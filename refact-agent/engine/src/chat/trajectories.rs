@@ -178,13 +178,17 @@ pub async fn save_trajectory_snapshot(
     let file_path = trajectories_dir.join(format!("{}.json", snapshot.chat_id));
     let now = chrono::Utc::now().to_rfc3339();
 
+    let messages_json: Vec<serde_json::Value> = snapshot.messages.iter()
+        .map(|m| serde_json::to_value(m).unwrap_or_default())
+        .collect();
+
     let trajectory = json!({
         "id": snapshot.chat_id,
         "title": snapshot.title,
         "model": snapshot.model,
         "mode": snapshot.mode,
         "tool_use": snapshot.tool_use,
-        "messages": snapshot.messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect::<Vec<_>>(),
+        "messages": messages_json,
         "created_at": snapshot.created_at,
         "updated_at": now,
         "boost_reasoning": snapshot.boost_reasoning,
@@ -212,6 +216,19 @@ pub async fn save_trajectory_snapshot(
             title: Some(snapshot.title.clone()),
         };
         let _ = tx.send(event);
+    }
+
+    let should_generate_title = is_placeholder_title(&snapshot.title)
+        && !snapshot.is_title_generated
+        && !snapshot.messages.is_empty();
+    
+    if should_generate_title {
+        let _ = spawn_title_generation_task(
+            gcx.clone(),
+            snapshot.chat_id.clone(),
+            messages_json,
+            trajectories_dir,
+        );
     }
 
     Ok(())
