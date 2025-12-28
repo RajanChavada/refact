@@ -1,26 +1,22 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
-use serde_json::json;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
-use futures::StreamExt;
-use reqwest_eventsource::Event;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ChatMeta, ChatMode, ChatUsage, SamplingParameters};
 use crate::global_context::GlobalContext;
-use crate::scratchpad_abstract::{FinishReason, HasTokenizerAndEot};
+use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::constants::CHAT_TOP_N;
 use crate::http::routers::v1::knowledge_enrichment::enrich_messages_with_knowledge;
 
 use super::types::*;
-use super::openai_merge::merge_tool_call;
 use super::trajectories::{maybe_save_trajectory, check_external_reload_pending};
 use super::tools::check_tool_calls_and_continue;
 use super::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
+use super::stream_core::{run_llm_stream, StreamRunParams, StreamCollector, normalize_tool_call};
 
 pub fn parse_chat_mode(mode: &str) -> ChatMode {
     match mode.to_uppercase().as_str() {
@@ -253,13 +249,6 @@ async fn run_streaming_generation(
 ) -> Result<(), String> {
     info!("session generation: prompt length = {}", prompt.len());
 
-    let (client, slowdown_arc) = {
-        let gcx_locked = gcx.read().await;
-        (gcx_locked.http_client.clone(), gcx_locked.http_client_slowdown.clone())
-    };
-
-    let _ = slowdown_arc.acquire().await;
-
     let (chat_id, context_tokens_cap, include_project_info, use_compression) = {
         let session = session_arc.lock().await;
         (
@@ -281,291 +270,80 @@ async fn run_streaming_generation(
         use_compression,
     });
 
-    let mut event_source = crate::forward_to_openai_endpoint::forward_to_openai_style_endpoint_streaming(
-        &model_rec,
-        &prompt,
-        &client,
-        &parameters,
+    let params = StreamRunParams {
+        prompt,
+        model_rec,
+        sampling: parameters,
         meta,
-    ).await.map_err(|e| format!("Failed to connect to LLM: {}", e))?;
+        abort_flag: Some(abort_flag),
+    };
 
-    let mut accumulated_content = String::new();
-    let mut accumulated_reasoning = String::new();
-    let mut accumulated_thinking_blocks: Vec<serde_json::Value> = Vec::new();
-    let mut accumulated_tool_calls: Vec<serde_json::Value> = Vec::new();
-    let mut accumulated_citations: Vec<serde_json::Value> = Vec::new();
-    let mut accumulated_extra: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    let mut last_finish_reason = FinishReason::None;
-
-    let stream_started_at = Instant::now();
-    let mut last_event_at = Instant::now();
-    let mut heartbeat = tokio::time::interval(STREAM_HEARTBEAT);
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    loop {
-        let event = tokio::select! {
-            _ = heartbeat.tick() => {
-                if abort_flag.load(Ordering::SeqCst) {
-                    info!("Generation aborted by user");
-                    return Err("Aborted".to_string());
-                }
-                if stream_started_at.elapsed() > STREAM_TOTAL_TIMEOUT {
-                    return Err("LLM stream timeout".to_string());
-                }
-                if last_event_at.elapsed() > STREAM_IDLE_TIMEOUT {
-                    return Err("LLM stream stalled".to_string());
-                }
-                continue;
-            }
-            maybe_event = event_source.next() => {
-                match maybe_event {
-                    Some(e) => e,
-                    None => break,
-                }
-            }
-        };
-        last_event_at = Instant::now();
-
-        match event {
-            Ok(Event::Open) => {},
-            Ok(Event::Message(msg)) => {
-                if msg.data.starts_with("[DONE]") {
-                    break;
-                }
-
-                let json: serde_json::Value = serde_json::from_str(&msg.data)
-                    .map_err(|e| format!("JSON parse error: {}", e))?;
-
-                if let Some(err) = json.get("error") {
-                    return Err(format!("LLM error: {}", err));
-                }
-                if let Some(detail) = json.get("detail") {
-                    return Err(format!("LLM error: {}", detail));
-                }
-
-                let mut changed_extra = serde_json::Map::new();
-                if let Some(obj) = json.as_object() {
-                    for (key, val) in obj {
-                        if val.is_null() {
-                            continue;
-                        }
-                        let dominated = key.starts_with("metering_")
-                            || key.starts_with("billing_")
-                            || key.starts_with("cost_")
-                            || key.starts_with("cache_")
-                            || key == "system_fingerprint";
-                        if dominated && accumulated_extra.get(key) != Some(val) {
-                            accumulated_extra.insert(key.clone(), val.clone());
-                            changed_extra.insert(key.clone(), val.clone());
-                        }
-                    }
-                }
-                if let Some(psf) = json.get("provider_specific_fields") {
-                    if !psf.is_null() && accumulated_extra.get("provider_specific_fields") != Some(psf) {
-                        accumulated_extra.insert("provider_specific_fields".to_string(), psf.clone());
-                        changed_extra.insert("provider_specific_fields".to_string(), psf.clone());
-                    }
-                }
-
-                let delta = match json.get("choices")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|c| c.get("delta"))
-                {
-                    Some(d) => d,
-                    None => continue,
-                };
-
-                if let Some(fr) = json.get("choices")
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|c| c.get("finish_reason"))
-                {
-                    last_finish_reason = FinishReason::from_json_val(fr).unwrap_or(FinishReason::None);
-                }
-
-                let mut ops = Vec::new();
-
-                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                    if !content.is_empty() {
-                        accumulated_content.push_str(content);
-                        ops.push(DeltaOp::AppendContent { text: content.to_string() });
-                    }
-                }
-
-                if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-                    if !reasoning.is_empty() {
-                        accumulated_reasoning.push_str(reasoning);
-                        ops.push(DeltaOp::AppendReasoning { text: reasoning.to_string() });
-                    }
-                }
-
-                if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
-                    for tc in tool_calls {
-                        merge_tool_call(&mut accumulated_tool_calls, tc.clone());
-                    }
-                    if !accumulated_tool_calls.is_empty() {
-                        ops.push(DeltaOp::SetToolCalls { tool_calls: accumulated_tool_calls.clone() });
-                    }
-                }
-
-                let thinking_blocks_raw = delta.get("thinking_blocks").and_then(|tb| tb.as_array())
-                    .or_else(|| delta.get("provider_specific_fields")
-                        .and_then(|psf| psf.get("thinking_blocks"))
-                        .and_then(|tb| tb.as_array()))
-                    .or_else(|| json.get("provider_specific_fields")
-                        .and_then(|psf| psf.get("thinking_blocks"))
-                        .and_then(|tb| tb.as_array()));
-
-                if let Some(thinking) = thinking_blocks_raw {
-                    let normalized: Vec<serde_json::Value> = thinking.iter().map(|block| {
-                        if block.get("thinking").is_some() {
-                            block.clone()
-                        } else if let Some(text) = block.get("text") {
-                            json!({
-                                "type": "thinking",
-                                "thinking": text,
-                                "signature": block.get("signature").cloned()
-                            })
-                        } else if let Some(content) = block.get("content") {
-                            json!({
-                                "type": "thinking",
-                                "thinking": content,
-                                "signature": block.get("signature").cloned()
-                            })
-                        } else if block.is_string() {
-                            json!({
-                                "type": "thinking",
-                                "thinking": block,
-                                "signature": null
-                            })
-                        } else {
-                            block.clone()
-                        }
-                    }).collect();
-                    accumulated_thinking_blocks = normalized.clone();
-                    ops.push(DeltaOp::SetThinkingBlocks { blocks: normalized });
-                }
-
-                if let Some(usage) = json.get("usage") {
-                    if !usage.is_null() {
-                        ops.push(DeltaOp::SetUsage { usage: usage.clone() });
-                        if let Ok(parsed_usage) = serde_json::from_value::<ChatUsage>(usage.clone()) {
-                            let mut session = session_arc.lock().await;
-                            session.draft_usage = Some(parsed_usage);
-                        }
-                    }
-                }
-
-                if let Some(citation) = json.get("provider_specific_fields")
-                    .and_then(|psf| psf.get("citation"))
-                {
-                    if !citation.is_null() {
-                        accumulated_citations.push(citation.clone());
-                        ops.push(DeltaOp::AddCitation { citation: citation.clone() });
-                    }
-                }
-                if let Some(citation) = delta.get("provider_specific_fields")
-                    .and_then(|psf| psf.get("citation"))
-                {
-                    if !citation.is_null() {
-                        accumulated_citations.push(citation.clone());
-                        ops.push(DeltaOp::AddCitation { citation: citation.clone() });
-                    }
-                }
-
-                if !changed_extra.is_empty() {
-                    ops.push(DeltaOp::MergeExtra { extra: changed_extra });
-                }
-
-                if !ops.is_empty() {
-                    let mut session = session_arc.lock().await;
-                    session.emit_stream_delta(ops);
-                }
-            }
-            Err(e) => {
-                return Err(format!("Stream error: {}", e));
-            }
-        }
+    struct SessionCollector {
+        session_arc: Arc<AMutex<ChatSession>>,
     }
-    drop(heartbeat);
+
+    impl StreamCollector for SessionCollector {
+        fn on_delta_ops(&mut self, _choice_idx: usize, ops: Vec<DeltaOp>) {
+            let session_arc = self.session_arc.clone();
+            tokio::spawn(async move {
+                let mut session = session_arc.lock().await;
+                session.emit_stream_delta(ops);
+            });
+        }
+
+        fn on_usage(&mut self, usage: &ChatUsage) {
+            let session_arc = self.session_arc.clone();
+            let usage = usage.clone();
+            tokio::spawn(async move {
+                let mut session = session_arc.lock().await;
+                session.draft_usage = Some(usage);
+            });
+        }
+
+        fn on_finish(&mut self, _choice_idx: usize, _finish_reason: Option<String>) {}
+    }
+
+    let mut collector = SessionCollector { session_arc: session_arc.clone() };
+    let results = run_llm_stream(gcx.clone(), params, 1, &mut collector).await?;
+
+    let result = results.into_iter().next().unwrap_or_default();
 
     {
         let mut session = session_arc.lock().await;
 
         if let Some(ref mut draft) = session.draft_message {
-            draft.content = ChatContent::SimpleText(accumulated_content);
-            if !accumulated_tool_calls.is_empty() {
-                info!("Parsing {} accumulated tool calls", accumulated_tool_calls.len());
+            draft.content = ChatContent::SimpleText(result.content);
 
-                let parsed_tool_calls: Vec<crate::call_validation::ChatToolCall> = accumulated_tool_calls
-                    .iter()
+            if !result.tool_calls_raw.is_empty() {
+                info!("Parsing {} accumulated tool calls", result.tool_calls_raw.len());
+                let parsed: Vec<_> = result.tool_calls_raw.iter()
                     .filter_map(|tc| normalize_tool_call(tc))
                     .collect();
-
-                info!("Successfully parsed {} tool calls", parsed_tool_calls.len());
-                if !parsed_tool_calls.is_empty() {
-                    draft.tool_calls = Some(parsed_tool_calls);
+                info!("Successfully parsed {} tool calls", parsed.len());
+                if !parsed.is_empty() {
+                    draft.tool_calls = Some(parsed);
                 }
             }
 
-            if !accumulated_reasoning.is_empty() {
-                draft.reasoning_content = Some(accumulated_reasoning.clone());
+            if !result.reasoning.is_empty() {
+                draft.reasoning_content = Some(result.reasoning);
             }
-            if !accumulated_thinking_blocks.is_empty() {
-                draft.thinking_blocks = Some(accumulated_thinking_blocks.clone());
+            if !result.thinking_blocks.is_empty() {
+                draft.thinking_blocks = Some(result.thinking_blocks);
             }
-            if !accumulated_citations.is_empty() {
-                draft.citations = accumulated_citations.clone();
+            if !result.citations.is_empty() {
+                draft.citations = result.citations;
             }
-            if !accumulated_extra.is_empty() {
-                draft.extra = accumulated_extra.clone();
+            if !result.extra.is_empty() {
+                draft.extra = result.extra;
             }
         }
 
-        let finish_reason_str = match last_finish_reason {
-            FinishReason::Stop | FinishReason::ScratchpadStop => Some("stop".to_string()),
-            FinishReason::Length => Some("length".to_string()),
-            FinishReason::None => None,
-        };
-        session.finish_stream(finish_reason_str);
+        session.finish_stream(result.finish_reason);
     }
 
     check_tool_calls_and_continue(gcx.clone(), session_arc.clone(), chat_mode).await;
     check_external_reload_pending(gcx, session_arc).await;
 
     Ok(())
-}
-
-fn normalize_tool_call(tc: &serde_json::Value) -> Option<crate::call_validation::ChatToolCall> {
-    let function = tc.get("function")?;
-    let name = function.get("name").and_then(|n| n.as_str()).filter(|s| !s.is_empty())?;
-
-    let id = tc.get("id")
-        .and_then(|i| i.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("call_{}", Uuid::new_v4().to_string().replace("-", "")[..24].to_string()));
-
-    let arguments = match function.get("arguments") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(v) if !v.is_null() => serde_json::to_string(v).unwrap_or_default(),
-        _ => String::new(),
-    };
-
-    let tool_type = tc.get("type")
-        .and_then(|t| t.as_str())
-        .unwrap_or("function")
-        .to_string();
-
-    let index = tc.get("index").and_then(|i| i.as_u64()).map(|i| i as usize);
-
-    Some(crate::call_validation::ChatToolCall {
-        id,
-        index,
-        function: crate::call_validation::ChatToolFunction {
-            name: name.to_string(),
-            arguments,
-        },
-        tool_type,
-    })
 }

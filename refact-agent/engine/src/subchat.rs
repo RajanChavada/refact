@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex as AMutex;
-use serde_json::{json, Value};
+use serde_json::json;
 use tracing::info;
 use uuid::Uuid;
 
@@ -8,17 +8,17 @@ use crate::caps::resolve_chat_model;
 use crate::tools::tools_description::ToolDesc;
 use crate::tools::tools_list::get_available_tools;
 use crate::at_commands::at_commands::AtCommandsContext;
-use crate::call_validation::{ChatMeta, ChatMode, SamplingParameters, ChatMessage, ChatUsage, ChatToolCall, ReasoningEffort};
+use crate::call_validation::{ChatContent, ChatMeta, ChatMode, SamplingParameters, ChatMessage, ChatUsage, ReasoningEffort};
 use crate::global_context::try_load_caps_quickly_if_not_present;
 use crate::scratchpad_abstract::HasTokenizerAndEot;
-use crate::scratchpads::multimodality::chat_content_raw_from_value;
 use crate::chat::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
+use crate::chat::stream_core::{run_llm_stream, StreamRunParams, NoopCollector, ChoiceFinal, normalize_tool_call};
 
 
 const MAX_NEW_TOKENS: usize = 4096;
 
 
-async fn subchat_non_stream(
+async fn subchat_stream(
     ccx: Arc<AMutex<AtCommandsContext>>,
     model_id: &str,
     messages: Vec<ChatMessage>,
@@ -86,104 +86,59 @@ async fn subchat_non_stream(
         &None,
     ).await?;
 
-    let (client, slowdown_arc) = {
-        let gcx_locked = gcx.read().await;
-        (gcx_locked.http_client.clone(), gcx_locked.http_client_slowdown.clone())
+    let t1 = std::time::Instant::now();
+
+    let params = StreamRunParams {
+        prompt: prepared.prompt,
+        model_rec: model_rec.base.clone(),
+        sampling: parameters,
+        meta: if model_rec.base.support_metadata { Some(meta) } else { None },
+        abort_flag: None,
     };
 
-    let _ = slowdown_arc.acquire().await;
+    let mut collector = NoopCollector;
+    let results = run_llm_stream(gcx.clone(), params, n, &mut collector).await?;
 
-    let t1 = std::time::Instant::now();
-    let j = crate::forward_to_openai_endpoint::forward_to_openai_style_endpoint(
-        &model_rec.base,
-        &prepared.prompt,
-        &client,
-        &parameters,
-        if model_rec.base.support_metadata { Some(meta) } else { None },
-    ).await.map_err(|e| format!("network error: {:?}", e))?;
-    info!("non stream generation took {:?}ms", t1.elapsed().as_millis() as i32);
+    info!("stream generation took {:?}ms", t1.elapsed().as_millis() as i32);
 
-    parse_llm_response(&j, messages)
+    convert_results_to_messages(results, messages)
 }
 
-fn parse_llm_response(j: &Value, original_messages: Vec<ChatMessage>) -> Result<Vec<Vec<ChatMessage>>, String> {
-    if let Some(err) = j.get("error") {
-        return Err(format!("model error: {}", err));
-    }
-    if let Some(msg) = j.get("detail") {
-        return Err(format!("model error: {}", msg));
-    }
-    if let Some(msg) = j.get("human_readable_message") {
-        return Err(format!("model error: {}", msg));
-    }
-
-    let usage_mb = j.get("usage")
-        .and_then(|value| value.as_object())
-        .and_then(|o| serde_json::from_value::<ChatUsage>(Value::Object(o.clone())).ok());
-
-    let choices = j.get("choices")
-        .and_then(|value| value.as_array())
-        .ok_or_else(|| format!("error parsing model's output: choices doesn't exist, response: {}", j))?;
-
-    if choices.is_empty() {
+fn convert_results_to_messages(results: Vec<ChoiceFinal>, original_messages: Vec<ChatMessage>) -> Result<Vec<Vec<ChatMessage>>, String> {
+    if results.is_empty() {
         return Ok(vec![original_messages]);
     }
 
-    let mut indexed_choices: Vec<(usize, &Value)> = choices.iter()
-        .map(|c| {
-            let idx = c.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-            (idx, c)
-        })
-        .collect();
-    indexed_choices.sort_by_key(|(idx, _)| *idx);
-
-    let mut results = vec![];
-    for (_, choice) in indexed_choices {
-        let message = choice.get("message")
-            .ok_or("error parsing model's output: choice.message doesn't exist")?;
-
-        let role = message.get("role")
-            .and_then(|v| v.as_str())
-            .ok_or("error parsing model's output: role doesn't exist")?.to_string();
-
-        let content_value = message.get("content").cloned().unwrap_or(json!(null));
-        let content = chat_content_raw_from_value(content_value)
-            .and_then(|c| c.to_internal_format())
-            .map_err(|e| format!("error parsing model's output: {}", e))?;
-
-        let tool_calls = message.get("tool_calls")
-            .and_then(|v| v.as_array())
-            .and_then(|arr| serde_json::from_value::<Vec<ChatToolCall>>(Value::Array(arr.clone())).ok());
-
-        let tool_call_id = message.get("tool_call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
-
-        let thinking_blocks = message.get("thinking_blocks")
-            .and_then(|v| v.as_array())
-            .cloned();
+    let mut all_choices = vec![];
+    for result in results {
+        let tool_calls: Option<Vec<_>> = if result.tool_calls_raw.is_empty() {
+            None
+        } else {
+            let parsed: Vec<_> = result.tool_calls_raw.iter()
+                .filter_map(|tc| normalize_tool_call(tc))
+                .collect();
+            if parsed.is_empty() { None } else { Some(parsed) }
+        };
 
         let msg = ChatMessage {
-            role,
-            content,
+            role: "assistant".to_string(),
+            content: ChatContent::SimpleText(result.content),
             tool_calls,
-            tool_call_id,
-            thinking_blocks,
-            usage: usage_mb.clone(),
+            reasoning_content: if result.reasoning.is_empty() { None } else { Some(result.reasoning) },
+            thinking_blocks: if result.thinking_blocks.is_empty() { None } else { Some(result.thinking_blocks) },
+            usage: result.usage,
             ..Default::default()
         };
 
         let mut extended = original_messages.clone();
         extended.push(msg);
-        results.push(extended);
+        all_choices.push(extended);
     }
 
-    if results.is_empty() {
-        results.push(original_messages);
-    }
-
-    Ok(results)
+    Ok(all_choices)
 }
+
+
 
 fn update_usage_from_messages(usage: &mut ChatUsage, messages: &Vec<Vec<ChatMessage>>) {
     // even if n_choices > 1, usage is identical in each Vec<ChatMessage>, so we could take the first one
@@ -248,7 +203,7 @@ pub async fn subchat_single(
 
     let max_new_tokens = max_new_tokens.unwrap_or(MAX_NEW_TOKENS);
 
-    let results = subchat_non_stream(
+    let results = subchat_stream(
         ccx.clone(),
         model_id,
         messages.clone(),

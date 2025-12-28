@@ -12,6 +12,7 @@ pub mod openai_convert;
 pub mod prompts;
 pub mod history_limit;
 pub mod prepare;
+pub mod stream_core;
 #[cfg(test)]
 mod tests;
 
