@@ -5,11 +5,11 @@ use crate::integrations::integr_abstract::IntegrationConfirmation;
 use crate::privacy::load_privacy_if_needed;
 use crate::tools::file_edit::auxiliary::{
     await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary,
-    parse_bool_arg, parse_path_for_update, parse_string_arg, str_replace_regex, sync_documents_ast,
+    parse_bool_arg, parse_path_for_update, parse_string_arg, str_replace_anchored,
+    sync_documents_ast, AnchorMode,
 };
 use crate::tools::tools_description::{MatchConfirmDeny, MatchConfirmDenyResult, Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
 use async_trait::async_trait;
-use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,16 +17,17 @@ use std::sync::Arc;
 use tokio::sync::Mutex as AMutex;
 use tokio::sync::RwLock as ARwLock;
 
-pub struct ToolUpdateTextDocRegex {
+pub struct ToolUpdateTextDocAnchored {
     pub config_path: String,
 }
 
 struct Args {
     path: PathBuf,
-    pattern: Regex,
-    replacement: String,
+    mode: AnchorMode,
+    anchor1: String,
+    anchor2: Option<String>,
+    content: String,
     multiple: bool,
-    expected_matches: Option<usize>,
 }
 
 async fn parse_args(
@@ -35,33 +36,50 @@ async fn parse_args(
 ) -> Result<Args, String> {
     let privacy = load_privacy_if_needed(gcx.clone()).await;
     let path = parse_path_for_update(gcx, args, privacy).await?;
-    let pattern_str = parse_string_arg(args, "pattern", "Provide pattern to match")?;
-    let literal = parse_bool_arg(args, "literal", true)?;
-    let pattern = if literal {
-        Regex::new(&regex::escape(&pattern_str))
-            .map_err(|e| format!("⚠️ Pattern too complex: {}. 💡 Use shorter pattern", e))?
-    } else {
-        Regex::new(&pattern_str)
-            .map_err(|e| format!("⚠️ Invalid regex: {}. 💡 Check syntax, or set literal:true", e))?
+
+    let mode_str = parse_string_arg(args, "mode", "Use 'replace_between', 'insert_after', or 'insert_before'")?;
+    let mode = match mode_str.as_str() {
+        "replace_between" => AnchorMode::ReplaceBetween,
+        "insert_after" => AnchorMode::InsertAfter,
+        "insert_before" => AnchorMode::InsertBefore,
+        _ => return Err(format!("⚠️ Invalid mode '{}'. 💡 Use 'replace_between', 'insert_after', or 'insert_before'", mode_str)),
     };
-    let replacement = parse_string_arg(args, "replacement", "Provide the new text")?;
+
+    let (anchor1, anchor2) = match mode {
+        AnchorMode::ReplaceBetween => {
+            let before = parse_string_arg(args, "anchor_before", "Provide text that marks start of region")?;
+            let after = parse_string_arg(args, "anchor_after", "Provide text that marks end of region")?;
+            (before, Some(after))
+        }
+        _ => {
+            let anchor = parse_string_arg(args, "anchor", "Provide text to locate insert position")?;
+            (anchor, None)
+        }
+    };
+
+    let content = parse_string_arg(args, "content", "Provide the new content")?;
     let multiple = parse_bool_arg(args, "multiple", false)?;
-    let expected_matches = match args.get("expected_matches") {
-        Some(Value::Number(n)) => n.as_u64().map(|v| v as usize),
-        Some(Value::String(s)) => s.parse::<usize>().ok(),
-        _ => None,
-    };
-    Ok(Args { path, pattern, replacement, multiple, expected_matches })
+
+    Ok(Args { path, mode, anchor1, anchor2, content, multiple })
 }
 
-pub async fn tool_update_text_doc_regex_exec(
+pub async fn tool_update_text_doc_anchored_exec(
     gcx: Arc<ARwLock<GlobalContext>>,
     args: &HashMap<String, Value>,
     dry: bool,
 ) -> Result<(String, String, Vec<DiffChunk>, String), String> {
     let a = parse_args(gcx.clone(), args).await?;
     await_ast_indexing(gcx.clone()).await?;
-    let (before, after) = str_replace_regex(gcx.clone(), &a.path, &a.pattern, &a.replacement, a.multiple, a.expected_matches, dry).await?;
+    let (before, after) = str_replace_anchored(
+        gcx.clone(),
+        &a.path,
+        a.mode,
+        &a.anchor1,
+        a.anchor2.as_deref(),
+        &a.content,
+        a.multiple,
+        dry,
+    ).await?;
     sync_documents_ast(gcx.clone(), &a.path).await?;
     let chunks = convert_edit_to_diffchunks(a.path.clone(), &before, &after)?;
     let summary = edit_result_summary(&before, &after, &a.path);
@@ -69,7 +87,7 @@ pub async fn tool_update_text_doc_regex_exec(
 }
 
 #[async_trait]
-impl Tool for ToolUpdateTextDocRegex {
+impl Tool for ToolUpdateTextDocAnchored {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
     async fn tool_execute(
@@ -79,7 +97,7 @@ impl Tool for ToolUpdateTextDocRegex {
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let gcx = ccx.lock().await.global_context.clone();
-        let (_, _, chunks, _summary) = tool_update_text_doc_regex_exec(gcx, args, false).await?;
+        let (_, _, chunks, _) = tool_update_text_doc_anchored_exec(gcx, args, false).await?;
         Ok((false, vec![ContextEnum::ChatMessage(ChatMessage {
             role: "diff".to_string(),
             content: ChatContent::SimpleText(json!(chunks).to_string()),
@@ -100,13 +118,13 @@ impl Tool for ToolUpdateTextDocRegex {
         if msgs_len != 0 && !can_exec {
             return Ok(MatchConfirmDeny {
                 result: MatchConfirmDenyResult::PASS,
-                command: "update_textdoc_regex".to_string(),
+                command: "update_textdoc_anchored".to_string(),
                 rule: "".to_string(),
             });
         }
         Ok(MatchConfirmDeny {
             result: MatchConfirmDenyResult::CONFIRMATION,
-            command: "update_textdoc_regex".to_string(),
+            command: "update_textdoc_anchored".to_string(),
             rule: "default".to_string(),
         })
     }
@@ -116,60 +134,65 @@ impl Tool for ToolUpdateTextDocRegex {
         _ccx: Arc<AMutex<AtCommandsContext>>,
         _args: &HashMap<String, Value>,
     ) -> Result<String, String> {
-        Ok("update_textdoc_regex".to_string())
+        Ok("update_textdoc_anchored".to_string())
     }
 
     fn confirm_deny_rules(&self) -> Option<IntegrationConfirmation> {
         Some(IntegrationConfirmation {
-            ask_user: vec!["update_textdoc_regex*".to_string()],
+            ask_user: vec!["update_textdoc_anchored*".to_string()],
             deny: vec![],
         })
     }
 
     fn tool_description(&self) -> ToolDesc {
         ToolDesc {
-            name: "update_textdoc_regex".to_string(),
-            display_name: "Update Text Document with Regex".to_string(),
+            name: "update_textdoc_anchored".to_string(),
+            display_name: "Update Text Document (Anchored)".to_string(),
             source: ToolSource {
                 source_type: ToolSourceType::Builtin,
                 config_path: self.config_path.clone(),
             },
             agentic: false,
             experimental: false,
-            description: "Updates an existing document using pattern matching. By default treats pattern as literal text (literal:true). Set literal:false for regex.".to_string(),
+            description: "Edit file by finding anchor text. More reliable than exact string match. Use 'replace_between' to replace content between two anchors, or 'insert_after'/'insert_before' to insert at anchor.".to_string(),
             parameters: vec![
                 ToolParam {
                     name: "path".to_string(),
-                    description: "Absolute path to the file to change.".to_string(),
+                    description: "Absolute path to the file.".to_string(),
                     param_type: "string".to_string(),
                 },
                 ToolParam {
-                    name: "pattern".to_string(),
-                    description: "Pattern to match. Treated as literal text by default, or regex if literal:false.".to_string(),
+                    name: "mode".to_string(),
+                    description: "'replace_between' (needs anchor_before + anchor_after), 'insert_after', or 'insert_before' (need anchor).".to_string(),
                     param_type: "string".to_string(),
                 },
                 ToolParam {
-                    name: "replacement".to_string(),
-                    description: "The new text that will replace the matched pattern.".to_string(),
+                    name: "anchor_before".to_string(),
+                    description: "For replace_between: text marking start of region to replace.".to_string(),
                     param_type: "string".to_string(),
                 },
                 ToolParam {
-                    name: "literal".to_string(),
-                    description: "If true (default), pattern is treated as literal text. If false, pattern is a regex.".to_string(),
-                    param_type: "boolean".to_string(),
+                    name: "anchor_after".to_string(),
+                    description: "For replace_between: text marking end of region to replace.".to_string(),
+                    param_type: "string".to_string(),
+                },
+                ToolParam {
+                    name: "anchor".to_string(),
+                    description: "For insert_after/insert_before: text to locate insert position.".to_string(),
+                    param_type: "string".to_string(),
+                },
+                ToolParam {
+                    name: "content".to_string(),
+                    description: "The new content to insert or replace with.".to_string(),
+                    param_type: "string".to_string(),
                 },
                 ToolParam {
                     name: "multiple".to_string(),
-                    description: "If true, replaces all occurrences; if false (default), only the first.".to_string(),
+                    description: "If true, apply to all matching anchors. Default false.".to_string(),
                     param_type: "boolean".to_string(),
                 },
-                ToolParam {
-                    name: "expected_matches".to_string(),
-                    description: "If provided, fails if actual match count differs (safety check).".to_string(),
-                    param_type: "integer".to_string(),
-                },
             ],
-            parameters_required: vec!["path".to_string(), "pattern".to_string(), "replacement".to_string()],
+            parameters_required: vec!["path".to_string(), "mode".to_string(), "content".to_string()],
         }
     }
 }

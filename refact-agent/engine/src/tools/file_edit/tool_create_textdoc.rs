@@ -1,11 +1,12 @@
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum, DiffChunk};
+use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::IntegrationConfirmation;
 use crate::privacy::load_privacy_if_needed;
 use crate::tools::file_edit::auxiliary::{
-    await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary,
-    parse_path_for_create, parse_string_arg, sync_documents_ast, write_file,
+    await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary, normalize_line_endings,
+    parse_path_for_create, parse_string_arg, restore_line_endings, sync_documents_ast, write_file,
 };
 use crate::tools::tools_description::{MatchConfirmDeny, MatchConfirmDenyResult, Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
 use async_trait::async_trait;
@@ -23,14 +24,25 @@ pub struct ToolCreateTextDoc {
 async fn parse_args(
     gcx: Arc<ARwLock<GlobalContext>>,
     args: &HashMap<String, Value>,
-) -> Result<(PathBuf, String), String> {
+) -> Result<(PathBuf, String, bool), String> {
     let privacy = load_privacy_if_needed(gcx.clone()).await;
-    let path = parse_path_for_create(gcx, args, privacy).await?;
+    let path = parse_path_for_create(gcx.clone(), args, privacy).await?;
+
+    let has_crlf = if path.exists() {
+        let existing = get_file_text_from_memory_or_disk(gcx, &path).await.unwrap_or_default();
+        existing.contains("\r\n")
+    } else {
+        false
+    };
+
     let mut content = parse_string_arg(args, "content", "Provide the file content")?;
+    content = normalize_line_endings(&content);
     if !content.ends_with('\n') {
         content.push('\n');
     }
-    Ok((path, content))
+    let content = restore_line_endings(&content, has_crlf);
+
+    Ok((path, content, has_crlf))
 }
 
 pub async fn tool_create_text_doc_exec(
@@ -38,7 +50,7 @@ pub async fn tool_create_text_doc_exec(
     args: &HashMap<String, Value>,
     dry: bool,
 ) -> Result<(String, String, Vec<DiffChunk>, String), String> {
-    let (path, content) = parse_args(gcx.clone(), args).await?;
+    let (path, content, _) = parse_args(gcx.clone(), args).await?;
     await_ast_indexing(gcx.clone()).await?;
     let (before, after) = write_file(gcx.clone(), &path, &content, dry).await?;
     sync_documents_ast(gcx.clone(), &path).await?;

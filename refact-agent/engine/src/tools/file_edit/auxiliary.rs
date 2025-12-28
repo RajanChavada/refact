@@ -31,7 +31,7 @@ pub async fn parse_path_for_update(
     ).await.map(|f| canonicalize_normalized_path(PathBuf::from(f)))?;
 
     if check_file_privacy(privacy_settings, &path, &FilePrivacyLevel::AllowToSendAnywhere).is_err() {
-        return Err(format!("⚠️ Cannot update {:?} due to privacy settings", path));
+        return Err(format!("⚠️ Cannot update {:?} (blocked by privacy). 💡 Choose file in allowed directory", path));
     }
     if !path.exists() {
         return Err(format!("⚠️ File {:?} not found. 💡 Use create_textdoc() for new files", path));
@@ -74,7 +74,7 @@ pub async fn parse_path_for_create(
     };
 
     if check_file_privacy(privacy_settings, &path, &FilePrivacyLevel::AllowToSendAnywhere).is_err() {
-        return Err(format!("⚠️ Cannot create {:?} due to privacy settings", path));
+        return Err(format!("⚠️ Cannot create {:?} (blocked by privacy). 💡 Choose path in allowed directory", path));
     }
     Ok(path)
 }
@@ -248,11 +248,13 @@ pub async fn sync_documents_ast(
 }
 
 pub async fn write_file(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, file_text: &String, dry: bool) -> Result<(String, String), String> {
+    use crate::tools::file_edit::undo_history::record_before_edit;
+
     let parent = path.parent().ok_or(format!(
         "Failed to Add: {:?}. Path is invalid.\nReason: path must have had a parent directory",
         path
     ))?;
-    
+
     if !parent.exists() {
         if !dry {
             fs::create_dir_all(&parent).map_err(|e| {
@@ -262,23 +264,23 @@ pub async fn write_file(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, file_t
             })?;
         }
     }
-    
+
     let before_text = if path.exists() {
         get_file_text_from_memory_or_disk(gcx.clone(), path).await?
     } else {
         "".to_string()
     };
-    
+
     if !dry {
+        record_before_edit(path, &before_text);
         fs::write(&path, file_text).map_err(|e| {
             let err = format!("Failed to write file: {:?}\nERROR: {}", path, e);
             warn!("{err}");
             err
         })?;
-        // Invalidate stale cache entry so subsequent reads get fresh content from disk
         gcx.write().await.documents_state.memory_document_map.remove(path);
     }
-    
+
     Ok((before_text, file_text.to_string()))
 }
 
@@ -294,37 +296,168 @@ pub async fn str_replace(
         return Err("⚠️ old_str cannot be empty. 💡 Provide the exact text to replace".to_string());
     }
     let file_content = get_file_text_from_memory_or_disk(gcx.clone(), path).await?;
-
     let has_crlf = file_content.contains("\r\n");
 
     let normalized_content = normalize_line_endings(&file_content);
-    let normalized_old_str = normalize_line_endings(old_str);
+    let normalized_old_str = strip_line_number_prefixes(&normalize_line_endings(old_str));
 
     let occurrences = normalized_content.matches(&normalized_old_str).count();
     if occurrences == 0 {
-        return Err(format!(
-            "⚠️ old_str not found in {:?}. 💡 Use cat() to check file content, ensure exact match including whitespace",
-            path
-        ));
+        let trimmed_old = normalized_old_str.trim();
+        let trimmed_match = normalized_content.contains(trimmed_old) && !trimmed_old.is_empty();
+        let hint = if trimmed_match {
+            "Whitespace mismatch detected. 💡 Check leading/trailing spaces, or use update_textdoc_anchored()"
+        } else {
+            "💡 Use cat() to verify content, or try update_textdoc_anchored() with shorter anchors"
+        };
+        return Err(format!("⚠️ old_str not found in {:?}. {}", path, hint));
     }
     if !replace_multiple && occurrences > 1 {
-        let lines: Vec<usize> = normalized_content
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| line.contains(&normalized_old_str))
-            .map(|(idx, _)| idx + 1)
-            .collect();
+        let lines = find_match_lines(&normalized_content, &normalized_old_str);
         return Err(format!(
-            "⚠️ {} occurrences found at lines {:?}. 💡 Use more context to make unique, or set multiple:true",
+            "⚠️ {} occurrences at lines {:?}. 💡 Add surrounding context to make unique, or set multiple:true",
             occurrences, lines
         ));
     }
 
     let normalized_new_str = normalize_line_endings(new_str);
-    let new_content = normalized_content.replace(&normalized_old_str, &normalized_new_str);
+    let new_content = if replace_multiple {
+        normalized_content.replace(&normalized_old_str, &normalized_new_str)
+    } else {
+        normalized_content.replacen(&normalized_old_str, &normalized_new_str, 1)
+    };
     let new_file_content = restore_line_endings(&new_content, has_crlf);
     write_file(gcx.clone(), path, &new_file_content, dry).await?;
     Ok((file_content, new_file_content))
+}
+
+fn strip_line_number_prefixes(s: &str) -> String {
+    let re = regex::Regex::new(r"(?m)^\d+[\t|:]\s?").unwrap();
+    re.replace_all(s, "").to_string()
+}
+
+fn find_match_lines(content: &str, pattern: &str) -> Vec<usize> {
+    let mut lines = Vec::new();
+    let mut pos = 0;
+    while let Some(idx) = content[pos..].find(pattern) {
+        let abs_idx = pos + idx;
+        let line_num = content[..abs_idx].lines().count() + 1;
+        lines.push(line_num);
+        pos = abs_idx + 1;
+    }
+    lines
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AnchorMode {
+    ReplaceBetween,
+    InsertAfter,
+    InsertBefore,
+}
+
+pub async fn str_replace_anchored(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    path: &PathBuf,
+    mode: AnchorMode,
+    anchor1: &str,
+    anchor2: Option<&str>,
+    content: &str,
+    multiple: bool,
+    dry: bool,
+) -> Result<(String, String), String> {
+    if anchor1.is_empty() {
+        return Err("⚠️ Anchor cannot be empty. 💡 Provide unique text to locate edit position".to_string());
+    }
+    let file_content = get_file_text_from_memory_or_disk(gcx.clone(), path).await?;
+    let has_crlf = file_content.contains("\r\n");
+
+    let normalized = normalize_line_endings(&file_content);
+    let anchor1_n = normalize_line_endings(anchor1);
+    let content_n = normalize_line_endings(content);
+
+    let result = match mode {
+        AnchorMode::ReplaceBetween => {
+            let anchor2_str = anchor2.ok_or("⚠️ anchor_after required for replace_between mode")?;
+            if anchor2_str.is_empty() {
+                return Err("⚠️ anchor_after cannot be empty".to_string());
+            }
+            let anchor2_n = normalize_line_endings(anchor2_str);
+            replace_between_anchors(&normalized, &anchor1_n, &anchor2_n, &content_n, multiple)?
+        }
+        AnchorMode::InsertAfter => {
+            insert_at_anchor(&normalized, &anchor1_n, &content_n, multiple, true)?
+        }
+        AnchorMode::InsertBefore => {
+            insert_at_anchor(&normalized, &anchor1_n, &content_n, multiple, false)?
+        }
+    };
+
+    let new_file_content = restore_line_endings(&result, has_crlf);
+    write_file(gcx.clone(), path, &new_file_content, dry).await?;
+    Ok((file_content, new_file_content))
+}
+
+fn replace_between_anchors(content: &str, before: &str, after: &str, replacement: &str, multiple: bool) -> Result<String, String> {
+    let before_positions: Vec<usize> = content.match_indices(before).map(|(i, _)| i).collect();
+    if before_positions.is_empty() {
+        return Err("⚠️ anchor_before not found. 💡 Use cat() to verify text exists".to_string());
+    }
+
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for &b_start in &before_positions {
+        let b_end = b_start + before.len();
+        if let Some(rel_a) = content[b_end..].find(after) {
+            pairs.push((b_start, b_end + rel_a));
+        }
+    }
+
+    if pairs.is_empty() {
+        return Err("⚠️ anchor_after not found after anchor_before. 💡 Check anchor order".to_string());
+    }
+    if !multiple && pairs.len() > 1 {
+        let lines: Vec<usize> = pairs.iter().map(|(i, _)| content[..*i].lines().count() + 1).collect();
+        return Err(format!("⚠️ {} anchor pairs at lines {:?}. 💡 Use more specific anchors, or set multiple:true", pairs.len(), lines));
+    }
+
+    pairs.sort_by_key(|(start, _)| *start);
+    for i in 1..pairs.len() {
+        let prev_end = pairs[i - 1].1 + after.len();
+        let curr_start = pairs[i].0;
+        if curr_start < prev_end {
+            let line1 = content[..pairs[i - 1].0].lines().count() + 1;
+            let line2 = content[..curr_start].lines().count() + 1;
+            return Err(format!(
+                "⚠️ Overlapping anchor regions at lines {} and {}. 💡 Use more specific anchors",
+                line1, line2
+            ));
+        }
+    }
+
+    let mut result = content.to_string();
+    for (b_start, a_start) in pairs.into_iter().rev() {
+        let b_end = b_start + before.len();
+        let a_end = a_start + after.len();
+        result = format!("{}{}{}{}", &result[..b_end], replacement, after, &result[a_end..]);
+    }
+    Ok(result)
+}
+
+fn insert_at_anchor(content: &str, anchor: &str, insert: &str, multiple: bool, after: bool) -> Result<String, String> {
+    let positions: Vec<usize> = content.match_indices(anchor).map(|(i, _)| i).collect();
+    if positions.is_empty() {
+        return Err("⚠️ Anchor not found. 💡 Use cat() to verify text exists".to_string());
+    }
+    if !multiple && positions.len() > 1 {
+        let lines: Vec<usize> = positions.iter().map(|i| content[..*i].lines().count() + 1).collect();
+        return Err(format!("⚠️ {} anchor occurrences at lines {:?}. 💡 Use more specific anchor, or set multiple:true", positions.len(), lines));
+    }
+
+    let mut result = content.to_string();
+    for pos in positions.into_iter().rev() {
+        let insert_pos = if after { pos + anchor.len() } else { pos };
+        result.insert_str(insert_pos, insert);
+    }
+    Ok(result)
 }
 
 #[derive(Debug, Clone)]
@@ -351,7 +484,7 @@ pub fn parse_line_ranges(ranges_str: &str, total_lines: usize) -> Result<Vec<Lin
                 1
             } else {
                 start_str.parse::<usize>().map_err(|_| {
-                    format!("Invalid start line number '{}' in range '{}'", start_str, part)
+                    format!("⚠️ Invalid start '{}' in '{}'. 💡 Use numbers like '10:20'", start_str, part)
                 })?
             };
 
@@ -359,30 +492,30 @@ pub fn parse_line_ranges(ranges_str: &str, total_lines: usize) -> Result<Vec<Lin
                 total_lines
             } else {
                 end_str.parse::<usize>().map_err(|_| {
-                    format!("Invalid end line number '{}' in range '{}'", end_str, part)
+                    format!("⚠️ Invalid end '{}' in '{}'. 💡 Use numbers like '10:20'", end_str, part)
                 })?
             };
 
             LineRange { start, end }
         } else {
             let line = part.parse::<usize>().map_err(|_| {
-                format!("Invalid line number '{}'", part)
+                format!("⚠️ Invalid line '{}'. 💡 Use number like '10' or range '10:20'", part)
             })?;
             LineRange { start: line, end: line }
         };
 
         if range.start == 0 {
-            return Err("Line numbers are 1-based. Start line must be at least 1.".to_string());
+            return Err("⚠️ Line numbers are 1-based, got 0. 💡 Use 1 for first line".to_string());
         }
         if range.end < range.start {
             return Err(format!(
-                "Invalid range '{}': end line ({}) must be >= start line ({}).",
+                "⚠️ Invalid range '{}': end ({}) < start ({}). 💡 Use start:end format",
                 part, range.end, range.start
             ));
         }
         if range.start > total_lines {
             return Err(format!(
-                "Start line {} is beyond end of file ({} lines).",
+                "⚠️ Line {} beyond EOF ({} lines). 💡 Use cat() to check file length",
                 range.start, total_lines
             ));
         }
@@ -391,18 +524,19 @@ pub fn parse_line_ranges(ranges_str: &str, total_lines: usize) -> Result<Vec<Lin
     }
 
     if ranges.is_empty() {
-        return Err("No valid ranges provided.".to_string());
+        return Err("⚠️ No ranges provided. 💡 Use format '10:20' or '5' or ':10,20:'".to_string());
     }
 
-    ranges.sort_by(|a, b| b.start.cmp(&a.start));
+    let mut sorted: Vec<&LineRange> = ranges.iter().collect();
+    sorted.sort_by_key(|r| r.start);
 
-    for i in 0..ranges.len() - 1 {
-        let current = &ranges[i];
-        let next = &ranges[i + 1];
-        if next.end >= current.start {
+    for i in 1..sorted.len() {
+        let prev = sorted[i - 1];
+        let curr = sorted[i];
+        if curr.start <= prev.end {
             return Err(format!(
-                "Overlapping ranges detected: {}:{} and {}:{}",
-                next.start, next.end, current.start, current.end
+                "⚠️ Overlapping ranges {}:{} and {}:{}. 💡 Ranges must not overlap",
+                prev.start, prev.end, curr.start, curr.end
             ));
         }
     }
@@ -429,9 +563,14 @@ pub async fn str_replace_lines(
 
     if ranges.len() == 1 {
         let range = &ranges[0];
-        let effective_end = range.end.min(total_lines);
+        if range.end > total_lines {
+            return Err(format!(
+                "⚠️ Range end {} exceeds file length ({} lines). 💡 Use cat() to check file, or ':' for end",
+                range.end, total_lines
+            ));
+        }
         let start_idx = range.start - 1;
-        let end_idx = effective_end;
+        let end_idx = range.end;
         let new_lines: Vec<String> = normalized_new_content.lines().map(|s| s.to_string()).collect();
         lines.splice(start_idx..end_idx, new_lines);
     } else {
@@ -439,19 +578,24 @@ pub async fn str_replace_lines(
 
         if content_parts.len() != ranges.len() {
             return Err(format!(
-                "Content has {} parts (separated by ---RANGE_SEPARATOR---) but {} ranges were specified. \
-                 For multiple ranges, separate content for each range with '---RANGE_SEPARATOR---'.",
+                "⚠️ {} content parts but {} ranges. 💡 Separate content with '---RANGE_SEPARATOR---'",
                 content_parts.len(), ranges.len()
             ));
         }
 
-        for (i, range) in ranges.iter().enumerate() {
-            let effective_end = range.end.min(lines.len());
+        let mut indexed: Vec<(usize, LineRange)> = ranges.into_iter().enumerate().collect();
+        indexed.sort_by(|a, b| b.1.start.cmp(&a.1.start));
+
+        for (orig_idx, range) in indexed {
+            if range.end > lines.len() {
+                return Err(format!(
+                    "⚠️ Range {}:{} exceeds current length ({} lines). 💡 Check ranges",
+                    range.start, range.end, lines.len()
+                ));
+            }
             let start_idx = range.start - 1;
-            let end_idx = effective_end;
-            let content_idx = ranges.len() - 1 - i;
-            let part_content = content_parts[content_idx].trim();
-            let new_lines: Vec<String> = part_content.lines().map(|s| s.to_string()).collect();
+            let end_idx = range.end;
+            let new_lines: Vec<String> = content_parts[orig_idx].lines().map(|s| s.to_string()).collect();
             lines.splice(start_idx..end_idx, new_lines);
         }
     }
@@ -473,36 +617,195 @@ pub async fn str_replace_regex(
     pattern: &Regex,
     replacement: &String,
     multiple: bool,
-    dry: bool
+    expected_matches: Option<usize>,
+    dry: bool,
 ) -> Result<(String, String), String> {
     let file_content = get_file_text_from_memory_or_disk(gcx.clone(), path).await?;
     let has_crlf = file_content.contains("\r\n");
 
     let normalized_content = normalize_line_endings(&file_content);
+    let normalized_replacement = normalize_line_endings(replacement);
     let matches: Vec<Match> = pattern.find_iter(&normalized_content).collect();
     let occurrences = matches.len();
+
     if occurrences == 0 {
         return Err(format!(
-            "⚠️ pattern not found in {:?}. 💡 Use cat() to check content, verify regex syntax",
+            "⚠️ Pattern not found in {:?}. 💡 Use cat() to check content, try update_textdoc_anchored()",
             path
         ));
     }
+    if let Some(expected) = expected_matches {
+        if occurrences != expected {
+            return Err(format!(
+                "⚠️ Expected {} matches, found {}. 💡 Adjust pattern or expected_matches",
+                expected, occurrences
+            ));
+        }
+    }
     if !multiple && occurrences > 1 {
+        let lines: Vec<usize> = matches.iter()
+            .map(|m| normalized_content[..m.start()].lines().count() + 1)
+            .collect();
         return Err(format!(
-            "⚠️ {} matches found. 💡 Make pattern more specific, or set multiple:true",
-            occurrences
+            "⚠️ {} matches at lines {:?}. 💡 Make pattern more specific, or set multiple:true",
+            occurrences, lines
         ));
     }
-    let new_content = if multiple && occurrences > 1 {
-        pattern
-            .replace_all(&normalized_content, replacement)
-            .to_string()
+
+    let new_content = if multiple {
+        pattern.replace_all(&normalized_content, normalized_replacement.as_str()).to_string()
     } else {
-        pattern
-            .replace(&normalized_content, replacement)
-            .to_string()
+        pattern.replace(&normalized_content, normalized_replacement.as_str()).to_string()
     };
     let new_file_content = restore_line_endings(&new_content, has_crlf);
     write_file(gcx.clone(), path, &new_file_content, dry).await?;
     Ok((file_content, new_file_content))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_line_ranges_single() {
+        assert!(parse_line_ranges("5", 10).is_ok());
+        assert!(parse_line_ranges("1:10", 10).is_ok());
+        assert!(parse_line_ranges(":5", 10).is_ok());
+        assert!(parse_line_ranges("5:", 10).is_ok());
+    }
+
+    #[test]
+    fn test_parse_line_ranges_multiple() {
+        let ranges = parse_line_ranges("1:3,7:9", 10).unwrap();
+        assert_eq!(ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_line_ranges_errors() {
+        assert!(parse_line_ranges("0", 10).is_err());
+        assert!(parse_line_ranges("5:3", 10).is_err());
+        assert!(parse_line_ranges("15", 10).is_err());
+        assert!(parse_line_ranges("abc", 10).is_err());
+        assert!(parse_line_ranges("", 10).is_err());
+    }
+
+    #[test]
+    fn test_parse_line_ranges_overlap() {
+        assert!(parse_line_ranges("1:5,3:7", 10).is_err());
+        assert!(parse_line_ranges("1:5,5:7", 10).is_err());
+    }
+
+    #[test]
+    fn test_parse_line_ranges_preserves_order() {
+        let ranges = parse_line_ranges("4:4,2:2", 10).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].start, 4);
+        assert_eq!(ranges[1].start, 2);
+    }
+
+    #[test]
+    fn test_normalize_line_endings() {
+        assert_eq!(normalize_line_endings("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(normalize_line_endings("a\nb\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn test_restore_line_endings() {
+        assert_eq!(restore_line_endings("a\nb\n", true), "a\r\nb\r\n");
+        assert_eq!(restore_line_endings("a\nb\n", false), "a\nb\n");
+    }
+
+    #[test]
+    fn test_strip_line_number_prefixes() {
+        assert_eq!(strip_line_number_prefixes("1\tfoo\n2\tbar"), "foo\nbar");
+        assert_eq!(strip_line_number_prefixes("10|foo\n20|bar"), "foo\nbar");
+        assert_eq!(strip_line_number_prefixes("1: foo\n2: bar"), "foo\nbar");
+        assert_eq!(strip_line_number_prefixes("no prefix"), "no prefix");
+    }
+
+    #[test]
+    fn test_find_match_lines() {
+        let content = "line1\nfoo\nline3\nfoo\nline5";
+        let lines = find_match_lines(content, "foo");
+        assert_eq!(lines, vec![2, 4]);
+    }
+
+    #[test]
+    fn test_replace_between_anchors_single() {
+        let content = "start\nBEGIN\nold\nEND\nfinish";
+        let result = replace_between_anchors(content, "BEGIN\n", "END", "new\n", false).unwrap();
+        assert_eq!(result, "start\nBEGIN\nnew\nEND\nfinish");
+    }
+
+    #[test]
+    fn test_replace_between_anchors_multiple() {
+        let content = "A\nBEGIN\nx\nEND\nB\nBEGIN\ny\nEND\nC";
+        let result = replace_between_anchors(content, "BEGIN\n", "END", "z\n", true).unwrap();
+        assert!(result.contains("z\n"));
+    }
+
+    #[test]
+    fn test_replace_between_anchors_not_found() {
+        let content = "no anchors here";
+        assert!(replace_between_anchors(content, "BEGIN", "END", "x", false).is_err());
+    }
+
+    #[test]
+    fn test_replace_between_anchors_overlap_error() {
+        let content = "A{B{C}D}E";
+        assert!(replace_between_anchors(content, "{", "}", "x", true).is_err());
+    }
+
+    #[test]
+    fn test_insert_at_anchor_after() {
+        let content = "line1\nANCHOR\nline3";
+        let result = insert_at_anchor(content, "ANCHOR", "\ninserted", false, true).unwrap();
+        assert_eq!(result, "line1\nANCHOR\ninserted\nline3");
+    }
+
+    #[test]
+    fn test_insert_at_anchor_before() {
+        let content = "line1\nANCHOR\nline3";
+        let result = insert_at_anchor(content, "ANCHOR", "inserted\n", false, false).unwrap();
+        assert_eq!(result, "line1\ninserted\nANCHOR\nline3");
+    }
+
+    #[test]
+    fn test_insert_at_anchor_not_found() {
+        assert!(insert_at_anchor("content", "MISSING", "x", false, true).is_err());
+    }
+
+    #[test]
+    fn test_insert_at_anchor_multiple_error() {
+        let content = "A\nA\nA";
+        assert!(insert_at_anchor(content, "A", "x", false, true).is_err());
+    }
+
+    #[test]
+    fn test_convert_edit_to_diffchunks_add() {
+        let before = "";
+        let after = "line1\nline2\n";
+        let chunks = convert_edit_to_diffchunks(PathBuf::from("test.txt"), &before.to_string(), &after.to_string()).unwrap();
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_convert_edit_to_diffchunks_modify() {
+        let before = "line1\nold\nline3\n";
+        let after = "line1\nnew\nline3\n";
+        let chunks = convert_edit_to_diffchunks(PathBuf::from("test.txt"), &before.to_string(), &after.to_string()).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].lines_remove.contains("old"));
+        assert!(chunks[0].lines_add.contains("new"));
+    }
+
+    #[test]
+    fn test_edit_result_summary() {
+        let path = PathBuf::from("/path/to/file.rs");
+        let summary = edit_result_summary("a\nb\nc", "a\nb\nc\nd\ne", &path);
+        assert!(summary.contains("file.rs"));
+        assert!(summary.contains("3"));
+        assert!(summary.contains("5"));
+        assert!(summary.contains("+2"));
+    }
 }

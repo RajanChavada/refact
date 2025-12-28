@@ -70,6 +70,24 @@ pub async fn handle_v1_file_edit_tool_dry_run(
             .await
             .map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
         }
+        "update_textdoc_anchored" => {
+            crate::tools::file_edit::tool_update_textdoc_anchored::tool_update_text_doc_anchored_exec(
+                global_context.clone(),
+                &post.tool_args,
+                true,
+            )
+            .await
+            .map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
+        }
+        "apply_patch" => {
+            crate::tools::file_edit::tool_apply_patch::tool_apply_patch_exec(
+                global_context.clone(),
+                &post.tool_args,
+                true,
+            )
+            .await
+            .map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
+        }
         _ => {
             return Err(ScratchError::new(
                 StatusCode::BAD_REQUEST,
