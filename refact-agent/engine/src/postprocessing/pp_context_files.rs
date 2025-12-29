@@ -244,7 +244,7 @@ async fn pp_limit_and_merge(
     tokens_limit: usize,
     single_file_mode: bool,
     settings: &PostprocessSettings,
-) -> Vec<ContextFile> {
+) -> (Vec<ContextFile>, Vec<String>) {
     // Sort
     let mut lines_by_useful = lines_in_files.values_mut().flatten().collect::<Vec<_>>();
 
@@ -259,7 +259,7 @@ async fn pp_limit_and_merge(
     let mut lines_take_cnt = 0;
     let mut lines_skipped_by_budget = 0;
     let mut files_skipped_by_limit = 0;
-    let mut budget_exceeded = false;
+    let mut _budget_exceeded = false;
     let mut files_mentioned_set = HashSet::new();
     let mut files_mentioned_sequence = vec![];
     for line_ref in lines_by_useful.iter_mut() {
@@ -281,7 +281,7 @@ async fn pp_limit_and_merge(
             }
         }
         if tokens_count + ntokens > tokens_limit {
-            budget_exceeded = true;
+            _budget_exceeded = true;
             lines_skipped_by_budget += 1;
             continue;
         }
@@ -364,30 +364,15 @@ async fn pp_limit_and_merge(
         });
     }
 
-    if budget_exceeded || files_skipped_by_limit > 0 {
-        let mut truncation_note = String::new();
-        if lines_skipped_by_budget > 0 {
-            truncation_note.push_str(&format!("⚠️ {} lines skipped due to token budget", lines_skipped_by_budget));
-        }
-        if files_skipped_by_limit > 0 {
-            if !truncation_note.is_empty() {
-                truncation_note.push_str("; ");
-            }
-            truncation_note.push_str(&format!("⚠️ {} files skipped due to max files limit", files_skipped_by_limit));
-        }
-        context_files_merged.push(ContextFile {
-            file_name: "".to_string(),
-            file_content: truncation_note,
-            line1: 0,
-            line2: 0,
-            symbols: vec![],
-            gradient_type: -1,
-            usefulness: 0.0,
-            skip_pp: true,
-        });
+    let mut notes = Vec::new();
+    if lines_skipped_by_budget > 0 {
+        notes.push(format!("⚠️ {} lines skipped due to token budget", lines_skipped_by_budget));
+    }
+    if files_skipped_by_limit > 0 {
+        notes.push(format!("⚠️ {} files skipped due to max files limit", files_skipped_by_limit));
     }
 
-    context_files_merged
+    (context_files_merged, notes)
 }
 
 pub async fn postprocess_context_files(
@@ -397,13 +382,11 @@ pub async fn postprocess_context_files(
     tokens_limit: usize,
     single_file_mode: bool,
     settings: &PostprocessSettings,
-) -> Vec<ContextFile> {
+) -> (Vec<ContextFile>, Vec<String>) {
     assert!(settings.max_files_n > 0);
     let files_marked_up = if settings.use_ast_based_pp {
-        // this modifies context_file.file_name to make it cpath
         pp_ast_markup_files(gcx.clone(), context_file_vec).await
     } else {
-        // still need to load files for post-processing, just without AST symbols
         pp_load_files_without_ast(gcx.clone(), context_file_vec).await
     };
 

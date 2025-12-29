@@ -267,7 +267,7 @@ async fn read_and_compress_directory(
     let tokenizer = crate::tokens::cached_tokenizer(gcx.clone(), &model_rec.base).await?;
     let mut pp_settings = PostprocessSettings::new();
     pp_settings.max_files_n = context_files.len();
-    let compressed = postprocess_context_files(
+    let (compressed, _notes) = postprocess_context_files(
         gcx.clone(),
         &mut context_files,
         tokenizer,

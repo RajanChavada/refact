@@ -210,10 +210,10 @@ const PatchConfirmation: React.FC<PatchConfirmationProps> = ({
   const messages = useAppSelector(selectMessages);
   const assistantMessages = messages.filter(isAssistantMessage);
   const lastAssistantMessage = useMemo(
-    () => assistantMessages[assistantMessages.length - 1],
+    () => assistantMessages[assistantMessages.length - 1] ?? null,
     [assistantMessages],
   );
-  const toolCalls = lastAssistantMessage.tool_calls;
+  const toolCalls = lastAssistantMessage?.tool_calls;
 
   const messageForPatch = useMemo(() => {
     if (!toolCalls || toolCalls.length === 0) return "Apply changes";
@@ -227,7 +227,7 @@ const PatchConfirmation: React.FC<PatchConfirmationProps> = ({
     }
   }, [toolCalls]);
 
-  if (!toolCalls || toolCalls.length === 0) return null;
+  if (!lastAssistantMessage || !toolCalls || toolCalls.length === 0) return null;
 
   return (
     <Card className={styles.ToolConfirmationCard}>

@@ -254,11 +254,15 @@ fn get_existing_context_file_paths(messages: &[ChatMessage]) -> HashSet<String> 
     let mut paths = HashSet::new();
     for msg in messages {
         if msg.role == "context_file" {
-            let content = msg.content.content_text_only();
-            if let Ok(files) = serde_json::from_str::<Vec<ContextFile>>(&content) {
-                for file in files {
-                    paths.insert(file.file_name.clone());
+            let files: Vec<ContextFile> = match &msg.content {
+                ChatContent::ContextFiles(files) => files.clone(),
+                ChatContent::SimpleText(text) => {
+                    serde_json::from_str::<Vec<ContextFile>>(text).unwrap_or_default()
                 }
+                _ => vec![]
+            };
+            for file in files {
+                paths.insert(file.file_name.clone());
             }
         }
     }

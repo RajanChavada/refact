@@ -148,9 +148,9 @@ pub async fn run_at_commands_locally(
                 false,
                 &pp_settings,
             ).await;
-            if !post_processed.is_empty() {
-                // OUTPUT: files after all custom messages and plain text
-                let json_vec = post_processed.iter().map(|p| { json!(p)}).collect::<Vec<Value>>();
+            let (post_processed_files, _notes) = post_processed;
+            if !post_processed_files.is_empty() {
+                let json_vec = post_processed_files.iter().map(|p| { json!(p)}).collect::<Vec<Value>>();
                 if !json_vec.is_empty() {
                     let message = ChatMessage::new(
                         "context_file".to_string(),

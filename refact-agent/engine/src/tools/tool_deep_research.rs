@@ -243,7 +243,12 @@ impl Tool for ToolDeepResearch {
             _ => return Ok("".to_string()),
         };
         let truncated_query = if query.len() > 100 {
-            format!("{}...", &query[..100])
+            let end = query.char_indices()
+                .take_while(|(i, _)| *i < 100)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(100.min(query.len()));
+            format!("{}...", &query[..end])
         } else {
             query
         };

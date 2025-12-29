@@ -218,7 +218,12 @@ impl Tool for ToolSubagent {
         tracing::info!("Subagent completed task");
 
         let title = if task.len() > 80 {
-            format!("{}...", &task[..80])
+            let end = task.char_indices()
+                .take_while(|(i, _)| *i < 80)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(80.min(task.len()));
+            format!("{}...", &task[..end])
         } else {
             task.clone()
         };

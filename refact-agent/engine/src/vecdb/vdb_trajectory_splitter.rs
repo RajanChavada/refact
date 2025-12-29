@@ -94,7 +94,12 @@ impl TrajectoryFileSplitter {
                 }
 
                 let truncated = if content.len() > MAX_CONTENT_PER_MESSAGE {
-                    format!("{}...", &content[..MAX_CONTENT_PER_MESSAGE])
+                    let end = content.char_indices()
+                        .take_while(|(i, _)| *i < MAX_CONTENT_PER_MESSAGE)
+                        .last()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .unwrap_or(MAX_CONTENT_PER_MESSAGE.min(content.len()));
+                    format!("{}...", &content[..end])
                 } else {
                     content
                 };

@@ -51,26 +51,39 @@ pub async fn postprocess_tool_results(
 
     result.extend(diff_messages);
 
+    let (file_message, notes) = if !context_files.is_empty() {
+        postprocess_context_file_results(
+            gcx,
+            tokenizer.clone(),
+            context_files,
+            budget.tokens_for_code,
+            pp_settings,
+            existing_messages,
+        ).await
+    } else {
+        (None, vec![])
+    };
+
+    let mut text_messages_with_notes = other_messages;
+    if !notes.is_empty() {
+        text_messages_with_notes.push(ChatMessage {
+            role: "tool".to_string(),
+            content: ChatContent::SimpleText(notes.join("\n")),
+            tool_call_id: "context_notes".to_string(),
+            ..Default::default()
+        });
+    }
+
     let (text_messages, _) = postprocess_plain_text(
-        other_messages,
-        tokenizer.clone(),
+        text_messages_with_notes,
+        tokenizer,
         budget.tokens_for_text,
         &None,
     ).await;
     result.extend(text_messages);
 
-    if !context_files.is_empty() {
-        let file_message = postprocess_context_file_results(
-            gcx,
-            tokenizer,
-            context_files,
-            budget.tokens_for_code,
-            pp_settings,
-            existing_messages,
-        ).await;
-        if let Some(msg) = file_message {
-            result.push(msg);
-        }
+    if let Some(msg) = file_message {
+        result.push(msg);
     }
 
     result
@@ -176,7 +189,7 @@ async fn postprocess_context_file_results(
     tokens_limit: usize,
     mut pp_settings: PostprocessSettings,
     existing_messages: &[ChatMessage],
-) -> Option<ChatMessage> {
+) -> (Option<ChatMessage>, Vec<String>) {
     let deduped_files = deduplicate_and_merge_context_files(context_files, existing_messages);
 
     let (skip_pp_files, mut pp_files): (Vec<_>, Vec<_>) = deduped_files
@@ -193,7 +206,7 @@ async fn postprocess_context_file_results(
     let tokens_for_pp = tokens_limit * pp_ratio / 100;
     let tokens_for_skip = tokens_limit.saturating_sub(tokens_for_pp);
 
-    let pp_result = postprocess_context_files(
+    let (pp_result, pp_notes) = postprocess_context_files(
         gcx.clone(),
         &mut pp_files,
         tokenizer.clone(),
@@ -202,7 +215,7 @@ async fn postprocess_context_file_results(
         &pp_settings,
     ).await;
 
-    let skip_result = fill_skip_pp_files_with_budget(
+    let (skip_result, skip_notes) = fill_skip_pp_files_with_budget(
         gcx.clone(),
         tokenizer.clone(),
         skip_pp_files,
@@ -210,17 +223,22 @@ async fn postprocess_context_file_results(
         existing_messages,
     ).await;
 
-    let all_files: Vec<_> = pp_result.into_iter().chain(skip_result).collect();
+    let notes: Vec<String> = pp_notes.into_iter().chain(skip_notes).collect();
+
+    let all_files: Vec<_> = pp_result.into_iter()
+        .chain(skip_result)
+        .filter(|cf| !cf.file_name.is_empty())
+        .collect();
 
     if all_files.is_empty() {
-        return None;
+        return (None, notes);
     }
 
-    Some(ChatMessage {
+    (Some(ChatMessage {
         role: "context_file".to_string(),
         content: ChatContent::ContextFiles(all_files),
         ..Default::default()
-    })
+    }), notes)
 }
 
 const MIN_PER_FILE_BUDGET: usize = 50;
@@ -231,9 +249,9 @@ async fn fill_skip_pp_files_with_budget(
     files: Vec<ContextFile>,
     tokens_limit: usize,
     existing_messages: &[ChatMessage],
-) -> Vec<ContextFile> {
+) -> (Vec<ContextFile>, Vec<String>) {
     if files.is_empty() {
-        return vec![];
+        return (vec![], vec![]);
     }
 
     let max_files_by_budget = (tokens_limit / MIN_PER_FILE_BUDGET).max(1);
@@ -245,27 +263,23 @@ async fn fill_skip_pp_files_with_budget(
     let files: Vec<_> = files.into_iter().take(max_files_by_budget).collect();
     let per_file_budget = (tokens_limit / files.len().max(1)).max(MIN_PER_FILE_BUDGET);
     let mut result = Vec::new();
+    let mut notes = Vec::new();
 
     if files_to_skip > 0 {
-        result.push(ContextFile {
-            file_name: "".to_string(),
-            file_content: format!("⚠️ {} files skipped due to token budget constraints", files_to_skip),
-            line1: 0,
-            line2: 0,
-            symbols: vec![],
-            gradient_type: -1,
-            usefulness: 0.0,
-            skip_pp: true,
-        });
+        notes.push(format!("⚠️ {} files skipped due to token budget constraints", files_to_skip));
     }
 
     for mut cf in files {
         if let Some(dup_info) = find_duplicate_in_history(&cf, existing_messages) {
-            cf.file_content = format!(
-                "📎 Already retrieved in message #{} via `{}`. Use narrower range if needed.",
-                dup_info.0, dup_info.1
-            );
-            result.push(cf);
+            let range = if cf.line1 > 0 && cf.line2 > 0 {
+                format!("{}:{}-{}", cf.file_name, cf.line1, cf.line2)
+            } else {
+                cf.file_name.clone()
+            };
+            notes.push(format!(
+                "📎 Skipped `{}`: already retrieved in message #{} via `{}`.",
+                range, dup_info.0, dup_info.1
+            ));
             continue;
         }
 
@@ -305,17 +319,19 @@ async fn fill_skip_pp_files_with_budget(
             }
             Err(e) => {
                 warn!("Failed to load file {}: {}", cf.file_name, e);
-                cf.file_content = format!("Error: {}", e);
-                result.push(cf);
+                notes.push(format!("⚠️ Failed to load `{}`: {}", cf.file_name, e));
             }
         }
     }
 
-    result
+    (result, notes)
 }
 
 fn find_duplicate_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Option<(usize, String)> {
     let cf_canonical = canonical_path(&cf.file_name);
+    let cf_start = if cf.line1 == 0 { 1 } else { cf.line1 };
+    let cf_end = if cf.line2 == 0 { usize::MAX } else { cf.line2 };
+
     for (idx, msg) in messages.iter().enumerate() {
         if msg.role != "context_file" {
             continue;
@@ -323,7 +339,12 @@ fn find_duplicate_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Opti
         if let ChatContent::ContextFiles(files) = &msg.content {
             for existing in files {
                 let existing_canonical = canonical_path(&existing.file_name);
-                if existing_canonical == cf_canonical && ranges_overlap(existing, cf) {
+                if existing_canonical != cf_canonical {
+                    continue;
+                }
+                let ex_start = if existing.line1 == 0 { 1 } else { existing.line1 };
+                let ex_end = if existing.line2 == 0 { usize::MAX } else { existing.line2 };
+                if ex_start <= cf_start && ex_end >= cf_end {
                     let tool_name = find_tool_name_for_context(messages, idx);
                     return Some((idx, tool_name));
                 }
@@ -331,14 +352,6 @@ fn find_duplicate_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Opti
         }
     }
     None
-}
-
-fn ranges_overlap(a: &ContextFile, b: &ContextFile) -> bool {
-    let a_start = if a.line1 == 0 { 1 } else { a.line1 };
-    let a_end = if a.line2 == 0 { usize::MAX } else { a.line2 };
-    let b_start = if b.line1 == 0 { 1 } else { b.line1 };
-    let b_end = if b.line2 == 0 { usize::MAX } else { b.line2 };
-    a_start <= b_end && b_start <= a_end
 }
 
 fn find_tool_name_for_context(messages: &[ChatMessage], context_idx: usize) -> String {
@@ -536,25 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ranges_overlap() {
-        let full = make_context_file("test.rs", 0, 0);
-        let partial = make_context_file("test.rs", 10, 20);
-        assert!(ranges_overlap(&full, &partial));
-
-        let a = make_context_file("test.rs", 1, 10);
-        let b = make_context_file("test.rs", 5, 15);
-        assert!(ranges_overlap(&a, &b));
-
-        let c = make_context_file("test.rs", 1, 10);
-        let d = make_context_file("test.rs", 20, 30);
-        assert!(!ranges_overlap(&c, &d));
-
-        let e = make_context_file("test.rs", 1, 10);
-        let f = make_context_file("test.rs", 10, 20);
-        assert!(ranges_overlap(&e, &f));
-    }
-
-    #[test]
     fn test_find_duplicate_in_history_no_match() {
         let cf = make_context_file("new_file.rs", 1, 10);
         let messages = vec![
@@ -575,20 +569,40 @@ mod tests {
     }
 
     #[test]
-    fn test_find_duplicate_in_history_overlapping() {
+    fn test_find_duplicate_in_history_partial_overlap_not_covered() {
         let cf = make_context_file("test.rs", 5, 15);
         let messages = vec![
             make_context_file_message(vec![make_context_file("test.rs", 1, 10)]),
+        ];
+        let result = find_duplicate_in_history(&cf, &messages);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_duplicate_in_history_fully_covered() {
+        let cf = make_context_file("test.rs", 5, 10);
+        let messages = vec![
+            make_context_file_message(vec![make_context_file("test.rs", 1, 20)]),
         ];
         let result = find_duplicate_in_history(&cf, &messages);
         assert!(result.is_some());
     }
 
     #[test]
-    fn test_find_duplicate_in_history_full_file_overlap() {
+    fn test_find_duplicate_in_history_full_file_not_covered_by_partial() {
         let cf = make_context_file("test.rs", 0, 0);
         let messages = vec![
             make_context_file_message(vec![make_context_file("test.rs", 50, 100)]),
+        ];
+        let result = find_duplicate_in_history(&cf, &messages);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_duplicate_in_history_full_file_covered_by_full() {
+        let cf = make_context_file("test.rs", 0, 0);
+        let messages = vec![
+            make_context_file_message(vec![make_context_file("test.rs", 0, 0)]),
         ];
         let result = find_duplicate_in_history(&cf, &messages);
         assert!(result.is_some());

@@ -204,7 +204,7 @@ pub async fn retrieve_ast_based_extra_context(
 
     info!(" -- post processing starts --");
     let post_t0 = Instant::now();
-    let postprocessed_messages = postprocess_context_files(
+    let (postprocessed_messages, _notes) = postprocess_context_files(
         gcx.clone(),
         &mut ast_context_file_vec,
         t.tokenizer.clone(),

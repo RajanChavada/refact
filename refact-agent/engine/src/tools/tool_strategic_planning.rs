@@ -156,14 +156,15 @@ async fn _make_prompt(
         let mut pp_settings = PostprocessSettings::new();
         pp_settings.max_files_n = context_files.len();
         let mut files_context = "".to_string();
-        for context_file in postprocess_context_files(
+        let (pp_files, _notes) = postprocess_context_files(
             gcx.clone(),
             &mut context_files,
             tokenizer.clone(),
             subchat_params.subchat_tokens_for_rag + tokens_budget.max(0) as usize,
             false,
             &pp_settings,
-        ).await {
+        ).await;
+        for context_file in pp_files {
             files_context.push_str(
                 &format!("📎 {}:{}-{}\n```\n{}```\n\n",
                          context_file.file_name,
@@ -374,7 +375,12 @@ impl Tool for ToolStrategicPlanning {
             _ => return Ok("".to_string()),
         };
         let truncated_paths = if paths.len() > 100 {
-            format!("{}...", &paths[..100])
+            let end = paths.char_indices()
+                .take_while(|(i, _)| *i < 100)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(100.min(paths.len()));
+            format!("{}...", &paths[..end])
         } else {
             paths
         };

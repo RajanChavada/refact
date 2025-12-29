@@ -82,14 +82,18 @@ fn compress_message_at_index(
 ) -> Result<i32, String> {
     let role = &mutable_messages[index].role;
     let new_summary = if role == "context_file" {
-        // For context files: parse to extract a list of file names
-        let content_text_only = mutable_messages[index].content.content_text_only();
-        let vector_of_context_files: Vec<ContextFile> = serde_json::from_str(&content_text_only)
-            .map_err(|e| {
-                error!("parsing context_files has failed: {}; content: {}", e, &content_text_only);
-                format!("parsing context_files failed: {}", e)
-            })
-            .unwrap_or(vec![]);
+        let vector_of_context_files: Vec<ContextFile> = match &mutable_messages[index].content {
+            ChatContent::ContextFiles(files) => files.clone(),
+            ChatContent::SimpleText(text) => {
+                serde_json::from_str(text)
+                    .map_err(|e| {
+                        error!("parsing context_files has failed: {}; content: {}", e, text);
+                        format!("parsing context_files failed: {}", e)
+                    })
+                    .unwrap_or(vec![])
+            }
+            _ => vec![]
+        };
         let filenames = vector_of_context_files.iter().map(|cf| cf.file_name.clone()).join(", ");
         tracing::info!("Compressing ContextFile message at index {}: {}", index, filenames);
         mutable_messages[index].role = "cd_instruction".to_string();
@@ -309,11 +313,19 @@ pub(crate) fn compress_duplicate_context_files(messages: &mut Vec<ChatMessage>) 
         if msg.role != "context_file" {
             continue;
         }
-        let content_text = msg.content.content_text_only();
-        let context_files: Vec<ContextFile> = match serde_json::from_str(&content_text) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Stage 0: Failed to parse ContextFile JSON at index {}: {}. Skipping.", msg_idx, e);
+        let context_files: Vec<ContextFile> = match &msg.content {
+            ChatContent::ContextFiles(files) => files.clone(),
+            ChatContent::SimpleText(text) => {
+                match serde_json::from_str(text) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("Stage 0: Failed to parse ContextFile JSON at index {}: {}. Skipping.", msg_idx, e);
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!("Stage 0: Unexpected content type for context_file at index {}. Skipping.", msg_idx);
                 continue;
             }
         };
@@ -389,9 +401,13 @@ pub(crate) fn compress_duplicate_context_files(messages: &mut Vec<ChatMessage>) 
     let mut modified_messages: HashSet<usize> = HashSet::new();
     for file in &all_files {
         if file.is_compressed && !modified_messages.contains(&file.msg_idx) {
-            let content_text = messages[file.msg_idx].content.content_text_only();
-            let context_files: Vec<ContextFile> = serde_json::from_str(&content_text)
-                .expect("already checked in the previous pass");
+            let context_files: Vec<ContextFile> = match &messages[file.msg_idx].content {
+                ChatContent::ContextFiles(files) => files.clone(),
+                ChatContent::SimpleText(text) => {
+                    serde_json::from_str(text).unwrap_or_default()
+                }
+                _ => vec![]
+            };
             
             let mut remaining_files = Vec::new();
             let mut compressed_files = Vec::new();
