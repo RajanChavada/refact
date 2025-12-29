@@ -176,6 +176,10 @@ pub async fn save_trajectory_snapshot(
     gcx: Arc<ARwLock<GlobalContext>>,
     snapshot: TrajectorySnapshot,
 ) -> Result<(), String> {
+    if snapshot.messages.is_empty() {
+        return Ok(());
+    }
+
     let trajectories_dir = get_trajectories_dir(gcx.clone()).await?;
     tokio::fs::create_dir_all(&trajectories_dir).await
         .map_err(|e| format!("Failed to create trajectories dir: {}", e))?;
