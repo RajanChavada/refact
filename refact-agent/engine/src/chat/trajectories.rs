@@ -213,6 +213,10 @@ pub async fn save_trajectory_snapshot(
 
     info!("Saved trajectory for chat {} ({} messages)", snapshot.chat_id, snapshot.messages.len());
 
+    if let Some(vecdb) = gcx.read().await.vec_db.lock().await.as_ref() {
+        vecdb.vectorizer_enqueue_files(&vec![file_path.to_string_lossy().to_string()], false).await;
+    }
+
     if let Some(tx) = &gcx.read().await.trajectory_events_tx {
         let event = TrajectoryEvent {
             event_type: "updated".to_string(),

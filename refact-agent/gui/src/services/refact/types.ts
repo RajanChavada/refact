@@ -130,6 +130,7 @@ interface BaseMessage {
 export interface ChatContextFileMessage extends BaseMessage {
   role: "context_file";
   content: ChatContextFile[];
+  tool_call_id?: string;
 }
 
 export type UserImage = {

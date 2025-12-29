@@ -31,7 +31,7 @@ impl Tool for ToolGetKnowledge {
             },
             agentic: true,
             experimental: false,
-            description: "Searches project knowledge base for relevant information. Uses semantic search and knowledge graph expansion. Also searches past chat trajectories for relevant patterns and solutions.".to_string(),
+            description: "Searches project knowledge base for relevant information. Uses semantic search and knowledge graph expansion.".to_string(),
             parameters: vec![
                 ToolParam {
                     name: "search_key".to_string(),

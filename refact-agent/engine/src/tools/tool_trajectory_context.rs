@@ -117,8 +117,12 @@ impl Tool for ToolTrajectoryContext {
         let actual_start = msg_start.saturating_sub(expand_by);
         let actual_end = (msg_end + expand_by).min(messages.len().saturating_sub(1));
 
-        let mut output = format!("Trajectory: {} ({})\nMessages {}-{} (expanded from {}-{}):\n\n",
-            trajectory_id, title, actual_start, actual_end, msg_start, msg_end);
+        let mut output = String::new();
+        output.push_str("╭──────────────────────────────────────╮\n");
+        output.push_str(&format!("│ 📁 {}│\n", pad_right(&trajectory_id, 36)));
+        output.push_str(&format!("│ 📌 {}│\n", pad_right(title, 36)));
+        output.push_str(&format!("│ 📍 Messages {}-{} (requested {}-{}) │\n", actual_start, actual_end, msg_start, msg_end));
+        output.push_str("╰──────────────────────────────────────╯\n\n");
 
         for (i, msg) in messages.iter().enumerate() {
             if i < actual_start || i > actual_end {
@@ -135,8 +139,21 @@ impl Tool for ToolTrajectoryContext {
                 continue;
             }
 
-            let marker = if i >= msg_start && i <= msg_end { ">>>" } else { "   " };
-            output.push_str(&format!("{} [{}] {}:\n{}\n\n", marker, i, role.to_uppercase(), content_text));
+            let is_highlighted = i >= msg_start && i <= msg_end;
+            let role_icon = match role {
+                "user" => "👤",
+                "assistant" => "🤖",
+                "tool" => "🔧",
+                _ => "💬",
+            };
+
+            if is_highlighted {
+                output.push_str(&format!("┏━ {} [{}] {} ━━━━━━━━━━━━━━━━━━━━━━━\n", role_icon, i, role.to_uppercase()));
+            } else {
+                output.push_str(&format!("┌─ {} [{}] {} ─────────────────────────\n", role_icon, i, role.to_uppercase()));
+            }
+            output.push_str(&content_text);
+            output.push_str("\n\n");
         }
 
         Ok((false, vec![ContextEnum::ChatMessage(ChatMessage {
@@ -150,6 +167,15 @@ impl Tool for ToolTrajectoryContext {
 
     fn tool_depends_on(&self) -> Vec<String> {
         vec![]
+    }
+}
+
+fn pad_right(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.chars().take(width - 3).collect::<String>() + "..."
+    } else {
+        format!("{}{}", s, " ".repeat(width - len))
     }
 }
 

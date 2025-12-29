@@ -308,6 +308,20 @@ function processToolCalls(
     return processToolCalls(tail, toolResults, features, [...processed, elem]);
   }
 
+  if (result && head.function.name === "search_trajectories") {
+    const elem = (
+      <Trajectories key={`trajectories-tool-${processed.length}`} toolCall={head} />
+    );
+    return processToolCalls(tail, toolResults, features, [...processed, elem]);
+  }
+
+  if (result && head.function.name === "get_trajectory_context") {
+    const elem = (
+      <TrajectoryContext key={`trajectory-context-tool-${processed.length}`} toolCall={head} />
+    );
+    return processToolCalls(tail, toolResults, features, [...processed, elem]);
+  }
+
   if (isRawTextDocToolCall(head)) {
     const elem = (
       <TextDocTool
@@ -645,15 +659,9 @@ const Knowledge: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
               </Box>
             </ScrollArea>
             <Flex gap="4" direction="column" py="4">
-              {memories.map((memory) => {
-                return (
-                  <Memory
-                    key={memory.memid}
-                    id={memory.memid}
-                    content={memory.content}
-                  />
-                );
-              })}
+              {memories.map((memory, idx) => (
+                <Memory key={memory.title + idx} memory={memory} />
+              ))}
             </Flex>
             <FadedButton color="gray" onClick={handleHide} mx="2">
               Hide Memories
@@ -665,34 +673,382 @@ const Knowledge: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
   );
 };
 
-const Memory: React.FC<{ id: string; content: string }> = ({ id, content }) => {
+interface MemoryEntry {
+  title: string;
+  content: string;
+}
+
+const Memory: React.FC<{ memory: MemoryEntry }> = ({ memory }) => {
   return (
     <Card>
       <Flex direction="column" gap="2">
         <Flex justify="between" align="center">
           <Text size="1" weight="light">
-            Memory: {id}
+            Memory: {memory.title}
           </Text>
         </Flex>
         <Separator size="4" />
-        <Text size="2">{content}</Text>
+        <Text size="2" style={{ whiteSpace: "pre-wrap" }}>{memory.content}</Text>
       </Flex>
     </Card>
   );
 };
 
-function splitMemories(text: string): { memid: string; content: string }[] {
-  // Split by 🗃️ and filter out empty strings
-  const parts = text.split("🗃️").filter((part) => part.trim());
+function splitMemories(text: string): MemoryEntry[] {
+  const entries = text.split("\n\n---\n").filter((part) => part.trim());
 
-  return parts.map((part) => {
-    const newlineIndex = part.indexOf("\n");
-    const memid = part.substring(0, newlineIndex);
-    const content = part.substring(newlineIndex + 1);
+  return entries.map((entry) => {
+    const lines = entry.split("\n");
+    let path = "";
+    let title = "";
+    const contentLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith("📄 ")) {
+        path = line.substring(3);
+      } else if (line.startsWith("📌 ")) {
+        title = line.substring(3);
+      } else if (line.startsWith("📦 ") || line.startsWith("🏷️ ")) {
+        continue;
+      } else {
+        contentLines.push(line);
+      }
+    }
+
+    const displayTitle = title || extractReadableName(path);
 
     return {
-      memid,
-      content,
+      title: displayTitle,
+      content: contentLines.join("\n").trim(),
     };
+  });
+}
+
+function extractReadableName(path: string): string {
+  const fileName = path.split("/").pop() || path;
+  const memoryMatch = fileName.match(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]+_(.+)\.md$/);
+  if (memoryMatch) {
+    return memoryMatch[1].replace(/-/g, " ");
+  }
+  return fileName;
+}
+
+const Trajectories: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
+  const [open, setOpen] = React.useState(false);
+  const ref = useRef(null);
+  const scrollOnHide = useHideScroll(ref);
+
+  const handleHide = useCallback(() => {
+    setOpen(false);
+    scrollOnHide();
+  }, [scrollOnHide]);
+
+  const name = toolCall.function.name ?? "";
+
+  const maybeResult = useAppSelector((state) =>
+    selectToolResultById(state, toolCall.id),
+  );
+
+  const argsString = React.useMemo(() => {
+    return toolCallArgsToString(toolCall.function.arguments);
+  }, [toolCall.function.arguments]);
+
+  const trajectories = useMemo(() => {
+    if (typeof maybeResult?.content !== "string") return [];
+    return splitTrajectories(maybeResult.content);
+  }, [maybeResult?.content]);
+
+  const functionCalled = "```python\n" + name + "(" + argsString + ")\n```";
+
+  return (
+    <Container>
+      <Collapsible.Root open={open} onOpenChange={setOpen}>
+        <Collapsible.Trigger asChild>
+          <Flex
+            gap="2"
+            align="end"
+            onClick={() => setOpen((prev) => !prev)}
+            ref={ref}
+          >
+            <Flex
+              gap="1"
+              align="start"
+              direction="column"
+              style={{ cursor: "pointer" }}
+            >
+              <Text weight="light" size="1">
+                🕐 Past Conversations ({trajectories.length})
+              </Text>
+            </Flex>
+            <Chevron open={open} />
+          </Flex>
+        </Collapsible.Trigger>
+        <Collapsible.Content>
+          <Flex direction="column" pt="4">
+            <ScrollArea scrollbars="horizontal" style={{ width: "100%" }}>
+              <Box>
+                <CommandMarkdown isInsideScrollArea>
+                  {functionCalled}
+                </CommandMarkdown>
+              </Box>
+            </ScrollArea>
+            <Flex gap="4" direction="column" py="4">
+              {trajectories.map((traj) => (
+                <TrajectoryCard
+                  key={traj.id}
+                  id={traj.id}
+                  title={traj.title}
+                  relevance={traj.relevance}
+                  messageRange={traj.messageRange}
+                  preview={traj.preview}
+                />
+              ))}
+            </Flex>
+            <FadedButton color="gray" onClick={handleHide} mx="2">
+              Hide Results
+            </FadedButton>
+          </Flex>
+        </Collapsible.Content>
+      </Collapsible.Root>
+    </Container>
+  );
+};
+
+const TrajectoryCard: React.FC<{
+  id: string;
+  title: string;
+  relevance: string;
+  messageRange: string;
+  preview: string;
+}> = ({ id, title, relevance, messageRange, preview }) => {
+  return (
+    <Card>
+      <Flex direction="column" gap="2">
+        <Flex justify="between" align="center">
+          <Text size="1" weight="medium">
+            📁 {id}
+          </Text>
+          {relevance && (
+            <Text size="1" style={{ color: "var(--accent-9)" }}>
+              {relevance}
+            </Text>
+          )}
+        </Flex>
+        {title && (
+          <Text size="2" weight="medium">
+            📌 {title}
+          </Text>
+        )}
+        {messageRange && (
+          <Text size="1" color="gray">
+            📍 Messages: {messageRange}
+          </Text>
+        )}
+        {preview && (
+          <>
+            <Separator size="4" />
+            <Text size="1" style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>
+              {preview}
+            </Text>
+          </>
+        )}
+      </Flex>
+    </Card>
+  );
+};
+
+const TrajectoryContext: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
+  const [open, setOpen] = React.useState(false);
+  const ref = useRef(null);
+  const scrollOnHide = useHideScroll(ref);
+
+  const handleHide = useCallback(() => {
+    setOpen(false);
+    scrollOnHide();
+  }, [scrollOnHide]);
+
+  const name = toolCall.function.name ?? "";
+
+  const maybeResult = useAppSelector((state) =>
+    selectToolResultById(state, toolCall.id),
+  );
+
+  const argsString = React.useMemo(() => {
+    return toolCallArgsToString(toolCall.function.arguments);
+  }, [toolCall.function.arguments]);
+
+  const { header, messages } = useMemo(() => {
+    if (typeof maybeResult?.content !== "string") return { header: null, messages: [] };
+    return parseTrajectoryContext(maybeResult.content);
+  }, [maybeResult?.content]);
+
+  const functionCalled = "```python\n" + name + "(" + argsString + ")\n```";
+
+  return (
+    <Container>
+      <Collapsible.Root open={open} onOpenChange={setOpen}>
+        <Collapsible.Trigger asChild>
+          <Flex
+            gap="2"
+            align="end"
+            onClick={() => setOpen((prev) => !prev)}
+            ref={ref}
+          >
+            <Flex
+              gap="1"
+              align="start"
+              direction="column"
+              style={{ cursor: "pointer" }}
+            >
+              <Text weight="light" size="1">
+                📜 Trajectory Context {header?.title && `- ${header.title}`}
+              </Text>
+            </Flex>
+            <Chevron open={open} />
+          </Flex>
+        </Collapsible.Trigger>
+        <Collapsible.Content>
+          <Flex direction="column" pt="4">
+            <ScrollArea scrollbars="horizontal" style={{ width: "100%" }}>
+              <Box>
+                <CommandMarkdown isInsideScrollArea>
+                  {functionCalled}
+                </CommandMarkdown>
+              </Box>
+            </ScrollArea>
+            {header && (
+              <Card my="2">
+                <Flex direction="column" gap="1">
+                  <Text size="1" weight="medium">📁 {header.id}</Text>
+                  <Text size="2" weight="medium">{header.title}</Text>
+                  <Text size="1" color="gray">{header.range}</Text>
+                </Flex>
+              </Card>
+            )}
+            <Flex gap="3" direction="column" py="2">
+              {messages.map((msg, idx) => (
+                <Card key={idx} style={{ borderLeft: msg.highlighted ? "3px solid var(--accent-9)" : undefined }}>
+                  <Flex direction="column" gap="1">
+                    <Flex gap="2" align="center">
+                      <Text size="1">{msg.icon}</Text>
+                      <Text size="1" weight="medium" color={msg.highlighted ? "blue" : undefined}>
+                        [{msg.index}] {msg.role}
+                      </Text>
+                    </Flex>
+                    <Text size="2" style={{ whiteSpace: "pre-wrap" }}>{msg.content}</Text>
+                  </Flex>
+                </Card>
+              ))}
+            </Flex>
+            <FadedButton color="gray" onClick={handleHide} mx="2">
+              Hide Context
+            </FadedButton>
+          </Flex>
+        </Collapsible.Content>
+      </Collapsible.Root>
+    </Container>
+  );
+};
+
+interface TrajectoryHeader {
+  id: string;
+  title: string;
+  range: string;
+}
+
+interface TrajectoryMessage {
+  index: string;
+  role: string;
+  icon: string;
+  content: string;
+  highlighted: boolean;
+}
+
+function parseTrajectoryContext(text: string): { header: TrajectoryHeader | null; messages: TrajectoryMessage[] } {
+  const lines = text.split("\n");
+  let header: TrajectoryHeader | null = null;
+  const messages: TrajectoryMessage[] = [];
+  let currentMsg: TrajectoryMessage | null = null;
+  let contentLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("│ 📁 ")) {
+      if (!header) header = { id: "", title: "", range: "" };
+      header.id = line.substring(5).replace(/│$/, "").trim();
+    } else if (line.startsWith("│ 📌 ")) {
+      if (!header) header = { id: "", title: "", range: "" };
+      header.title = line.substring(5).replace(/│$/, "").trim();
+    } else if (line.startsWith("│ 📍 ")) {
+      if (!header) header = { id: "", title: "", range: "" };
+      header.range = line.substring(5).replace(/│$/, "").trim();
+    } else if (line.startsWith("┏━") || line.startsWith("┌─")) {
+      if (currentMsg) {
+        currentMsg.content = contentLines.join("\n").trim();
+        messages.push(currentMsg);
+        contentLines = [];
+      }
+      const highlighted = line.startsWith("┏━");
+      const match = line.match(/([👤🤖🔧💬]) \[(\d+)\] (\w+)/);
+      if (match) {
+        currentMsg = {
+          icon: match[1],
+          index: match[2],
+          role: match[3],
+          content: "",
+          highlighted,
+        };
+      }
+    } else if (currentMsg && !line.startsWith("╭") && !line.startsWith("╰") && !line.startsWith("│")) {
+      contentLines.push(line);
+    }
+  }
+
+  if (currentMsg) {
+    currentMsg.content = contentLines.join("\n").trim();
+    messages.push(currentMsg);
+  }
+
+  return { header, messages };
+}
+
+interface ParsedTrajectory {
+  id: string;
+  title: string;
+  relevance: string;
+  messageRange: string;
+  preview: string;
+}
+
+function splitTrajectories(text: string): ParsedTrajectory[] {
+  const entries = text.split("───────────────────────────────────────\n").filter((part) => part.trim() && part.includes("📁"));
+
+  return entries.map((entry) => {
+    const lines = entry.split("\n");
+    let id = "";
+    let title = "";
+    let relevance = "";
+    let messageRange = "";
+    const previewLines: string[] = [];
+    let inPreview = false;
+
+    for (const line of lines) {
+      if (line.startsWith("📁 ")) {
+        id = line.substring(3).trim();
+        inPreview = false;
+      } else if (line.startsWith("📌 ")) {
+        title = line.substring(3).trim();
+        inPreview = false;
+      } else if (line.startsWith("⭐ Relevance: ")) {
+        relevance = line.substring(14).trim();
+        inPreview = false;
+      } else if (line.startsWith("📍 Messages: ")) {
+        messageRange = line.substring(13).trim();
+        inPreview = true;
+      } else if (inPreview && line.trim() && !line.startsWith("💡")) {
+        previewLines.push(line);
+      }
+    }
+
+    return { id, title, relevance, messageRange, preview: previewLines.join("\n").trim() };
   });
 }

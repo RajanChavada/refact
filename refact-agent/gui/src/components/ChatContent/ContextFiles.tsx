@@ -1,15 +1,9 @@
 import React from "react";
-import { Flex, Container, Box, HoverCard, Text } from "@radix-ui/themes";
-import styles from "./ChatContent.module.css";
+import { Flex, Container, Box, Text } from "@radix-ui/themes";
 import { ChatContextFile } from "../../services/refact";
-import classnames from "classnames";
-import { TruncateLeft, Small } from "../Text";
 import * as Collapsible from "@radix-ui/react-collapsible";
-
-import { ScrollArea } from "../ScrollArea";
 import { Link } from "../Link";
 import ReactMarkDown from "react-markdown";
-
 import { MarkdownCodeBlock } from "../Markdown/CodeBlock";
 import { Chevron } from "../Collapsible";
 import { filename } from "../../utils";
@@ -37,137 +31,203 @@ export const Markdown: React.FC<{
   );
 };
 
-function getFileInfoFromName(name: string) {
+function getExtensionFromName(name: string): string {
   const dot = name.lastIndexOf(".");
-
-  if (dot === -1)
-    return {
-      extension: "",
-      start: 1,
-    };
-  const extendsionAndLines = dot === -1 ? "" : name.substring(dot + 1);
-  const extension = extendsionAndLines.replace(/:\d*-\d*/, "");
-
-  if (!/:\d*-\d*/.test(extendsionAndLines)) {
-    return { extension, start: 1 };
-  }
-  const lineIndex = extendsionAndLines.lastIndexOf(":");
-  const lines = extendsionAndLines.substring(lineIndex + 1);
-
-  const [start] = lines.split("-");
-  const maybeNumber = Number(start);
-
-  return {
-    extension,
-    start: maybeNumber,
-  };
+  if (dot === -1) return "";
+  return name.substring(dot + 1).replace(/:\d*-\d*/, "");
 }
 
-export const ContextFile: React.FC<{
-  name: string;
-  children: string;
-  className?: string;
-  onClick?: React.MouseEventHandler<HTMLAnchorElement> | undefined;
-}> = ({ name, onClick, ...props }) => {
-  const [open, setOpen] = React.useState(false);
-  const { extension, start } = getFileInfoFromName(name);
-  const text = "```" + extension + "\n" + props.children + "\n```";
-  return (
-    <Box position="relative">
-      <HoverCard.Root onOpenChange={setOpen} open={open}>
-        <HoverCard.Trigger>
-          <Box>
-            <Small className={classnames(styles.file, props.className)}>
-              &nbsp;&nbsp;&nbsp;&nbsp;
-              <TruncateLeft>
-                <Link onClick={onClick}>{name}</Link>
-              </TruncateLeft>
-            </Small>
-          </Box>
-        </HoverCard.Trigger>
-        <ScrollArea scrollbars="both" asChild>
-          <HoverCard.Content
-            size="1"
-            maxHeight="50vh"
-            maxWidth="90vw"
-            avoidCollisions
-          >
-            <Markdown startingLineNumber={start}>{text}</Markdown>
-          </HoverCard.Content>
-        </ScrollArea>
-      </HoverCard.Root>
-    </Box>
-  );
-};
-
-const ContextFilesContent: React.FC<{
+const FilesContent: React.FC<{
   files: ChatContextFile[];
   onOpenFile: (file: { file_path: string; line?: number }) => Promise<void>;
-}> = ({ files, onOpenFile }) => {
+  isEnrichment?: boolean;
+}> = ({ files, onOpenFile, isEnrichment = false }) => {
   if (files.length === 0) return null;
 
+  if (isEnrichment) {
+    const memories = files.filter(f => f.file_name.includes("/.refact/memories/"));
+    const trajectories = files.filter(f => f.file_name.includes("/.refact/trajectories/"));
+    const other = files.filter(f =>
+      !f.file_name.includes("/.refact/memories/") &&
+      !f.file_name.includes("/.refact/trajectories/")
+    );
+
+    return (
+      <Flex direction="column" gap="2">
+        {memories.length > 0 && (
+          <FileSection icon="📝" title="Knowledge" files={memories} onOpenFile={onOpenFile} isEnrichment />
+        )}
+        {trajectories.length > 0 && (
+          <FileSection icon="💬" title="Past Conversations" files={trajectories} onOpenFile={onOpenFile} isEnrichment />
+        )}
+        {other.length > 0 && (
+          <FileSection icon="📄" title="Related" files={other} onOpenFile={onOpenFile} isEnrichment />
+        )}
+      </Flex>
+    );
+  }
+
   return (
-    <Container>
-      <pre style={{ margin: 0 }}>
-        <Flex wrap="nowrap" direction="column">
-          {files.map((file, index) => {
-            const lineText =
-              file.line1 && file.line2 && file.line1 !== 0 && file.line2 !== 0
-                ? `:${file.line1}-${file.line2}`
-                : "";
-            const key = file.file_name + lineText + index;
-            return (
-              <ContextFile
-                onClick={(event) => {
-                  event.preventDefault();
-                  // TODO: this maybe will need to be reworked in the future
-                  // but VSCode handles well file_path to be relative to the actual file_name as file_path
-                  void onOpenFile({
-                    ...file,
-                    file_path: file.file_name,
-                  });
-                }}
-                key={key}
-                name={file.file_name + lineText}
-              >
-                {file.file_content}
-              </ContextFile>
-            );
-          })}
-        </Flex>
-      </pre>
-    </Container>
+    <Flex direction="column" gap="1">
+      {files.map((file, index) => (
+        <FileCard
+          key={file.file_name + index}
+          file={file}
+          onOpenFile={onOpenFile}
+          isEnrichment={false}
+        />
+      ))}
+    </Flex>
   );
 };
 
 export const ContextFiles: React.FC<{
   files: ChatContextFile[];
-}> = ({ files }) => {
+  isEnrichment?: boolean;
+}> = ({ files, isEnrichment = false }) => {
   const [open, setOpen] = React.useState(false);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
 
   if (!Array.isArray(files) || files.length === 0) return null;
 
-  const fileNames = files.map((file) => filename(file.file_name));
+  const icon = isEnrichment ? "🧠" : "📎";
+  const label = isEnrichment
+    ? `${files.length} memories`
+    : `${files.length} file${files.length > 1 ? "s" : ""}`;
 
   return (
     <Container>
       <Collapsible.Root open={open} onOpenChange={setOpen}>
         <Collapsible.Trigger asChild>
           <Flex gap="2" align="start" py="2" style={{ cursor: "pointer" }}>
-            <Text weight="light" size="1">
-              📎 {fileNames.join(", ")}
+            <Text weight="light" size="1" style={{ color: "var(--gray-10)" }}>
+              {icon} {label}
             </Text>
             <Chevron open={open} />
           </Flex>
         </Collapsible.Trigger>
         <Collapsible.Content>
-          <ContextFilesContent
+          <FilesContent
             files={files}
             onOpenFile={queryPathThenOpenFile}
+            isEnrichment={isEnrichment}
           />
         </Collapsible.Content>
       </Collapsible.Root>
     </Container>
   );
 };
+
+const FileSection: React.FC<{
+  icon: string;
+  title: string;
+  files: ChatContextFile[];
+  onOpenFile: (file: { file_path: string; line?: number }) => Promise<void>;
+  isEnrichment?: boolean;
+}> = ({ icon, title, files, onOpenFile, isEnrichment }) => {
+  return (
+    <Box>
+      <Text size="1" weight="light" style={{ color: "var(--gray-9)" }}>
+        {icon} {title}
+      </Text>
+      <Flex direction="column" gap="1" mt="1">
+        {files.map((file, index) => (
+          <FileCard
+            key={file.file_name + index}
+            file={file}
+            onOpenFile={onOpenFile}
+            isEnrichment={isEnrichment}
+          />
+        ))}
+      </Flex>
+    </Box>
+  );
+};
+
+const FileCard: React.FC<{
+  file: ChatContextFile;
+  onOpenFile: (file: { file_path: string; line?: number }) => Promise<void>;
+  isEnrichment?: boolean;
+}> = ({ file, onOpenFile, isEnrichment }) => {
+  const [showContent, setShowContent] = React.useState(false);
+  const extension = getExtensionFromName(file.file_name);
+  const start = file.line1 || 1;
+
+  const displayName = isEnrichment
+    ? extractEnrichmentDisplayName(file.file_name)
+    : formatFileName(file.file_name, file.line1, file.line2);
+  const relevance = file.usefulness ? Math.round(file.usefulness) : null;
+
+  const preview = file.file_content.slice(0, 100).replace(/\n/g, " ") +
+    (file.file_content.length > 100 ? "..." : "");
+
+  return (
+    <Box pl="2" style={{ borderLeft: "1px solid var(--gray-a4)" }}>
+      <Flex justify="between" align="start" gap="2">
+        <Box style={{ flex: 1, minWidth: 0 }}>
+          <Flex align="center" gap="2">
+            <Link
+              onClick={(e) => {
+                e.preventDefault();
+                void onOpenFile({ file_path: file.file_name, line: file.line1 });
+              }}
+              style={{ cursor: "pointer" }}
+            >
+              <Text size="1" weight="light" style={{ color: "var(--gray-11)" }}>
+                {displayName}
+              </Text>
+            </Link>
+            {relevance !== null && (
+              <Text size="1" style={{ color: "var(--gray-9)" }}>
+                {relevance}%
+              </Text>
+            )}
+          </Flex>
+          <Text size="1" style={{ color: "var(--gray-9)" }}>
+            {preview}
+          </Text>
+        </Box>
+        <Box
+          style={{ cursor: "pointer", flexShrink: 0 }}
+          onClick={() => setShowContent(!showContent)}
+        >
+          <Chevron open={showContent} />
+        </Box>
+      </Flex>
+      {showContent && (
+        <Box mt="2" style={{ maxHeight: "300px", overflow: "auto" }}>
+          <Markdown startingLineNumber={start}>
+            {"```" + extension + "\n" + file.file_content + "\n```"}
+          </Markdown>
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+function formatFileName(filePath: string, line1?: number, line2?: number): string {
+  const name = filename(filePath);
+  if (line1 && line2 && line1 !== 0 && line2 !== 0) {
+    return `${name}:${line1}-${line2}`;
+  }
+  return name;
+}
+
+function extractEnrichmentDisplayName(filePath: string): string {
+  const fileName = filename(filePath);
+
+  // Memory files: 2025-12-26_230536_3fe00894_servicebobpy-is-a-standalone-fastapi.md
+  // Extract the readable part after the hash
+  const memoryMatch = fileName.match(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]+_(.+)\.md$/);
+  if (memoryMatch) {
+    return memoryMatch[1].replace(/-/g, " ");
+  }
+
+  // Trajectory files: UUID.json - show as "Conversation"
+  const trajectoryMatch = fileName.match(/^[a-f0-9-]{36}\.json$/);
+  if (trajectoryMatch) {
+    return "Past conversation";
+  }
+
+  return fileName;
+}

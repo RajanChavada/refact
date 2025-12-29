@@ -222,9 +222,13 @@ function renderMessages(
         skipCount++;
         tempTail = tempTail.slice(1);
       } else if (isChatContextFileMessage(nextMsg)) {
-        // Collect context_file messages to render after assistant
+        if (nextMsg.tool_call_id === "knowledge_enrichment") {
+          break;
+        }
         const ctxKey = "context-file-" + (index + 1 + skipCount);
-        contextFilesAfter.push(<ContextFiles key={ctxKey} files={nextMsg.content} />);
+        contextFilesAfter.push(
+          <ContextFiles key={ctxKey} files={nextMsg.content} />
+        );
         skipCount++;
         tempTail = tempTail.slice(1);
       } else if (isDiffMessage(nextMsg)) {
@@ -291,7 +295,8 @@ function renderMessages(
 
   if (isChatContextFileMessage(head)) {
     const key = "context-file-" + index;
-    const nextMemo = [...memo, <ContextFiles key={key} files={head.content} />];
+    const isEnrichment = head.tool_call_id === "knowledge_enrichment";
+    const nextMemo = [...memo, <ContextFiles key={key} files={head.content} isEnrichment={isEnrichment} />];
     return renderMessages(tail, onRetry, waiting, nextMemo, index + 1);
   }
 
