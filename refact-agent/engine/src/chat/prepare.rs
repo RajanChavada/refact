@@ -23,6 +23,7 @@ const MIN_BUDGET_TOKENS: usize = 1024;
 
 pub struct PreparedChat {
     pub prompt: String,
+    pub limited_messages: Vec<ChatMessage>,
 }
 
 pub struct ChatPrepareOptions {
@@ -184,7 +185,7 @@ pub async fn prepare_chat_passthrough(
 
     // 9. Convert to OpenAI format
     let converted_messages =
-        convert_messages_to_openai_format(limited_adapted_msgs, style, &model_record.base.id);
+        convert_messages_to_openai_format(limited_adapted_msgs.clone(), style, &model_record.base.id);
 
     big_json["messages"] = json!(converted_messages);
     big_json["compression_strength"] = json!(compression_strength);
@@ -194,7 +195,10 @@ pub async fn prepare_chat_passthrough(
         serde_json::to_string(&big_json).map_err(|e| format!("JSON serialization error: {}", e))?;
     let prompt = format!("PASSTHROUGH {}", body);
 
-    Ok(PreparedChat { prompt })
+    Ok(PreparedChat {
+        prompt,
+        limited_messages: limited_adapted_msgs,
+    })
 }
 
 fn adapt_sampling_for_reasoning_models(

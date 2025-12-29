@@ -306,6 +306,7 @@ pub struct ChatSession {
     pub created_at: String,
     pub closed: bool,
     pub external_reload_pending: bool,
+    pub last_prompt_messages: Vec<ChatMessage>,
 }
 
 #[cfg(test)]

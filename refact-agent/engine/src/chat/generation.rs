@@ -314,6 +314,11 @@ pub async fn run_llm_generation(
     )
     .await?;
 
+    {
+        let mut session = session_arc.lock().await;
+        session.last_prompt_messages = prepared.limited_messages.clone();
+    }
+
     run_streaming_generation(
         gcx,
         session_arc,

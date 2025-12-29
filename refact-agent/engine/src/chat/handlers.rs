@@ -124,7 +124,13 @@ pub async fn handle_v1_chat_command(
             .unwrap());
     }
 
-    if session.command_queue.len() >= MAX_QUEUE_SIZE {
+    let is_critical_while_paused = session.runtime.state == SessionState::Paused
+        && matches!(
+            request.command,
+            ChatCommand::ToolDecision { .. } | ChatCommand::ToolDecisions { .. }
+        );
+
+    if session.command_queue.len() >= MAX_QUEUE_SIZE && !is_critical_while_paused {
         session.emit(ChatEvent::Ack {
             client_request_id: request.client_request_id,
             accepted: false,

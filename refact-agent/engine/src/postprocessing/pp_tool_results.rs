@@ -83,12 +83,12 @@ pub async fn postprocess_tool_results(
     };
 
     if !notes.is_empty() {
-        result.push(ChatMessage {
-            role: "tool".to_string(),
-            content: ChatContent::SimpleText(notes.join("\n")),
-            tool_call_id: "context_notes".to_string(),
-            ..Default::default()
-        });
+        if let Some(last_tool_msg) = result.iter_mut().rev().find(|m| m.role == "tool") {
+            if let ChatContent::SimpleText(ref mut text) = last_tool_msg.content {
+                text.push_str("\n\n");
+                text.push_str(&notes.join("\n"));
+            }
+        }
     }
 
     if let Some(msg) = file_message {
@@ -101,7 +101,7 @@ pub async fn postprocess_tool_results(
 fn deduplicate_and_merge_context_files(
     context_files: Vec<ContextFile>,
     existing_messages: &[ChatMessage],
-) -> Vec<ContextFile> {
+) -> (Vec<ContextFile>, Vec<String>) {
     let mut file_groups: HashMap<String, Vec<ContextFile>> = HashMap::new();
 
     for cf in context_files {
@@ -110,11 +110,22 @@ fn deduplicate_and_merge_context_files(
     }
 
     let mut result = Vec::new();
+    let mut notes = Vec::new();
 
     for (_canonical, mut files) in file_groups {
         if files.len() == 1 {
             let cf = files.remove(0);
-            if !is_covered_by_history(&cf, existing_messages) {
+            if let Some((msg_idx, tool_name)) = find_coverage_in_history(&cf, existing_messages) {
+                let range = if cf.line1 > 0 && cf.line2 > 0 {
+                    format!("{}:{}-{}", cf.file_name, cf.line1, cf.line2)
+                } else {
+                    cf.file_name.clone()
+                };
+                notes.push(format!(
+                    "📎 `{}` already in context (message #{}, via `{}`). Skipping to save tokens.",
+                    range, msg_idx + 1, tool_name
+                ));
+            } else {
                 result.push(cf);
             }
             continue;
@@ -124,13 +135,23 @@ fn deduplicate_and_merge_context_files(
         let merged = merge_overlapping_ranges(files);
 
         for cf in merged {
-            if !is_covered_by_history(&cf, existing_messages) {
+            if let Some((msg_idx, tool_name)) = find_coverage_in_history(&cf, existing_messages) {
+                let range = if cf.line1 > 0 && cf.line2 > 0 {
+                    format!("{}:{}-{}", cf.file_name, cf.line1, cf.line2)
+                } else {
+                    cf.file_name.clone()
+                };
+                notes.push(format!(
+                    "📎 `{}` already in context (message #{}, via `{}`). Skipping to save tokens.",
+                    range, msg_idx + 1, tool_name
+                ));
+            } else {
                 result.push(cf);
             }
         }
     }
 
-    result
+    (result, notes)
 }
 
 fn merge_overlapping_ranges(mut files: Vec<ContextFile>) -> Vec<ContextFile> {
@@ -177,12 +198,12 @@ fn merge_overlapping_ranges(mut files: Vec<ContextFile>) -> Vec<ContextFile> {
     result
 }
 
-fn is_covered_by_history(cf: &ContextFile, messages: &[ChatMessage]) -> bool {
+fn find_coverage_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Option<(usize, String)> {
     let cf_canonical = canonical_path(&cf.file_name);
     let cf_start = if cf.line1 == 0 { 1 } else { cf.line1 };
     let cf_end = if cf.line2 == 0 { usize::MAX } else { cf.line2 };
 
-    for msg in messages {
+    for (idx, msg) in messages.iter().enumerate() {
         if msg.role != "context_file" {
             continue;
         }
@@ -203,12 +224,13 @@ fn is_covered_by_history(cf: &ContextFile, messages: &[ChatMessage]) -> bool {
                     existing.line2
                 };
                 if ex_start <= cf_start && ex_end >= cf_end {
-                    return true;
+                    let tool_name = msg.tool_call_id.clone();
+                    return Some((idx, tool_name));
                 }
             }
         }
     }
-    false
+    None
 }
 
 async fn postprocess_context_file_results(
@@ -219,7 +241,7 @@ async fn postprocess_context_file_results(
     mut pp_settings: PostprocessSettings,
     existing_messages: &[ChatMessage],
 ) -> (Option<ChatMessage>, Vec<String>, usize) {
-    let deduped_files = deduplicate_and_merge_context_files(context_files, existing_messages);
+    let (deduped_files, dedup_notes) = deduplicate_and_merge_context_files(context_files, existing_messages);
 
     let (skip_pp_files, mut pp_files): (Vec<_>, Vec<_>) =
         deduped_files.into_iter().partition(|cf| cf.skip_pp);
@@ -257,7 +279,7 @@ async fn postprocess_context_file_results(
     )
     .await;
 
-    let notes: Vec<String> = pp_notes.into_iter().chain(skip_notes).collect();
+    let notes: Vec<String> = dedup_notes.into_iter().chain(pp_notes).chain(skip_notes).collect();
 
     let all_files: Vec<_> = pp_result
         .into_iter()
@@ -844,7 +866,7 @@ mod tests {
             make_context_file("test.rs", 40, 100),
             make_context_file("other.rs", 1, 20),
         ];
-        let result = deduplicate_and_merge_context_files(files, &[]);
+        let (result, _notes) = deduplicate_and_merge_context_files(files, &[]);
         assert_eq!(result.len(), 2);
         let test_file = result.iter().find(|f| f.file_name == "test.rs").unwrap();
         assert_eq!(test_file.line1, 1);
@@ -857,8 +879,9 @@ mod tests {
         let history = vec![make_context_file_message(vec![make_context_file(
             "test.rs", 1, 100,
         )])];
-        let result = deduplicate_and_merge_context_files(files, &history);
+        let (result, notes) = deduplicate_and_merge_context_files(files, &history);
         assert_eq!(result.len(), 0);
+        assert!(!notes.is_empty());
     }
 
     #[test]
@@ -867,19 +890,19 @@ mod tests {
         let history = vec![make_context_file_message(vec![make_context_file(
             "test.rs", 1, 100,
         )])];
-        let result = deduplicate_and_merge_context_files(files, &history);
+        let (result, _notes) = deduplicate_and_merge_context_files(files, &history);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn test_is_covered_by_history() {
+    fn test_find_coverage_in_history() {
         let cf = make_context_file("test.rs", 10, 50);
         let history = vec![make_context_file_message(vec![make_context_file(
             "test.rs", 1, 100,
         )])];
-        assert!(is_covered_by_history(&cf, &history));
+        assert!(find_coverage_in_history(&cf, &history).is_some());
 
         let cf2 = make_context_file("test.rs", 10, 150);
-        assert!(!is_covered_by_history(&cf2, &history));
+        assert!(find_coverage_in_history(&cf2, &history).is_none());
     }
 }

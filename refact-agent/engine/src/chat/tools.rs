@@ -363,6 +363,15 @@ pub async fn execute_tools_with_session(
         return (vec![], false);
     }
 
+    let prompt_messages = {
+        let session = session_arc.lock().await;
+        if session.last_prompt_messages.is_empty() {
+            messages.to_vec()
+        } else {
+            session.last_prompt_messages.clone()
+        }
+    };
+
     let n_ctx = get_effective_n_ctx(gcx.clone(), thread).await;
     let budget = match ToolBudget::try_from_n_ctx(n_ctx) {
         Ok(b) => b,
@@ -407,7 +416,7 @@ pub async fn execute_tools_with_session(
     let cancel_flag = spawn_subchat_bridge(ccx.clone(), session_arc);
 
     let result =
-        execute_tools_inner(gcx, ccx, tool_calls, chat_mode, budget, options, messages).await;
+        execute_tools_inner(gcx, ccx, tool_calls, chat_mode, budget, options, &prompt_messages).await;
 
     cancel_flag.store(true, Ordering::Relaxed);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

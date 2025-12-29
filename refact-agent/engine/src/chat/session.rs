@@ -44,6 +44,7 @@ impl ChatSession {
             created_at: chrono::Utc::now().to_rfc3339(),
             closed: false,
             external_reload_pending: false,
+            last_prompt_messages: Vec::new(),
         }
     }
 
@@ -74,6 +75,7 @@ impl ChatSession {
             trajectory_version: 0,
             created_at,
             closed: false,
+            last_prompt_messages: Vec::new(),
         }
     }
 
@@ -275,15 +277,33 @@ impl ChatSession {
 
     pub fn finish_stream(&mut self, finish_reason: Option<String>) {
         if let Some(mut draft) = self.draft_message.take() {
+            let has_text_content = match &draft.content {
+                ChatContent::SimpleText(s) => !s.trim().is_empty(),
+                ChatContent::Multimodal(v) => !v.is_empty(),
+                ChatContent::ContextFiles(v) => !v.is_empty(),
+            };
+            let has_structured_data = draft.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+                || draft.reasoning_content.as_ref().map_or(false, |r| !r.trim().is_empty())
+                || draft.thinking_blocks.as_ref().map_or(false, |tb| !tb.is_empty())
+                || !draft.citations.is_empty();
+
             self.emit(ChatEvent::StreamFinished {
                 message_id: draft.message_id.clone(),
                 finish_reason: finish_reason.clone(),
             });
-            draft.finish_reason = finish_reason;
-            if let Some(usage) = self.draft_usage.take() {
-                draft.usage = Some(usage);
+
+            if has_text_content || has_structured_data {
+                draft.finish_reason = finish_reason;
+                if let Some(usage) = self.draft_usage.take() {
+                    draft.usage = Some(usage);
+                }
+                self.add_message(draft);
+            } else {
+                tracing::warn!("Discarding empty assistant message");
+                self.emit(ChatEvent::MessageRemoved {
+                    message_id: draft.message_id,
+                });
             }
-            self.add_message(draft);
         }
         self.set_runtime_state(SessionState::Idle, None);
         self.touch();

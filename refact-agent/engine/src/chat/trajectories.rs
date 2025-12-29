@@ -1348,6 +1348,7 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             closed: false,
             external_reload_pending: false,
+            last_prompt_messages: Vec::new(),
         };
 
         let snapshot = TrajectorySnapshot::from_session(&session);
