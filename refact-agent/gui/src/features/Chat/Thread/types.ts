@@ -1,6 +1,6 @@
 import { ToolConfirmationPauseReason, Usage } from "../../../services/refact";
 import { SystemPrompts } from "../../../services/refact/prompts";
-import { ChatMessages, UserMessage } from "../../../services/refact/types";
+import { ChatMessages } from "../../../services/refact/types";
 import { parseOrElse } from "../../../utils/parseOrElse";
 
 export type ImageFile = {
@@ -14,11 +14,11 @@ export type ToolConfirmationStatus = {
   confirmationStatus: boolean;
 };
 
-export type QueuedUserMessage = {
-  id: string;
-  message: UserMessage;
-  createdAt: number;
-  priority?: boolean;
+export type QueuedItem = {
+  client_request_id: string;
+  priority: boolean;
+  command_type: string;
+  preview: string;
 };
 
 export type IntegrationMeta = {
@@ -72,11 +72,10 @@ export type ChatThreadRuntime = {
   waiting_for_response: boolean;
   prevent_send: boolean;
   error: string | null;
-  queued_messages: QueuedUserMessage[];
+  queued_items: QueuedItem[];
   send_immediately: boolean;
   attached_images: ImageFile[];
   confirmation: ThreadConfirmation;
-  queue_size: number;
 };
 
 export type Chat = {

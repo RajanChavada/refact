@@ -150,27 +150,6 @@ export const setSendImmediately = createAction<boolean>(
   "chatThread/setSendImmediately",
 );
 
-export type EnqueueUserMessagePayload = {
-  chatId: string;
-  id: string;
-  message: import("../../../services/refact/types").UserMessage;
-  createdAt: number;
-  priority?: boolean;
-};
-
-export const enqueueUserMessage = createAction<EnqueueUserMessagePayload>(
-  "chatThread/enqueueUserMessage",
-);
-
-export const dequeueUserMessage = createAction<{
-  chatId: string;
-  queuedId: string;
-}>("chatThread/dequeueUserMessage");
-
-export const clearQueuedMessages = createAction<{ chatId: string }>(
-  "chatThread/clearQueuedMessages",
-);
-
 export const setChatMode = createAction<LspChatMode>("chatThread/setChatMode");
 
 export const setIntegrationData = createAction<Partial<IntegrationMeta> | null>(

@@ -64,9 +64,9 @@ use crate::http::routers::v1::workspace::{
     handle_v1_get_app_searchable_id, handle_v1_set_active_group_id,
 };
 use crate::chat::{
-    handle_v1_chat_subscribe, handle_v1_chat_command, handle_v1_trajectories_list,
-    handle_v1_trajectories_get, handle_v1_trajectories_save, handle_v1_trajectories_delete,
-    handle_v1_trajectories_subscribe,
+    handle_v1_chat_subscribe, handle_v1_chat_command, handle_v1_chat_cancel_queued,
+    handle_v1_trajectories_list, handle_v1_trajectories_get, handle_v1_trajectories_save,
+    handle_v1_trajectories_delete, handle_v1_trajectories_subscribe,
 };
 
 mod ast;
@@ -219,7 +219,8 @@ pub fn make_v1_router() -> Router {
         .route("/trajectories/:id", put(handle_v1_trajectories_save))
         .route("/trajectories/:id", delete(handle_v1_trajectories_delete))
         .route("/chats/subscribe", get(handle_v1_chat_subscribe))
-        .route("/chats/:chat_id/commands", post(handle_v1_chat_command));
+        .route("/chats/:chat_id/commands", post(handle_v1_chat_command))
+        .route("/chats/:chat_id/queue/:client_request_id", delete(handle_v1_chat_cancel_queued));
 
     builder
         .layer(axum::middleware::from_fn(telemetry_middleware))

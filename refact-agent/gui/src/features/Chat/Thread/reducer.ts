@@ -42,9 +42,6 @@ import {
   setIncludeProjectInfo,
   setContextTokensCap,
   setUseCompression,
-  enqueueUserMessage,
-  dequeueUserMessage,
-  clearQueuedMessages,
   closeThread,
   switchToThread,
   updateOpenThread,
@@ -109,7 +106,7 @@ const createThreadRuntime = (
     waiting_for_response: false,
     prevent_send: false,
     error: null,
-    queued_messages: [],
+    queued_items: [],
     send_immediately: false,
     attached_images: [],
     confirmation: {
@@ -120,7 +117,6 @@ const createThreadRuntime = (
         confirmationStatus: true,
       },
     },
-    queue_size: 0,
   };
 };
 
@@ -238,22 +234,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
       newRuntime.thread.boost_reasoning = currentRt.thread.boost_reasoning;
     }
 
-    if (action.payload?.messages) {
-      const nonUserMessages: ChatMessages = [];
-      for (const msg of action.payload.messages) {
-        if (isUserMessage(msg)) {
-          newRuntime.queued_messages.push({
-            id: uuidv4(),
-            message: msg,
-            createdAt: Date.now(),
-          });
-        } else {
-          nonUserMessages.push(msg);
-        }
-      }
-      newRuntime.thread.messages = nonUserMessages;
-    }
-
     if (action.payload?.title) {
       newRuntime.thread.title = action.payload.title;
     }
@@ -363,7 +343,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
       waiting_for_response: false,
       prevent_send: false,
       error: null,
-      queued_messages: [],
+      queued_items: [],
       send_immediately: false,
       attached_images: [],
       confirmation: {
@@ -374,7 +354,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
           confirmationStatus: true,
         },
       },
-      queue_size: 0,
     };
     newRuntime.thread.messages = postProcessMessagesAfterStreaming(
       newRuntime.thread.messages,
@@ -478,37 +457,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
   builder.addCase(setSendImmediately, (state, action) => {
     const rt = getCurrentRuntime(state);
     if (rt) rt.send_immediately = action.payload;
-  });
-
-  builder.addCase(enqueueUserMessage, (state, action) => {
-    const rt = getRuntime(state, action.payload.chatId);
-    if (!rt) return;
-    const { chatId: _, priority, ...rest } = action.payload;
-    const messagePayload = { ...rest, priority };
-    if (priority) {
-      const insertAt = rt.queued_messages.findIndex((m) => !m.priority);
-      if (insertAt === -1) {
-        rt.queued_messages.push(messagePayload);
-      } else {
-        rt.queued_messages.splice(insertAt, 0, messagePayload);
-      }
-    } else {
-      rt.queued_messages.push(messagePayload);
-    }
-  });
-
-  builder.addCase(dequeueUserMessage, (state, action) => {
-    const rt = getRuntime(state, action.payload.chatId);
-    if (rt) {
-      rt.queued_messages = rt.queued_messages.filter(
-        (q) => q.id !== action.payload.queuedId,
-      );
-    }
-  });
-
-  builder.addCase(clearQueuedMessages, (state, action) => {
-    const rt = getRuntime(state, action.payload.chatId);
-    if (rt) rt.queued_messages = [];
   });
 
   builder.addCase(setChatMode, (state, action) => {
@@ -677,7 +625,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
           waiting_for_response: isBusy,
           prevent_send: false,
           error: event.runtime.error ?? null,
-          queued_messages: existingRuntime?.queued_messages ?? [],
+          queued_items: (event.runtime.queued_items as ChatThreadRuntime["queued_items"]) ?? [],
           send_immediately: existingRuntime?.send_immediately ?? false,
           attached_images: existingRuntime?.attached_images ?? [],
           confirmation: {
@@ -687,7 +635,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
             status:
               existingRuntime?.confirmation.status ?? defaultConfirmationStatus,
           },
-          queue_size: event.runtime.queue_size,
         };
 
         state.threads[chat_id] = newRt;
@@ -757,7 +704,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
         rt.prevent_send = false;
         rt.error = event.error ?? null;
         rt.confirmation.pause = event.paused;
-        rt.queue_size = event.queue_size;
+        rt.queued_items = (event.queued_items as ChatThreadRuntime["queued_items"]) ?? [];
         if (!event.paused) {
           rt.confirmation.pause_reasons = [];
         }

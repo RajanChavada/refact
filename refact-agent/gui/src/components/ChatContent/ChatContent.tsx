@@ -26,7 +26,7 @@ import {
   selectIsStreaming,
   selectIsWaiting,
   selectMessages,
-  selectQueuedMessages,
+  selectQueuedItems,
   selectThread,
 } from "../../features/Chat/Thread/selectors";
 import { takeWhile } from "../../utils";
@@ -56,7 +56,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   const dispatch = useAppDispatch();
   const pauseReasonsWithPause = useAppSelector(selectThreadConfirmation);
   const messages = useAppSelector(selectMessages);
-  const queuedMessages = useAppSelector(selectQueuedMessages);
+  const queuedItems = useAppSelector(selectQueuedItems);
   const isStreaming = useAppSelector(selectIsStreaming);
   const thread = useAppSelector(selectThread);
 
@@ -126,17 +126,6 @@ export const ChatContent: React.FC<ChatContentProps> = ({
           </Container>
         )}
         {renderMessages(messages, onRetryWrapper, isWaiting)}
-        {queuedMessages.length > 0 && (
-          <Flex direction="column" gap="2" mt="2">
-            {queuedMessages.map((queuedMsg, index) => (
-              <QueuedMessage
-                key={queuedMsg.id}
-                queuedMessage={queuedMsg}
-                position={index + 1}
-              />
-            ))}
-          </Flex>
-        )}
         <Container>
           <UncommittedChangesWarning />
         </Container>
@@ -155,14 +144,13 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         style={{
           position: "absolute",
           bottom: 0,
-          maxWidth: "100%", // TODO: make space for the down button
+          maxWidth: "100%",
         }}
       >
         <ScrollArea scrollbars="horizontal">
           <Flex align="start" gap="3" pb="2">
             {(isWaiting || isStreaming) && !pauseReasonsWithPause.pause && (
               <Button
-                // ml="auto"
                 color="red"
                 title="stop streaming"
                 onClick={handleManualStopStreamingClick}
@@ -172,7 +160,6 @@ export const ChatContent: React.FC<ChatContentProps> = ({
             )}
             {shouldConfigButtonBeVisible && (
               <Button
-                // ml="auto"
                 color="gray"
                 title="Return to configuration page"
                 onClick={handleReturnToConfigurationClick}
@@ -185,6 +172,20 @@ export const ChatContent: React.FC<ChatContentProps> = ({
           </Flex>
         </ScrollArea>
       </Box>
+
+      {queuedItems.length > 0 && (
+        <Box className={styles.queuedMessagesContainer}>
+          <Flex direction="column" gap="2" align="end">
+            {queuedItems.map((item, index) => (
+              <QueuedMessage
+                key={item.client_request_id}
+                queuedItem={item}
+                position={index + 1}
+              />
+            ))}
+          </Flex>
+        </Box>
+      )}
     </ScrollAreaWithAnchor.ScrollArea>
   );
 };

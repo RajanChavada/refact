@@ -53,7 +53,7 @@ const Template: React.FC<{
           waiting_for_response: false,
           prevent_send: false,
           error: null,
-          queued_messages: [],
+          queued_items: [],
           send_immediately: false,
           attached_images: [],
           confirmation: {
@@ -61,7 +61,6 @@ const Template: React.FC<{
             pause_reasons: [],
             status: { wasInteracted: false, confirmationStatus: true },
           },
-          queue_size: 0,
         },
       },
       max_new_tokens: 4096,

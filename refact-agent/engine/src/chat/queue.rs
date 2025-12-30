@@ -14,6 +14,47 @@ use super::generation::start_generation;
 use super::tools::execute_tools;
 use super::trajectories::maybe_save_trajectory;
 
+pub async fn inject_priority_messages_if_any(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    session_arc: Arc<AMutex<ChatSession>>,
+) -> bool {
+    let priority_requests = {
+        let mut session = session_arc.lock().await;
+        let requests = drain_priority_user_messages(&mut session.command_queue);
+        if !requests.is_empty() {
+            session.emit_queue_update();
+        }
+        requests
+    };
+
+    if priority_requests.is_empty() {
+        return false;
+    }
+
+    for request in priority_requests {
+        if let ChatCommand::UserMessage { content, attachments } = request.command {
+            let mut session = session_arc.lock().await;
+            let parsed_content = parse_content_with_attachments(&content, &attachments);
+            let checkpoints = if session.thread.checkpoints_enabled {
+                create_checkpoint_for_message(gcx.clone(), &session).await
+            } else {
+                Vec::new()
+            };
+            let user_message = ChatMessage {
+                message_id: Uuid::new_v4().to_string(),
+                role: "user".to_string(),
+                content: parsed_content,
+                checkpoints,
+                ..Default::default()
+            };
+            session.add_message(user_message);
+        }
+    }
+
+    maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
+    true
+}
+
 pub fn find_allowed_command_while_paused(queue: &VecDeque<CommandRequest>) -> Option<usize> {
     for (i, req) in queue.iter().enumerate() {
         match &req.command {
@@ -26,6 +67,48 @@ pub fn find_allowed_command_while_paused(queue: &VecDeque<CommandRequest>) -> Op
         }
     }
     None
+}
+
+pub fn find_allowed_command_while_waiting_ide(queue: &VecDeque<CommandRequest>) -> Option<usize> {
+    for (i, req) in queue.iter().enumerate() {
+        match &req.command {
+            ChatCommand::IdeToolResult { .. } | ChatCommand::Abort {} => {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+pub fn drain_priority_user_messages(queue: &mut VecDeque<CommandRequest>) -> Vec<CommandRequest> {
+    let mut priority_messages = Vec::new();
+    let mut i = 0;
+    while i < queue.len() {
+        if queue[i].priority && matches!(queue[i].command, ChatCommand::UserMessage { .. }) {
+            if let Some(req) = queue.remove(i) {
+                priority_messages.push(req);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    priority_messages
+}
+
+pub fn drain_non_priority_user_messages(queue: &mut VecDeque<CommandRequest>) -> Vec<CommandRequest> {
+    let mut messages = Vec::new();
+    let mut i = 0;
+    while i < queue.len() {
+        if !queue[i].priority && matches!(queue[i].command, ChatCommand::UserMessage { .. }) {
+            if let Some(req) = queue.remove(i) {
+                messages.push(req);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    messages
 }
 
 pub fn apply_setparams_patch(
@@ -117,8 +200,7 @@ pub async fn process_command_queue(
 
             let state = session.runtime.state;
             let is_busy = state == SessionState::Generating
-                || state == SessionState::ExecutingTools
-                || state == SessionState::WaitingIde;
+                || state == SessionState::ExecutingTools;
 
             if is_busy {
                 let notify = session.queue_notify.clone();
@@ -128,9 +210,23 @@ pub async fn process_command_queue(
                 continue;
             }
 
-            if state == SessionState::Paused {
+            if state == SessionState::WaitingIde {
+                if let Some(idx) = find_allowed_command_while_waiting_ide(&session.command_queue) {
+                    let cmd = session.command_queue.remove(idx);
+                    session.emit_queue_update();
+                    cmd
+                } else {
+                    let notify = session.queue_notify.clone();
+                    let waiter = notify.notified();
+                    drop(session);
+                    waiter.await;
+                    continue;
+                }
+            } else if state == SessionState::Paused {
                 if let Some(idx) = find_allowed_command_while_paused(&session.command_queue) {
-                    session.command_queue.remove(idx)
+                    let cmd = session.command_queue.remove(idx);
+                    session.emit_queue_update();
+                    cmd
                 } else {
                     let notify = session.queue_notify.clone();
                     let waiter = notify.notified();
@@ -162,7 +258,9 @@ pub async fn process_command_queue(
                 drop(session);
                 continue;
             } else {
-                session.command_queue.pop_front()
+                let cmd = session.command_queue.pop_front();
+                session.emit_queue_update();
+                cmd
             }
         };
 
@@ -175,24 +273,47 @@ pub async fn process_command_queue(
                 content,
                 attachments,
             } => {
-                let mut session = session_arc.lock().await;
-                let parsed_content = parse_content_with_attachments(&content, &attachments);
-
-                let checkpoints = if session.thread.checkpoints_enabled {
-                    create_checkpoint_for_message(gcx.clone(), &session).await
+                let additional_messages = if !request.priority {
+                    let mut session = session_arc.lock().await;
+                    let msgs = drain_non_priority_user_messages(&mut session.command_queue);
+                    if !msgs.is_empty() {
+                        session.emit_queue_update();
+                    }
+                    msgs
                 } else {
                     Vec::new()
                 };
 
-                let user_message = ChatMessage {
-                    message_id: Uuid::new_v4().to_string(),
-                    role: "user".to_string(),
-                    content: parsed_content,
-                    checkpoints,
-                    ..Default::default()
-                };
-                session.add_message(user_message);
-                drop(session);
+                {
+                    let mut session = session_arc.lock().await;
+                    let parsed_content = parse_content_with_attachments(&content, &attachments);
+                    let checkpoints = if session.thread.checkpoints_enabled {
+                        create_checkpoint_for_message(gcx.clone(), &session).await
+                    } else {
+                        Vec::new()
+                    };
+                    let user_message = ChatMessage {
+                        message_id: Uuid::new_v4().to_string(),
+                        role: "user".to_string(),
+                        content: parsed_content,
+                        checkpoints,
+                        ..Default::default()
+                    };
+                    session.add_message(user_message);
+
+                    for additional in additional_messages {
+                        if let ChatCommand::UserMessage { content: add_content, attachments: add_attachments } = additional.command {
+                            let add_parsed = parse_content_with_attachments(&add_content, &add_attachments);
+                            let add_message = ChatMessage {
+                                message_id: Uuid::new_v4().to_string(),
+                                role: "user".to_string(),
+                                content: add_parsed,
+                                ..Default::default()
+                            };
+                            session.add_message(add_message);
+                        }
+                    }
+                }
 
                 maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
                 start_generation(gcx.clone(), session_arc.clone()).await;
@@ -463,6 +584,7 @@ mod tests {
     fn make_request(cmd: ChatCommand) -> CommandRequest {
         CommandRequest {
             client_request_id: "req-1".into(),
+            priority: false,
             command: cmd,
         }
     }
@@ -673,5 +795,291 @@ mod tests {
         let (changed, _) = apply_setparams_patch(&mut thread, &patch);
         assert!(!changed);
         assert_eq!(thread.model, "original");
+    }
+
+    #[test]
+    fn test_find_allowed_command_while_waiting_ide_empty_queue() {
+        let queue = VecDeque::new();
+        assert!(find_allowed_command_while_waiting_ide(&queue).is_none());
+    }
+
+    #[test]
+    fn test_find_allowed_command_while_waiting_ide_no_allowed() {
+        let mut queue = VecDeque::new();
+        queue.push_back(make_request(ChatCommand::UserMessage {
+            content: json!("hi"),
+            attachments: vec![],
+        }));
+        queue.push_back(make_request(ChatCommand::ToolDecision {
+            tool_call_id: "tc1".into(),
+            accepted: true,
+        }));
+        assert!(find_allowed_command_while_waiting_ide(&queue).is_none());
+    }
+
+    #[test]
+    fn test_find_allowed_command_while_waiting_ide_finds_ide_tool_result() {
+        let mut queue = VecDeque::new();
+        queue.push_back(make_request(ChatCommand::UserMessage {
+            content: json!("hi"),
+            attachments: vec![],
+        }));
+        queue.push_back(make_request(ChatCommand::IdeToolResult {
+            tool_call_id: "tc1".into(),
+            content: "result".into(),
+            tool_failed: false,
+        }));
+        assert_eq!(find_allowed_command_while_waiting_ide(&queue), Some(1));
+    }
+
+    #[test]
+    fn test_find_allowed_command_while_waiting_ide_finds_abort() {
+        let mut queue = VecDeque::new();
+        queue.push_back(make_request(ChatCommand::UserMessage {
+            content: json!("hi"),
+            attachments: vec![],
+        }));
+        queue.push_back(make_request(ChatCommand::Abort {}));
+        assert_eq!(find_allowed_command_while_waiting_ide(&queue), Some(1));
+    }
+
+    #[test]
+    fn test_find_allowed_command_while_waiting_ide_returns_first_match() {
+        let mut queue = VecDeque::new();
+        queue.push_back(make_request(ChatCommand::Abort {}));
+        queue.push_back(make_request(ChatCommand::IdeToolResult {
+            tool_call_id: "tc1".into(),
+            content: "result".into(),
+            tool_failed: false,
+        }));
+        assert_eq!(find_allowed_command_while_waiting_ide(&queue), Some(0));
+    }
+
+    #[test]
+    fn test_priority_insertion_before_non_priority() {
+        let mut queue = VecDeque::new();
+        queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("first"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-2".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("second"),
+                attachments: vec![],
+            },
+        });
+        let priority_req = CommandRequest {
+            client_request_id: "req-priority".into(),
+            priority: true,
+            command: ChatCommand::UserMessage {
+                content: json!("priority"),
+                attachments: vec![],
+            },
+        };
+        let insert_pos = queue
+            .iter()
+            .position(|r| !r.priority)
+            .unwrap_or(queue.len());
+        queue.insert(insert_pos, priority_req);
+        assert_eq!(queue[0].client_request_id, "req-priority");
+        assert_eq!(queue[1].client_request_id, "req-1");
+        assert_eq!(queue[2].client_request_id, "req-2");
+    }
+
+    #[test]
+    fn test_priority_insertion_after_existing_priority() {
+        let mut queue = VecDeque::new();
+        queue.push_back(CommandRequest {
+            client_request_id: "req-p1".into(),
+            priority: true,
+            command: ChatCommand::UserMessage {
+                content: json!("p1"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("normal"),
+                attachments: vec![],
+            },
+        });
+        let priority_req = CommandRequest {
+            client_request_id: "req-p2".into(),
+            priority: true,
+            command: ChatCommand::UserMessage {
+                content: json!("p2"),
+                attachments: vec![],
+            },
+        };
+        let insert_pos = queue
+            .iter()
+            .position(|r| !r.priority)
+            .unwrap_or(queue.len());
+        queue.insert(insert_pos, priority_req);
+        assert_eq!(queue[0].client_request_id, "req-p1");
+        assert_eq!(queue[1].client_request_id, "req-p2");
+        assert_eq!(queue[2].client_request_id, "req-1");
+    }
+
+    #[test]
+    fn test_priority_insertion_into_empty_queue() {
+        let mut queue: VecDeque<CommandRequest> = VecDeque::new();
+        let priority_req = CommandRequest {
+            client_request_id: "req-p".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        };
+        let insert_pos = queue
+            .iter()
+            .position(|r| !r.priority)
+            .unwrap_or(queue.len());
+        queue.insert(insert_pos, priority_req);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].client_request_id, "req-p");
+    }
+
+    #[test]
+    fn test_priority_insertion_all_priority() {
+        let mut queue = VecDeque::new();
+        queue.push_back(CommandRequest {
+            client_request_id: "req-p1".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        });
+        let priority_req = CommandRequest {
+            client_request_id: "req-p2".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        };
+        let insert_pos = queue
+            .iter()
+            .position(|r| !r.priority)
+            .unwrap_or(queue.len());
+        queue.insert(insert_pos, priority_req);
+        assert_eq!(queue[0].client_request_id, "req-p1");
+        assert_eq!(queue[1].client_request_id, "req-p2");
+    }
+
+    #[test]
+    fn test_drain_priority_user_messages_extracts_only_priority() {
+        let mut queue = VecDeque::new();
+        queue.push_back(CommandRequest {
+            client_request_id: "req-p1".into(),
+            priority: true,
+            command: ChatCommand::UserMessage {
+                content: json!("priority 1"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("normal"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-p2".into(),
+            priority: true,
+            command: ChatCommand::UserMessage {
+                content: json!("priority 2"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-abort".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        });
+
+        let drained = drain_priority_user_messages(&mut queue);
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].client_request_id, "req-p1");
+        assert_eq!(drained[1].client_request_id, "req-p2");
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].client_request_id, "req-1");
+        assert_eq!(queue[1].client_request_id, "req-abort");
+    }
+
+    #[test]
+    fn test_drain_non_priority_user_messages_extracts_all_non_priority() {
+        let mut queue = VecDeque::new();
+        queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("first"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-p".into(),
+            priority: true,
+            command: ChatCommand::UserMessage {
+                content: json!("priority"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-2".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("second"),
+                attachments: vec![],
+            },
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-3".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("third"),
+                attachments: vec![],
+            },
+        });
+
+        let drained = drain_non_priority_user_messages(&mut queue);
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0].client_request_id, "req-1");
+        assert_eq!(drained[1].client_request_id, "req-2");
+        assert_eq!(drained[2].client_request_id, "req-3");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].client_request_id, "req-p");
+    }
+
+    #[test]
+    fn test_drain_priority_skips_non_user_messages() {
+        let mut queue = VecDeque::new();
+        queue.push_back(CommandRequest {
+            client_request_id: "req-abort".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        });
+        queue.push_back(CommandRequest {
+            client_request_id: "req-params".into(),
+            priority: true,
+            command: ChatCommand::SetParams { patch: json!({}) },
+        });
+
+        let drained = drain_priority_user_messages(&mut queue);
+        assert!(drained.is_empty());
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn test_drain_empty_queue() {
+        let mut queue: VecDeque<CommandRequest> = VecDeque::new();
+        let priority_drained = drain_priority_user_messages(&mut queue);
+        let non_priority_drained = drain_non_priority_user_messages(&mut queue);
+        assert!(priority_drained.is_empty());
+        assert!(non_priority_drained.is_empty());
     }
 }

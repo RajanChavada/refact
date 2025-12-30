@@ -670,6 +670,7 @@ mod tests {
             paused: false,
             error: None,
             queue_size: 0,
+            queued_items: vec![],
         };
 
         let json = serde_json::to_value(&event).expect("serialize");

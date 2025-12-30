@@ -57,17 +57,22 @@ export type ChatCommandBase =
       type: "regenerate";
     };
 
-export type ChatCommand = ChatCommandBase & { client_request_id: string };
+export type ChatCommand = ChatCommandBase & {
+  client_request_id: string;
+  priority?: boolean;
+};
 
 export async function sendChatCommand(
   chatId: string,
   port: number,
   apiKey: string | undefined,
   command: ChatCommandBase,
+  priority?: boolean,
 ): Promise<void> {
-  const commandWithId = {
+  const commandWithId: ChatCommand = {
     ...command,
     client_request_id: uuidv4(),
+    priority,
   };
 
   const url = `http://127.0.0.1:${port}/v1/chats/${encodeURIComponent(
@@ -101,11 +106,15 @@ export async function sendUserMessage(
   content: MessageContent,
   port: number,
   apiKey?: string,
+  priority?: boolean,
 ): Promise<void> {
-  await sendChatCommand(chatId, port, apiKey, {
-    type: "user_message",
-    content,
-  } as ChatCommandBase);
+  await sendChatCommand(
+    chatId,
+    port,
+    apiKey,
+    { type: "user_message", content },
+    priority,
+  );
 }
 
 export async function retryFromIndex(
@@ -208,4 +217,19 @@ export async function removeMessage(
     message_id: messageId,
     regenerate,
   } as ChatCommandBase);
+}
+
+export async function cancelQueuedItem(
+  chatId: string,
+  clientRequestId: string,
+  port: number,
+  apiKey?: string,
+): Promise<boolean> {
+  const url = `http://127.0.0.1:${port}/v1/chats/${encodeURIComponent(chatId)}/queue/${encodeURIComponent(clientRequestId)}`;
+  const headers: Record<string, string> = {};
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+  const response = await fetch(url, { method: "DELETE", headers });
+  return response.ok;
 }

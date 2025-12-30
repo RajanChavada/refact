@@ -72,6 +72,14 @@ impl Default for ThreadParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedItem {
+    pub client_request_id: String,
+    pub priority: bool,
+    pub command_type: String,
+    pub preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub state: SessionState,
     pub paused: bool,
@@ -79,6 +87,8 @@ pub struct RuntimeState {
     pub queue_size: usize,
     #[serde(default)]
     pub pause_reasons: Vec<PauseReason>,
+    #[serde(default)]
+    pub queued_items: Vec<QueuedItem>,
 }
 
 impl Default for RuntimeState {
@@ -89,6 +99,7 @@ impl Default for RuntimeState {
             error: None,
             queue_size: 0,
             pause_reasons: Vec::new(),
+            queued_items: Vec::new(),
         }
     }
 }
@@ -120,6 +131,8 @@ pub enum ChatEvent {
         paused: bool,
         error: Option<String>,
         queue_size: usize,
+        #[serde(default)]
+        queued_items: Vec<QueuedItem>,
     },
     TitleUpdated {
         title: String,
@@ -282,8 +295,74 @@ pub struct ToolDecisionItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandRequest {
     pub client_request_id: String,
+    #[serde(default)]
+    pub priority: bool,
     #[serde(flatten)]
     pub command: ChatCommand,
+}
+
+impl CommandRequest {
+    pub fn to_queued_item(&self) -> QueuedItem {
+        let (command_type, preview) = match &self.command {
+            ChatCommand::UserMessage { content, .. } => {
+                ("user_message".to_string(), extract_preview(content))
+            }
+            ChatCommand::RetryFromIndex { content, index, .. } => {
+                ("retry_from_index".to_string(), format!("@{}: {}", index, extract_preview(content)))
+            }
+            ChatCommand::SetParams { patch } => {
+                let model = patch.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                ("set_params".to_string(), format!("model={}", model))
+            }
+            ChatCommand::Abort {} => ("abort".to_string(), String::new()),
+            ChatCommand::ToolDecision { tool_call_id, accepted } => {
+                ("tool_decision".to_string(), format!("{}: {}", tool_call_id, accepted))
+            }
+            ChatCommand::ToolDecisions { decisions } => {
+                ("tool_decisions".to_string(), format!("{} decisions", decisions.len()))
+            }
+            ChatCommand::IdeToolResult { tool_call_id, .. } => {
+                ("ide_tool_result".to_string(), tool_call_id.clone())
+            }
+            ChatCommand::UpdateMessage { message_id, .. } => {
+                ("update_message".to_string(), message_id.clone())
+            }
+            ChatCommand::RemoveMessage { message_id, .. } => {
+                ("remove_message".to_string(), message_id.clone())
+            }
+            ChatCommand::Regenerate {} => ("regenerate".to_string(), String::new()),
+        };
+        QueuedItem {
+            client_request_id: self.client_request_id.clone(),
+            priority: self.priority,
+            command_type,
+            preview,
+        }
+    }
+}
+
+fn extract_preview(content: &serde_json::Value) -> String {
+    const MAX_PREVIEW: usize = 120;
+    let text = if let Some(s) = content.as_str() {
+        s.to_string()
+    } else if let Some(arr) = content.as_array() {
+        arr.iter()
+            .find_map(|item| {
+                if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    item.get("text").and_then(|t| t.as_str()).map(String::from)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "[Image attachment]".to_string())
+    } else {
+        String::new()
+    };
+    if text.len() > MAX_PREVIEW {
+        format!("{}…", &text[..MAX_PREVIEW])
+    } else {
+        text
+    }
 }
 
 pub struct ChatSession {
@@ -547,6 +626,7 @@ mod tests {
     fn test_command_request_flattens_command() {
         let req = CommandRequest {
             client_request_id: "req-1".into(),
+            priority: false,
             command: ChatCommand::Abort {},
         };
         let json = serde_json::to_value(&req).unwrap();

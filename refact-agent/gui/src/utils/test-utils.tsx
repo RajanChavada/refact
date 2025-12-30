@@ -32,7 +32,7 @@ const createTestThreadRuntime = (): ChatThreadRuntime => {
     waiting_for_response: false,
     prevent_send: false,
     error: null,
-    queued_messages: [],
+    queued_items: [],
     send_immediately: false,
     attached_images: [],
     confirmation: {
@@ -43,7 +43,6 @@ const createTestThreadRuntime = (): ChatThreadRuntime => {
         confirmationStatus: true,
       },
     },
-    queue_size: 0,
   };
 };
 

@@ -56,7 +56,7 @@ import {
   selectIsWaiting,
   selectLastSentCompression,
   selectMessages,
-  selectQueuedMessages,
+  selectQueuedItems,
   selectThreadToolUse,
   selectToolUse,
   selectThreadImages,
@@ -100,7 +100,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const threadToolUse = useAppSelector(selectThreadToolUse);
   const messages = useAppSelector(selectMessages);
   const lastSentCompression = useAppSelector(selectLastSentCompression);
-  const queuedMessages = useAppSelector(selectQueuedMessages);
+  const queuedItems = useAppSelector(selectQueuedItems);
   const { compressChat, compressChatRequest, isCompressing } =
     useCompressChat();
   const autoFocus = useAutoFocusOnce();
@@ -458,7 +458,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                     (value.trim().length === 0 && attachedImages.length === 0)
                   }
                   isStreaming={isStreaming || isWaiting}
-                  queuedCount={queuedMessages.length}
+                  queuedCount={queuedItems.length}
                   onSend={() => handleSubmit("after_flow")}
                   onSendImmediately={handleSendImmediately}
                 />

@@ -19,6 +19,7 @@ use super::tools::{process_tool_calls_once, ToolStepOutcome};
 use super::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
 use super::stream_core::{run_llm_stream, StreamRunParams, StreamCollector, normalize_tool_call};
+use super::queue::inject_priority_messages_if_any;
 
 pub const MAX_AGENT_CYCLES: usize = 50;
 
@@ -95,9 +96,17 @@ pub fn start_generation(
             };
 
             match process_tool_calls_once(gcx.clone(), session_arc.clone(), chat_mode).await {
-                ToolStepOutcome::NoToolCalls => break,
+                ToolStepOutcome::NoToolCalls => {
+                    if inject_priority_messages_if_any(gcx.clone(), session_arc.clone()).await {
+                        continue;
+                    }
+                    break;
+                }
                 ToolStepOutcome::Paused => break,
                 ToolStepOutcome::Continue => {
+                    if inject_priority_messages_if_any(gcx.clone(), session_arc.clone()).await {
+                        // Priority messages injected, continue generation
+                    }
                     if cycle == MAX_AGENT_CYCLES - 1 {
                         warn!("Agent reached max cycles ({}), stopping", MAX_AGENT_CYCLES);
                     }

@@ -67,7 +67,7 @@ const MockedStore: React.FC<{
           waiting_for_response: false,
           prevent_send: false,
           error: null,
-          queued_messages: [],
+          queued_items: [],
           send_immediately: false,
           attached_images: [],
           confirmation: {
@@ -75,7 +75,6 @@ const MockedStore: React.FC<{
             pause_reasons: [],
             status: { wasInteracted: false, confirmationStatus: true },
           },
-          queue_size: 0,
         },
       },
       tool_use: "agent",

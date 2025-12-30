@@ -12,13 +12,13 @@ import {
 import { takeFromLast } from "../../../utils/takeFromLast";
 import {
   ChatThreadRuntime,
-  QueuedUserMessage,
+  QueuedItem,
   ThreadConfirmation,
   ImageFile,
 } from "./types";
 
 const EMPTY_MESSAGES: ChatMessages = [];
-const EMPTY_QUEUED: QueuedUserMessage[] = [];
+const EMPTY_QUEUED: QueuedItem[] = [];
 const EMPTY_PAUSE_REASONS: string[] = [];
 const EMPTY_IMAGES: ImageFile[] = [];
 const DEFAULT_NEW_CHAT_SUGGESTED = { wasSuggested: false } as const;
@@ -230,17 +230,16 @@ export const selectLastSentCompression = createSelector(
   },
 );
 
-export const selectQueuedMessages = (state: RootState) =>
-  state.chat.threads[state.chat.current_thread_id]?.queued_messages ??
-  EMPTY_QUEUED;
+export const selectQueuedItems = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.queued_items ?? EMPTY_QUEUED;
 
-export const selectQueuedMessagesCount = createSelector(
-  selectQueuedMessages,
+export const selectQueuedItemsCount = createSelector(
+  selectQueuedItems,
   (queued) => queued.length,
 );
 
-export const selectHasQueuedMessages = createSelector(
-  selectQueuedMessages,
+export const selectHasQueuedItems = createSelector(
+  selectQueuedItems,
   (queued) => queued.length > 0,
 );
 

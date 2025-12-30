@@ -22,4 +22,4 @@ pub use trajectories::{
     handle_v1_trajectories_get, handle_v1_trajectories_save, handle_v1_trajectories_delete,
     handle_v1_trajectories_subscribe,
 };
-pub use handlers::{handle_v1_chat_subscribe, handle_v1_chat_command};
+pub use handlers::{handle_v1_chat_subscribe, handle_v1_chat_command, handle_v1_chat_cancel_queued};

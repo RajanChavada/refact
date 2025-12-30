@@ -29,12 +29,20 @@ export type PauseReason = {
   integr_config_path: string | null;
 };
 
+export type QueuedItem = {
+  client_request_id: string;
+  priority: boolean;
+  command_type: string;
+  preview: string;
+};
+
 export type RuntimeState = {
   state: SessionState;
   paused: boolean;
   error: string | null;
   queue_size: number;
   pause_reasons: PauseReason[];
+  queued_items: QueuedItem[];
 };
 
 export type DeltaOp =
@@ -69,6 +77,7 @@ export type EventEnvelope =
       paused: boolean;
       error: string | null;
       queue_size: number;
+      queued_items: QueuedItem[];
     }
   | {
       chat_id: string;

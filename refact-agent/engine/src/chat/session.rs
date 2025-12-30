@@ -113,6 +113,7 @@ impl ChatSession {
         }
         let mut runtime = self.runtime.clone();
         runtime.queue_size = self.command_queue.len();
+        runtime.queued_items = self.build_queued_items();
         ChatEvent::Snapshot {
             thread: self.thread.clone(),
             runtime,
@@ -194,6 +195,7 @@ impl ChatSession {
         self.runtime.paused = state == SessionState::Paused;
         self.runtime.error = error.clone();
         self.runtime.queue_size = self.command_queue.len();
+        self.runtime.queued_items = self.build_queued_items();
 
         if state != SessionState::Paused && (was_paused || had_pause_reasons) {
             self.runtime.pause_reasons.clear();
@@ -205,6 +207,23 @@ impl ChatSession {
             paused: self.runtime.paused,
             error,
             queue_size: self.runtime.queue_size,
+            queued_items: self.runtime.queued_items.clone(),
+        });
+    }
+
+    pub fn build_queued_items(&self) -> Vec<QueuedItem> {
+        self.command_queue.iter().map(|r| r.to_queued_item()).collect()
+    }
+
+    pub fn emit_queue_update(&mut self) {
+        self.runtime.queue_size = self.command_queue.len();
+        self.runtime.queued_items = self.build_queued_items();
+        self.emit(ChatEvent::RuntimeUpdated {
+            state: self.runtime.state,
+            paused: self.runtime.paused,
+            error: self.runtime.error.clone(),
+            queue_size: self.runtime.queue_size,
+            queued_items: self.runtime.queued_items.clone(),
         });
     }
 
@@ -526,6 +545,7 @@ pub fn start_session_cleanup_task(gcx: Arc<ARwLock<GlobalContext>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::types::{ChatCommand, CommandRequest};
     use serde_json::json;
 
     fn make_session() -> ChatSession {
@@ -1086,5 +1106,98 @@ mod tests {
             let read = map.read().await;
             assert!(read.is_empty());
         });
+    }
+
+    #[test]
+    fn test_build_queued_items() {
+        let mut session = make_session();
+        session.command_queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("hello"),
+                attachments: vec![],
+            },
+        });
+        session.command_queue.push_back(CommandRequest {
+            client_request_id: "req-2".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        });
+        let items = session.build_queued_items();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].client_request_id, "req-1");
+        assert!(!items[0].priority);
+        assert_eq!(items[0].command_type, "user_message");
+        assert_eq!(items[1].client_request_id, "req-2");
+        assert!(items[1].priority);
+        assert_eq!(items[1].command_type, "abort");
+    }
+
+    #[test]
+    fn test_emit_queue_update_syncs_runtime() {
+        let mut session = make_session();
+        let mut rx = session.subscribe();
+        session.command_queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::Abort {},
+        });
+        session.emit_queue_update();
+        assert_eq!(session.runtime.queue_size, 1);
+        assert_eq!(session.runtime.queued_items.len(), 1);
+        let mut found_update = false;
+        while let Ok(env) = rx.try_recv() {
+            if let ChatEvent::RuntimeUpdated { queue_size, queued_items, .. } = env.event {
+                assert_eq!(queue_size, 1);
+                assert_eq!(queued_items.len(), 1);
+                found_update = true;
+            }
+        }
+        assert!(found_update);
+    }
+
+    #[test]
+    fn test_set_runtime_state_syncs_queued_items() {
+        let mut session = make_session();
+        session.command_queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: true,
+            command: ChatCommand::Abort {},
+        });
+        session.set_runtime_state(SessionState::Generating, None);
+        assert_eq!(session.runtime.queued_items.len(), 1);
+        assert_eq!(session.runtime.queued_items[0].client_request_id, "req-1");
+    }
+
+    #[test]
+    fn test_snapshot_includes_queued_items() {
+        let mut session = make_session();
+        session.command_queue.push_back(CommandRequest {
+            client_request_id: "req-1".into(),
+            priority: false,
+            command: ChatCommand::UserMessage {
+                content: json!("test"),
+                attachments: vec![],
+            },
+        });
+        let snap = session.snapshot();
+        match snap {
+            ChatEvent::Snapshot { runtime, .. } => {
+                assert_eq!(runtime.queue_size, 1);
+                assert_eq!(runtime.queued_items.len(), 1);
+                assert_eq!(runtime.queued_items[0].client_request_id, "req-1");
+            }
+            _ => panic!("Expected Snapshot"),
+        }
+    }
+
+    #[test]
+    fn test_touch_updates_last_activity() {
+        let mut session = make_session();
+        let before = session.last_activity;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.touch();
+        assert!(session.last_activity > before);
     }
 }

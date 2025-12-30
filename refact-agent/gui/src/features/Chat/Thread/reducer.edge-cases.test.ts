@@ -38,6 +38,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
       error: null,
       queue_size: 0,
       pause_reasons: [],
+      queued_items: [],
     },
     messages,
   });
@@ -240,6 +241,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
           error: null,
           queue_size: 0,
           pause_reasons: [],
+          queued_items: [],
         },
         messages: [],
       };
@@ -279,6 +281,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
           error: null,
           queue_size: 1,
           pause_reasons: [],
+          queued_items: [],
         },
         messages: [],
       };
@@ -389,6 +392,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
         paused: false,
         error: null,
         queue_size: 0,
+        queued_items: [],
       };
       state = chatReducer(state, applyChatEvent(runtimeIdle));
 
@@ -492,6 +496,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
         paused: false,
         error: "Model not found",
         queue_size: 0,
+        queued_items: [],
       };
       state = chatReducer(state, applyChatEvent(errorState));
 

@@ -7,7 +7,6 @@ import {
   useAppDispatch,
   useChatSubscription,
   useChatActions,
-  useQueueAutoFlush,
 } from "../../hooks";
 import { type Config } from "../../features/Config/configSlice";
 import {
@@ -54,7 +53,6 @@ export const Chat: React.FC<ChatProps> = ({
   });
 
   const { submit, abort, retryFromIndex } = useChatActions();
-  useQueueAutoFlush();
 
   const chatToolUse = useAppSelector(getSelectedToolUse);
   const threadNewChatSuggested = useAppSelector(selectThreadNewChatSuggested);
@@ -69,8 +67,9 @@ export const Chat: React.FC<ChatProps> = ({
   const onEnableSend = () => dispatch(enableSend({ id: chatId }));
 
   const handleSubmit = useCallback(
-    (value: string) => {
-      void submit(value);
+    (value: string, sendPolicy?: "immediate" | "after_flow") => {
+      const priority = sendPolicy === "immediate";
+      void submit(value, priority);
       if (isViewingRawJSON) {
         setIsViewingRawJSON(false);
       }

@@ -455,7 +455,7 @@ export const CHAT_CONFIG_THREAD: Chat = {
       waiting_for_response: false,
       prevent_send: true,
       error: null,
-      queued_messages: [],
+      queued_items: [],
       send_immediately: false,
       attached_images: [],
       confirmation: {
@@ -463,7 +463,6 @@ export const CHAT_CONFIG_THREAD: Chat = {
         pause_reasons: [],
         status: { wasInteracted: false, confirmationStatus: true },
       },
-      queue_size: 0,
     },
   },
   max_new_tokens: 4096,
