@@ -5,6 +5,7 @@ use tokenizers::Tokenizer;
 use tokio::sync::RwLock as ARwLock;
 use tracing::warn;
 
+use crate::ast::chunk_utils::official_text_hashing_function;
 use crate::call_validation::{ChatContent, ChatMessage, ContextFile, PostprocessSettings};
 use crate::files_correction::canonical_path;
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
@@ -209,23 +210,16 @@ fn find_coverage_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Optio
         }
         if let ChatContent::ContextFiles(files) = &msg.content {
             for existing in files {
-                let existing_canonical = canonical_path(&existing.file_name);
-                if existing_canonical != cf_canonical {
+                if canonical_path(&existing.file_name) != cf_canonical {
                     continue;
                 }
-                let ex_start = if existing.line1 == 0 {
-                    1
-                } else {
-                    existing.line1
-                };
-                let ex_end = if existing.line2 == 0 {
-                    usize::MAX
-                } else {
-                    existing.line2
-                };
+                let ex_start = if existing.line1 == 0 { 1 } else { existing.line1 };
+                let ex_end = if existing.line2 == 0 { usize::MAX } else { existing.line2 };
                 if ex_start <= cf_start && ex_end >= cf_end {
-                    let tool_name = msg.tool_call_id.clone();
-                    return Some((idx, tool_name));
+                    match (&cf.file_rev, &existing.file_rev) {
+                        (Some(cf_rev), Some(ex_rev)) if cf_rev != ex_rev => continue,
+                        _ => return Some((idx, msg.tool_call_id.clone())),
+                    }
                 }
             }
         }
@@ -339,21 +333,23 @@ async fn fill_skip_pp_files_with_budget(
     }
 
     for mut cf in files {
-        if let Some(dup_info) = find_duplicate_in_history(&cf, existing_messages) {
-            let range = if cf.line1 > 0 && cf.line2 > 0 {
-                format!("{}:{}-{}", cf.file_name, cf.line1, cf.line2)
-            } else {
-                cf.file_name.clone()
-            };
-            notes.push(format!(
-                "📎 Skipped `{}`: already retrieved in message #{} via `{}`.",
-                range, dup_info.0, dup_info.1
-            ));
-            continue;
-        }
-
         match get_file_text_from_memory_or_disk(gcx.clone(), &PathBuf::from(&cf.file_name)).await {
             Ok(text) => {
+                cf.file_rev = Some(official_text_hashing_function(&text));
+
+                if let Some(dup_info) = find_duplicate_in_history(&cf, existing_messages) {
+                    let range = if cf.line1 > 0 && cf.line2 > 0 {
+                        format!("{}:{}-{}", cf.file_name, cf.line1, cf.line2)
+                    } else {
+                        cf.file_name.clone()
+                    };
+                    notes.push(format!(
+                        "📎 Skipped `{}`: already retrieved in message #{} via `{}`.",
+                        range, dup_info.0 + 1, dup_info.1
+                    ));
+                    continue;
+                }
+
                 let lines: Vec<&str> = text.lines().collect();
                 let total_lines = lines.len();
 
@@ -410,23 +406,19 @@ fn find_duplicate_in_history(
         }
         if let ChatContent::ContextFiles(files) = &msg.content {
             for existing in files {
-                let existing_canonical = canonical_path(&existing.file_name);
-                if existing_canonical != cf_canonical {
+                if canonical_path(&existing.file_name) != cf_canonical {
                     continue;
                 }
-                let ex_start = if existing.line1 == 0 {
-                    1
-                } else {
-                    existing.line1
-                };
-                let ex_end = if existing.line2 == 0 {
-                    usize::MAX
-                } else {
-                    existing.line2
-                };
+                let ex_start = if existing.line1 == 0 { 1 } else { existing.line1 };
+                let ex_end = if existing.line2 == 0 { usize::MAX } else { existing.line2 };
                 if ex_start <= cf_start && ex_end >= cf_end {
-                    let tool_name = find_tool_name_for_context(messages, idx);
-                    return Some((idx, tool_name));
+                    match (&cf.file_rev, &existing.file_rev) {
+                        (Some(cf_rev), Some(ex_rev)) if cf_rev != ex_rev => continue,
+                        _ => {
+                            let tool_name = find_tool_name_for_context(messages, idx);
+                            return Some((idx, tool_name));
+                        }
+                    }
                 }
             }
         }
@@ -538,6 +530,7 @@ mod tests {
             file_content: String::new(),
             line1,
             line2,
+            file_rev: None,
             symbols: vec![],
             gradient_type: -1,
             usefulness: 0.0,

@@ -370,6 +370,7 @@ mod tests {
             file_content: content.into(),
             line1: 1,
             line2: 1,
+            file_rev: None,
             symbols: vec![],
             gradient_type: -1,
             usefulness: 0.0,

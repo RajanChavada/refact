@@ -118,6 +118,8 @@ pub struct ContextFile {
     pub file_content: String,
     pub line1: usize, // starts from 1, zero means non-valid
     pub line2: usize, // starts from 1
+    #[serde(default, skip_serializing_if = "Option::is_none", skip_deserializing)]
+    pub file_rev: Option<String>,
     #[serde(default, skip_serializing)]
     pub symbols: Vec<String>,
     #[serde(default = "default_gradient_type_value", skip_serializing)]

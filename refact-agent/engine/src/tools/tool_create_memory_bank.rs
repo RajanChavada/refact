@@ -279,6 +279,7 @@ async fn read_and_compress_directory(
             file_content: text,
             line1: 1,
             line2: lines,
+            file_rev: None,
             symbols: vec![],
             gradient_type: 4,
             usefulness: 100.0,

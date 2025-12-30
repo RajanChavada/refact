@@ -125,6 +125,7 @@ async fn _make_prompt(
                         file_content: "".to_string(),
                         line1: 1,
                         line2: total_lines.max(1),
+                        file_rev: None,
                         symbols: vec![],
                         gradient_type: 4,
                         usefulness: 100.0,

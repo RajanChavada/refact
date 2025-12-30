@@ -485,6 +485,7 @@ async fn pp_limit_and_merge(
             file_content: out.clone(),
             line1: out_line1.min(total_lines).max(1),
             line2: out_line2.min(total_lines).max(1),
+            file_rev: None,
             symbols: vec![],
             gradient_type: -1,
             usefulness: 0.0,

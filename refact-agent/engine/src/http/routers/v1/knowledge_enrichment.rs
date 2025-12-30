@@ -243,6 +243,7 @@ async fn create_knowledge_context(
                 file_content: memo.content.clone(),
                 line1: 1,
                 line2: line_count,
+                file_rev: None,
                 symbols: vec![],
                 gradient_type: -1,
                 usefulness: 80.0 + (memo.score.unwrap_or(0.75) * 20.0),

@@ -122,6 +122,7 @@ impl Tool for ToolAstReference {
                                 file_content: "".to_string(),
                                 line1: *uline,
                                 line2: *uline,
+                                file_rev: None,
                                 symbols: vec![usedin.path()],
                                 gradient_type: 4,
                                 usefulness: 100.0,

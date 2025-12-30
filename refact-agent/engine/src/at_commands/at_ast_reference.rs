@@ -78,6 +78,7 @@ impl AtCommand for AtAstReference {
                         gradient_type: 4,
                         usefulness: 100.0,
                         skip_pp: false,
+                        file_rev: None,
                     });
                 }
                 if usage_count > USAGES_LIMIT {

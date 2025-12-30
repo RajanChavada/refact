@@ -341,6 +341,7 @@ pub async fn context_file_from_file_path(
         gradient_type,
         usefulness: 100.0,
         skip_pp: false,
+        file_rev: None,
     })
 }
 

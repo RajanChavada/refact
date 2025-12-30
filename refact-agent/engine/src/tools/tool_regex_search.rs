@@ -53,6 +53,7 @@ async fn search_single_file(
                 gradient_type: 5,
                 usefulness: 100.0,
                 skip_pp: false,
+                file_rev: None,
             });
         }
     }
@@ -278,6 +279,7 @@ impl Tool for ToolRegexSearch {
                         file_content: "".to_string(),
                         line1: 1,
                         line2: total_lines.max(1),
+                        file_rev: None,
                         symbols: vec![],
                         gradient_type: 4,
                         usefulness: 80.0,
