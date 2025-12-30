@@ -25,7 +25,9 @@ import {
   setToolUse,
   setChatMode,
   setChatModel,
+  setUseCompression,
 } from "../features/Chat/Thread";
+import { PATCH_LIKE_FUNCTIONS } from "../components/ChatForm/constants";
 import { statisticsApi } from "../services/refact/statistics";
 import { integrationsApi } from "../services/refact/integrations";
 import { dockerApi } from "../services/refact/docker";
@@ -481,7 +483,6 @@ startListening({
   },
 });
 
-// Auto-switch to thread when it needs confirmation (background chat support)
 startListening({
   actionCreator: setThreadPauseReasons,
   effect: (action, listenerApi) => {
@@ -489,10 +490,52 @@ startListening({
     const currentThreadId = selectCurrentThreadId(state);
     const threadIdNeedingConfirmation = action.payload.id;
 
-    // If the thread needing confirmation is not the current one, switch to it
     if (threadIdNeedingConfirmation !== currentThreadId) {
       listenerApi.dispatch(switchToThread({ id: threadIdNeedingConfirmation }));
     }
+  },
+});
+
+startListening({
+  actionCreator: applyChatEvent,
+  effect: async (action, listenerApi) => {
+    const event = action.payload;
+    if (event.type !== "pause_required") return;
+
+    const state = listenerApi.getState();
+    const chatId = event.chat_id;
+    const thread = state.chat.threads[chatId]?.thread;
+
+    if (!thread?.automatic_patch) return;
+
+    const reasons = event.reasons as {
+      type: string;
+      command: string;
+      tool_call_id: string;
+    }[];
+
+    const allPatchLike = reasons.every(
+      (r) =>
+        r.type === "confirmation" && PATCH_LIKE_FUNCTIONS.includes(r.command),
+    );
+
+    if (!allPatchLike) return;
+
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+
+    if (!port) return;
+
+    try {
+      const { respondToToolConfirmations } = await import(
+        "../services/refact/chatCommands"
+      );
+      const decisions = reasons.map((r) => ({
+        tool_call_id: r.tool_call_id,
+        accepted: true,
+      }));
+      await respondToToolConfirmations(chatId, decisions, port, apiKey ?? undefined);
+    } catch { /* ignore */ }
   },
 });
 
@@ -719,8 +762,28 @@ startListening({
         type: "set_params",
         patch: { model: action.payload },
       });
-    } catch {
-      // Silently ignore - backend may not support this command
-    }
+    } catch { /* ignore */ }
+  },
+});
+
+startListening({
+  actionCreator: setUseCompression,
+  effect: async (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+    const chatId = state.chat.current_thread_id;
+
+    if (!port || !chatId) return;
+
+    try {
+      const { sendChatCommand } = await import(
+        "../services/refact/chatCommands"
+      );
+      await sendChatCommand(chatId, port, apiKey ?? undefined, {
+        type: "set_params",
+        patch: { use_compression: action.payload },
+      });
+    } catch { /* ignore */ }
   },
 });

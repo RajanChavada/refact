@@ -30,7 +30,7 @@ export function useQueueAutoFlush() {
   const hasUncalledTools = useAppSelector(selectHasUncalledTools);
 
   const inFlightRef = useRef(false);
-  const [retryTick, bumpRetry] = useReducer((x) => x + 1, 0);
+  const [retryTick, bumpRetry] = useReducer((x: number) => x + 1, 0);
 
   useEffect(() => {
     if (!chatId || !port) return;
