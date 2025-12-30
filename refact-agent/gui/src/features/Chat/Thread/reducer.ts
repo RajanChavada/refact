@@ -224,18 +224,18 @@ export const chatReducer = createReducer(initialState, (builder) => {
   builder.addCase(newChatAction, (state, action) => {
     const currentRt = getCurrentRuntime(state);
     const lastParams = getLastThreadParams();
-    
+
     const mode = getThreadMode({
-      tool_use: lastParams.tool_use || state.tool_use,
-      maybeMode: currentRt?.thread.mode || lastParams.mode,
+      tool_use: lastParams.tool_use ?? state.tool_use,
+      maybeMode: currentRt?.thread.mode ?? lastParams.mode,
     });
     const newRuntime = createThreadRuntime(
-      lastParams.tool_use || state.tool_use,
+      lastParams.tool_use ?? state.tool_use,
       null,
       mode,
     );
 
-    newRuntime.thread.model = lastParams.model || currentRt?.thread.model || "";
+    newRuntime.thread.model = lastParams.model ?? currentRt?.thread.model ?? "";
     newRuntime.thread.boost_reasoning = lastParams.boost_reasoning ?? currentRt?.thread.boost_reasoning ?? false;
     newRuntime.thread.automatic_patch = lastParams.automatic_patch ?? currentRt?.thread.automatic_patch ?? false;
     newRuntime.thread.increase_max_tokens = lastParams.increase_max_tokens ?? currentRt?.thread.increase_max_tokens ?? false;
@@ -344,7 +344,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
       thread: {
         id: action.payload.id,
         messages: [],
-        model: action.payload.model ?? "",
+        model: action.payload.model,
         title: action.payload.title,
         tool_use: action.payload.tool_use ?? state.tool_use,
         mode,
@@ -584,6 +584,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
     switch (event.type) {
       case "snapshot": {
         const existingRuntime = rt;
+        const existing = existingRuntime?.thread;
         const snapshotMessages = (event.messages as ChatMessages).map(
           normalizeMessage,
         );
@@ -592,25 +593,32 @@ export const chatReducer = createReducer(initialState, (builder) => {
           event.runtime.state === "executing_tools" ||
           event.runtime.state === "waiting_ide";
 
-        // REMOVED: Empty snapshot special case - accept empty snapshots as truth
-        // Backend may legitimately send empty snapshots (chat cleared, truncated, etc.)
-        // Keeping stale messages leads to permanent desync
+        const backendModel = event.thread.model.trim();
+        const backendToolUse = event.thread.tool_use;
+        const backendMode = event.thread.mode;
 
         const thread: ChatThread = {
           id: event.thread.id,
           messages: snapshotMessages,
-          model: event.thread.model,
+          model: backendModel || (existing?.model ?? ""),
           title: event.thread.title,
-          tool_use: isToolUse(event.thread.tool_use)
-            ? event.thread.tool_use
-            : "agent",
-          mode: isLspChatMode(event.thread.mode) ? event.thread.mode : "AGENT",
+          tool_use: isToolUse(backendToolUse)
+            ? backendToolUse
+            : existing?.tool_use && isToolUse(existing.tool_use)
+              ? existing.tool_use
+              : "agent",
+          mode: isLspChatMode(backendMode)
+            ? backendMode
+            : existing?.mode && isLspChatMode(existing.mode)
+              ? existing.mode
+              : "AGENT",
           boost_reasoning: event.thread.boost_reasoning,
-          context_tokens_cap: event.thread.context_tokens_cap ?? undefined,
+          context_tokens_cap: event.thread.context_tokens_cap ?? existing?.context_tokens_cap,
           include_project_info: event.thread.include_project_info,
           checkpoints_enabled: event.thread.checkpoints_enabled,
           isTitleGenerated: event.thread.is_title_generated,
-          automatic_patch: event.thread.automatic_patch ?? false,
+          automatic_patch: event.thread.automatic_patch ?? existing?.automatic_patch ?? false,
+          increase_max_tokens: existing?.increase_max_tokens ?? false,
           new_chat_suggested: { wasSuggested: false },
         };
 
@@ -624,7 +632,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
           waiting_for_response: isBusy,
           prevent_send: false,
           error: event.runtime.error ?? null,
-          queued_items: (event.runtime.queued_items as ChatThreadRuntime["queued_items"]) ?? [],
+          queued_items: event.runtime.queued_items as ChatThreadRuntime["queued_items"],
           send_immediately: existingRuntime?.send_immediately ?? false,
           attached_images: existingRuntime?.attached_images ?? [],
           confirmation: {
@@ -709,7 +717,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
         rt.prevent_send = false;
         rt.error = event.error ?? null;
         rt.confirmation.pause = event.paused;
-        rt.queued_items = (event.queued_items as ChatThreadRuntime["queued_items"]) ?? [];
+        rt.queued_items = event.queued_items as ChatThreadRuntime["queued_items"];
         if (!event.paused) {
           rt.confirmation.pause_reasons = [];
         }

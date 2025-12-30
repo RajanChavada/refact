@@ -9,6 +9,10 @@ name = "refact-lsp"
 version = "0.10.30"
 edition = "2021"
 build = "build.rs"
+
+[features]
+default = ["voice"]
+voice = ["dep:whisper-rs", "dep:symphonia", "dep:symphonia-bundle-mp3", "dep:rubato"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
@@ -107,3 +111,8 @@ zerocopy = "0.8.14"
 # rmcp = { path = "../../../rust-sdk/crates/rmcp/", "features" = ["client", "transport-child-process", "transport-sse"] }
 rmcp = { git = "https://github.com/smallcloudai/rust-sdk", branch = "main", features = ["client", "transport-child-process", "transport-sse-client", "reqwest"] }
 thiserror = "2.0.12"
+dirs = "5.0"
+whisper-rs = { version = "0.12", optional = true }
+symphonia = { version = "0.5", default-features = false, features = ["wav", "ogg", "pcm", "vorbis"], optional = true }
+symphonia-bundle-mp3 = { version = "0.5", optional = true }
+rubato = { version = "0.15", optional = true }

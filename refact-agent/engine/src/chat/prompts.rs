@@ -12,8 +12,8 @@ use crate::http::routers::v1::system_prompt::{PrependSystemPromptPost, PrependSy
 use crate::integrations::docker::docker_container_manager::docker_container_get_host_lsp_port_to_connect;
 use crate::scratchpads::scratchpad_utils::HasRagResults;
 use super::system_context::{
-    self, create_instruction_files_message, gather_system_context, generate_git_info_prompt,
-    gather_git_info, PROJECT_CONTEXT_MARKER,
+    self, create_instruction_files_message, create_memories_message, gather_system_context,
+    generate_git_info_prompt, gather_git_info, PROJECT_CONTEXT_MARKER,
 };
 use crate::call_validation::{ChatMessage, ChatContent, ChatMode};
 
@@ -443,6 +443,22 @@ async fn gather_and_inject_system_context(
             }
             Err(e) => {
                 tracing::warn!("Failed to create instruction files message: {}", e);
+            }
+        }
+    }
+
+    if !context.memories.is_empty() {
+        if let Some(memories_msg) = create_memories_message(&context.memories) {
+            let first_user_pos = messages.iter().position(|m| m.role == "user");
+
+            if let Some(pos) = first_user_pos {
+                stream_back_to_user.push_in_json(serde_json::json!(memories_msg));
+                messages.insert(pos, memories_msg);
+
+                tracing::info!(
+                    "Injected {} memories before first user message",
+                    context.memories.len()
+                );
             }
         }
     }

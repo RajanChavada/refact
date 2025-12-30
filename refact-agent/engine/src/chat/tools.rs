@@ -74,9 +74,11 @@ fn spawn_subchat_bridge(
 
     tokio::spawn(async move {
         let subchat_rx = ccx.lock().await.subchat_rx.clone();
+        info!("spawn_subchat_bridge: started listening for subchat messages");
 
         loop {
             if cancel_flag_clone.load(Ordering::Relaxed) {
+                info!("spawn_subchat_bridge: cancelled, exiting");
                 break;
             }
 
@@ -87,13 +89,17 @@ fn spawn_subchat_bridge(
 
             match recv_result {
                 Ok(Some(value)) => {
+                    info!("spawn_subchat_bridge: received message: {:?}", value);
                     let tool_call_id = value.get("tool_call_id").and_then(|v| v.as_str());
                     let subchat_id = value.get("subchat_id").and_then(|v| v.as_str());
 
                     if let (Some(tool_call_id), Some(subchat_id)) = (tool_call_id, subchat_id) {
                         if subchat_id == "1337" {
+                            info!("spawn_subchat_bridge: skipping 1337 message");
                             continue;
                         }
+
+                        info!("spawn_subchat_bridge: emitting SubchatUpdate for tool_call_id={}, subchat_id={}", tool_call_id, subchat_id);
 
                         let mut attached_files: Vec<String> = value
                             .get("attached_files")

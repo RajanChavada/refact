@@ -128,8 +128,8 @@ describe("threadStorage", () => {
       }
 
       const stored = JSON.parse(
-        localStorage.getItem("refact_draft_messages") || "{}",
-      );
+        localStorage.getItem("refact_draft_messages") ?? "{}",
+      ) as Record<string, unknown>;
       expect(Object.keys(stored).length).toBeLessThanOrEqual(50);
     });
   });

@@ -25,6 +25,7 @@ use crate::integrations::sessions::IntegrationSession;
 use crate::privacy::PrivacySettings;
 use crate::telemetry::telemetry_structs;
 use crate::background_tasks::BackgroundTasksHolder;
+use crate::voice::SharedVoiceService;
 
 #[derive(Debug, StructOpt, Clone)]
 pub struct CommandLine {
@@ -290,6 +291,7 @@ pub struct GlobalContext {
     pub app_searchable_id: String,
     pub trajectory_events_tx: Option<tokio::sync::broadcast::Sender<crate::chat::TrajectoryEvent>>,
     pub chat_sessions: crate::chat::SessionsMap,
+    pub voice_service: SharedVoiceService,
 }
 
 pub type SharedGlobalContext = Arc<ARwLock<GlobalContext>>; // TODO: remove this type alias, confusing
@@ -576,6 +578,7 @@ pub async fn create_global_context(
         app_searchable_id: get_app_searchable_id(&workspace_dirs),
         trajectory_events_tx: Some(tokio::sync::broadcast::channel(100).0),
         chat_sessions: crate::chat::create_sessions_map(),
+        voice_service: crate::voice::VoiceService::new(),
     };
     let gcx = Arc::new(ARwLock::new(cx));
     crate::files_in_workspace::watcher_init(gcx.clone()).await;

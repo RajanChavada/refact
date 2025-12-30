@@ -68,6 +68,9 @@ use crate::chat::{
     handle_v1_trajectories_list, handle_v1_trajectories_get, handle_v1_trajectories_save,
     handle_v1_trajectories_delete, handle_v1_trajectories_subscribe,
 };
+use crate::http::routers::v1::voice::{
+    handle_v1_voice_transcribe, handle_v1_voice_download, handle_v1_voice_status,
+};
 
 mod ast;
 pub mod at_commands;
@@ -97,6 +100,7 @@ pub mod telemetry_chat;
 pub mod telemetry_network;
 mod v1_integrations;
 pub mod vecdb;
+pub mod voice;
 mod workspace;
 
 pub fn make_v1_router() -> Router {
@@ -220,7 +224,10 @@ pub fn make_v1_router() -> Router {
         .route("/trajectories/:id", delete(handle_v1_trajectories_delete))
         .route("/chats/subscribe", get(handle_v1_chat_subscribe))
         .route("/chats/:chat_id/commands", post(handle_v1_chat_command))
-        .route("/chats/:chat_id/queue/:client_request_id", delete(handle_v1_chat_cancel_queued));
+        .route("/chats/:chat_id/queue/:client_request_id", delete(handle_v1_chat_cancel_queued))
+        .route("/voice/transcribe", post(handle_v1_voice_transcribe))
+        .route("/voice/download", post(handle_v1_voice_download))
+        .route("/voice/status", get(handle_v1_voice_status));
 
     builder
         .layer(axum::middleware::from_fn(telemetry_middleware))

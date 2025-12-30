@@ -142,6 +142,101 @@ pub async fn memories_add(
     Ok(file_path)
 }
 
+pub async fn load_memories_by_tags(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    allowed_tags: &[&str],
+    max_items: usize,
+) -> Result<Vec<MemoRecord>, String> {
+    let knowledge_dirs = get_all_knowledge_dirs(gcx.clone()).await;
+
+    if knowledge_dirs.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut records = Vec::new();
+
+    for knowledge_dir in &knowledge_dirs {
+        if !knowledge_dir.exists() {
+            continue;
+        }
+
+        for entry in WalkDir::new(knowledge_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.to_string_lossy().contains("/archive/") {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "md" && ext != "mdx" {
+                continue;
+            }
+
+            let text = match get_file_text_from_memory_or_disk(gcx.clone(), &path.to_path_buf()).await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            let (frontmatter, content_start) = KnowledgeFrontmatter::parse(&text);
+            if frontmatter.is_archived() {
+                continue;
+            }
+
+            let has_matching_tag = frontmatter.tags.iter().any(|tag| {
+                let tag_lower = tag.to_lowercase();
+                allowed_tags.iter().any(|allowed| tag_lower.contains(&allowed.to_lowercase()))
+            });
+
+            let kind_matches = frontmatter.kind.as_ref().map_or(false, |k| {
+                let kind_lower = k.to_lowercase();
+                allowed_tags.iter().any(|allowed| kind_lower.contains(&allowed.to_lowercase()))
+            });
+
+            if !has_matching_tag && !kind_matches {
+                continue;
+            }
+
+            let content = text[content_start..].trim().to_string();
+            let id = frontmatter
+                .id
+                .clone()
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+            records.push(MemoRecord {
+                memid: id,
+                tags: frontmatter.tags,
+                content,
+                file_path: Some(path.to_path_buf()),
+                line_range: None,
+                title: frontmatter.title,
+                created: frontmatter.created,
+                kind: frontmatter.kind,
+                score: None,
+            });
+        }
+    }
+
+    records.sort_by(|a, b| {
+        let date_a = a.created.as_deref().unwrap_or("");
+        let date_b = b.created.as_deref().unwrap_or("");
+        date_b.cmp(date_a)
+    });
+
+    records.truncate(max_items);
+
+    tracing::info!(
+        "load_memories_by_tags: found {} memories with tags {:?}",
+        records.len(),
+        allowed_tags
+    );
+
+    Ok(records)
+}
+
 pub async fn memories_search(
     gcx: Arc<ARwLock<GlobalContext>>,
     query: &str,
@@ -189,7 +284,7 @@ pub async fn memories_search(
         let path_str = rec.file_path.to_string_lossy().to_string();
         let score = 1.0 - (rec.distance / 2.0).min(1.0);
 
-        if path_str.contains(KNOWLEDGE_FOLDER_NAME) {
+        if path_str.contains(KNOWLEDGE_FOLDER_NAME) && !path_str.contains("/archive/") {
             knowledge_matches
                 .entry(rec.file_path.clone())
                 .and_modify(|m| {

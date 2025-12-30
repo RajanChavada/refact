@@ -64,7 +64,11 @@ async fn send_entertainment_message(
             "content": message_text
         }
     });
-    let _ = subchat_tx.lock().await.send(entertainment_msg);
+    tracing::info!("strategic_planning: sending entertainment message: tool_call_id={}, subchat_id={}", tool_call_id, message_text);
+    match subchat_tx.lock().await.send(entertainment_msg) {
+        Ok(_) => tracing::info!("strategic_planning: entertainment message sent successfully"),
+        Err(e) => tracing::error!("strategic_planning: failed to send entertainment message: {}", e),
+    }
 }
 
 fn spawn_entertainment_task(

@@ -69,6 +69,7 @@ mod knowledge_graph;
 mod memories;
 mod privacy;
 mod trajectory_memos;
+mod voice;
 
 #[tokio::main]
 async fn main() {

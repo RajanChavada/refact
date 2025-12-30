@@ -9,6 +9,7 @@ use git2::Repository;
 use crate::at_commands::at_tree::TreeNode;
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile};
 use crate::files_correction::{get_project_dirs, paths_from_anywhere};
+use crate::memories::{load_memories_by_tags, MemoRecord};
 
 pub const PROJECT_CONTEXT_MARKER: &str = "project_context";
 use crate::files_in_workspace::detect_vcs_for_a_file_path;
@@ -393,6 +394,7 @@ pub struct SystemContext {
     pub project_tree: Option<String>,
     pub environment_instructions: String,
     pub git_info: Vec<GitInfo>,
+    pub memories: Vec<MemoRecord>,
 }
 
 impl SystemInfo {
@@ -1435,6 +1437,9 @@ fn print_compact_tree(
     result
 }
 
+const MEMORY_TAGS_FOR_CONTEXT: &[&str] = &["preference", "lesson", "insight", "pattern"];
+const MAX_MEMORIES_IN_CONTEXT: usize = 30;
+
 pub async fn gather_system_context(
     gcx: Arc<ARwLock<GlobalContext>>,
     include_tree: bool,
@@ -1458,6 +1463,10 @@ pub async fn gather_system_context(
 
     let environment_instructions = generate_environment_instructions(&detected_environments);
 
+    let memories = load_memories_by_tags(gcx.clone(), MEMORY_TAGS_FOR_CONTEXT, MAX_MEMORIES_IN_CONTEXT)
+        .await
+        .unwrap_or_default();
+
     Ok(SystemContext {
         system_info,
         detected_environments,
@@ -1466,6 +1475,60 @@ pub async fn gather_system_context(
         project_tree,
         environment_instructions,
         git_info,
+        memories,
+    })
+}
+
+pub const MEMORIES_CONTEXT_MARKER: &str = "memories_context";
+const MAX_MEMORY_CONTENT_SIZE: usize = 2000;
+
+pub fn create_memories_message(memories: &[MemoRecord]) -> Option<ChatMessage> {
+    if memories.is_empty() {
+        return None;
+    }
+
+    let context_files: Vec<ContextFile> = memories
+        .iter()
+        .filter_map(|memo| {
+            let file_path = memo.file_path.as_ref()?;
+            let content = if memo.content.len() > MAX_MEMORY_CONTENT_SIZE {
+                format!(
+                    "{}\n\n[TRUNCATED]",
+                    memo.content.chars().take(MAX_MEMORY_CONTENT_SIZE).collect::<String>()
+                )
+            } else {
+                memo.content.clone()
+            };
+            let line_count = content.lines().count().max(1);
+
+            Some(ContextFile {
+                file_name: file_path.to_string_lossy().to_string(),
+                file_content: content,
+                line1: 1,
+                line2: line_count,
+                file_rev: None,
+                symbols: vec![],
+                gradient_type: -1,
+                usefulness: 90.0,
+                skip_pp: true,
+            })
+        })
+        .collect();
+
+    if context_files.is_empty() {
+        return None;
+    }
+
+    tracing::info!(
+        "Created memories context message: {} memories",
+        context_files.len()
+    );
+
+    Some(ChatMessage {
+        role: "context_file".to_string(),
+        content: ChatContent::ContextFiles(context_files),
+        tool_call_id: MEMORIES_CONTEXT_MARKER.to_string(),
+        ..Default::default()
     })
 }
 

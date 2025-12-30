@@ -49,6 +49,7 @@ import { ToolConfirmation } from "./ToolConfirmation";
 import { selectThreadConfirmation } from "../../features/Chat";
 import { AttachImagesButton, FileList } from "../Dropzone";
 import { ResendButton } from "../ChatContent/ResendButton";
+import { MicrophoneButton } from "./MicrophoneButton";
 import { useAttachedImages } from "../../hooks/useAttachedImages";
 import {
   selectChatError,
@@ -449,7 +450,12 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                   isMultimodalitySupportedForCurrentModel && (
                     <AttachImagesButton />
                   )}
-                {/* TODO: Reserved space for microphone button coming later on */}
+                <MicrophoneButton
+                  onTranscript={(text) => {
+                    setValue((prev) => (prev ? `${prev} ${text}` : text));
+                  }}
+                  disabled={isStreaming}
+                />
                 <ResendButton />
                 <SendButtonWithDropdown
                   disabled={

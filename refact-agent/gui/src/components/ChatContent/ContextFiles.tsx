@@ -37,7 +37,7 @@ function getExtensionFromName(name: string): string {
   return name.substring(dot + 1).replace(/:\d*-\d*/, "");
 }
 
-type ContextVariant = "default" | "enrichment" | "project_context";
+type ContextVariant = "default" | "enrichment" | "project_context" | "memories_context";
 
 const FilesContent: React.FC<{
   files: ChatContextFile[];
@@ -132,6 +132,21 @@ const FilesContent: React.FC<{
     );
   }
 
+  if (variant === "memories_context") {
+    return (
+      <Flex direction="column" gap="1">
+        {files.map((file, index) => (
+          <FileCard
+            key={file.file_name + index}
+            file={file}
+            onOpenFile={onOpenFile}
+            variant="enrichment"
+          />
+        ))}
+      </Flex>
+    );
+  }
+
   return (
     <Flex direction="column" gap="1">
       {files.map((file, index) => (
@@ -190,21 +205,27 @@ export const ContextFiles: React.FC<{
       ? "enrichment"
       : toolCallId === "project_context"
         ? "project_context"
-        : "default";
+        : toolCallId === "memories_context"
+          ? "memories_context"
+          : "default";
 
   const icon =
     variant === "enrichment"
       ? "🧠"
       : variant === "project_context"
         ? "📁"
-        : "📎";
+        : variant === "memories_context"
+          ? "💡"
+          : "📎";
 
   const label =
     variant === "enrichment"
       ? `${files.length} memories`
       : variant === "project_context"
         ? `Project context (${files.length})`
-        : files.map((f) => formatFileName(f.file_name, f.line1, f.line2)).join(", ");
+        : variant === "memories_context"
+          ? `User memories (${files.length})`
+          : files.map((f) => formatFileName(f.file_name, f.line1, f.line2)).join(", ");
 
   return (
     <Container>

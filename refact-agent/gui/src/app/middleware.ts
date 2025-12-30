@@ -61,6 +61,7 @@ import {
   modelsApi,
   providersApi,
 } from "../services/refact";
+import { sendChatCommand } from "../services/refact/chatCommands";
 
 const AUTH_ERROR_MESSAGE =
   "There is an issue with your API key. Check out your API Key or re-login";
@@ -805,6 +806,36 @@ startListening({
       follow_ups_enabled: state.chat.follow_ups_enabled,
       use_compression: state.chat.use_compression,
     });
+  },
+});
+
+startListening({
+  actionCreator: newChatAction,
+  effect: async (_action, listenerApi) => {
+    const state = listenerApi.getState();
+    const chatId = state.chat.current_thread_id;
+    const runtime = state.chat.threads[chatId];
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+
+    if (!runtime || !port || !chatId) return;
+
+    const patch: Record<string, unknown> = {};
+    if (runtime.thread.model) patch.model = runtime.thread.model;
+    if (runtime.thread.tool_use) patch.tool_use = runtime.thread.tool_use;
+    if (runtime.thread.mode) patch.mode = runtime.thread.mode;
+    if (runtime.thread.boost_reasoning !== undefined) patch.boost_reasoning = runtime.thread.boost_reasoning;
+    if (runtime.thread.automatic_patch !== undefined) patch.automatic_patch = runtime.thread.automatic_patch;
+    if (runtime.thread.include_project_info !== undefined) patch.include_project_info = runtime.thread.include_project_info;
+    if (runtime.thread.context_tokens_cap !== undefined) patch.context_tokens_cap = runtime.thread.context_tokens_cap;
+
+    if (Object.keys(patch).length === 0) return;
+
+    try {
+      await sendChatCommand(chatId, port, apiKey ?? undefined, { type: "set_params", patch });
+    } catch {
+      // Best effort - ignore if backend rejects
+    }
   },
 });
 

@@ -85,7 +85,7 @@ export function useInputValue(
         return;
       }
     },
-    [setUpIfNotReady, submit, uncheckCheckboxes],
+    [setUpIfNotReady, submit, uncheckCheckboxes, setValue],
   );
 
   useEffect(() => {

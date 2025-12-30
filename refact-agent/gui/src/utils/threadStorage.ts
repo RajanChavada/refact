@@ -20,12 +20,10 @@ export interface PersistedThreadParams {
   use_compression?: boolean;
 }
 
-interface DraftMessagesStorage {
-  [threadId: string]: {
-    content: string;
-    timestamp: number;
-  };
-}
+type DraftMessagesStorage = Partial<Record<string, {
+  content: string;
+  timestamp: number;
+}>>;
 
 export function saveLastThreadParams(params: Partial<PersistedThreadParams>): void {
   try {
@@ -33,8 +31,8 @@ export function saveLastThreadParams(params: Partial<PersistedThreadParams>): vo
     const existing = getLastThreadParams();
     const merged = { ...existing, ...params };
     localStorage.setItem(LAST_THREAD_PARAMS_KEY, JSON.stringify(merged));
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to save thread params:", error);
+  } catch {
+    // Silent fail - localStorage might be unavailable
   }
 }
 
@@ -44,8 +42,7 @@ export function getLastThreadParams(): Partial<PersistedThreadParams> {
     const stored = localStorage.getItem(LAST_THREAD_PARAMS_KEY);
     if (!stored) return {};
     return JSON.parse(stored) as Partial<PersistedThreadParams>;
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to load thread params:", error);
+  } catch {
     return {};
   }
 }
@@ -54,8 +51,8 @@ export function clearLastThreadParams(): void {
   try {
     if (typeof localStorage === "undefined") return;
     localStorage.removeItem(LAST_THREAD_PARAMS_KEY);
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to clear thread params:", error);
+  } catch {
+    // Silent fail
   }
 }
 
@@ -65,8 +62,7 @@ function loadDraftMessagesStorage(): DraftMessagesStorage {
     const stored = localStorage.getItem(DRAFT_MESSAGES_KEY);
     if (!stored) return {};
     return JSON.parse(stored) as DraftMessagesStorage;
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to load draft messages:", error);
+  } catch {
     return {};
   }
 }
@@ -74,7 +70,10 @@ function loadDraftMessagesStorage(): DraftMessagesStorage {
 function saveDraftMessagesStorage(storage: DraftMessagesStorage): void {
   try {
     if (typeof localStorage === "undefined") return;
-    const entries = Object.entries(storage);
+    const entries = Object.entries(storage).filter(
+      (entry): entry is [string, { content: string; timestamp: number }] =>
+        entry[1] !== undefined,
+    );
     if (entries.length > MAX_DRAFT_MESSAGES) {
       const sorted = entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
       const pruned = Object.fromEntries(sorted.slice(0, MAX_DRAFT_MESSAGES));
@@ -82,8 +81,8 @@ function saveDraftMessagesStorage(storage: DraftMessagesStorage): void {
     } else {
       localStorage.setItem(DRAFT_MESSAGES_KEY, JSON.stringify(storage));
     }
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to save draft messages:", error);
+  } catch {
+    // Silent fail
   }
 }
 
@@ -92,13 +91,14 @@ export function saveDraftMessage(threadId: string, content: string): void {
     if (!threadId) return;
     const storage = loadDraftMessagesStorage();
     if (!content.trim()) {
-      delete storage[threadId];
+      const { [threadId]: _, ...rest } = storage;
+      saveDraftMessagesStorage(rest);
     } else {
       storage[threadId] = { content, timestamp: Date.now() };
+      saveDraftMessagesStorage(storage);
     }
-    saveDraftMessagesStorage(storage);
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to save draft message:", error);
+  } catch {
+    // Silent fail
   }
 }
 
@@ -106,9 +106,8 @@ export function getDraftMessage(threadId: string): string {
   try {
     if (!threadId) return "";
     const storage = loadDraftMessagesStorage();
-    return storage[threadId]?.content || "";
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to load draft message:", error);
+    return storage[threadId]?.content ?? "";
+  } catch {
     return "";
   }
 }
@@ -117,10 +116,10 @@ export function clearDraftMessage(threadId: string): void {
   try {
     if (!threadId) return;
     const storage = loadDraftMessagesStorage();
-    delete storage[threadId];
-    saveDraftMessagesStorage(storage);
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to clear draft message:", error);
+    const { [threadId]: _, ...rest } = storage;
+    saveDraftMessagesStorage(rest);
+  } catch {
+    // Silent fail
   }
 }
 
@@ -128,8 +127,8 @@ export function clearAllDraftMessages(): void {
   try {
     if (typeof localStorage === "undefined") return;
     localStorage.removeItem(DRAFT_MESSAGES_KEY);
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to clear all draft messages:", error);
+  } catch {
+    // Silent fail
   }
 }
 
@@ -140,6 +139,10 @@ export function pruneStaleDraftMessages(): void {
     const pruned: DraftMessagesStorage = {};
     let didPrune = false;
     for (const [threadId, draft] of Object.entries(storage)) {
+      if (!draft) {
+        didPrune = true;
+        continue;
+      }
       if (draft.timestamp > sevenDaysAgo) {
         pruned[threadId] = draft;
       } else {
@@ -149,7 +152,7 @@ export function pruneStaleDraftMessages(): void {
     if (didPrune) {
       saveDraftMessagesStorage(pruned);
     }
-  } catch (error) {
-    console.warn("[ThreadStorage] Failed to prune stale drafts:", error);
+  } catch {
+    // Silent fail
   }
 }
