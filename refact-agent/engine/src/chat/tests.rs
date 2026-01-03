@@ -918,7 +918,6 @@ mod tests {
         assert!(opts.allow_at_commands);
         assert!(opts.allow_tool_prerun);
         assert!(opts.supports_tools);
-        assert!(opts.use_compression);
     }
 
     #[test]
@@ -930,14 +929,12 @@ mod tests {
             allow_at_commands: false,
             allow_tool_prerun: false,
             supports_tools: true,
-            use_compression: false,
         };
 
         assert!(!opts.prepend_system_prompt);
         assert!(!opts.allow_at_commands);
         assert!(!opts.allow_tool_prerun);
         assert!(opts.supports_tools);
-        assert!(!opts.use_compression);
     }
 
     #[test]
