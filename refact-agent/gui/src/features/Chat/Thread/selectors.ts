@@ -1,7 +1,6 @@
 import { RootState } from "../../../app/store";
 import { createSelector } from "@reduxjs/toolkit";
 import {
-  CompressionStrength,
   isAssistantMessage,
   isDiffMessage,
   isToolMessage,
@@ -113,9 +112,6 @@ export const selectIsWaitingById = (state: RootState, chatId: string) =>
 export const selectAreFollowUpsEnabled = (state: RootState) =>
   state.chat.follow_ups_enabled;
 
-export const selectUseCompression = (state: RootState) =>
-  state.chat.use_compression;
-
 export const selectIsStreaming = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.streaming ?? false;
 
@@ -215,25 +211,6 @@ export const selectIntegration = createSelector(
 export const selectThreadMode = createSelector(
   selectThread,
   (thread) => thread?.mode,
-);
-
-export const selectLastSentCompression = createSelector(
-  selectMessages,
-  (messages) => {
-    const lastCompression = messages.reduce<null | CompressionStrength>(
-      (acc, message) => {
-        if (isUserMessage(message) && message.compression_strength) {
-          return message.compression_strength;
-        }
-        if (isToolMessage(message) && message.compression_strength) {
-          return message.compression_strength;
-        }
-        return acc;
-      },
-      null,
-    );
-    return lastCompression;
-  },
 );
 
 export const selectQueuedItems = (state: RootState) =>

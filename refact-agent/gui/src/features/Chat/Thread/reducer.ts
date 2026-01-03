@@ -43,7 +43,6 @@ import {
   setAreFollowUpsEnabled,
   setIncludeProjectInfo,
   setContextTokensCap,
-  setUseCompression,
   closeThread,
   switchToThread,
   updateOpenThread,
@@ -161,7 +160,6 @@ const createInitialState = (): Chat => {
     tool_use: "agent",
     checkpoints_enabled: true,
     follow_ups_enabled: undefined,
-    use_compression: undefined,
   };
 };
 
@@ -202,10 +200,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
 
   builder.addCase(setAreFollowUpsEnabled, (state, action) => {
     state.follow_ups_enabled = action.payload;
-  });
-
-  builder.addCase(setUseCompression, (state, action) => {
-    state.use_compression = action.payload;
   });
 
   builder.addCase(clearChatError, (state, action) => {

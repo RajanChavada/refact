@@ -17,7 +17,6 @@ import {
   AgentRollbackSwitch,
   ApplyPatchSwitch,
   FollowUpsSwitch,
-  UseCompressionSwitch,
   ProjectInfoSwitch,
 } from "../ChatControls";
 import { useAppSelector } from "../../../hooks";
@@ -25,7 +24,6 @@ import {
   selectAreFollowUpsEnabled,
   selectAutomaticPatch,
   selectCheckpointsEnabled,
-  selectUseCompression,
   selectIncludeProjectInfo,
   selectMessages,
 } from "../../../features/Chat";
@@ -36,7 +34,6 @@ export const AgentCapabilities = () => {
   const isPatchAutomatic = useAppSelector(selectAutomaticPatch);
   const isAgentRollbackEnabled = useAppSelector(selectCheckpointsEnabled);
   const areFollowUpsEnabled = useAppSelector(selectAreFollowUpsEnabled);
-  const useCompression = useAppSelector(selectUseCompression);
   const includeProjectInfo = useAppSelector(selectIncludeProjectInfo);
   const messages = useAppSelector(selectMessages);
   const isNewChat = messages.length === 0;
@@ -60,11 +57,6 @@ export const AgentCapabilities = () => {
         switcher: <FollowUpsSwitch />,
       },
       {
-        name: "Compression",
-        enabled: useCompression,
-        switcher: <UseCompressionSwitch />,
-      },
-      {
         name: "Project info",
         enabled: includeProjectInfo ?? true,
         switcher: <ProjectInfoSwitch />,
@@ -75,7 +67,6 @@ export const AgentCapabilities = () => {
     isPatchAutomatic,
     isAgentRollbackEnabled,
     areFollowUpsEnabled,
-    useCompression,
     includeProjectInfo,
     isNewChat,
   ]);

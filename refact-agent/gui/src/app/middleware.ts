@@ -25,7 +25,6 @@ import {
   setToolUse,
   setChatMode,
   setChatModel,
-  setUseCompression,
   setAutomaticPatch,
   setIncreaseMaxTokens,
   setAreFollowUpsEnabled,
@@ -751,28 +750,6 @@ startListening({
 });
 
 startListening({
-  actionCreator: setUseCompression,
-  effect: async (action, listenerApi) => {
-    const state = listenerApi.getState();
-    const port = state.config.lspPort;
-    const apiKey = state.config.apiKey;
-    const chatId = state.chat.current_thread_id;
-
-    if (!port || !chatId) return;
-
-    try {
-      const { sendChatCommand } = await import(
-        "../services/refact/chatCommands"
-      );
-      await sendChatCommand(chatId, port, apiKey ?? undefined, {
-        type: "set_params",
-        patch: { use_compression: action.payload },
-      });
-    } catch { /* ignore */ }
-  },
-});
-
-startListening({
   matcher: isAnyOf(
     setChatModel,
     setToolUse,
@@ -783,7 +760,6 @@ startListening({
     setContextTokensCap,
     setEnabledCheckpoints,
     setAreFollowUpsEnabled,
-    setUseCompression,
     setChatMode,
     setSystemPrompt,
   ),
@@ -804,7 +780,6 @@ startListening({
       system_prompt: state.chat.system_prompt,
       checkpoints_enabled: state.chat.checkpoints_enabled,
       follow_ups_enabled: state.chat.follow_ups_enabled,
-      use_compression: state.chat.use_compression,
     });
   },
 });

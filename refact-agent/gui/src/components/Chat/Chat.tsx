@@ -16,14 +16,12 @@ import {
   selectChatId,
   selectMessages,
   getSelectedToolUse,
-  selectThreadNewChatSuggested,
 } from "../../features/Chat/Thread";
 import { ThreadHistoryButton } from "../Buttons";
 import { push } from "../../features/Pages/pagesSlice";
 import { DropzoneProvider } from "../Dropzone";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
 import { Checkpoints } from "../../features/Checkpoints";
-import { SuggestNewChat } from "../ChatForm/SuggestNewChat";
 import { EnhancedModelSelector } from "./EnhancedModelSelector";
 
 export type ChatProps = {
@@ -55,7 +53,6 @@ export const Chat: React.FC<ChatProps> = ({
   const { submit, abort, retryFromIndex } = useChatActions();
 
   const chatToolUse = useAppSelector(getSelectedToolUse);
-  const threadNewChatSuggested = useAppSelector(selectThreadNewChatSuggested);
   const messages = useAppSelector(selectMessages);
 
   const { shouldCheckpointsPopupBeShown } = useCheckpoints();
@@ -112,12 +109,6 @@ export const Chat: React.FC<ChatProps> = ({
         <Flex direction="column" style={{ flex: "0 0 auto" }}>
           {shouldCheckpointsPopupBeShown && <Checkpoints />}
 
-          <SuggestNewChat
-            shouldBeVisible={
-              threadNewChatSuggested.wasSuggested &&
-              !threadNewChatSuggested.wasRejectedByUser
-            }
-          />
           {!isStreaming && preventSend && unCalledTools && (
             <Flex py="4">
               <Card style={{ width: "100%" }}>
@@ -133,7 +124,6 @@ export const Chat: React.FC<ChatProps> = ({
             key={chatId}
             onSubmit={handleSubmit}
             onClose={maybeSendToSidebar}
-            unCalledTools={unCalledTools}
           />
 
           <Flex justify="between" pl="1" pr="1" pt="1">

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo } from "react";
 
-import { Flex, Card, Text, IconButton } from "@radix-ui/themes";
+import { Flex, Card, Text } from "@radix-ui/themes";
 import styles from "./ChatForm.module.css";
 
 import {
@@ -17,7 +17,6 @@ import {
   useIsOnline,
   useConfig,
   useCapsForToolUse,
-  useCompressChat,
   useAutoFocusOnce,
 } from "../../hooks";
 import { ErrorCallout, Callout } from "../Callout";
@@ -55,7 +54,6 @@ import {
   selectChatError,
   selectIsStreaming,
   selectIsWaiting,
-  selectLastSentCompression,
   selectMessages,
   selectQueuedItems,
   selectThreadToolUse,
@@ -67,7 +65,6 @@ import { push } from "../../features/Pages/pagesSlice";
 import { AgentCapabilities } from "./AgentCapabilities/AgentCapabilities";
 import { TokensPreview } from "./TokensPreview";
 import classNames from "classnames";
-import { ArchiveIcon } from "@radix-ui/react-icons";
 
 export type SendPolicy = "immediate" | "after_flow";
 
@@ -75,14 +72,12 @@ export type ChatFormProps = {
   onSubmit: (str: string, sendPolicy?: SendPolicy) => void;
   onClose?: () => void;
   className?: string;
-  unCalledTools: boolean;
 };
 
 export const ChatForm: React.FC<ChatFormProps> = ({
   onSubmit,
   onClose,
   className,
-  unCalledTools,
 }) => {
   const dispatch = useAppDispatch();
   const isStreaming = useAppSelector(selectIsStreaming);
@@ -100,10 +95,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
 
   const threadToolUse = useAppSelector(selectThreadToolUse);
   const messages = useAppSelector(selectMessages);
-  const lastSentCompression = useAppSelector(selectLastSentCompression);
   const queuedItems = useAppSelector(selectQueuedItems);
-  const { compressChat, compressChatRequest, isCompressing } =
-    useCompressChat();
   const autoFocus = useAutoFocusOnce();
   const attachedFiles = useAttachedFiles();
   const shouldShowBalanceLow = useAppSelector(showBalanceLowCallout);
@@ -406,29 +398,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 currentMessageQuery={attachedFiles.addFilesToInput(value)}
               />
               <Flex gap="2" align="center" justify="center">
-                <IconButton
-                  size="1"
-                  variant="ghost"
-                  color={
-                    lastSentCompression === "high"
-                      ? "red"
-                      : lastSentCompression === "medium"
-                        ? "yellow"
-                        : undefined
-                  }
-                  title="Summarize and continue in a new chat"
-                  type="button"
-                  onClick={() => void compressChat()}
-                  disabled={
-                    messages.length === 0 ||
-                    isStreaming ||
-                    isWaiting ||
-                    unCalledTools
-                  }
-                  loading={compressChatRequest.isLoading || isCompressing}
-                >
-                  <ArchiveIcon />
-                </IconButton>
                 {toolUse === "agent" && (
                   <AgentIntegrationsButton
                     title="Set up Agent Integrations"

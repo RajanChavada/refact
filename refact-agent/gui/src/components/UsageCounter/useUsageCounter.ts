@@ -1,6 +1,6 @@
 import { useMemo, useRef } from "react";
-import { selectMessages } from "../../features/Chat";
-import { useAppSelector, useLastSentCompressionStop } from "../../hooks";
+import { selectMessages, selectThreadMaximumTokens } from "../../features/Chat";
+import { useAppSelector } from "../../hooks";
 import {
   calculateUsageInputTokens,
   mergeUsages,
@@ -8,8 +8,8 @@ import {
 import { isAssistantMessage } from "../../services/refact";
 
 export function useUsageCounter() {
-  const compressionStop = useLastSentCompressionStop();
   const messages = useAppSelector(selectMessages);
+  const maxContextTokens = useAppSelector(selectThreadMaximumTokens);
   const assistantMessages = messages.filter(isAssistantMessage);
   const usages = assistantMessages.map((msg) => msg.usage);
   const currentThreadUsage = mergeUsages(usages);
@@ -37,18 +37,18 @@ export function useUsageCounter() {
   }
   const currentSessionTokens = rawTokens > 0 ? rawTokens : lastKnownTokensRef.current;
 
-  const isOverflown = useMemo(() => {
-    if (compressionStop.strength === "low") return true;
-    if (compressionStop.strength === "medium") return true;
-    if (compressionStop.strength === "high") return true;
-    return false;
-  }, [compressionStop.strength]);
+  const tokenPercentage = useMemo(() => {
+    if (!maxContextTokens || maxContextTokens === 0) return 0;
+    return (currentSessionTokens / maxContextTokens) * 100;
+  }, [currentSessionTokens, maxContextTokens]);
 
   const isWarning = useMemo(() => {
-    if (compressionStop.strength === "medium") return true;
-    if (compressionStop.strength === "high") return true;
-    return false;
-  }, [compressionStop.strength]);
+    return tokenPercentage >= 80;
+  }, [tokenPercentage]);
+
+  const isOverflown = useMemo(() => {
+    return tokenPercentage >= 95;
+  }, [tokenPercentage]);
 
   const shouldShow = useMemo(() => {
     return messages.length > 0;
@@ -61,6 +61,6 @@ export function useUsageCounter() {
     currentSessionTokens,
     isOverflown,
     isWarning,
-    compressionStrength: compressionStop.strength,
+    tokenPercentage,
   };
 }

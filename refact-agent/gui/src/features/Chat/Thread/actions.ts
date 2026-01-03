@@ -201,10 +201,6 @@ export const setAreFollowUpsEnabled = createAction<boolean>(
   "chat/setAreFollowUpsEnabled",
 );
 
-export const setUseCompression = createAction<boolean>(
-  "chat/setUseCompression",
-);
-
 export const setToolUse = createAction<ToolUse>("chatThread/setToolUse");
 
 export const setEnabledCheckpoints = createAction<boolean>(

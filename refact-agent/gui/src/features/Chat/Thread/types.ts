@@ -97,7 +97,6 @@ export type Chat = {
   tool_use: ToolUse;
   checkpoints_enabled?: boolean;
   follow_ups_enabled?: boolean;
-  use_compression?: boolean;
   max_new_tokens?: number;
 };
 

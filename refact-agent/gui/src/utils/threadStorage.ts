@@ -17,7 +17,6 @@ export interface PersistedThreadParams {
   system_prompt?: SystemPrompts;
   checkpoints_enabled?: boolean;
   follow_ups_enabled?: boolean;
-  use_compression?: boolean;
 }
 
 type DraftMessagesStorage = Partial<Record<string, {
