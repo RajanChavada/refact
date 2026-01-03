@@ -65,8 +65,8 @@ use crate::http::routers::v1::workspace::{
 };
 use crate::chat::{
     handle_v1_chat_subscribe, handle_v1_chat_command, handle_v1_chat_cancel_queued,
-    handle_v1_trajectories_list, handle_v1_trajectories_get, handle_v1_trajectories_save,
-    handle_v1_trajectories_delete, handle_v1_trajectories_subscribe,
+    handle_v1_trajectories_list, handle_v1_trajectories_all, handle_v1_trajectories_get,
+    handle_v1_trajectories_save, handle_v1_trajectories_delete, handle_v1_trajectories_subscribe,
 };
 use crate::http::routers::v1::voice::{
     handle_v1_voice_transcribe, handle_v1_voice_download, handle_v1_voice_status,
@@ -227,6 +227,7 @@ pub fn make_v1_router() -> Router {
         .route("/knowledge-graph", get(handle_v1_knowledge_graph))
         .route("/trajectory-compress", post(handle_v1_trajectory_compress))
         .route("/trajectories", get(handle_v1_trajectories_list))
+        .route("/trajectories/all", get(handle_v1_trajectories_all))
         .route(
             "/trajectories/subscribe",
             get(handle_v1_trajectories_subscribe),

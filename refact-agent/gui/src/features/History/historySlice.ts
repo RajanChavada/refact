@@ -16,6 +16,7 @@ import {
 import {
   trajectoriesApi,
   TrajectoryData,
+  TrajectoryMeta,
   trajectoryDataToChatThread,
 } from "../../services/refact";
 import { AppDispatch, RootState } from "../../app/store";
@@ -27,6 +28,12 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
   title: string;
   isTitleGenerated?: boolean;
   new_chat_suggested?: SuggestedChat;
+  parent_id?: string;
+  link_type?: string;
+  task_id?: string;
+  task_role?: string;
+  agent_id?: string;
+  card_id?: string;
 };
 
 export type HistoryMeta = Pick<
@@ -35,6 +42,19 @@ export type HistoryMeta = Pick<
 > & { userMessageCount: number };
 
 export type HistoryState = Record<string, ChatHistoryItem>;
+
+export type TrajectoryWithMeta = TrajectoryData & {
+  parent_id?: string;
+  link_type?: string;
+  task_id?: string;
+  task_role?: string;
+  agent_id?: string;
+  card_id?: string;
+};
+
+export type HistoryTreeNode = ChatHistoryItem & {
+  children: HistoryTreeNode[];
+};
 
 const initialState: HistoryState = {};
 
@@ -86,7 +106,17 @@ function chatThreadToHistoryItem(thread: ChatThread): ChatHistoryItem {
   };
 }
 
-function trajectoryToHistoryItem(data: TrajectoryData): ChatHistoryItem {
+function trajectoryToHistoryItem(
+  data: TrajectoryData,
+  meta?: {
+    parent_id?: string;
+    link_type?: string;
+    task_id?: string;
+    task_role?: string;
+    agent_id?: string;
+    card_id?: string;
+  },
+): ChatHistoryItem {
   const thread = trajectoryDataToChatThread(data);
   return {
     ...thread,
@@ -94,6 +124,12 @@ function trajectoryToHistoryItem(data: TrajectoryData): ChatHistoryItem {
     updatedAt: data.updated_at,
     title: data.title,
     isTitleGenerated: data.isTitleGenerated,
+    parent_id: meta?.parent_id,
+    link_type: meta?.link_type,
+    task_id: meta?.task_id,
+    task_role: meta?.task_role,
+    agent_id: meta?.agent_id,
+    card_id: meta?.card_id,
   };
 }
 
@@ -127,9 +163,16 @@ export const historySlice = createSlice({
       }
     },
 
-    hydrateHistory: (state, action: PayloadAction<TrajectoryData[]>) => {
+    hydrateHistory: (state, action: PayloadAction<TrajectoryWithMeta[]>) => {
       for (const data of action.payload) {
-        state[data.id] = trajectoryToHistoryItem(data);
+        state[data.id] = trajectoryToHistoryItem(data, {
+          parent_id: data.parent_id,
+          link_type: data.link_type,
+          task_id: data.task_id,
+          task_role: data.task_role,
+          agent_id: data.agent_id,
+          card_id: data.card_id,
+        });
       }
     },
 
@@ -190,6 +233,40 @@ export const historySlice = createSlice({
       Object.values(state).sort((a, b) =>
         b.updatedAt.localeCompare(a.updatedAt),
       ),
+
+    getHistoryTree: (state): HistoryTreeNode[] => {
+      const items = Object.values(state);
+      const itemMap = new Map<string, HistoryTreeNode>();
+      const roots: HistoryTreeNode[] = [];
+
+      for (const item of items) {
+        itemMap.set(item.id, { ...item, children: [] });
+      }
+
+      for (const item of items) {
+        const node = itemMap.get(item.id)!;
+        if (item.parent_id && itemMap.has(item.parent_id)) {
+          itemMap.get(item.parent_id)!.children.push(node);
+        } else {
+          roots.push(node);
+        }
+      }
+
+      const sortByUpdated = (a: HistoryTreeNode, b: HistoryTreeNode) =>
+        b.updatedAt.localeCompare(a.updatedAt);
+
+      const sortTree = (nodes: HistoryTreeNode[]) => {
+        nodes.sort(sortByUpdated);
+        for (const node of nodes) {
+          if (node.children.length > 0) {
+            sortTree(node.children);
+          }
+        }
+      };
+
+      sortTree(roots);
+      return roots;
+    },
   },
 });
 
@@ -203,7 +280,8 @@ export const {
   clearHistory,
   upsertToolCallIntoHistory,
 } = historySlice.actions;
-export const { getChatById, getHistory } = historySlice.selectors;
+export const { getChatById, getHistory, getHistoryTree } =
+  historySlice.selectors;
 
 export const historyMiddleware = createListenerMiddleware();
 const startHistoryListening = historyMiddleware.startListening.withTypes<

@@ -169,15 +169,24 @@ export function useTrajectoriesSubscription() {
       await migrateFromLocalStorage();
 
       const result = await dispatch(
-        trajectoriesApi.endpoints.listTrajectories.initiate(undefined),
+        trajectoriesApi.endpoints.listAllTrajectories.initiate(undefined),
       ).unwrap();
 
       const trajectories = await Promise.all(
-        result.map((meta) =>
-          dispatch(
+        result.map(async (meta) => {
+          const data = await dispatch(
             trajectoriesApi.endpoints.getTrajectory.initiate(meta.id),
-          ).unwrap(),
-        ),
+          ).unwrap();
+          return {
+            ...data,
+            parent_id: meta.parent_id,
+            link_type: meta.link_type,
+            task_id: meta.task_id,
+            task_role: meta.task_role,
+            agent_id: meta.agent_id,
+            card_id: meta.card_id,
+          };
+        }),
       );
 
       dispatch(hydrateHistory(trajectories));

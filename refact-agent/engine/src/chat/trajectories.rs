@@ -44,6 +44,18 @@ pub struct TrajectoryMeta {
     pub model: String,
     pub mode: String,
     pub message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1014,6 +1026,42 @@ fn spawn_title_generation_task(
     });
 }
 
+fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
+    let task_meta_json = data.extra.get("task_meta");
+    let task_id = task_meta_json
+        .and_then(|v| v.get("task_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let task_role = task_meta_json
+        .and_then(|v| v.get("role"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let agent_id = task_meta_json
+        .and_then(|v| v.get("agent_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let card_id = task_meta_json
+        .and_then(|v| v.get("card_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    TrajectoryMeta {
+        id: data.id.clone(),
+        title: data.title.clone(),
+        created_at: data.created_at.clone(),
+        updated_at: data.updated_at.clone(),
+        model: data.model.clone(),
+        mode: data.mode.clone(),
+        message_count: data.messages.len(),
+        parent_id: None,
+        link_type: None,
+        task_id,
+        task_role,
+        agent_id,
+        card_id,
+    }
+}
+
 pub async fn handle_v1_trajectories_list(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
 ) -> Result<Response<Body>, ScratchError> {
@@ -1036,15 +1084,7 @@ pub async fn handle_v1_trajectories_list(
             }
             if let Ok(content) = fs::read_to_string(&path).await {
                 if let Ok(data) = serde_json::from_str::<TrajectoryData>(&content) {
-                    result.push(TrajectoryMeta {
-                        id: data.id,
-                        title: data.title,
-                        created_at: data.created_at,
-                        updated_at: data.updated_at,
-                        model: data.model,
-                        mode: data.mode,
-                        message_count: data.messages.len(),
-                    });
+                    result.push(trajectory_data_to_meta(&data));
                 }
             }
         }
@@ -1055,6 +1095,116 @@ pub async fn handle_v1_trajectories_list(
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&result).unwrap()))
         .unwrap())
+}
+
+pub async fn handle_v1_trajectories_all(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+) -> Result<Response<Body>, ScratchError> {
+    let mut result: Vec<TrajectoryMeta> = Vec::new();
+
+    let trajectories_dir = get_trajectories_dir(gcx.clone())
+        .await
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if trajectories_dir.exists() {
+        let mut entries = fs::read_dir(&trajectories_dir)
+            .await
+            .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&path).await {
+                if let Ok(data) = serde_json::from_str::<TrajectoryData>(&content) {
+                    result.push(trajectory_data_to_meta(&data));
+                }
+            }
+        }
+    }
+
+    if let Ok(tasks_dir) = crate::tasks::storage::get_tasks_dir(gcx.clone()).await {
+        if tasks_dir.exists() {
+            if let Ok(mut task_entries) = fs::read_dir(&tasks_dir).await {
+                while let Ok(Some(task_entry)) = task_entries.next_entry().await {
+                    let task_dir = task_entry.path();
+                    if !task_dir.is_dir() {
+                        continue;
+                    }
+                    let task_id = task_dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    for role in &["planner", "agents"] {
+                        let role_dir = task_dir.join("trajectories").join(role);
+                        if !role_dir.exists() {
+                            continue;
+                        }
+                        let trajectories = collect_task_trajectories(&role_dir, &task_id, role, None).await;
+                        result.extend(trajectories);
+                    }
+                }
+            }
+        }
+    }
+
+    result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_string(&result).unwrap()))
+        .unwrap())
+}
+
+async fn collect_task_trajectories(
+    dir: &PathBuf,
+    task_id: &str,
+    role: &str,
+    agent_id: Option<&str>,
+) -> Vec<TrajectoryMeta> {
+    let mut result = Vec::new();
+
+    let Ok(mut entries) = fs::read_dir(dir).await else {
+        return result;
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+
+        if path.is_dir() {
+            let sub_agent_id = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let sub_trajectories = Box::pin(collect_task_trajectories(&path, task_id, role, Some(sub_agent_id))).await;
+            result.extend(sub_trajectories);
+            continue;
+        }
+
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        if let Ok(content) = fs::read_to_string(&path).await {
+            if let Ok(data) = serde_json::from_str::<TrajectoryData>(&content) {
+                let mut meta = trajectory_data_to_meta(&data);
+                if meta.task_id.is_none() {
+                    meta.task_id = Some(task_id.to_string());
+                }
+                if meta.task_role.is_none() {
+                    meta.task_role = Some(role.to_string());
+                }
+                if meta.agent_id.is_none() && agent_id.is_some() {
+                    meta.agent_id = agent_id.map(|s| s.to_string());
+                }
+                result.push(meta);
+            }
+        }
+    }
+
+    result
 }
 
 pub async fn handle_v1_trajectories_get(

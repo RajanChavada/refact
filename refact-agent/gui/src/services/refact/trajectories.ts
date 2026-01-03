@@ -10,6 +10,12 @@ export type TrajectoryMeta = {
   model: string;
   mode: string;
   message_count: number;
+  parent_id?: string;
+  link_type?: string;
+  task_id?: string;
+  task_role?: string;
+  agent_id?: string;
+  card_id?: string;
 };
 
 export type TrajectoryData = {
@@ -94,6 +100,10 @@ export const trajectoriesApi = createApi({
       query: () => "/trajectories",
       providesTags: ["Trajectory"],
     }),
+    listAllTrajectories: builder.query<TrajectoryMeta[], undefined>({
+      query: () => "/trajectories/all",
+      providesTags: ["Trajectory"],
+    }),
     getTrajectory: builder.query<TrajectoryData, string>({
       query: (id) => `/trajectories/${id}`,
       providesTags: (_result, _error, id) => [{ type: "Trajectory", id }],
@@ -121,6 +131,7 @@ export const trajectoriesApi = createApi({
 
 export const {
   useListTrajectoriesQuery,
+  useListAllTrajectoriesQuery,
   useGetTrajectoryQuery,
   useSaveTrajectoryMutation,
   useDeleteTrajectoryMutation,

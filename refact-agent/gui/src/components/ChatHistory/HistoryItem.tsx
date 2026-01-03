@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Card, Flex, Text, Box, Spinner } from "@radix-ui/themes";
+import { Card, Flex, Text, Box, Spinner, Badge } from "@radix-ui/themes";
 import { ChatBubbleIcon, DotFilledIcon } from "@radix-ui/react-icons";
 import { CloseButton } from "../Buttons/Buttons";
 import { IconButton } from "@radix-ui/themes";
@@ -16,7 +16,8 @@ export const HistoryItem: React.FC<{
   onDelete: (id: string) => void;
   onOpenInTab?: (id: string) => void;
   disabled: boolean;
-}> = ({ historyItem, onClick, onDelete, onOpenInTab, disabled }) => {
+  badge?: string;
+}> = ({ historyItem, onClick, onDelete, onOpenInTab, disabled, badge }) => {
   const dateCreated = new Date(historyItem.createdAt);
   const dateTimeString = dateCreated.toLocaleString();
   const threads = useAppSelector((app) => app.chat.threads);
@@ -78,6 +79,11 @@ export const HistoryItem: React.FC<{
             >
               {historyItem.title}
             </Text>
+            {badge && (
+              <Badge size="1" color="gray" variant="soft">
+                {badge}
+              </Badge>
+            )}
           </Flex>
 
           <Flex justify="between" mt="8px">
