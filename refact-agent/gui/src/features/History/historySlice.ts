@@ -230,8 +230,10 @@ export const historySlice = createSlice({
     },
 
     getHistory: (state): ChatHistoryItem[] =>
-      Object.values(state).sort((a, b) =>
-        b.updatedAt.localeCompare(a.updatedAt),
+      Object.values(state)
+        .filter((item) => !item.task_id)
+        .sort((a, b) =>
+          b.updatedAt.localeCompare(a.updatedAt),
       ),
 
     getHistoryTree: (state): HistoryTreeNode[] => {

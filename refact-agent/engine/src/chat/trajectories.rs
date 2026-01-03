@@ -1204,16 +1204,12 @@ pub async fn handle_v1_trajectories_get(
     Path(id): Path<String>,
 ) -> Result<Response<Body>, ScratchError> {
     validate_trajectory_id(&id)?;
-    let trajectories_dir = get_trajectories_dir(gcx)
+    let file_path = find_trajectory_path(gcx, &id)
         .await
-        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let file_path = trajectories_dir.join(format!("{}.json", id));
-    if !file_path.exists() {
-        return Err(ScratchError::new(
+        .ok_or_else(|| ScratchError::new(
             StatusCode::NOT_FOUND,
             "Trajectory not found".to_string(),
-        ));
-    }
+        ))?;
     let content = fs::read_to_string(&file_path)
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1293,16 +1289,12 @@ pub async fn handle_v1_trajectories_delete(
     Path(id): Path<String>,
 ) -> Result<Response<Body>, ScratchError> {
     validate_trajectory_id(&id)?;
-    let trajectories_dir = get_trajectories_dir(gcx.clone())
+    let file_path = find_trajectory_path(gcx.clone(), &id)
         .await
-        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let file_path = trajectories_dir.join(format!("{}.json", id));
-    if !file_path.exists() {
-        return Err(ScratchError::new(
+        .ok_or_else(|| ScratchError::new(
             StatusCode::NOT_FOUND,
             "Trajectory not found".to_string(),
-        ));
-    }
+        ))?;
     fs::remove_file(&file_path)
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
