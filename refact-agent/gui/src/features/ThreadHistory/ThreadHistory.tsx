@@ -5,6 +5,7 @@ import { ArrowLeftIcon } from "@radix-ui/react-icons";
 import { ChatRawJSON } from "../../components/ChatRawJSON";
 import { useAppDispatch, useAppSelector } from "../../hooks";
 import { getChatById } from "../History/historySlice";
+import { selectThreadById } from "../Chat/Thread/selectors";
 import { copyChatHistoryToClipboard } from "../../utils/copyChatHistoryToClipboard";
 import { clearError, getErrorMessage, setError } from "../Errors/errorsSlice";
 import {
@@ -39,9 +40,13 @@ export const ThreadHistory: FC<ThreadHistoryProps> = ({
     devModeChecks: { stabilityCheck: "never" },
   });
 
-  const historyThreadToPass = historyThread && {
-    ...historyThread,
-    model: historyThread.model || "gpt-4o-mini",
+  const activeThread = useAppSelector((state) => selectThreadById(state, chatId));
+
+  const threadToUse = historyThread ?? activeThread;
+
+  const historyThreadToPass = threadToUse && {
+    ...threadToUse,
+    model: threadToUse.model || "gpt-4o-mini",
   };
 
   const error = useAppSelector(getErrorMessage);
@@ -54,15 +59,15 @@ export const ThreadHistory: FC<ThreadHistoryProps> = ({
   );
 
   const handleCopyToClipboardJSON = useCallback(() => {
-    if (!historyThread) {
+    if (!historyThreadToPass) {
       dispatch(setError("No history thread found"));
       return;
     }
 
-    void copyChatHistoryToClipboard(historyThread).then(() => {
+    void copyChatHistoryToClipboard(historyThreadToPass).then(() => {
       dispatch(setInformation("Chat history copied to clipboard"));
     });
-  }, [dispatch, historyThread]);
+  }, [dispatch, historyThreadToPass]);
 
   const handleBackFromThreadHistory = useCallback(
     (customBackFunction: () => void) => {

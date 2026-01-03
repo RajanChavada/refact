@@ -95,74 +95,76 @@ export const Chat: React.FC<ChatProps> = ({
   return (
     <DropzoneProvider asChild>
       <Flex
-        style={{ ...style, minHeight: 0 }}
+        style={{ ...style, minHeight: 0, height: "100%" }}
         direction="column"
         flexGrow="1"
         width="100%"
-        justify="between"
         px="1"
       >
-        <ChatContent
-          key={`chat-content-${chatId}`}
-          onRetry={handleRetry}
-          onStopStreaming={handleAbort}
-        />
+        <Flex direction="column" style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
+          <ChatContent
+            key={`chat-content-${chatId}`}
+            onRetry={handleRetry}
+            onStopStreaming={handleAbort}
+          />
+        </Flex>
 
-        {shouldCheckpointsPopupBeShown && <Checkpoints />}
+        <Flex direction="column" style={{ flex: "0 0 auto" }}>
+          {shouldCheckpointsPopupBeShown && <Checkpoints />}
 
-        <SuggestNewChat
-          shouldBeVisible={
-            threadNewChatSuggested.wasSuggested &&
-            !threadNewChatSuggested.wasRejectedByUser
-          }
-        />
-        {!isStreaming && preventSend && unCalledTools && (
-          <Flex py="4">
-            <Card style={{ width: "100%" }}>
-              <Flex direction="column" align="center" gap="2" width="100%">
-                Chat was interrupted with uncalled tools calls.
-                <Button onClick={onEnableSend}>Resume</Button>
-              </Flex>
-            </Card>
-          </Flex>
-        )}
-
-        <ChatForm
-          key={chatId} // TODO: think of how can we not trigger re-render on chatId change (checkboxes)
-          onSubmit={handleSubmit}
-          onClose={maybeSendToSidebar}
-          unCalledTools={unCalledTools}
-        />
-
-        <Flex justify="between" pl="1" pr="1" pt="1">
-          {/* Two flexboxes are left for the future UI element on the right side */}
-          {messages.length > 0 && (
-            <Flex align="center" justify="between" width="100%">
-              <Flex align="center" gap="2">
-                <EnhancedModelSelector disabled={isStreaming} />
-                <Text size="1" color="gray">
-                  •
-                </Text>
-                <Text
-                  size="1"
-                  color="gray"
-                  onClick={() => setIsDebugChatHistoryVisible((prev) => !prev)}
-                  style={{ cursor: "pointer" }}
-                >
-                  mode: {chatToolUse}
-                </Text>
-              </Flex>
-              {messages.length !== 0 &&
-                !isStreaming &&
-                isDebugChatHistoryVisible && (
-                  <ThreadHistoryButton
-                    title="View history of current thread"
-                    size="1"
-                    onClick={handleThreadHistoryPage}
-                  />
-                )}
+          <SuggestNewChat
+            shouldBeVisible={
+              threadNewChatSuggested.wasSuggested &&
+              !threadNewChatSuggested.wasRejectedByUser
+            }
+          />
+          {!isStreaming && preventSend && unCalledTools && (
+            <Flex py="4">
+              <Card style={{ width: "100%" }}>
+                <Flex direction="column" align="center" gap="2" width="100%">
+                  Chat was interrupted with uncalled tools calls.
+                  <Button onClick={onEnableSend}>Resume</Button>
+                </Flex>
+              </Card>
             </Flex>
           )}
+
+          <ChatForm
+            key={chatId}
+            onSubmit={handleSubmit}
+            onClose={maybeSendToSidebar}
+            unCalledTools={unCalledTools}
+          />
+
+          <Flex justify="between" pl="1" pr="1" pt="1">
+            {messages.length > 0 && (
+              <Flex align="center" justify="between" width="100%">
+                <Flex align="center" gap="2">
+                  <EnhancedModelSelector disabled={isStreaming} />
+                  <Text size="1" color="gray">
+                    •
+                  </Text>
+                  <Text
+                    size="1"
+                    color="gray"
+                    onClick={() => setIsDebugChatHistoryVisible((prev) => !prev)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    mode: {chatToolUse}
+                  </Text>
+                </Flex>
+                {messages.length !== 0 &&
+                  !isStreaming &&
+                  isDebugChatHistoryVisible && (
+                    <ThreadHistoryButton
+                      title="View history of current thread"
+                      size="1"
+                      onClick={handleThreadHistoryPage}
+                    />
+                  )}
+              </Flex>
+            )}
+          </Flex>
         </Flex>
       </Flex>
     </DropzoneProvider>

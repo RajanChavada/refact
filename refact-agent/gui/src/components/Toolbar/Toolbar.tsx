@@ -20,7 +20,7 @@ import {
 import { newChatAction } from "../../events";
 import { restart, useTourRefs } from "../../features/Tour";
 import { popBackTo, push } from "../../features/Pages/pagesSlice";
-import { useCreateTaskMutation } from "../../services/refact/tasks";
+import { useCreateTaskMutation, useUpdateTaskMetaMutation } from "../../services/refact/tasks";
 import {
   selectOpenTasksFromRoot,
   openTask,
@@ -116,7 +116,9 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
   const [createTask] = useCreateTaskMutation();
 
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renamingTaskId, setRenamingTaskId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState<string | null>(null);
+  const [updateTaskMeta] = useUpdateTaskMetaMutation();
 
   const handleNavigation = useCallback(
     (to: DropdownNavigationOptions | "chat") => {
@@ -348,6 +350,24 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
     [dispatch, newTitle],
   );
 
+  const handleTaskRenaming = useCallback((taskId: string) => {
+    setRenamingTaskId(taskId);
+  }, []);
+
+  const handleKeyUpOnTaskRename = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>, taskId: string) => {
+      if (event.code === "Escape") {
+        setRenamingTaskId(null);
+      }
+      if (event.code === "Enter") {
+        setRenamingTaskId(null);
+        if (!newTitle || newTitle.trim() === "") return;
+        void updateTaskMeta({ taskId, name: newTitle });
+      }
+    },
+    [newTitle, updateTaskMeta],
+  );
+
   const handleChatTitleChange = (event: ChangeEvent<HTMLInputElement>) => {
     setNewTitle(event.target.value);
   };
@@ -387,6 +407,25 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
           {openTasks.map((task) => {
             const isActive = isTaskTab(activeTab) && activeTab.taskId === task.id;
             const taskName = task.name.trim() || "Task";
+            const isRenaming = renamingTaskId === task.id;
+
+            if (isRenaming) {
+              return (
+                <TextField.Root
+                  my="auto"
+                  key={`task-${task.id}`}
+                  autoComplete="off"
+                  onKeyUp={(e) => handleKeyUpOnTaskRename(e, task.id)}
+                  onBlur={() => setRenamingTaskId(null)}
+                  autoFocus
+                  size="2"
+                  defaultValue={taskName}
+                  onChange={handleChatTitleChange}
+                  className={styles.RenameInput}
+                />
+              );
+            }
+
             return (
               <TabNav.Link
                 active={isActive}
@@ -404,15 +443,42 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
                   >
                     {taskName}
                   </TruncateLeft>
-                  <IconButton
-                    size="1"
-                    variant="ghost"
-                    color="gray"
-                    title="Close task tab"
-                    onClick={(e) => handleCloseTaskTab(e, task.id)}
-                  >
-                    <Cross1Icon />
-                  </IconButton>
+                  <Flex gap="1" align="center">
+                    <DropdownMenu.Root>
+                      <DropdownMenu.Trigger>
+                        <IconButton
+                          size="1"
+                          variant="ghost"
+                          color="gray"
+                          title="Task actions"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <DotsVerticalIcon />
+                        </IconButton>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content
+                        size="1"
+                        side="bottom"
+                        align="end"
+                        style={{ minWidth: 110 }}
+                      >
+                        <DropdownMenu.Item
+                          onClick={() => handleTaskRenaming(task.id)}
+                        >
+                          Rename
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Root>
+                    <IconButton
+                      size="1"
+                      variant="ghost"
+                      color="gray"
+                      title="Close task tab"
+                      onClick={(e) => handleCloseTaskTab(e, task.id)}
+                    >
+                      <Cross1Icon />
+                    </IconButton>
+                  </Flex>
                 </Flex>
               </TabNav.Link>
             );

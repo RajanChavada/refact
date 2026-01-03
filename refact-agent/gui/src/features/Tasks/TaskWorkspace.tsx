@@ -361,23 +361,22 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     setSelectedCard(card);
   }, []);
 
-  const handleNewPlanner = useCallback(async () => {
+  const handleNewPlanner = useCallback(() => {
     if (isCreatingPlanner) return;
-    try {
-      const result = await createPlannerChat(taskId).unwrap();
-      const newChatId = result.chat_id;
-      dispatch(createChatWithId({
-        id: newChatId,
-        title: "",
-        isTaskChat: true,
-        mode: "TASK_PLANNER",
-        taskMeta: { task_id: taskId, role: "planner" },
-      }));
-      dispatch(addPlannerChat({ taskId, chatId: newChatId }));
-      dispatch(setTaskActiveChat({ taskId, activeChat: { type: "planner", chatId: newChatId } }));
-    } catch (e) {
-      console.error("Failed to create planner chat:", e);
-    }
+    createPlannerChat(taskId).unwrap()
+      .then((result) => {
+        const newChatId = result.chat_id;
+        dispatch(createChatWithId({
+          id: newChatId,
+          title: "",
+          isTaskChat: true,
+          mode: "TASK_PLANNER",
+          taskMeta: { task_id: taskId, role: "planner" },
+        }));
+        dispatch(addPlannerChat({ taskId, chatId: newChatId }));
+        dispatch(setTaskActiveChat({ taskId, activeChat: { type: "planner", chatId: newChatId } }));
+      })
+      .catch(() => undefined);
   }, [dispatch, taskId, createPlannerChat, isCreatingPlanner]);
 
   const handleRemovePlanner = useCallback((chatId: string) => {
@@ -406,11 +405,12 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       title: `Agent: ${cardTitle}`,
       isTaskChat: true,
       mode: "TASK_AGENT",
-       taskMeta: { task_id: taskId, role: "agents", card_id: cardId },
+      taskMeta: { task_id: taskId, role: "agents", card_id: cardId },
+      model: task?.default_agent_model,
     }));
 
     dispatch(setTaskActiveChat({ taskId, activeChat: { type: "agent", cardId, chatId } }));
-  }, [board, taskId, dispatch]);
+  }, [board, taskId, dispatch, task?.default_agent_model]);
 
   const handleInternalLink = useCallback((url: string): boolean => {
     const parsed = parseRefactLink(url);
@@ -438,7 +438,8 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
         title: `Agent: ${cardTitle}`,
         isTaskChat: true,
         mode: "TASK_AGENT",
-         taskMeta: { task_id: taskId, role: "agents", card_id: cardId },
+        taskMeta: { task_id: taskId, role: "agents", card_id: cardId },
+        model: task?.default_agent_model,
       }));
 
       dispatch(setTaskActiveChat({ taskId, activeChat: { type: "agent", cardId, chatId } }));
@@ -446,7 +447,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     }
 
     return false;
-  }, [board, taskId, dispatch]);
+  }, [board, taskId, dispatch, task?.default_agent_model]);
 
   const handleToggleChatExpanded = useCallback(() => {
     setChatExpanded((prev) => !prev);

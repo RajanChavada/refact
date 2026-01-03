@@ -235,11 +235,12 @@ export const tasksApi = createApi({
       },
     }),
 
-    updateTaskMeta: builder.mutation<TaskMeta, { taskId: string; baseBranch?: string; baseCommit?: string; defaultAgentModel?: string }>({
-      queryFn: async ({ taskId, baseBranch, baseCommit, defaultAgentModel }, api, _opts, baseQuery) => {
+    updateTaskMeta: builder.mutation<TaskMeta, { taskId: string; name?: string; baseBranch?: string; baseCommit?: string; defaultAgentModel?: string }>({
+      queryFn: async ({ taskId, name, baseBranch, baseCommit, defaultAgentModel }, api, _opts, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort;
         const body: Record<string, string> = {};
+        if (name !== undefined) body.name = name;
         if (baseBranch !== undefined) body.base_branch = baseBranch;
         if (baseCommit !== undefined) body.base_commit = baseCommit;
         if (defaultAgentModel !== undefined) body.default_agent_model = defaultAgentModel;

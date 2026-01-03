@@ -278,6 +278,8 @@ pub struct UpdateTaskStatusRequest {
 #[derive(Deserialize)]
 pub struct UpdateTaskMetaRequest {
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub base_branch: Option<String>,
     #[serde(default)]
     pub base_commit: Option<String>,
@@ -292,6 +294,9 @@ pub async fn handle_update_task_meta(
 ) -> Result<Json<TaskMeta>, (StatusCode, String)> {
     let mut meta = storage::load_task_meta(gcx.clone(), &task_id).await
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    if let Some(name) = req.name {
+        meta.name = name;
+    }
     if let Some(branch) = req.base_branch {
         meta.base_branch = Some(branch);
     }

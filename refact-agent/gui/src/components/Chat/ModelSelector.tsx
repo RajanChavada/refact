@@ -46,7 +46,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   );
 
   const defaultModel = capsData?.chat_default_model ?? "";
-  const effectiveValue = isControlled ? (value || defaultModel) : capsForToolUse.currentModel;
+  const effectiveValue = isControlled ? (value ?? defaultModel) : capsForToolUse.currentModel;
   const handleChange = isControlled
     ? (model: string) => onValueChange?.(model)
     : capsForToolUse.setCapModel;

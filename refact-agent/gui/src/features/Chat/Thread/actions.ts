@@ -74,6 +74,7 @@ export const createChatWithId = createAction<{
   isTaskChat?: boolean;
   mode?: string;
   taskMeta?: TaskMeta;
+  model?: string;
 }>("chatThread/createWithId");
 
 export const newChatWithInitialMessages = createAsyncThunk(
