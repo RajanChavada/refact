@@ -91,19 +91,22 @@ impl Tool for ToolTaskBoardCreateCard {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let ccx_lock = ccx.lock().await;
-        
-        let is_planner = ccx_lock.task_meta.as_ref()
-            .map(|m| m.role == "planner")
-            .unwrap_or(false);
-        
+        let (is_planner, gcx) = {
+            let ccx_lock = ccx.lock().await;
+            let is_planner = ccx_lock.task_meta.as_ref()
+                .map(|m| m.role == "planner")
+                .unwrap_or(false);
+            let gcx = ccx_lock.global_context.clone();
+            (is_planner, gcx)
+        };
+
         if !is_planner {
             return Err(
                 "task_board_create_card can only be called by the task planner. \
                  Switch to the planner chat to create cards.".to_string()
             );
         }
-        
+
         let task_id = get_task_id(&ccx, args).await?;
         let card_id = args.get("card_id").and_then(|v| v.as_str()).ok_or("Missing 'card_id'")?;
         let title = args.get("title").and_then(|v| v.as_str()).ok_or("Missing 'title'")?;
@@ -113,8 +116,6 @@ impl Tool for ToolTaskBoardCreateCard {
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
-
-        let gcx = ccx.lock().await.global_context.clone();
         let mut board = storage::load_board(gcx.clone(), &task_id).await?;
 
         if board.cards.iter().any(|c| c.id == card_id) {
@@ -188,23 +189,24 @@ impl Tool for ToolTaskBoardUpdateCard {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let ccx_lock = ccx.lock().await;
-        
-        let is_planner = ccx_lock.task_meta.as_ref()
-            .map(|m| m.role == "planner")
-            .unwrap_or(false);
-        
+        let (is_planner, gcx) = {
+            let ccx_lock = ccx.lock().await;
+            let is_planner = ccx_lock.task_meta.as_ref()
+                .map(|m| m.role == "planner")
+                .unwrap_or(false);
+            let gcx = ccx_lock.global_context.clone();
+            (is_planner, gcx)
+        };
+
         if !is_planner {
             return Err(
                 "task_board_update_card can only be called by the task planner. \
                  Switch to the planner chat to update cards.".to_string()
             );
         }
-        
+
         let task_id = get_task_id(&ccx, args).await?;
         let card_id = args.get("card_id").and_then(|v| v.as_str()).ok_or("Missing 'card_id'")?;
-
-        let gcx = ccx.lock().await.global_context.clone();
         let mut board = storage::load_board(gcx.clone(), &task_id).await?;
 
         let card = board.get_card_mut(card_id).ok_or(format!("Card {} not found", card_id))?;
@@ -269,19 +271,22 @@ impl Tool for ToolTaskBoardMoveCard {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let ccx_lock = ccx.lock().await;
-        
-        let is_planner = ccx_lock.task_meta.as_ref()
-            .map(|m| m.role == "planner")
-            .unwrap_or(false);
-        
+        let (is_planner, gcx) = {
+            let ccx_lock = ccx.lock().await;
+            let is_planner = ccx_lock.task_meta.as_ref()
+                .map(|m| m.role == "planner")
+                .unwrap_or(false);
+            let gcx = ccx_lock.global_context.clone();
+            (is_planner, gcx)
+        };
+
         if !is_planner {
             return Err(
                 "task_board_move_card can only be called by the task planner. \
                  Switch to the planner chat to move cards.".to_string()
             );
         }
-        
+
         let task_id = get_task_id(&ccx, args).await?;
         let card_id = args.get("card_id").and_then(|v| v.as_str()).ok_or("Missing 'card_id'")?;
         let column = args.get("column").and_then(|v| v.as_str()).ok_or("Missing 'column'")?;
@@ -290,8 +295,6 @@ impl Tool for ToolTaskBoardMoveCard {
         if !valid_columns.contains(&column) {
             return Err(format!("Invalid column: {}. Must be one of: {:?}", column, valid_columns));
         }
-
-        let gcx = ccx.lock().await.global_context.clone();
         let mut board = storage::load_board(gcx.clone(), &task_id).await?;
         let now = Utc::now().to_rfc3339();
 
@@ -351,23 +354,24 @@ impl Tool for ToolTaskBoardDeleteCard {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let ccx_lock = ccx.lock().await;
-        
-        let is_planner = ccx_lock.task_meta.as_ref()
-            .map(|m| m.role == "planner")
-            .unwrap_or(false);
-        
+        let (is_planner, gcx) = {
+            let ccx_lock = ccx.lock().await;
+            let is_planner = ccx_lock.task_meta.as_ref()
+                .map(|m| m.role == "planner")
+                .unwrap_or(false);
+            let gcx = ccx_lock.global_context.clone();
+            (is_planner, gcx)
+        };
+
         if !is_planner {
             return Err(
                 "task_board_delete_card can only be called by the task planner. \
                  Switch to the planner chat to delete cards.".to_string()
             );
         }
-        
+
         let task_id = get_task_id(&ccx, args).await?;
         let card_id = args.get("card_id").and_then(|v| v.as_str()).ok_or("Missing 'card_id'")?;
-
-        let gcx = ccx.lock().await.global_context.clone();
         let mut board = storage::load_board(gcx.clone(), &task_id).await?;
 
         let existed = board.cards.iter().any(|c| c.id == card_id);
