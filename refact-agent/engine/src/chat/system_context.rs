@@ -29,34 +29,17 @@ const INSTRUCTION_FILE_PATTERNS: &[&str] = &[
 
 const RECURSIVE_SEARCH_SKIP_DIRS: &[&str] = &[
     "node_modules",
-    ".git",
-    ".hg",
-    ".svn",
     "target",
     "build",
     "dist",
     "out",
-    ".next",
-    ".nuxt",
     "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
     "venv",
-    ".venv",
     "env",
-    ".env",
     "vendor",
-    ".cargo",
-    ".rustup",
     "coverage",
-    ".coverage",
-    ".tox",
     "eggs",
     "*.egg-info",
-    ".gradle",
-    ".idea",
-    ".vscode",
-    ".vs",
 ];
 
 const RECURSIVE_SEARCH_MAX_DEPTH: usize = 5;
@@ -735,6 +718,9 @@ fn extract_option_value(xml: &str, option_name: &str) -> Option<String> {
 }
 
 fn should_skip_dir(dir_name: &str) -> bool {
+    if dir_name.starts_with('.') {
+        return true;
+    }
     for skip_pattern in RECURSIVE_SEARCH_SKIP_DIRS {
         if skip_pattern.starts_with("*.") {
             if let Some(suffix) = skip_pattern.strip_prefix("*.") {

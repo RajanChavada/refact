@@ -197,9 +197,7 @@ pub async fn handoff_select(
     let before_count = messages.len();
     let before_tokens = approx_token_count(messages);
 
-    let mut context_files: Vec<ChatMessage> = Vec::new();
-    let mut conversation: Vec<ChatMessage> = Vec::new();
-    let mut llm_summary: Option<String> = None;
+    let system_prefix_len = messages.iter().take_while(|m| m.role == "system").count();
 
     let start_idx = if opts.include_last_user_plus {
         messages.iter().rposition(|m| m.role == "user").unwrap_or(0)
@@ -220,17 +218,22 @@ pub async fn handoff_select(
         }
     }
 
+    let mut system_prefix: Vec<ChatMessage> = messages.iter().take(system_prefix_len).cloned().collect();
+
+    let mut context_files: Vec<ChatMessage> = Vec::new();
     if opts.include_all_opened_context {
-        for msg in messages.iter() {
+        for msg in messages.iter().skip(system_prefix_len) {
             if msg.role == "context_file" {
                 context_files.push(msg.clone());
             }
         }
     }
 
-    for (i, msg) in messages.iter().enumerate() {
+    let mut conversation: Vec<ChatMessage> = Vec::new();
+    for (i, msg) in messages.iter().enumerate().skip(system_prefix_len) {
         let should_include = match msg.role.as_str() {
-            "user" | "assistant" | "system" => i >= start_idx,
+            "user" | "assistant" => i >= start_idx,
+            "system" => false,
             "context_file" => false,
             "diff" => {
                 (i >= start_idx && opts.include_all_edited_context) ||
@@ -245,28 +248,39 @@ pub async fn handoff_select(
         }
     }
 
-    let mut selected = context_files;
+    let mut llm_summary: Option<String> = None;
+    let mut summary_msg: Option<ChatMessage> = None;
+
+    if opts.llm_summary_for_excluded && generate_summary {
+        let excluded: Vec<ChatMessage> = if opts.include_last_user_plus && start_idx > system_prefix_len {
+            messages[system_prefix_len..start_idx].to_vec()
+        } else if !opts.include_last_user_plus {
+            messages[system_prefix_len..].to_vec()
+        } else {
+            vec![]
+        };
+
+        if !excluded.is_empty() {
+            if let Ok(summary) = crate::agentic::compress_trajectory::compress_trajectory(gcx, &excluded).await {
+                summary_msg = Some(ChatMessage {
+                    role: "user".to_string(),
+                    content: ChatContent::SimpleText(format!("## Previous conversation summary\n\n{}", summary)),
+                    ..Default::default()
+                });
+                llm_summary = Some(summary);
+            }
+        }
+    }
+
+    let mut selected: Vec<ChatMessage> = Vec::new();
+    selected.append(&mut system_prefix);
+    selected.extend(context_files);
+    if let Some(msg) = summary_msg {
+        selected.push(msg);
+    }
     selected.extend(conversation);
 
     super::history_limit::remove_invalid_tool_calls_and_tool_calls_results(&mut selected);
-
-    if opts.llm_summary_for_excluded && generate_summary {
-        let excluded: Vec<ChatMessage> = if opts.include_last_user_plus && start_idx > 0 {
-            messages[..start_idx].to_vec()
-        } else {
-            messages.to_vec()
-        };
-
-        if let Ok(summary) = crate::agentic::compress_trajectory::compress_trajectory(gcx, &excluded).await {
-            let summary_msg = ChatMessage {
-                role: "user".to_string(),
-                content: ChatContent::SimpleText(format!("## Previous conversation summary\n\n{}", summary)),
-                ..Default::default()
-            };
-            selected.insert(0, summary_msg);
-            llm_summary = Some(summary);
-        }
-    }
 
     let stats = TransformStats {
         before_message_count: before_count,
@@ -568,5 +582,310 @@ mod tests {
         assert_eq!(stats.before_message_count, 0);
         assert_eq!(stats.after_message_count, 1);
         assert_eq!(messages[0].role, "cd_instruction");
+    }
+
+    fn make_system_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "system".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn roles(messages: &[ChatMessage]) -> Vec<&str> {
+        messages.iter().map(|m| m.role.as_str()).collect()
+    }
+
+    fn assert_system_prefix(messages: &[ChatMessage]) {
+        let first_non_system = messages
+            .iter()
+            .position(|m| m.role != "system")
+            .unwrap_or(messages.len());
+        assert!(
+            messages.iter().skip(first_non_system).all(|m| m.role != "system"),
+            "system messages must be prefix, got: {:?}",
+            roles(messages)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handoff_preserves_system_prefix() {
+        let messages = vec![
+            make_system_msg("You are an assistant"),
+            make_user_msg("first question"),
+            make_assistant_msg("first answer"),
+            make_user_msg("second question"),
+            make_assistant_msg("second answer"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected[0].role, "system");
+        assert_eq!(selected[0].content.content_text_only(), "You are an assistant");
+        assert_eq!(selected[1].role, "user");
+        assert_eq!(selected[1].content.content_text_only(), "second question");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_system_before_context_files() {
+        let messages = vec![
+            make_system_msg("You are an assistant"),
+            make_context_file_msg("test.rs", "fn main() {}"),
+            make_user_msg("question"),
+            make_assistant_msg("answer"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_all_opened_context: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected[0].role, "system");
+        assert_eq!(selected[1].role, "context_file");
+        assert_eq!(selected[2].role, "user");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_multiple_system_messages_preserved() {
+        let messages = vec![
+            make_system_msg("System prompt 1"),
+            make_system_msg("System prompt 2"),
+            make_user_msg("question"),
+            make_assistant_msg("answer"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected[0].role, "system");
+        assert_eq!(selected[0].content.content_text_only(), "System prompt 1");
+        assert_eq!(selected[1].role, "system");
+        assert_eq!(selected[1].content.content_text_only(), "System prompt 2");
+        assert_eq!(selected[2].role, "user");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_no_system_messages() {
+        let messages = vec![
+            make_user_msg("question"),
+            make_assistant_msg("answer"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected[0].role, "user");
+        assert_eq!(selected[1].role, "assistant");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_all_messages_when_include_last_user_plus_false() {
+        let messages = vec![
+            make_system_msg("System prompt"),
+            make_user_msg("first question"),
+            make_assistant_msg("first answer"),
+            make_user_msg("second question"),
+            make_assistant_msg("second answer"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: false,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected.len(), 5);
+        assert_eq!(roles(&selected), vec!["system", "user", "assistant", "user", "assistant"]);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_mid_chat_system_dropped() {
+        let messages = vec![
+            make_system_msg("s1"),
+            make_user_msg("u1"),
+            make_system_msg("s2"),
+            make_assistant_msg("a1"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: false,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        let system_count = selected.iter().filter(|m| m.role == "system").count();
+        assert_eq!(system_count, 1);
+        assert_eq!(selected[0].content.content_text_only(), "s1");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_orphan_tool_result_removed() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_assistant_with_tool_call("tc1", "cat"),
+            make_tool_msg("tc1", "tool output"),
+            make_user_msg("q"),
+            make_assistant_msg("a"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert!(selected.iter().all(|m| m.role != "tool"));
+        assert_eq!(roles(&selected), vec!["system", "user", "assistant"]);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_valid_tool_pair_preserved() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q"),
+            make_assistant_with_tool_call("tc1", "cat"),
+            make_tool_msg("tc1", "tool output"),
+            make_assistant_msg("final"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(roles(&selected), vec!["system", "user", "assistant", "tool", "assistant"]);
+        assert_eq!(selected[2].tool_calls.as_ref().unwrap()[0].id, "tc1");
+        assert_eq!(selected[3].tool_call_id, "tc1");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_empty_input() {
+        let messages: Vec<ChatMessage> = vec![];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_all_opened_context: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert!(selected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handoff_only_system_messages() {
+        let messages = vec![
+            make_system_msg("s1"),
+            make_system_msg("s2"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(roles(&selected), vec!["system", "system"]);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_context_files_from_different_positions() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_context_file_msg("early.rs", "early"),
+            make_user_msg("u1"),
+            make_context_file_msg("mid.rs", "mid"),
+            make_assistant_msg("a1"),
+            make_user_msg("u2"),
+            make_context_file_msg("late.rs", "late"),
+            make_assistant_msg("a2"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_all_opened_context: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(selected[0].role, "system");
+        let cf_count = selected.iter().filter(|m| m.role == "context_file").count();
+        assert_eq!(cf_count, 3);
+        let first_cf_idx = selected.iter().position(|m| m.role == "context_file").unwrap();
+        let first_user_idx = selected.iter().position(|m| m.role == "user").unwrap();
+        assert!(first_cf_idx < first_user_idx);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_single_user_message() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("only question"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(roles(&selected), vec!["system", "user"]);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_diff_messages_with_edited_context() {
+        let diff_msg = ChatMessage {
+            role: "diff".to_string(),
+            tool_call_id: "tc1".to_string(),
+            content: ChatContent::SimpleText("diff content".to_string()),
+            ..Default::default()
+        };
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("u1"),
+            make_assistant_with_tool_call("tc1", "update_textdoc"),
+            diff_msg,
+            make_user_msg("u2"),
+            make_assistant_msg("a2"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_all_edited_context: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(roles(&selected), vec!["system", "user", "assistant"]);
     }
 }

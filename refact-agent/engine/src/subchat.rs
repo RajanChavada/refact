@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::collections::HashSet;
-use tokio::sync::Mutex as AMutex;
+use tokio::sync::{broadcast, Mutex as AMutex, RwLock as ARwLock};
 use serde_json::{json, Value};
 use tracing::info;
 use uuid::Uuid;
@@ -13,16 +14,302 @@ use crate::call_validation::{
     ChatContent, ChatMeta, ChatMode, ChatToolCall, SamplingParameters, ChatMessage, ChatUsage,
     ReasoningEffort,
 };
-use crate::global_context::try_load_caps_quickly_if_not_present;
+use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present};
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::chat::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use crate::chat::stream_core::{
     run_llm_stream, StreamRunParams, NoopCollector, ChoiceFinal, normalize_tool_call,
 };
 use crate::chat::tools::{execute_tools, ExecuteToolsOptions};
-use crate::chat::types::ThreadParams;
+use crate::chat::types::{ThreadParams, ChatCommand, CommandRequest, SessionState, ChatEvent};
+use crate::chat::{get_or_create_session_with_trajectory, process_command_queue, maybe_save_trajectory};
 
 const MAX_NEW_TOKENS: usize = 4096;
+
+#[derive(Clone, Default)]
+pub struct SubchatConfig {
+    pub tools: Option<Vec<String>>,
+    pub temperature: Option<f32>,
+    pub max_new_tokens: Option<usize>,
+    pub n_ctx: Option<usize>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub prepend_system_prompt: bool,
+    pub max_steps: usize,
+    pub save_trajectory: bool,
+    pub chat_id: Option<String>,
+    pub title: Option<String>,
+    pub parent_id: Option<String>,
+    pub link_type: Option<String>,
+    pub mode: String,
+}
+
+impl SubchatConfig {
+    pub fn stateless() -> Self {
+        Self {
+            max_steps: 10,
+            mode: "AGENT".to_string(),
+            ..Default::default()
+        }
+    }
+
+    pub fn stateful(parent_id: Option<String>) -> Self {
+        Self {
+            max_steps: 10,
+            mode: "TASK_AGENT".to_string(),
+            save_trajectory: true,
+            parent_id,
+            link_type: Some("subagent".to_string()),
+            ..Default::default()
+        }
+    }
+}
+
+pub struct SubchatResult {
+    pub messages: Vec<ChatMessage>,
+    pub usage: ChatUsage,
+    pub chat_id: Option<String>,
+}
+
+fn has_final_answer(messages: &[ChatMessage]) -> bool {
+    messages.iter().rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| m.tool_calls.as_ref().map_or(true, |tc| tc.is_empty()))
+        .unwrap_or(false)
+}
+
+pub async fn run_subchat(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    model: &str,
+    messages: Vec<ChatMessage>,
+    config: SubchatConfig,
+) -> Result<SubchatResult, String> {
+    if config.save_trajectory {
+        run_subchat_stateful(gcx, model, messages, config).await
+    } else {
+        run_subchat_stateless(gcx, model, messages, config).await
+    }
+}
+
+async fn run_subchat_stateless(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    model: &str,
+    messages: Vec<ChatMessage>,
+    config: SubchatConfig,
+) -> Result<SubchatResult, String> {
+    let n_ctx = config.n_ctx.unwrap_or(32000);
+    let ccx = Arc::new(AMutex::new(
+        AtCommandsContext::new(
+            gcx.clone(),
+            n_ctx,
+            1,
+            false,
+            messages.clone(),
+            "subchat-stateless".to_string(),
+            false,
+            model.to_string(),
+            None,
+            None,
+        ).await
+    ));
+
+    let mut usage = ChatUsage::default();
+    let mut current_messages = messages;
+
+    for step in 0..config.max_steps {
+        let results = subchat_single(
+            ccx.clone(),
+            model,
+            current_messages.clone(),
+            config.tools.clone(),
+            None,
+            false,
+            config.temperature,
+            config.max_new_tokens,
+            1,
+            config.reasoning_effort.clone(),
+            config.prepend_system_prompt && step == 0,
+            Some(&mut usage),
+            None,
+            None,
+        ).await?;
+
+        current_messages = results.into_iter().next().unwrap_or(current_messages);
+
+        let last = current_messages.last();
+        if let Some(m) = last {
+            if m.role == "assistant" && m.tool_calls.is_none() {
+                break;
+            }
+        }
+    }
+
+    Ok(SubchatResult {
+        messages: current_messages,
+        usage,
+        chat_id: None,
+    })
+}
+
+async fn run_subchat_stateful(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    model: &str,
+    messages: Vec<ChatMessage>,
+    config: SubchatConfig,
+) -> Result<SubchatResult, String> {
+    let chat_id = config.chat_id.clone().unwrap_or_else(|| format!("subchat-{}", Uuid::new_v4()));
+    let title = config.title.clone().unwrap_or_else(|| "Subchat".to_string());
+
+    let sessions = {
+        let gcx_locked = gcx.read().await;
+        gcx_locked.chat_sessions.clone()
+    };
+
+    let session_arc = get_or_create_session_with_trajectory(gcx.clone(), &sessions, &chat_id).await;
+
+    {
+        let mut session = session_arc.lock().await;
+
+        session.thread = ThreadParams {
+            id: chat_id.clone(),
+            title: title.clone(),
+            model: model.to_string(),
+            mode: config.mode.clone(),
+            tool_use: config.tools.as_ref().map(|t| t.join(",")).unwrap_or_else(|| "agent".to_string()),
+            boost_reasoning: false,
+            context_tokens_cap: config.n_ctx,
+            include_project_info: true,
+            checkpoints_enabled: false,
+            is_title_generated: true,
+            automatic_patch: false,
+            task_meta: None,
+            parent_id: config.parent_id.clone(),
+            link_type: config.link_type.clone(),
+        };
+
+        if session.messages.is_empty() {
+            for msg in messages {
+                session.add_message(msg);
+            }
+        }
+
+        session.increment_version();
+    }
+
+    maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
+
+    let mut event_rx = {
+        let session = session_arc.lock().await;
+        session.event_tx.subscribe()
+    };
+
+    {
+        let mut session = session_arc.lock().await;
+
+        let request = CommandRequest {
+            client_request_id: Uuid::new_v4().to_string(),
+            priority: false,
+            command: ChatCommand::Regenerate {},
+        };
+        session.command_queue.push_back(request);
+        session.touch();
+
+        let processor_running = session.queue_processor_running.clone();
+        let queue_notify = session.queue_notify.clone();
+
+        drop(session);
+
+        if !processor_running.swap(true, Ordering::SeqCst) {
+            tokio::spawn(process_command_queue(gcx.clone(), session_arc.clone(), processor_running));
+        } else {
+            queue_notify.notify_one();
+        }
+    }
+
+    info!("Started stateful subchat {} (model: {}), waiting for completion...", chat_id, model);
+
+    let timeout = tokio::time::Duration::from_secs(60 * 30);
+    let start = tokio::time::Instant::now();
+    let mut saw_work = false;
+    let mut tool_phases = 0usize;
+
+    loop {
+        if start.elapsed() > timeout {
+            return Err(format!("Subchat {} timed out after 30 minutes", chat_id));
+        }
+
+        match event_rx.recv().await {
+            Ok(envelope) => {
+                match envelope.event {
+                    ChatEvent::StreamStarted { .. } | ChatEvent::StreamDelta { .. } | ChatEvent::StreamFinished { .. } => {
+                        saw_work = true;
+                    }
+                    ChatEvent::RuntimeUpdated { state, queue_size, error, .. } => {
+                        if state == SessionState::ExecutingTools {
+                            tool_phases += 1;
+                            if tool_phases > config.max_steps {
+                                return Err(format!("Subchat {} exceeded max_steps ({})", chat_id, config.max_steps));
+                            }
+                        }
+                        if state != SessionState::Idle || queue_size > 0 {
+                            saw_work = true;
+                        }
+                        match state {
+                            SessionState::Idle if queue_size == 0 && saw_work => {
+                                let session = session_arc.lock().await;
+                                if has_final_answer(&session.messages) {
+                                    info!("Subchat {} completed", chat_id);
+                                    break;
+                                }
+                            }
+                            SessionState::Paused => {
+                                return Err(format!(
+                                    "Subchat {} requires tool confirmation. Use TASK_AGENT mode.",
+                                    chat_id
+                                ));
+                            }
+                            SessionState::WaitingIde => {
+                                return Err(format!(
+                                    "Subchat {} requires IDE interaction which is not supported.",
+                                    chat_id
+                                ));
+                            }
+                            SessionState::Error => {
+                                let err_msg = error.unwrap_or_else(|| "Unknown error".to_string());
+                                return Err(format!("Subchat {} error: {}", chat_id, err_msg));
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                saw_work = true;
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                return Err(format!("Subchat {} event channel closed unexpectedly", chat_id));
+            }
+        }
+    }
+
+    let (result_messages, usage) = {
+        let session = session_arc.lock().await;
+        let total_usage = session.messages.iter()
+            .filter_map(|m| m.usage.as_ref())
+            .fold(ChatUsage::default(), |mut acc, u| {
+                acc.prompt_tokens += u.prompt_tokens;
+                acc.completion_tokens += u.completion_tokens;
+                acc
+            });
+        (session.messages.clone(), total_usage)
+    };
+
+    Ok(SubchatResult {
+        messages: result_messages,
+        usage,
+        chat_id: Some(chat_id),
+    })
+}
 
 fn truncate_text(s: &str, max_chars: usize) -> String {
     let s = s.trim().replace('\n', " ");

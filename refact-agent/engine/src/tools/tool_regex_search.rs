@@ -63,11 +63,12 @@ async fn search_single_file(
 
 async fn search_files_with_regex(
     gcx: Arc<ARwLock<GlobalContext>>,
+    code_workdir: &Option<PathBuf>,
     pattern: &str,
     scope: &String,
 ) -> Result<Vec<ContextFile>, String> {
     let regex = Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {}", e))?;
-    let files_to_search = resolve_scope(gcx.clone(), scope)
+    let files_to_search = resolve_scope(gcx.clone(), code_workdir, scope)
         .await
         .and_then(|files| validate_scope_files(files, scope))?;
     let regex_arc = Arc::new(regex);
@@ -237,11 +238,12 @@ impl Tool for ToolRegexSearch {
             }
         };
 
-        let ccx_lock = ccx.lock().await;
-        let gcx = ccx_lock.global_context.clone();
-        drop(ccx_lock);
+        let (gcx, code_workdir) = {
+            let ccx_lock = ccx.lock().await;
+            (ccx_lock.global_context.clone(), ccx_lock.code_workdir.clone())
+        };
 
-        let files_in_scope = resolve_scope(gcx.clone(), &scope)
+        let files_in_scope = resolve_scope(gcx.clone(), &code_workdir, &scope)
             .await
             .and_then(|files| validate_scope_files(files, &scope))?;
 
@@ -293,8 +295,7 @@ impl Tool for ToolRegexSearch {
             }
         }
 
-        // 2. Text matches
-        let search_results = search_files_with_regex(gcx.clone(), &pattern, &scope).await?;
+        let search_results = search_files_with_regex(gcx.clone(), &code_workdir, &pattern, &scope).await?;
         all_content.push_str("\nText matches inside files:\n");
         if search_results.is_empty() {
             all_content.push_str("  No text matches found in any file.\n");

@@ -231,7 +231,7 @@ pub async fn handle_handoff_apply(
 
     let snapshot = TrajectorySnapshot {
         chat_id: new_chat_id.clone(),
-        title: format!("Handoff from: {}", thread.title),
+        title: thread.title.clone(),
         model: thread.model.clone(),
         mode: thread.mode.clone(),
         tool_use: thread.tool_use.clone(),

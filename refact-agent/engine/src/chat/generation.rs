@@ -136,12 +136,24 @@ pub async fn run_llm_generation(
 ) -> Result<(), String> {
     let chat_mode = parse_chat_mode(&thread.mode);
 
-    let tools: Vec<crate::tools::tools_description::ToolDesc> =
-        crate::tools::tools_list::get_available_tools_by_chat_mode(gcx.clone(), chat_mode)
+    let tools: Vec<crate::tools::tools_description::ToolDesc> = {
+        let all_tools: Vec<_> = crate::tools::tools_list::get_available_tools_by_chat_mode(gcx.clone(), chat_mode)
             .await
             .into_iter()
             .map(|tool| tool.tool_description())
             .collect();
+
+        if thread.tool_use.contains(',') {
+            let allowed: std::collections::HashSet<String> = thread.tool_use
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            all_tools.into_iter().filter(|t| allowed.contains(&t.name)).collect()
+        } else {
+            all_tools
+        }
+    };
 
     info!("session generation: tools count = {}", tools.len());
 
@@ -215,7 +227,7 @@ pub async fn run_llm_generation(
                 if msg.role == "assistant" {
                     continue;
                 }
-                if msg.role == "system" && session.messages.iter().any(|m| m.role == "system") {
+                if msg.role == "system" && session.messages.first().map(|m| m.role == "system").unwrap_or(false) {
                     continue;
                 }
                 if msg.role == "cd_instruction" && session.messages.iter().any(|m| m.role == "cd_instruction") {

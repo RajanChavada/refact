@@ -586,3 +586,97 @@ pub async fn create_global_context(
     crate::chat::start_trajectory_watcher(gcx.clone());
     (gcx, ask_shutdown_receiver, cmdline)
 }
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    pub async fn make_test_gcx() -> Arc<ARwLock<GlobalContext>> {
+        let (ask_shutdown_sender, _) = std::sync::mpsc::channel::<String>();
+
+        let cache_dir = std::env::temp_dir().join(format!("refact-test-{}", uuid::Uuid::new_v4()));
+        let config_dir = std::env::temp_dir().join(format!("refact-cfg-{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let _ = std::fs::create_dir_all(&config_dir);
+
+        let cmdline = CommandLine {
+            ping_message: "pong".to_string(),
+            logs_stderr: true,
+            logs_to_file: String::new(),
+            address_url: "Refact".to_string(),
+            api_key: String::new(),
+            insecure: true,
+            http_port: 0,
+            lsp_port: 0,
+            lsp_stdin_stdout: 0,
+            enduser_client_version: String::new(),
+            basic_telemetry: false,
+            verbose: false,
+            ast: false,
+            ast_max_files: 0,
+            ast_permanent: String::new(),
+            wait_ast: false,
+            vecdb: false,
+            vecdb_max_files: 0,
+            vecdb_force_path: String::new(),
+            wait_vecdb: false,
+            files_jsonl_path: String::new(),
+            workspace_folder: String::new(),
+            only_create_yaml_configs: false,
+            print_customization: false,
+            experimental: false,
+            inside_container: true,
+            integrations_yaml: String::new(),
+            variables_yaml: String::new(),
+            secrets_yaml: String::new(),
+            indexing_yaml: String::new(),
+            privacy_yaml: String::new(),
+            active_group_id: None,
+        };
+
+        let http_client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
+        let cx = GlobalContext {
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            cmdline,
+            http_client,
+            http_client_slowdown: Arc::new(Semaphore::new(2)),
+            cache_dir,
+            config_dir,
+            caps: None,
+            caps_reading_lock: Arc::new(AMutex::<bool>::new(false)),
+            caps_last_error: String::new(),
+            caps_last_attempted_ts: 0,
+            tokenizer_map: HashMap::new(),
+            tokenizer_download_lock: Arc::new(AMutex::<bool>::new(false)),
+            completions_cache: Arc::new(StdRwLock::new(CompletionCache::new())),
+            telemetry: Arc::new(StdRwLock::new(telemetry_structs::Storage::new())),
+            vec_db: Arc::new(AMutex::new(None)),
+            vec_db_error: String::new(),
+            ast_service: None,
+            ask_shutdown_sender: Arc::new(StdMutex::new(ask_shutdown_sender)),
+            documents_state: DocumentsState::new(vec![]).await,
+            at_commands_preview_cache: Arc::new(AMutex::new(AtCommandsPreviewCache::new())),
+            privacy_settings: Arc::new(PrivacySettings::default()),
+            indexing_everywhere: Arc::new(crate::files_blocklist::IndexingEverywhere::default()),
+            integration_sessions: HashMap::new(),
+            codelens_cache: Arc::new(AMutex::new(
+                crate::http::routers::v1::code_lens::CodeLensCache::default(),
+            )),
+            docker_ssh_tunnel: Arc::new(AMutex::new(None)),
+            active_group_id: None,
+            init_shadow_repos_background_task_holder: BackgroundTasksHolder::new(vec![]),
+            init_shadow_repos_lock: Arc::new(AMutex::new(false)),
+            git_operations_abort_flag: Arc::new(AtomicBool::new(false)),
+            app_searchable_id: "test".to_string(),
+            trajectory_events_tx: Some(tokio::sync::broadcast::channel(16).0),
+            chat_sessions: crate::chat::create_sessions_map(),
+            voice_service: crate::voice::VoiceService::new(),
+        };
+
+        Arc::new(ARwLock::new(cx))
+    }
+}

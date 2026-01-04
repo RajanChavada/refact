@@ -150,21 +150,57 @@ describe("getHistoryTree", () => {
     expect(result[0].children[2].id).toBe("child_old");
   });
 
-  it("preserves task metadata in tree nodes", () => {
+  it("filters out task chats from tree", () => {
     const state: HistoryState = {
       task_chat: createHistoryItem("task_chat", "Task Chat", {
         task_id: "task-123",
-        task_role: "planner",
-        agent_id: "agent-1",
-        card_id: "card-1",
+      }),
+      regular: createHistoryItem("regular", "Regular Chat"),
+    };
+
+    const result = getHistoryTree({ history: state });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("regular");
+  });
+
+  it("inverts handoff relationship - handoff becomes root with parent as child", () => {
+    const state: HistoryState = {
+      original: createHistoryItem("original", "Original Chat", {
+        updatedAt: "2024-01-01T00:00:00Z",
+      }),
+      handoff: createHistoryItem("handoff", "Handoff Chat", {
+        updatedAt: "2024-01-02T00:00:00Z",
+        parent_id: "original",
+        link_type: "handoff",
       }),
     };
 
     const result = getHistoryTree({ history: state });
 
-    expect(result[0].task_id).toBe("task-123");
-    expect(result[0].task_role).toBe("planner");
-    expect(result[0].agent_id).toBe("agent-1");
-    expect(result[0].card_id).toBe("card-1");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("handoff");
+    expect(result[0].children).toHaveLength(1);
+    expect(result[0].children[0].id).toBe("original");
+  });
+
+  it("keeps subagent as child of parent", () => {
+    const state: HistoryState = {
+      parent: createHistoryItem("parent", "Parent Chat", {
+        updatedAt: "2024-01-02T00:00:00Z",
+      }),
+      subagent: createHistoryItem("subagent", "Subagent Chat", {
+        updatedAt: "2024-01-01T00:00:00Z",
+        parent_id: "parent",
+        link_type: "subagent",
+      }),
+    };
+
+    const result = getHistoryTree({ history: state });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("parent");
+    expect(result[0].children).toHaveLength(1);
+    expect(result[0].children[0].id).toBe("subagent");
   });
 });

@@ -20,7 +20,7 @@ use crate::at_commands::at_file::{file_repair_candidates, return_one_candidate_o
 use crate::caps::resolve_chat_model;
 use crate::custom_error::ScratchError;
 use crate::files_correction::{
-    canonicalize_normalized_path, get_project_dirs, preprocess_path_for_normalization,
+    canonicalize_normalized_path, get_project_dirs_with_code_workdir, preprocess_path_for_normalization,
 };
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present};
@@ -392,7 +392,11 @@ impl Tool for ToolStrategicPlanning {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = ccx.lock().await.global_context.clone();
+        let (gcx, code_workdir) = {
+            let ccx_locked = ccx.lock().await;
+            (ccx_locked.global_context.clone(), ccx_locked.code_workdir.clone())
+        };
+        let project_dirs = get_project_dirs_with_code_workdir(gcx.clone(), &code_workdir).await;
         let important_paths = match args.get("important_paths") {
             Some(Value::String(s)) => {
                 let mut paths = vec![];
@@ -405,7 +409,7 @@ impl Tool for ToolStrategicPlanning {
                             gcx.clone(),
                             &s_raw,
                             &candidates_file,
-                            &get_project_dirs(gcx.clone()).await,
+                            &project_dirs,
                             false,
                         )
                         .await

@@ -1,6 +1,11 @@
 import React, { useMemo } from "react";
 import { Card, Flex, Text, Box, Spinner, Badge } from "@radix-ui/themes";
-import { ChatBubbleIcon, DotFilledIcon } from "@radix-ui/react-icons";
+import {
+  ChatBubbleIcon,
+  DotFilledIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+} from "@radix-ui/react-icons";
 import { CloseButton } from "../Buttons/Buttons";
 import { IconButton } from "@radix-ui/themes";
 import { OpenInNewWindowIcon } from "@radix-ui/react-icons";
@@ -17,7 +22,20 @@ export const HistoryItem: React.FC<{
   onOpenInTab?: (id: string) => void;
   disabled: boolean;
   badge?: string;
-}> = ({ historyItem, onClick, onDelete, onOpenInTab, disabled, badge }) => {
+  childCount?: number;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+}> = ({
+  historyItem,
+  onClick,
+  onDelete,
+  onOpenInTab,
+  disabled,
+  badge,
+  childCount,
+  isExpanded,
+  onToggleExpand,
+}) => {
   const dateCreated = new Date(historyItem.createdAt);
   const dateTimeString = dateCreated.toLocaleString();
   const threads = useAppSelector((app) => app.chat.threads);
@@ -46,7 +64,6 @@ export const HistoryItem: React.FC<{
       <Card
         style={{
           width: "100%",
-          marginBottom: "2px",
           opacity: disabled ? 0.8 : 1,
         }}
         variant="surface"
@@ -111,6 +128,33 @@ export const HistoryItem: React.FC<{
           </Flex>
         </button>
       </Card>
+
+      {childCount !== undefined && onToggleExpand && (
+        <Box
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand();
+          }}
+          style={{
+            cursor: "pointer",
+            padding: "4px 8px",
+            borderRadius: "0 0 4px 4px",
+            marginTop: "-2px",
+            background: "var(--gray-a3)",
+          }}
+        >
+          <Flex align="center" justify="center" gap="1">
+            <Text size="1" color="gray">
+              {childCount} related {childCount === 1 ? "chat" : "chats"}
+            </Text>
+            {isExpanded ? (
+              <ChevronDownIcon width={12} height={12} />
+            ) : (
+              <ChevronRightIcon width={12} height={12} />
+            )}
+          </Flex>
+        </Box>
+      )}
 
       <Flex
         position="absolute"

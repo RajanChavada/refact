@@ -1,6 +1,5 @@
 import { memo, useState, useCallback } from "react";
-import { Flex, Box, Text, IconButton } from "@radix-ui/themes";
-import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
+import { Flex, Box, Text } from "@radix-ui/themes";
 import { ScrollArea } from "../ScrollArea";
 import { HistoryItem } from "./HistoryItem";
 import {
@@ -45,47 +44,39 @@ const TreeNode = memo(
     const hasChildren = node.children.length > 0;
     const isExpanded = expandedIds.has(node.id);
     const isTask = !!node.task_id;
+    const linkType = node.link_type;
+
+    const isHandoffParent = depth > 0 && !linkType && !isTask;
+
+    const getBadge = () => {
+      if (isTask) {
+        return node.task_role === "planner"
+          ? "Planner"
+          : node.task_role === "agents"
+            ? "Agent"
+            : undefined;
+      }
+      if (linkType === "subagent") return "Subagent";
+      if (linkType === "handoff") return "Handoff";
+      if (isHandoffParent) return "Original";
+      return undefined;
+    };
 
     return (
-      <Box style={{ width: "100%" }}>
-        <Flex align="center" gap="1" style={{ paddingLeft: depth * 16 }}>
-          {hasChildren ? (
-            <IconButton
-              size="1"
-              variant="ghost"
-              onClick={() => onToggleExpand(node.id)}
-              style={{ minWidth: 20, minHeight: 20 }}
-            >
-              {isExpanded ? (
-                <ChevronDownIcon width={12} height={12} />
-              ) : (
-                <ChevronRightIcon width={12} height={12} />
-              )}
-            </IconButton>
-          ) : (
-            <Box style={{ width: 20 }} />
-          )}
-          <Box style={{ flex: 1 }}>
-            <HistoryItem
-              onClick={() => onHistoryItemClick(node)}
-              onOpenInTab={onOpenChatInTab}
-              onDelete={onDeleteHistoryItem}
-              historyItem={node}
-              disabled={node.id === currentChatId}
-              badge={
-                isTask
-                  ? node.task_role === "planner"
-                    ? "Planner"
-                    : node.task_role === "agents"
-                      ? "Agent"
-                      : undefined
-                  : undefined
-              }
-            />
-          </Box>
-        </Flex>
+      <Box style={{ width: "100%", paddingLeft: depth * 16 }}>
+        <HistoryItem
+          onClick={() => onHistoryItemClick(node)}
+          onOpenInTab={onOpenChatInTab}
+          onDelete={onDeleteHistoryItem}
+          historyItem={node}
+          disabled={node.id === currentChatId}
+          badge={getBadge()}
+          childCount={hasChildren ? node.children.length : undefined}
+          isExpanded={isExpanded}
+          onToggleExpand={hasChildren ? () => onToggleExpand(node.id) : undefined}
+        />
         {hasChildren && isExpanded && (
-          <Box>
+          <Flex direction="column" gap="1" pt="1">
             {node.children.map((child) => (
               <TreeNode
                 key={child.id}
@@ -99,7 +90,7 @@ const TreeNode = memo(
                 onToggleExpand={onToggleExpand}
               />
             ))}
-          </Box>
+          </Flex>
         )}
       </Box>
     );
@@ -134,7 +125,8 @@ export const ChatHistory = memo(
     }, []);
 
     const hasTaskChats = sortedHistory.some((item) => !!item.task_id);
-    const showTree = treeView || hasTaskChats;
+    const hasChildChats = sortedHistory.some((item) => !!item.parent_id);
+    const showTree = treeView || hasTaskChats || hasChildChats;
 
     return (
       <Box
@@ -150,7 +142,7 @@ export const ChatHistory = memo(
             align={sortedHistory.length > 0 ? "center" : "start"}
             pl="2"
             pr="2"
-            gap="2"
+            gap="1"
             direction="column"
           >
             {sortedHistory.length !== 0 ? (
