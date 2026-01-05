@@ -12,6 +12,33 @@ fn default_mime() -> String {
     "audio/webm".to_string()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StreamingChunkRequest {
+    pub audio_data: String,
+    #[serde(default)]
+    pub is_final: bool,
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamingTranscriptEvent {
+    pub session_id: String,
+    pub text: String,
+    pub is_final: bool,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum VoiceStreamEvent {
+    #[serde(rename = "transcript")]
+    Transcript(StreamingTranscriptEvent),
+    #[serde(rename = "error")]
+    Error { message: String },
+    #[serde(rename = "ended")]
+    Ended,
+}
+
 #[derive(Debug, Serialize)]
 pub struct TranscribeResponse {
     pub text: String,

@@ -409,38 +409,50 @@ async fn run_streaming_generation(
         abort_flag: Some(abort_flag),
     };
 
+    enum CollectorEvent {
+        DeltaOps(Vec<DeltaOp>),
+        Usage(ChatUsage),
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CollectorEvent>();
+
     struct SessionCollector {
-        pending_ops: Vec<Vec<DeltaOp>>,
-        pending_usage: Option<ChatUsage>,
+        tx: tokio::sync::mpsc::UnboundedSender<CollectorEvent>,
     }
 
     impl StreamCollector for SessionCollector {
         fn on_delta_ops(&mut self, _choice_idx: usize, ops: Vec<DeltaOp>) {
-            self.pending_ops.push(ops);
+            let _ = self.tx.send(CollectorEvent::DeltaOps(ops));
         }
 
         fn on_usage(&mut self, usage: &ChatUsage) {
-            self.pending_usage = Some(usage.clone());
+            let _ = self.tx.send(CollectorEvent::Usage(usage.clone()));
         }
 
         fn on_finish(&mut self, _choice_idx: usize, _finish_reason: Option<String>) {}
     }
 
-    let mut collector = SessionCollector {
-        pending_ops: Vec::new(),
-        pending_usage: None,
-    };
-    let results = run_llm_stream(gcx.clone(), params, &mut collector).await?;
+    let mut collector = SessionCollector { tx };
 
-    {
-        let mut session = session_arc.lock().await;
-        for ops in collector.pending_ops {
-            session.emit_stream_delta(ops);
+    let session_arc_emitter = session_arc.clone();
+    let emitter_task = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let mut session = session_arc_emitter.lock().await;
+            match event {
+                CollectorEvent::DeltaOps(ops) => {
+                    session.emit_stream_delta(ops);
+                }
+                CollectorEvent::Usage(usage) => {
+                    session.draft_usage = Some(usage);
+                }
+            }
         }
-        if let Some(usage) = collector.pending_usage {
-            session.draft_usage = Some(usage);
-        }
-    }
+    });
+
+    let results = run_llm_stream(gcx.clone(), params, &mut collector).await;
+    drop(collector);
+    let _ = emitter_task.await;
+    let results = results?;
 
     let result = results.into_iter().next().unwrap_or_default();
 

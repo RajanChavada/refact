@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use axum::extract::Path;
 use axum::Extension;
 use axum::response::Response;
+use base64::Engine;
 use hyper::{Body, StatusCode};
-use tokio::sync::RwLock as ARwLock;
+use tokio::sync::{broadcast, RwLock as ARwLock};
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
@@ -90,4 +93,100 @@ pub async fn handle_v1_voice_status(
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&response).unwrap()))
         .unwrap())
+}
+
+pub async fn handle_v1_voice_stream_subscribe(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+    Path(session_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Result<Response<Body>, ScratchError> {
+    let language = params.get("language").cloned();
+
+    let gcx_locked = gcx.read().await;
+    let voice_service = gcx_locked.voice_service.clone();
+    drop(gcx_locked);
+
+    let session_arc = voice_service.get_or_create_session(&session_id, language).await;
+    let session = session_arc.lock().await;
+    let mut rx = session.subscribe();
+    drop(session);
+
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let json = serde_json::to_string(&event).unwrap_or_default();
+                    yield Ok::<_, std::convert::Infallible>(format!("data: {}\n\n", json));
+                    if matches!(event, VoiceStreamEvent::Ended) {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(Body::wrap_stream(stream))
+        .unwrap())
+}
+
+pub async fn handle_v1_voice_stream_chunk(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+    Path(session_id): Path<String>,
+    body: hyper::body::Bytes,
+) -> Result<Response<Body>, ScratchError> {
+    let req: StreamingChunkRequest = serde_json::from_slice(&body)
+        .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)))?;
+
+    let gcx_locked = gcx.read().await;
+    let voice_service = gcx_locked.voice_service.clone();
+    drop(gcx_locked);
+
+    let session_arc = voice_service.get_or_create_session(&session_id, req.language.clone()).await;
+    let mut session = session_arc.lock().await;
+
+    if !req.audio_data.is_empty() {
+        let audio_bytes = decode_base64_audio(&req.audio_data)?;
+        let samples = decode_pcm_s16le(&audio_bytes);
+        session.audio_buffer.extend(&samples);
+    }
+
+    if req.is_final {
+        session.final_requested = true;
+    }
+
+    session.notify_update();
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"status":"ok"}"#))
+        .unwrap())
+}
+
+fn decode_base64_audio(data: &str) -> Result<Vec<u8>, ScratchError> {
+    let b64_data = if data.starts_with("data:") {
+        data.splitn(2, ',').nth(1).unwrap_or(data)
+    } else {
+        data
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(b64_data)
+        .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, format!("Invalid base64: {}", e)))
+}
+
+fn decode_pcm_s16le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+            sample as f32 / 32768.0
+        })
+        .collect()
 }

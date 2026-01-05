@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
-import { useVoiceRecording } from "./useVoiceRecording";
+import { useStreamingVoiceRecording } from "./useStreamingVoiceRecording";
 import {
-  transcribeAudio,
   getVoiceStatus,
   downloadVoiceModel,
   VoiceStatusResponse,
@@ -9,13 +8,15 @@ import {
 
 export interface UseVoiceInputResult {
   isRecording: boolean;
-  isTranscribing: boolean;
+  isFinishing: boolean;
+  isVoiceActive: boolean;
   isDownloading: boolean;
   downloadProgress: number;
   error: string | null;
   voiceEnabled: boolean;
   modelLoaded: boolean;
-  toggleRecording: () => Promise<void>;
+  liveTranscript: string;
+  toggleRecording: () => Promise<string | null>;
 }
 
 export function useVoiceInput(
@@ -23,10 +24,12 @@ export function useVoiceInput(
 ): UseVoiceInputResult {
   const {
     isRecording,
+    isFinishing,
+    transcript,
     error: recordingError,
-    toggleRecording: toggle,
-  } = useVoiceRecording();
-  const [isTranscribing, setIsTranscribing] = useState(false);
+    startRecording,
+    stopRecording,
+  } = useStreamingVoiceRecording();
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<VoiceStatusResponse | null>(null);
 
@@ -48,71 +51,55 @@ export function useVoiceInput(
     const interval = setInterval(() => {
       getVoiceStatus()
         .then(setStatus)
-        .catch(() => { /* ignore polling errors */ });
+        .catch(() => {});
     }, 1000);
 
     return () => clearInterval(interval);
   }, [status?.is_downloading]);
 
-  const toggleRecording = useCallback(async () => {
+  const toggleRecording = useCallback(async (): Promise<string | null> => {
     setError(null);
 
     if (isRecording) {
-      const blob = await toggle();
-      if (!blob || blob.size < 1000) {
-        setError("Recording too short. Please hold the mic button for 2-3 seconds while speaking.");
-        return;
-      }
-
-      setIsTranscribing(true);
-
       try {
-        const reader = new FileReader();
-        const base64Promise = new Promise<string>((resolve, reject) => {
-          reader.onloadend = () => {
-            const result = reader.result as string;
-            resolve(result);
-          };
-          reader.onerror = reject;
-        });
-        reader.readAsDataURL(blob);
-
-        const audioData = await base64Promise;
-        const response = await transcribeAudio({
-          audio_data: audioData,
-          mime_type: blob.type,
-        });
-
-        if (response.text.trim()) {
-          onTranscript(response.text.trim());
+        const finalText = await stopRecording();
+        const trimmed = finalText.trim();
+        if (trimmed) {
+          onTranscript(trimmed);
+          return trimmed;
         }
+        return null;
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Transcription failed";
-
+        const message = err instanceof Error ? err.message : "Failed to get transcript";
+        setError(message);
+        return null;
+      }
+    } else {
+      try {
+        await startRecording();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to start recording";
         if (message.includes("Model not downloaded")) {
-          downloadVoiceModel().catch(() => { /* ignore download errors */ });
+          downloadVoiceModel().catch(() => {});
           const newStatus = await getVoiceStatus().catch(() => null);
           if (newStatus) setStatus(newStatus);
         }
-
         setError(message);
-      } finally {
-        setIsTranscribing(false);
       }
-    } else {
-      await toggle();
+      return null;
     }
-  }, [isRecording, toggle, onTranscript]);
+  }, [isRecording, startRecording, stopRecording, onTranscript]);
 
   return {
     isRecording,
-    isTranscribing,
+    isFinishing,
+    isVoiceActive: isRecording || isFinishing,
     isDownloading: status?.is_downloading ?? false,
     downloadProgress: status?.download_progress ?? 0,
     error,
     voiceEnabled: status?.enabled ?? false,
     modelLoaded: status?.model_loaded ?? false,
+    liveTranscript: transcript,
     toggleRecording,
   };
 }

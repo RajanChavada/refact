@@ -70,6 +70,7 @@ use crate::chat::{
 };
 use crate::http::routers::v1::voice::{
     handle_v1_voice_transcribe, handle_v1_voice_download, handle_v1_voice_status,
+    handle_v1_voice_stream_subscribe, handle_v1_voice_stream_chunk,
 };
 use crate::http::routers::v1::tasks::{
     handle_list_tasks, handle_create_task, handle_get_task, handle_delete_task,
@@ -241,6 +242,8 @@ pub fn make_v1_router() -> Router {
         .route("/voice/transcribe", post(handle_v1_voice_transcribe))
         .route("/voice/download", post(handle_v1_voice_download))
         .route("/voice/status", get(handle_v1_voice_status))
+        .route("/voice/stream/:session_id/subscribe", get(handle_v1_voice_stream_subscribe))
+        .route("/voice/stream/:session_id/chunk", post(handle_v1_voice_stream_chunk))
         .route("/tasks", get(handle_list_tasks))
         .route("/tasks", post(handle_create_task))
         .route("/tasks/:task_id", get(handle_get_task))

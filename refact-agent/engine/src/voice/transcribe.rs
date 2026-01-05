@@ -22,25 +22,34 @@ pub fn transcribe(
 ) -> Result<TranscribeResult, String> {
     let audio_bytes = decode_base64(&request.audio_data)?;
     let pcm = decode_audio(&audio_bytes, &request.mime_type)?;
+    let text = transcribe_pcm(ctx, &pcm, request.language.as_deref())?;
+    let duration_ms = (pcm.len() as f64 / 16.0) as u64;
 
+    Ok(TranscribeResult {
+        text,
+        language: request.language.clone().unwrap_or_else(|| "en".to_string()),
+        duration_ms,
+    })
+}
+
+pub fn transcribe_pcm(
+    ctx: &WhisperContext,
+    pcm: &[f32],
+    language: Option<&str>,
+) -> Result<String, String> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-
-    if let Some(lang) = &request.language {
-        params.set_language(Some(lang));
-    } else {
-        params.set_language(Some("en"));
-    }
+    params.set_language(Some(language.unwrap_or("en")));
 
     let mut state = ctx
         .create_state()
         .map_err(|e| format!("Failed to create state: {:?}", e))?;
 
     state
-        .full(params, &pcm)
+        .full(params, pcm)
         .map_err(|e| format!("Transcription failed: {:?}", e))?;
 
     let num_segments = state
@@ -54,13 +63,7 @@ pub fn transcribe(
         }
     }
 
-    let duration_ms = (pcm.len() as f64 / 16.0) as u64;
-
-    Ok(TranscribeResult {
-        text: text.trim().to_string(),
-        language: request.language.clone().unwrap_or_else(|| "en".to_string()),
-        duration_ms,
-    })
+    Ok(text.trim().to_string())
 }
 
 fn decode_base64(data: &str) -> Result<Vec<u8>, String> {

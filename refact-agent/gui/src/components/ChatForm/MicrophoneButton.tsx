@@ -1,5 +1,5 @@
-import React, { useEffect } from "react";
-import { IconButton, Tooltip, Spinner } from "@radix-ui/themes";
+import React, { useEffect, useRef } from "react";
+import { IconButton, Spinner } from "@radix-ui/themes";
 import { useVoiceInput } from "../../hooks/useVoiceInput";
 import { useAppDispatch } from "../../hooks";
 import { setError } from "../../features/Errors/errorsSlice";
@@ -7,23 +7,31 @@ import styles from "./MicrophoneButton.module.css";
 
 interface MicrophoneButtonProps {
   onTranscript: (text: string) => void;
+  onLiveTranscript?: (text: string) => void;
+  onRecordingChange?: (isRecording: boolean, isFinishing: boolean) => void;
   disabled?: boolean;
 }
 
 export const MicrophoneButton: React.FC<MicrophoneButtonProps> = ({
   onTranscript,
+  onLiveTranscript,
+  onRecordingChange,
   disabled,
 }) => {
   const dispatch = useAppDispatch();
   const {
     isRecording,
-    isTranscribing,
+    isFinishing,
     isDownloading,
-    downloadProgress,
     voiceEnabled,
     error,
+    liveTranscript,
     toggleRecording,
   } = useVoiceInput(onTranscript);
+
+  const prevTranscriptRef = useRef(liveTranscript);
+  const prevRecordingRef = useRef(isRecording);
+  const prevFinishingRef = useRef(isFinishing);
 
   useEffect(() => {
     if (error) {
@@ -31,37 +39,44 @@ export const MicrophoneButton: React.FC<MicrophoneButtonProps> = ({
     }
   }, [error, dispatch]);
 
+  useEffect(() => {
+    if (isRecording !== prevRecordingRef.current || isFinishing !== prevFinishingRef.current) {
+      prevRecordingRef.current = isRecording;
+      prevFinishingRef.current = isFinishing;
+      onRecordingChange?.(isRecording, isFinishing);
+    }
+  }, [isRecording, isFinishing, onRecordingChange]);
+
+  useEffect(() => {
+    if (liveTranscript !== prevTranscriptRef.current) {
+      prevTranscriptRef.current = liveTranscript;
+      onLiveTranscript?.(liveTranscript);
+    }
+  }, [liveTranscript, onLiveTranscript]);
+
   if (!voiceEnabled) {
     return null;
   }
 
-  const isLoading = isTranscribing || isDownloading;
-
-  const getTooltip = () => {
-    if (isDownloading) return `Downloading model... ${downloadProgress}%`;
-    if (isTranscribing) return "Transcribing...";
-    if (isRecording) return "Click to stop recording";
-    return "Click to start voice input";
-  };
+  const isActive = isRecording || isFinishing;
 
   return (
-    <Tooltip content={getTooltip()}>
-      <IconButton
-        type="button"
-        variant={isRecording ? "solid" : "ghost"}
-        color={isRecording ? "red" : "gray"}
-        size="1"
-        disabled={disabled ?? isLoading}
-        onClick={() => void toggleRecording()}
-        className={isRecording ? styles.recording : undefined}
-      >
-        {isLoading ? (
-          <Spinner size="1" />
-        ) : (
-          <MicrophoneIcon />
-        )}
-      </IconButton>
-    </Tooltip>
+    <IconButton
+      type="button"
+      variant={isActive ? "solid" : "ghost"}
+      color={isActive ? "red" : "gray"}
+      size="1"
+      title={undefined}
+      disabled={!!disabled || isDownloading || isFinishing}
+      onClick={() => void toggleRecording()}
+      className={isRecording ? styles.recording : isFinishing ? styles.finishing : undefined}
+    >
+      {isDownloading ? (
+        <Spinner size="1" />
+      ) : (
+        <MicrophoneIcon />
+      )}
+    </IconButton>
   );
 };
 

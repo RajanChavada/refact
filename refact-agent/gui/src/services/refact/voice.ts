@@ -70,3 +70,75 @@ export async function downloadVoiceModel(
 
   return response.json() as Promise<DownloadModelResponse>;
 }
+
+export interface StreamingTranscriptEvent {
+  type: "transcript";
+  session_id: string;
+  text: string;
+  is_final: boolean;
+  duration_ms: number;
+}
+
+export interface StreamingErrorEvent {
+  type: "error";
+  message: string;
+}
+
+export interface StreamingEndedEvent {
+  type: "ended";
+}
+
+export type VoiceStreamEvent =
+  | StreamingTranscriptEvent
+  | StreamingErrorEvent
+  | StreamingEndedEvent;
+
+export function subscribeToVoiceStream(
+  sessionId: string,
+  language: string | undefined,
+  onEvent: (event: VoiceStreamEvent) => void,
+  onError?: (error: Error) => void,
+): () => void {
+  const params = new URLSearchParams();
+  if (language) params.set("language", language);
+  const url = `${VOICE_API_BASE}/stream/${sessionId}/subscribe?${params.toString()}`;
+
+  const eventSource = new EventSource(url);
+
+  eventSource.onmessage = (e) => {
+    const event = JSON.parse(e.data as string) as VoiceStreamEvent;
+    onEvent(event);
+    if (event.type === "ended") {
+      eventSource.close();
+    }
+  };
+
+  eventSource.onerror = () => {
+    onError?.(new Error("Stream connection error"));
+    eventSource.close();
+  };
+
+  return () => eventSource.close();
+}
+
+export async function sendVoiceChunk(
+  sessionId: string,
+  audioData: string,
+  isFinal: boolean,
+  language?: string,
+): Promise<void> {
+  const response = await fetch(`${VOICE_API_BASE}/stream/${sessionId}/chunk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      audio_data: audioData,
+      is_final: isFinal,
+      language,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || "Failed to send chunk");
+  }
+}

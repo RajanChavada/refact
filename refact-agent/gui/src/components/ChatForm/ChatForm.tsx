@@ -51,7 +51,9 @@ import { ResendButton } from "../ChatContent/ResendButton";
 import { MicrophoneButton } from "./MicrophoneButton";
 import { useAttachedImages } from "../../hooks/useAttachedImages";
 import {
+  clearChatError,
   selectChatError,
+  selectCurrentThreadId,
   selectIsStreaming,
   selectIsWaiting,
   selectMessages,
@@ -88,9 +90,13 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const globalError = useAppSelector(getErrorMessage);
   const globalErrorType = useAppSelector(getErrorType);
   const chatError = useAppSelector(selectChatError);
+  const chatId = useAppSelector(selectCurrentThreadId);
   const information = useAppSelector(getInformationMessage);
   const pauseReasonsWithPause = useAppSelector(selectThreadConfirmation);
   const [helpInfo, setHelpInfo] = React.useState<React.ReactNode | null>(null);
+  const [isVoiceActive, setIsVoiceActive] = React.useState(false);
+  const [liveTranscript, setLiveTranscript] = React.useState("");
+  const [inputResetKey, setInputResetKey] = React.useState(0);
   const isOnline = useIsOnline();
 
   const threadToolUse = useAppSelector(selectThreadToolUse);
@@ -106,9 +112,11 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   }, [threadToolUse]);
 
   const onClearError = useCallback(() => {
-    // Just clear the error - user can resend manually
     dispatch(clearError());
-  }, [dispatch]);
+    if (chatId) {
+      dispatch(clearChatError({ id: chatId }));
+    }
+  }, [dispatch, chatId]);
 
   const caps = useCapsForToolUse();
 
@@ -166,6 +174,9 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const [value, setValue, isSendImmediately, setIsSendImmediately] =
     useInputValue(() => unCheckAll());
 
+  const valueRef = React.useRef(value);
+  valueRef.current = value;
+
   const onClearInformation = useCallback(
     () => dispatch(clearInformation()),
     [dispatch],
@@ -192,10 +203,10 @@ export const ChatForm: React.FC<ChatFormProps> = ({
           valueWithFiles,
           checkboxes,
         );
-        // TODO: add @files
         setLineSelectionInteracted(false);
         onSubmit(valueIncludingChecks, sendPolicy);
-        setValue(() => "");
+        setValue("");
+        setInputResetKey((k) => k + 1);
         unCheckAll();
         attachedFiles.removeAll();
       }
@@ -290,6 +301,17 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     setIsSendImmediately,
   ]);
 
+  const handleLiveTranscript = useCallback((text: string) => {
+    setLiveTranscript(text);
+  }, []);
+
+  const handleRecordingChange = useCallback((isRecording: boolean, isFinishing: boolean) => {
+    setIsVoiceActive(isRecording || isFinishing);
+    if (!isRecording && !isFinishing) {
+      setLiveTranscript("");
+    }
+  }, []);
+
   if (globalError) {
     return (
       <Flex direction="column" mt="2" gap="2">
@@ -365,24 +387,31 @@ export const ChatForm: React.FC<ChatFormProps> = ({
           <FilesPreview files={previewFiles} />
 
           <ComboBox
+            key={inputResetKey}
             onHelpClick={handleHelpCommand}
             commands={commands}
             requestCommandsCompletion={requestCompletion}
-            value={value}
+            value={isVoiceActive && liveTranscript
+              ? (value.trim() ? `${value}\n${liveTranscript}` : liveTranscript)
+              : value}
             onChange={handleChange}
             onSubmit={(event) => {
               handleEnter(event);
             }}
             placeholder={
-              commands.completions.length < 1 ? "Type @ for commands" : ""
+              isVoiceActive
+                ? "Listening..."
+                : commands.completions.length < 1
+                  ? "Type @ for commands"
+                  : ""
             }
             render={(props) => (
               <TextArea
                 data-testid="chat-form-textarea"
                 required={true}
-                // disabled={isStreaming}
                 {...props}
                 autoFocus={autoFocus}
+                readOnly={isVoiceActive}
                 style={{ boxShadow: "none", outline: "none" }}
                 onPaste={handlePastingFile}
               />
@@ -421,13 +450,21 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                   )}
                 <MicrophoneButton
                   onTranscript={(text) => {
-                    setValue((prev) => (prev ? `${prev} ${text}` : text));
+                    setValue((prev) => {
+                      if (prev.trim()) {
+                        return `${prev}\n${text}`;
+                      }
+                      return text;
+                    });
                   }}
-                  disabled={isStreaming}
+                  onLiveTranscript={handleLiveTranscript}
+                  onRecordingChange={handleRecordingChange}
+                  disabled={disableSend}
                 />
                 <ResendButton />
                 <SendButtonWithDropdown
                   disabled={
+                    isVoiceActive ||
                     !isOnline ||
                     allDisabled ||
                     (value.trim().length === 0 && attachedImages.length === 0)
