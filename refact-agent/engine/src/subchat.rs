@@ -697,6 +697,7 @@ async fn subchat_stream(
         allow_at_commands: false,
         allow_tool_prerun: false,
         supports_tools: model_rec.supports_tools,
+        ..Default::default()
     };
 
     if only_deterministic_messages {

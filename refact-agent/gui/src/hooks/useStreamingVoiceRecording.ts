@@ -49,6 +49,9 @@ export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
   const sendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const finalizeResolveRef = useRef<((text: string) => void) | null>(null);
   const finalizeRejectRef = useRef<((err: Error) => void) | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
+
+  const LIVE_WINDOW_SECONDS = 20;
 
   const cleanupStream = useCallback(() => {
     if (streamRef.current) {
@@ -59,7 +62,9 @@ export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
 
   const handleEvent = useCallback((event: VoiceStreamEvent) => {
     if (event.type === "transcript") {
-      setTranscript(event.text);
+      const elapsedSeconds = (Date.now() - recordingStartTimeRef.current) / 1000;
+      const wasCut = !event.is_final && elapsedSeconds > LIVE_WINDOW_SECONDS;
+      setTranscript(wasCut ? "... " + event.text : event.text);
       if (event.is_final) {
         setIsFinishing(false);
         finalizeResolveRef.current?.(event.text);
@@ -123,6 +128,7 @@ export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
     bufferRef.current = [];
 
     sessionIdRef.current = crypto.randomUUID();
+    recordingStartTimeRef.current = Date.now();
 
     unsubscribeRef.current = subscribeToVoiceStream(
       sessionIdRef.current,

@@ -242,6 +242,12 @@ fn passthrough_messages_to_json(data: &mut serde_json::Value, prompt: &str, mode
     if let Some(tools) = big_json.get("tools") {
         if model_name != "o1-mini" {
             data["tools"] = tools.clone();
+            if let Some(tool_choice) = big_json.get("tool_choice") {
+                data["tool_choice"] = tool_choice.clone();
+            }
+            if let Some(parallel_tool_calls) = big_json.get("parallel_tool_calls") {
+                data["parallel_tool_calls"] = parallel_tool_calls.clone();
+            }
         }
     }
 }

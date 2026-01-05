@@ -93,6 +93,8 @@ pub struct ChatModelRecord {
     pub supports_boost_reasoning: bool,
     #[serde(default)]
     pub default_temperature: Option<f32>,
+    #[serde(default)]
+    pub supports_strict_tools: bool,
 }
 
 pub fn default_chat_scratchpad() -> String {

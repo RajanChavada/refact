@@ -43,18 +43,7 @@ pub struct TransformStats {
     pub tool_messages_modified: usize,
 }
 
-const AGENTIC_TOOLS: &[&str] = &[
-    "cat", "tree", "search_pattern", "search_symbol_definition", "search_semantic",
-    "create_textdoc", "update_textdoc", "update_textdoc_regex", "update_textdoc_by_lines",
-    "update_textdoc_anchored", "apply_patch", "undo_textdoc", "rm", "mv",
-    "shell", "web", "chrome", "subagent", "knowledge", "create_knowledge",
-];
-
 const TOOLS_TO_PRESERVE: &[&str] = &["deep_research", "subagent", "strategic_planning"];
-
-fn is_agentic_tool(name: &str) -> bool {
-    AGENTIC_TOOLS.iter().any(|t| *t == name)
-}
 
 fn should_preserve_tool(name: &str) -> bool {
     TOOLS_TO_PRESERVE.iter().any(|t| *t == name)
@@ -194,10 +183,13 @@ pub async fn handoff_select(
     gcx: Arc<ARwLock<GlobalContext>>,
     generate_summary: bool,
 ) -> Result<(Vec<ChatMessage>, TransformStats, Option<String>), String> {
+    use crate::call_validation::ContextFile;
+
     let before_count = messages.len();
     let before_tokens = approx_token_count(messages);
 
     let system_prefix_len = messages.iter().take_while(|m| m.role == "system").count();
+    let system_prefix: Vec<ChatMessage> = messages.iter().take(system_prefix_len).cloned().collect();
 
     let start_idx = if opts.include_last_user_plus {
         messages.iter().rposition(|m| m.role == "user").unwrap_or(0)
@@ -205,26 +197,65 @@ pub async fn handoff_select(
         0
     };
 
-    let mut agentic_tool_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let bundled_context: Option<ChatMessage> = if opts.include_all_opened_context {
+        let all_files: Vec<ContextFile> = messages
+            .iter()
+            .skip(system_prefix_len)
+            .filter(|m| m.role == "context_file")
+            .filter_map(|m| {
+                if let ChatContent::ContextFiles(files) = &m.content {
+                    Some(files.clone())
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect();
+
+        if all_files.is_empty() {
+            None
+        } else {
+            Some(ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(all_files),
+                ..Default::default()
+            })
+        }
+    } else {
+        None
+    };
+
+    let mut preserved_tool_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut agentic_tool_messages: Vec<ChatMessage> = Vec::new();
+
     if opts.include_agentic_tools {
         for msg in messages.iter() {
             if let Some(ref tool_calls) = msg.tool_calls {
                 for tc in tool_calls {
-                    if is_agentic_tool(&tc.function.name) {
-                        agentic_tool_ids.insert(tc.id.clone());
+                    if should_preserve_tool(&tc.function.name) {
+                        preserved_tool_ids.insert(tc.id.clone());
                     }
                 }
             }
         }
-    }
 
-    let mut system_prefix: Vec<ChatMessage> = messages.iter().take(system_prefix_len).cloned().collect();
+        for msg in messages.iter() {
+            if let Some(ref tool_calls) = msg.tool_calls {
+                let preserved_calls: Vec<_> = tool_calls
+                    .iter()
+                    .filter(|tc| should_preserve_tool(&tc.function.name))
+                    .cloned()
+                    .collect();
 
-    let mut context_files: Vec<ChatMessage> = Vec::new();
-    if opts.include_all_opened_context {
-        for msg in messages.iter().skip(system_prefix_len) {
-            if msg.role == "context_file" {
-                context_files.push(msg.clone());
+                if !preserved_calls.is_empty() {
+                    let mut assistant_msg = msg.clone();
+                    assistant_msg.tool_calls = Some(preserved_calls);
+                    agentic_tool_messages.push(assistant_msg);
+                }
+            }
+
+            if (msg.role == "tool" || msg.role == "diff") && preserved_tool_ids.contains(&msg.tool_call_id) {
+                agentic_tool_messages.push(msg.clone());
             }
         }
     }
@@ -232,14 +263,29 @@ pub async fn handoff_select(
     let mut conversation: Vec<ChatMessage> = Vec::new();
     for (i, msg) in messages.iter().enumerate().skip(system_prefix_len) {
         let should_include = match msg.role.as_str() {
-            "user" | "assistant" => i >= start_idx,
+            "user" => i >= start_idx,
+            "assistant" => {
+                if i >= start_idx {
+                    if let Some(ref tool_calls) = msg.tool_calls {
+                        let has_non_preserved = tool_calls.iter().any(|tc| !should_preserve_tool(&tc.function.name));
+                        has_non_preserved || tool_calls.is_empty()
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
             "system" => false,
             "context_file" => false,
             "diff" => {
-                (i >= start_idx && opts.include_all_edited_context) ||
-                (opts.include_agentic_tools && agentic_tool_ids.contains(&msg.tool_call_id))
+                if preserved_tool_ids.contains(&msg.tool_call_id) {
+                    false
+                } else {
+                    i >= start_idx && opts.include_all_edited_context
+                }
             }
-            "tool" => opts.include_agentic_tools && agentic_tool_ids.contains(&msg.tool_call_id),
+            "tool" => !preserved_tool_ids.contains(&msg.tool_call_id) && false,
             _ => i >= start_idx,
         };
 
@@ -273,8 +319,11 @@ pub async fn handoff_select(
     }
 
     let mut selected: Vec<ChatMessage> = Vec::new();
-    selected.append(&mut system_prefix);
-    selected.extend(context_files);
+    selected.extend(system_prefix);
+    if let Some(ctx_msg) = bundled_context {
+        selected.push(ctx_msg);
+    }
+    selected.extend(agentic_tool_messages);
     if let Some(msg) = summary_msg {
         selected.push(msg);
     }
@@ -452,12 +501,14 @@ mod tests {
     }
 
     #[test]
-    fn test_is_agentic_tool() {
-        assert!(is_agentic_tool("cat"));
-        assert!(is_agentic_tool("create_textdoc"));
-        assert!(is_agentic_tool("shell"));
-        assert!(!is_agentic_tool("unknown_tool"));
-        assert!(!is_agentic_tool(""));
+    fn test_should_preserve_tool() {
+        assert!(should_preserve_tool("deep_research"));
+        assert!(should_preserve_tool("subagent"));
+        assert!(should_preserve_tool("strategic_planning"));
+        assert!(!should_preserve_tool("cat"));
+        assert!(!should_preserve_tool("shell"));
+        assert!(!should_preserve_tool("unknown_tool"));
+        assert!(!should_preserve_tool(""));
     }
 
     #[test]
@@ -737,7 +788,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handoff_orphan_tool_result_removed() {
+    async fn test_handoff_non_preserved_tool_removed() {
+        // cat is NOT in TOOLS_TO_PRESERVE, so it should be removed
         let messages = vec![
             make_system_msg("s"),
             make_assistant_with_tool_call("tc1", "cat"),
@@ -759,12 +811,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handoff_valid_tool_pair_preserved() {
+    async fn test_handoff_preserved_tool_pair_included() {
+        // deep_research IS in TOOLS_TO_PRESERVE, so it should be preserved
         let messages = vec![
             make_system_msg("s"),
             make_user_msg("q"),
-            make_assistant_with_tool_call("tc1", "cat"),
-            make_tool_msg("tc1", "tool output"),
+            make_assistant_with_tool_call("tc1", "deep_research"),
+            make_tool_msg("tc1", "research results"),
             make_assistant_msg("final"),
         ];
         let opts = HandoffOptions {
@@ -776,9 +829,52 @@ mod tests {
         let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(roles(&selected), vec!["system", "user", "assistant", "tool", "assistant"]);
-        assert_eq!(selected[2].tool_calls.as_ref().unwrap()[0].id, "tc1");
-        assert_eq!(selected[3].tool_call_id, "tc1");
+        // Order: system -> preserved_tool_call -> preserved_tool_result -> user -> assistant
+        assert_eq!(roles(&selected), vec!["system", "assistant", "tool", "user", "assistant"]);
+        assert_eq!(selected[1].tool_calls.as_ref().unwrap()[0].id, "tc1");
+        assert_eq!(selected[2].tool_call_id, "tc1");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_subagent_preserved() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q"),
+            make_assistant_with_tool_call("tc1", "subagent"),
+            make_tool_msg("tc1", "subagent results"),
+            make_assistant_msg("final"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(roles(&selected), vec!["system", "assistant", "tool", "user", "assistant"]);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_strategic_planning_preserved() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q"),
+            make_assistant_with_tool_call("tc1", "strategic_planning"),
+            make_tool_msg("tc1", "planning results"),
+            make_assistant_msg("final"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        assert_eq!(roles(&selected), vec!["system", "assistant", "tool", "user", "assistant"]);
     }
 
     #[tokio::test]
@@ -815,7 +911,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handoff_context_files_from_different_positions() {
+    async fn test_handoff_context_files_bundled_into_single_message() {
         let messages = vec![
             make_system_msg("s"),
             make_context_file_msg("early.rs", "early"),
@@ -836,8 +932,24 @@ mod tests {
 
         assert_system_prefix(&selected);
         assert_eq!(selected[0].role, "system");
+
+        // Context files should be bundled into a single message
         let cf_count = selected.iter().filter(|m| m.role == "context_file").count();
-        assert_eq!(cf_count, 3);
+        assert_eq!(cf_count, 1, "All context files should be bundled into one message");
+
+        // The bundled message should contain all 3 files
+        let cf_msg = selected.iter().find(|m| m.role == "context_file").unwrap();
+        if let ChatContent::ContextFiles(files) = &cf_msg.content {
+            assert_eq!(files.len(), 3);
+            let names: Vec<_> = files.iter().map(|f| f.file_name.as_str()).collect();
+            assert!(names.contains(&"early.rs"));
+            assert!(names.contains(&"mid.rs"));
+            assert!(names.contains(&"late.rs"));
+        } else {
+            panic!("Expected ContextFiles content");
+        }
+
+        // Context file should come before user messages
         let first_cf_idx = selected.iter().position(|m| m.role == "context_file").unwrap();
         let first_user_idx = selected.iter().position(|m| m.role == "user").unwrap();
         assert!(first_cf_idx < first_user_idx);
@@ -886,6 +998,108 @@ mod tests {
         let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(roles(&selected), vec!["system", "user", "assistant"]);
+        // update_textdoc is NOT in TOOLS_TO_PRESERVE, so diff is included only via include_all_edited_context
+        assert_eq!(roles(&selected), vec!["system", "diff", "user", "assistant"]);
+    }
+
+    #[tokio::test]
+    async fn test_handoff_preserved_tools_before_conversation() {
+        // Test that preserved tools (deep_research) come before the conversation
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q1"),
+            make_assistant_with_tool_call("tc1", "deep_research"),
+            make_tool_msg("tc1", "research results"),
+            make_assistant_msg("after research"),
+            make_user_msg("q2"),
+            make_assistant_msg("final"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        // Order: system -> preserved_assistant -> preserved_tool -> user -> assistant
+        assert_eq!(roles(&selected), vec!["system", "assistant", "tool", "user", "assistant"]);
+
+        // The preserved tool pair should come before the conversation
+        let tool_idx = selected.iter().position(|m| m.role == "tool").unwrap();
+        let user_idx = selected.iter().position(|m| m.role == "user").unwrap();
+        assert!(tool_idx < user_idx, "Preserved tools should come before conversation");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_context_and_tools_ordering() {
+        // Test ordering: system -> context -> agentic_tools -> conversation
+        let messages = vec![
+            make_system_msg("s"),
+            make_context_file_msg("file.rs", "content"),
+            make_user_msg("q1"),
+            make_assistant_with_tool_call("tc1", "subagent"),
+            make_tool_msg("tc1", "subagent results"),
+            make_assistant_msg("after subagent"),
+            make_user_msg("q2"),
+            make_assistant_msg("final"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_all_opened_context: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+        // Order: system -> context_file -> assistant(tool_call) -> tool -> user -> assistant
+        assert_eq!(roles(&selected), vec!["system", "context_file", "assistant", "tool", "user", "assistant"]);
+
+        let cf_idx = selected.iter().position(|m| m.role == "context_file").unwrap();
+        let tool_idx = selected.iter().position(|m| m.role == "tool").unwrap();
+        let user_idx = selected.iter().position(|m| m.role == "user").unwrap();
+
+        assert!(cf_idx < tool_idx, "Context files should come before tools");
+        assert!(tool_idx < user_idx, "Tools should come before conversation");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_multiple_preserved_tools() {
+        // Test that multiple preserved tools are all included
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q1"),
+            make_assistant_with_tool_call("tc1", "deep_research"),
+            make_tool_msg("tc1", "research 1"),
+            make_assistant_msg("a1"),
+            make_assistant_with_tool_call("tc2", "strategic_planning"),
+            make_tool_msg("tc2", "planning 1"),
+            make_assistant_msg("a2"),
+            make_user_msg("q2"),
+            make_assistant_msg("final"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            include_agentic_tools: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (selected, _, _) = handoff_select(&messages, &opts, gcx, false).await.unwrap();
+
+        assert_system_prefix(&selected);
+
+        // Both preserved tool pairs should be included
+        let tool_count = selected.iter().filter(|m| m.role == "tool").count();
+        assert_eq!(tool_count, 2, "Both preserved tools should be included");
+
+        let tool_ids: Vec<_> = selected.iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| m.tool_call_id.as_str())
+            .collect();
+        assert!(tool_ids.contains(&"tc1"));
+        assert!(tool_ids.contains(&"tc2"));
     }
 }

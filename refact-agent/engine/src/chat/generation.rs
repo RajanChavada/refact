@@ -338,6 +338,7 @@ pub async fn run_llm_generation(
         allow_at_commands: true,
         allow_tool_prerun: true,
         supports_tools: model_rec.supports_tools,
+        ..Default::default()
     };
 
     let prepared = prepare_chat_passthrough(

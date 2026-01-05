@@ -14,12 +14,16 @@ import {
 import { trajectoriesApi } from "../services/refact/trajectories";
 import { switchToThread, requestSseRefresh } from "../features/Chat/Thread/actions";
 import { push } from "../features/Pages/pagesSlice";
+import { selectLspPort, selectApiKey } from "../features/Config/configSlice";
+import { regenerate } from "../services/refact/chatCommands";
 
 export type TrajectoryTab = "compress" | "handoff";
 
 export function useTrajectoryOps() {
   const dispatch = useAppDispatch();
   const chatId = useAppSelector(selectChatId);
+  const port = useAppSelector(selectLspPort);
+  const apiKey = useAppSelector(selectApiKey);
 
   const [activeTab, setActiveTab] = useState<TrajectoryTab>("compress");
   const [transformOptions, setTransformOptions] = useState<TransformOptions>({
@@ -85,11 +89,12 @@ export function useTrajectoryOps() {
       dispatch(requestSseRefresh({ chatId: result.new_chat_id }));
       dispatch(push({ name: "chat" }));
       setHandoffPreview(null);
+      await regenerate(result.new_chat_id, port, apiKey ?? undefined);
       return true;
     } catch {
       return false;
     }
-  }, [chatId, handoffOptions, applyHandoff, dispatch]);
+  }, [chatId, handoffOptions, applyHandoff, dispatch, port, apiKey]);
 
   const clearPreviews = useCallback(() => {
     setTransformPreview(null);

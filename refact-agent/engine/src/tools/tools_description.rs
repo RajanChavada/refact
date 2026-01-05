@@ -304,6 +304,7 @@ pub fn make_openai_tool_value(
     description: String,
     parameters_required: Vec<String>,
     parameters: Vec<ToolParam>,
+    strict: bool,
 ) -> Value {
     let params_properties = parameters
         .iter()
@@ -318,28 +319,45 @@ pub fn make_openai_tool_value(
         })
         .collect::<serde_json::Map<_, _>>();
 
-    let function_json = json!({
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": params_properties,
-                "required": parameters_required
-            }
-        }
+    let parameters_schema = if strict {
+        json!({
+            "type": "object",
+            "properties": params_properties,
+            "required": parameters_required,
+            "additionalProperties": false
+        })
+    } else {
+        json!({
+            "type": "object",
+            "properties": params_properties,
+            "required": parameters_required
+        })
+    };
+
+    let mut function_obj = json!({
+        "name": name,
+        "description": description,
+        "parameters": parameters_schema
     });
-    function_json
+
+    if strict {
+        function_obj["strict"] = json!(true);
+    }
+
+    json!({
+        "type": "function",
+        "function": function_obj
+    })
 }
 
 impl ToolDesc {
-    pub fn into_openai_style(self) -> Value {
+    pub fn into_openai_style(self, strict: bool) -> Value {
         make_openai_tool_value(
             self.name,
             self.description,
             self.parameters_required,
             self.parameters,
+            strict,
         )
     }
 

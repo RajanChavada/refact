@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 
@@ -30,6 +31,18 @@ pub struct ChatPrepareOptions {
     pub allow_at_commands: bool,
     pub allow_tool_prerun: bool,
     pub supports_tools: bool,
+    pub tool_choice: Option<ToolChoice>,
+    pub parallel_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ToolChoice {
+    Auto,
+    None,
+    Required,
+    #[serde(rename = "function")]
+    Function { name: String },
 }
 
 impl Default for ChatPrepareOptions {
@@ -39,6 +52,8 @@ impl Default for ChatPrepareOptions {
             allow_at_commands: true,
             allow_tool_prerun: true,
             supports_tools: true,
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 }
@@ -159,14 +174,26 @@ pub async fn prepare_chat_passthrough(
     } else {
         vec![]
     };
+    let strict_tools = model_record.supports_strict_tools;
     let openai_tools: Vec<Value> = filtered_tools
         .iter()
-        .map(|tool| tool.clone().into_openai_style())
+        .map(|tool| tool.clone().into_openai_style(strict_tools))
         .collect();
     let tools_str_for_limit = if openai_tools.is_empty() {
         None
     } else {
         big_json["tools"] = json!(openai_tools);
+        if let Some(ref tool_choice) = options.tool_choice {
+            big_json["tool_choice"] = match tool_choice {
+                ToolChoice::Auto => json!("auto"),
+                ToolChoice::None => json!("none"),
+                ToolChoice::Required => json!("required"),
+                ToolChoice::Function { name } => json!({"type": "function", "function": {"name": name}}),
+            };
+        }
+        if let Some(parallel) = options.parallel_tool_calls {
+            big_json["parallel_tool_calls"] = json!(parallel);
+        }
         serde_json::to_string(&openai_tools).ok()
     };
 

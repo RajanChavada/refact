@@ -39,6 +39,9 @@ pub struct SelfHostedCapsModelRecord {
 
     #[serde(default)]
     pub default_temperature: Option<f32>,
+
+    #[serde(default)]
+    pub supports_strict_tools: bool,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -243,6 +246,7 @@ impl SelfHostedCapsModelRecord {
             scratchpad,
             scratchpad_patch,
             supports_tools: self.supports_tools,
+            supports_strict_tools: self.supports_strict_tools,
             supports_multimodality: self.supports_multimodality,
             supports_clicks: self.supports_clicks,
             supports_agent: self.supports_agent,
