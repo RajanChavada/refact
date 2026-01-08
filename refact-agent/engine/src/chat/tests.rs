@@ -929,6 +929,8 @@ mod tests {
             allow_at_commands: false,
             allow_tool_prerun: false,
             supports_tools: true,
+            tool_choice: None,
+            parallel_tool_calls: None,
         };
 
         assert!(!opts.prepend_system_prompt);

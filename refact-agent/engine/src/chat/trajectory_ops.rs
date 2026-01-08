@@ -298,23 +298,18 @@ pub async fn handoff_select(
     let mut summary_msg: Option<ChatMessage> = None;
 
     if opts.llm_summary_for_excluded && generate_summary {
-        let excluded: Vec<ChatMessage> = if opts.include_last_user_plus && start_idx > system_prefix_len {
-            messages[system_prefix_len..start_idx].to_vec()
-        } else if !opts.include_last_user_plus {
-            messages[system_prefix_len..].to_vec()
-        } else {
-            vec![]
-        };
+        // Generate summary from the entire original conversation (excluding system prefix)
+        let all_conversation: Vec<ChatMessage> = messages[system_prefix_len..].to_vec();
 
-        if !excluded.is_empty() {
-            if let Ok(summary) = crate::agentic::compress_trajectory::compress_trajectory(gcx, &excluded).await {
-                summary_msg = Some(ChatMessage {
-                    role: "user".to_string(),
-                    content: ChatContent::SimpleText(format!("## Previous conversation summary\n\n{}", summary)),
-                    ..Default::default()
-                });
-                llm_summary = Some(summary);
-            }
+        if !all_conversation.is_empty() {
+            let summary = crate::agentic::compress_trajectory::compress_trajectory(gcx, &all_conversation).await
+                .map_err(|e| format!("Failed to generate summary: {}", e))?;
+            summary_msg = Some(ChatMessage {
+                role: "user".to_string(),
+                content: ChatContent::SimpleText(format!("## Previous conversation summary\n\n{}", summary)),
+                ..Default::default()
+            });
+            llm_summary = Some(summary);
         }
     }
 
@@ -1101,5 +1096,60 @@ mod tests {
             .collect();
         assert!(tool_ids.contains(&"tc1"));
         assert!(tool_ids.contains(&"tc2"));
+    }
+
+    #[tokio::test]
+    async fn test_handoff_no_summary_when_generate_summary_false() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q1"),
+            make_assistant_msg("a1"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            llm_summary_for_excluded: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let result = handoff_select(&messages, &opts, gcx, false).await;
+        assert!(result.is_ok(), "Should succeed when generate_summary=false");
+        let (_, _, llm_summary) = result.unwrap();
+        assert!(llm_summary.is_none(), "No summary should be generated when generate_summary=false");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_no_summary_when_option_disabled() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("q1"),
+            make_assistant_msg("a1"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            llm_summary_for_excluded: false,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let result = handoff_select(&messages, &opts, gcx, true).await;
+        assert!(result.is_ok(), "Should succeed when llm_summary_for_excluded=false");
+        let (_, _, llm_summary) = result.unwrap();
+        assert!(llm_summary.is_none(), "No summary should be generated when option is disabled");
+    }
+
+    #[tokio::test]
+    async fn test_handoff_no_summary_when_empty_messages() {
+        let messages = vec![
+            make_system_msg("s"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            llm_summary_for_excluded: true,
+            ..Default::default()
+        };
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let result = handoff_select(&messages, &opts, gcx, true).await;
+        assert!(result.is_ok(), "Should succeed when only system messages exist");
+        let (_, _, llm_summary) = result.unwrap();
+        assert!(llm_summary.is_none(), "No summary should be generated when no conversation exists");
     }
 }

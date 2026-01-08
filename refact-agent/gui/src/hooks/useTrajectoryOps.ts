@@ -12,7 +12,7 @@ import {
   HandoffPreviewResponse,
 } from "../services/refact/trajectory";
 import { trajectoriesApi } from "../services/refact/trajectories";
-import { switchToThread, requestSseRefresh } from "../features/Chat/Thread/actions";
+import { createChatWithId, requestSseRefresh } from "../features/Chat/Thread/actions";
 import { push } from "../features/Pages/pagesSlice";
 import { selectLspPort, selectApiKey } from "../features/Config/configSlice";
 import { regenerate } from "../services/refact/chatCommands";
@@ -85,7 +85,7 @@ export function useTrajectoryOps() {
     try {
       const result = await applyHandoff({ chatId, options: handoffOptions }).unwrap();
       await dispatch(trajectoriesApi.endpoints.listAllTrajectories.initiate(undefined, { forceRefetch: true }));
-      dispatch(switchToThread({ id: result.new_chat_id }));
+      dispatch(createChatWithId({ id: result.new_chat_id }));
       dispatch(requestSseRefresh({ chatId: result.new_chat_id }));
       dispatch(push({ name: "chat" }));
       setHandoffPreview(null);
