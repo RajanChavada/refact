@@ -271,9 +271,39 @@ pub async fn get_planner_chat_id(
     gcx: Arc<ARwLock<GlobalContext>>,
     task_id: &str,
 ) -> Result<String, String> {
-    let existing = list_task_trajectories(gcx.clone(), task_id, "planner", None).await?;
-    if let Some(id) = existing.first() {
+    let task_dir = get_task_dir(gcx.clone(), task_id).await?;
+    let traj_dir = get_task_trajectory_dir(&task_dir, "planner", None);
+
+    if !traj_dir.exists() {
+        return Ok(format!("plan-{}", task_id));
+    }
+
+    let mut entries = fs::read_dir(&traj_dir).await.map_err(|e| e.to_string())?;
+    let mut planners: Vec<(String, String)> = vec![];
+
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "json") {
+            if let Some(stem) = path.file_stem() {
+                let id = stem.to_string_lossy().to_string();
+                if let Ok(content) = fs::read_to_string(&path).await {
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let updated_at = data.get("updated_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        planners.push((id, updated_at));
+                    }
+                }
+            }
+        }
+    }
+
+    planners.sort_by(|a, b| b.1.cmp(&a.1));
+
+    if let Some((id, _)) = planners.first() {
         return Ok(id.clone());
     }
+
     Ok(format!("plan-{}", task_id))
 }
