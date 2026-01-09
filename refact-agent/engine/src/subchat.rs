@@ -10,7 +10,7 @@ use crate::tools::tools_list::get_available_tools;
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{
     ChatContent, ChatMeta, ChatMode, ChatToolCall, SamplingParameters, ChatMessage, ChatUsage,
-    ReasoningEffort, ChatModelType, SubchatParameters,
+    ReasoningEffort, ChatModelType, SubchatParameters, ContextFile,
 };
 use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present};
 use crate::scratchpad_abstract::HasTokenizerAndEot;
@@ -23,6 +23,27 @@ use crate::chat::types::ThreadParams;
 use crate::chat::trajectories::save_trajectory_as;
 use crate::yaml_configs::customization_loader::load_customization;
 use crate::custom_error::YamlError;
+
+fn get_context_files_from_messages(messages: &[ChatMessage]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for msg in messages {
+        if msg.role == "context_file" {
+            let files: Vec<ContextFile> = match &msg.content {
+                ChatContent::ContextFiles(files) => files.clone(),
+                ChatContent::SimpleText(text) => {
+                    serde_json::from_str::<Vec<ContextFile>>(text).unwrap_or_default()
+                }
+                _ => vec![],
+            };
+            for file in files {
+                if !paths.contains(&file.file_name) {
+                    paths.push(file.file_name.clone());
+                }
+            }
+        }
+    }
+    paths
+}
 
 #[derive(Clone, Debug)]
 pub enum ToolsPolicy {
@@ -606,6 +627,7 @@ async fn execute_pending_tool_calls(
 
     if let Some(tx_toolid) = &tx_toolid_mb {
         let subchat_tx = ccx.lock().await.subchat_tx.clone();
+        let context_files = get_context_files_from_messages(&messages);
         for tc in &allowed {
             let args_truncated = truncate_args(&tc.function.arguments, 200);
             let progress_msg = format!(
@@ -617,7 +639,8 @@ async fn execute_pending_tool_calls(
             );
             let tool_msg = json!({
                 "tool_call_id": tx_toolid,
-                "subchat_id": progress_msg
+                "subchat_id": progress_msg,
+                "attached_files": context_files
             });
             let _ = subchat_tx.lock().await.send(tool_msg);
         }

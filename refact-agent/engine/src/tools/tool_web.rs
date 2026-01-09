@@ -124,6 +124,11 @@ impl Tool for ToolWeb {
         };
 
         let text = execute_at_web(&url, options.as_ref()).await?;
+        let text = if text.is_empty() {
+            "No content retrieved from the URL.".to_string()
+        } else {
+            text
+        };
         let output_filter = parse_output_filter(args);
 
         let result = vec![ContextEnum::ChatMessage(ChatMessage {

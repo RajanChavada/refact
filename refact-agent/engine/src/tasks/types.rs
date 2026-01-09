@@ -25,6 +25,8 @@ pub struct TaskMeta {
     pub default_agent_model: Option<String>,
     #[serde(default)]
     pub is_name_generated: bool,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub planner_streaming: bool,
 }
 
 fn default_schema_version() -> u32 {

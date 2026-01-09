@@ -57,7 +57,7 @@ interface TaskItemProps {
 const TaskItem: React.FC<TaskItemProps> = ({ task, onClick, onDelete }) => {
   const dateUpdated = new Date(task.updated_at);
   const dateTimeString = dateUpdated.toLocaleString();
-  const isActive = task.status === "active" || task.agents_active > 0;
+  const isPlannerWorking = task.planner_streaming === true;
   const isCompleted = task.status === "completed";
   const isFailed = task.status === "abandoned";
 
@@ -78,18 +78,18 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onClick, onDelete }) => {
           }}
         >
           <Flex gap="1" align="center">
-            {isActive && <Spinner style={{ minWidth: 16, minHeight: 16 }} />}
-            {!isActive && isCompleted && (
+            {isPlannerWorking && <Spinner style={{ minWidth: 16, minHeight: 16 }} />}
+            {!isPlannerWorking && isCompleted && (
               <CheckCircledIcon
                 style={{ minWidth: 16, minHeight: 16, color: "var(--green-9)" }}
               />
             )}
-            {!isActive && isFailed && (
+            {!isPlannerWorking && isFailed && (
               <CrossCircledIcon
                 style={{ minWidth: 16, minHeight: 16, color: "var(--red-9)" }}
               />
             )}
-            {!isActive && !isCompleted && !isFailed && (
+            {!isPlannerWorking && !isCompleted && !isFailed && (
               <DotFilledIcon
                 style={{ minWidth: 16, minHeight: 16, color: "var(--gray-9)" }}
               />

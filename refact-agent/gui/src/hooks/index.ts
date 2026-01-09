@@ -39,3 +39,4 @@ export * from "./useCheckpoints";
 export * from "./useTrajectoriesSubscription";
 export * from "./useChatSubscription";
 export * from "./useDraftMessage";
+export * from "./useStreamingChatIds";

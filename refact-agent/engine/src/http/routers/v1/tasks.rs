@@ -73,9 +73,46 @@ pub enum BoardPatch {
 pub async fn handle_list_tasks(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
 ) -> Result<Json<Vec<TaskMeta>>, (StatusCode, String)> {
-    let tasks = storage::list_tasks(gcx).await
+    let mut tasks = storage::list_tasks(gcx.clone()).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let gcx_locked = gcx.read().await;
+    let sessions = gcx_locked.chat_sessions.read().await;
+    for task in &mut tasks {
+        for (chat_id, session_arc) in sessions.iter() {
+            if is_planner_chat_for_task(chat_id, &task.id) {
+                let session = session_arc.lock().await;
+                if session.runtime.state == crate::chat::types::SessionState::Generating {
+                    task.planner_streaming = true;
+                    break;
+                }
+            }
+        }
+    }
+    drop(sessions);
+    drop(gcx_locked);
+
     Ok(Json(tasks))
+}
+
+fn is_planner_chat_for_task(chat_id: &str, task_id: &str) -> bool {
+    if chat_id == format!("plan-{}", task_id) {
+        return true;
+    }
+    if chat_id == format!("orch-{}", task_id) {
+        return true;
+    }
+    if let Some(rest) = chat_id.strip_prefix("planner-") {
+        if let Some((id, suffix)) = rest.rsplit_once('-') {
+            if id == task_id && !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+                return true;
+            }
+        }
+        if rest == task_id {
+            return true;
+        }
+    }
+    false
 }
 
 pub async fn handle_create_task(

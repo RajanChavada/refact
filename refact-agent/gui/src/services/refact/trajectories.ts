@@ -16,6 +16,7 @@ export type TrajectoryMeta = {
   task_role?: string;
   agent_id?: string;
   card_id?: string;
+  is_streaming?: boolean;
 };
 
 export type TrajectoryData = {

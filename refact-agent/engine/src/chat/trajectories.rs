@@ -57,6 +57,8 @@ pub struct TrajectoryMeta {
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub card_id: Option<String>,
+    #[serde(default)]
+    pub is_streaming: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1138,13 +1140,14 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         task_role,
         agent_id,
         card_id,
+        is_streaming: false,
     }
 }
 
 pub async fn handle_v1_trajectories_list(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
 ) -> Result<Response<Body>, ScratchError> {
-    let trajectories_dir = get_trajectories_dir(gcx)
+    let trajectories_dir = get_trajectories_dir(gcx.clone())
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let mut result: Vec<TrajectoryMeta> = Vec::new();
@@ -1168,6 +1171,7 @@ pub async fn handle_v1_trajectories_list(
             }
         }
     }
+    enrich_with_streaming_state(gcx, &mut result).await;
     result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -1232,12 +1236,29 @@ pub async fn handle_v1_trajectories_all(
         }
     }
 
+    enrich_with_streaming_state(gcx, &mut result).await;
     result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&result).unwrap()))
         .unwrap())
+}
+
+async fn enrich_with_streaming_state(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    trajectories: &mut Vec<TrajectoryMeta>,
+) {
+    let gcx_locked = gcx.read().await;
+    let sessions = gcx_locked.chat_sessions.read().await;
+    for traj in trajectories.iter_mut() {
+        if let Some(session_arc) = sessions.get(&traj.id) {
+            let session = session_arc.lock().await;
+            if session.runtime.state == SessionState::Generating {
+                traj.is_streaming = true;
+            }
+        }
+    }
 }
 
 async fn collect_task_trajectories(

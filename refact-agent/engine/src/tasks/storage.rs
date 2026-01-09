@@ -183,6 +183,7 @@ pub async fn create_task(gcx: Arc<ARwLock<GlobalContext>>, name: &str) -> Result
         base_commit: None,
         default_agent_model: None,
         is_name_generated: has_user_provided_name,
+        planner_streaming: false,
     };
 
     save_task_meta(gcx.clone(), &task_id, &meta).await?;

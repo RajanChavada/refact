@@ -134,10 +134,24 @@ fn spawn_subchat_bridge(
                             active_tool_call_ids.push(tool_call_id.to_string());
                         }
 
-                        let attached_files = {
+                        let mut attached_files: Vec<String> = value
+                            .get("attached_files")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        {
                             let session = session_arc.lock().await;
-                            get_context_files_from_messages(&session.messages)
-                        };
+                            for f in get_context_files_from_messages(&session.messages) {
+                                if !attached_files.contains(&f) {
+                                    attached_files.push(f);
+                                }
+                            }
+                        }
 
                         let mut session = session_arc.lock().await;
                         session.emit(ChatEvent::SubchatUpdate {

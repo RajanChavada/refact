@@ -135,27 +135,30 @@ const PlannerPanel: React.FC<PlannerPanelProps> = ({
         </Button>
       </Flex>
       <Box className={styles.panelContent}>
-        <ScrollArea scrollbars="vertical">
-          <Flex direction="column" gap="1">
-            {plannerChats.length === 0 && (
-              <Text size="1" color="gray">
-                No planner chats yet
-              </Text>
-            )}
-            {plannerChats.map((chatId, idx) => (
-              <PlannerItem
-                key={chatId}
-                chatId={chatId}
-                index={idx}
-                isActive={
-                  activeChat?.type === "planner" && activeChat.chatId === chatId
-                }
-                onSelect={() => onSelectPlanner(chatId)}
-                onRemove={() => onRemovePlanner(chatId)}
-              />
-            ))}
+        {plannerChats.length === 0 ? (
+          <Flex align="center" justify="center" style={{ flex: 1 }}>
+            <Text size="1" color="gray">
+              No planner chats yet
+            </Text>
           </Flex>
-        </ScrollArea>
+        ) : (
+          <ScrollArea scrollbars="vertical">
+            <Flex direction="column" gap="1">
+              {plannerChats.map((chatId, idx) => (
+                <PlannerItem
+                  key={chatId}
+                  chatId={chatId}
+                  index={idx}
+                  isActive={
+                    activeChat?.type === "planner" && activeChat.chatId === chatId
+                  }
+                  onSelect={() => onSelectPlanner(chatId)}
+                  onRemove={() => onRemovePlanner(chatId)}
+                />
+              ))}
+            </Flex>
+          </ScrollArea>
+        )}
       </Box>
     </Box>
   );
@@ -226,20 +229,23 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
         )}
       </Flex>
       <Box className={styles.panelContent}>
-        <ScrollArea scrollbars="vertical">
-          <Flex direction="column" gap="1">
-            {activeAgents.length === 0 &&
-              completedAgents.length === 0 &&
-              failedAgents.length === 0 && (
-                <Text size="1" color="gray">
-                  No agents yet
-                </Text>
-              )}
-            {activeAgents.map((card) => renderAgentItem(card, "doing"))}
-            {completedAgents.map((card) => renderAgentItem(card, "done"))}
-            {failedAgents.map((card) => renderAgentItem(card, "failed"))}
+        {activeAgents.length === 0 &&
+        completedAgents.length === 0 &&
+        failedAgents.length === 0 ? (
+          <Flex align="center" justify="center" style={{ flex: 1 }}>
+            <Text size="1" color="gray">
+              No agents yet
+            </Text>
           </Flex>
-        </ScrollArea>
+        ) : (
+          <ScrollArea scrollbars="vertical">
+            <Flex direction="column" gap="1">
+              {activeAgents.map((card) => renderAgentItem(card, "doing"))}
+              {completedAgents.map((card) => renderAgentItem(card, "done"))}
+              {failedAgents.map((card) => renderAgentItem(card, "failed"))}
+            </Flex>
+          </ScrollArea>
+        )}
       </Box>
       <Flex
         p="2"

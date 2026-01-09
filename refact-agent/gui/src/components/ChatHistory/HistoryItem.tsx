@@ -12,6 +12,7 @@ import { OpenInNewWindowIcon } from "@radix-ui/react-icons";
 import type { ChatHistoryItem } from "../../features/History/historySlice";
 import { isUserMessage } from "../../services/refact";
 import { useAppSelector } from "../../hooks";
+import { useStreamingChatIds } from "../../hooks/useStreamingChatIds";
 import { getTotalCostMeteringForMessages } from "../../utils/getMetering";
 import { Coin } from "../../images";
 
@@ -39,6 +40,7 @@ export const HistoryItem: React.FC<{
   const dateCreated = new Date(historyItem.createdAt);
   const dateTimeString = dateCreated.toLocaleString();
   const threads = useAppSelector((app) => app.chat.threads);
+  const streamingChatIds = useStreamingChatIds();
 
   const totalCost = useMemo(() => {
     const totals = getTotalCostMeteringForMessages(historyItem.messages);
@@ -56,7 +58,7 @@ export const HistoryItem: React.FC<{
   const threadRuntime = threads[historyItem.id] as
     | { streaming: boolean; waiting_for_response: boolean }
     | undefined;
-  const isStreaming = threadRuntime?.streaming ?? false;
+  const isStreaming = threadRuntime?.streaming ?? streamingChatIds.has(historyItem.id);
   const isWaiting = threadRuntime?.waiting_for_response ?? false;
   const isBusy = isStreaming || isWaiting;
   return (

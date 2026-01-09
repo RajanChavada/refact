@@ -397,7 +397,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
   return (
     <Flex align="center" m="4px" gap="4px" style={{ alignSelf: "stretch" }}>
       <Flex flexGrow="1" align="start" maxHeight="40px" overflowY="hidden">
-        <TabNav.Root style={{ flex: 1, overflowX: "scroll" }} ref={tabNav}>
+        <TabNav.Root style={{ flex: 1, overflowX: "scroll" }} ref={tabNav} className={styles.tabNav}>
           <TabNav.Link
             active={isDashboardTab(activeTab)}
             ref={(x) => refs.setBack(x)}

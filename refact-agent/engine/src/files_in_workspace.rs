@@ -363,6 +363,7 @@ async fn ls_files_under_version_control(path: &PathBuf) -> Option<Vec<PathBuf>> 
 
 pub fn _ls_files(
     indexing_everywhere: &IndexingEverywhere,
+    scan_root: &Path,
     path: &PathBuf,
     recursive: bool,
     blocklist_check: bool,
@@ -393,14 +394,15 @@ pub fn _ls_files(
         let mut entries = entries_maybe.unwrap();
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
-            let path = entry.path();
-            let indexing_settings = indexing_everywhere.indexing_for_path(&path);
-            if recursive && path.is_dir() {
-                if !blocklist_check || !is_blocklisted(&indexing_settings, &path) {
-                    dirs_to_visit.push(path);
+            let abs_path = entry.path();
+            let indexing_settings = indexing_everywhere.indexing_for_path(&abs_path);
+            let rel_path = abs_path.strip_prefix(scan_root).unwrap_or(&abs_path);
+            if recursive && abs_path.is_dir() {
+                if !blocklist_check || !is_blocklisted(&indexing_settings, rel_path) {
+                    dirs_to_visit.push(abs_path);
                 }
-            } else if path.is_file() {
-                paths.push(path);
+            } else if abs_path.is_file() {
+                paths.push(abs_path);
             }
         }
     }
@@ -418,13 +420,15 @@ pub fn ls_files(
     }
 
     let indexing_settings = indexing_everywhere.indexing_for_path(path);
-    let mut paths = _ls_files(indexing_everywhere, path, recursive, true).unwrap();
+    let mut paths = _ls_files(indexing_everywhere, path.as_path(), path, recursive, true).unwrap();
     if recursive {
         for additional_indexing_dir in indexing_settings.additional_indexing_dirs.iter() {
+            let additional_path = PathBuf::from(additional_indexing_dir);
             paths.extend(
                 _ls_files(
                     indexing_everywhere,
-                    &PathBuf::from(additional_indexing_dir),
+                    additional_path.as_path(),
+                    &additional_path,
                     recursive,
                     false,
                 )

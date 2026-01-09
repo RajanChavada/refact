@@ -210,6 +210,9 @@ impl Tool for ToolCat {
             ));
             corrections = true;
         }
+        if content.is_empty() {
+            content = "No files or symbols found matching the request.".to_string();
+        }
 
         let mut results: Vec<ContextEnum> = context_enums
             .into_iter()

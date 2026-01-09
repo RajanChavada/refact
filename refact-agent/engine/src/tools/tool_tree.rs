@@ -135,6 +135,11 @@ impl Tool for ToolTree {
                 warn!("tree_for_tools err: {}", err);
                 err
             })?;
+        let content = if content.is_empty() {
+            "No files found in the specified path.".to_string()
+        } else {
+            content
+        };
 
         Ok((
             false,
