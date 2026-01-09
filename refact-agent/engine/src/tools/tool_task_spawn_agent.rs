@@ -79,15 +79,13 @@ async fn setup_agent_worktree(
 
     let mut task_meta = storage::load_task_meta(gcx.clone(), task_id).await?;
 
-    if task_meta.base_branch.is_none() || task_meta.base_commit.is_none() {
+    let base_commit = operations::get_head_commit(&repo)?;
+
+    if task_meta.base_branch.is_none() {
         let base_branch = operations::get_current_branch(&repo)?;
-        let base_commit = operations::get_head_commit(&repo)?;
         task_meta.base_branch = Some(base_branch);
-        task_meta.base_commit = Some(base_commit);
         storage::save_task_meta(gcx.clone(), task_id, &task_meta).await?;
     }
-
-    let base_commit = task_meta.base_commit.as_ref().ok_or("No base commit found")?;
     let agent_id_short = &agent_id[..agent_id.len().min(8)];
     let branch_name = format!("refact/task/{}/card/{}/{}", task_id, card_id, agent_id_short);
     let worktree_name = format!("{}-{}-{}", task_id, card_id, agent_id_short);
@@ -102,7 +100,7 @@ async fn setup_agent_worktree(
         .await
         .map_err(|e| format!("Failed to create worktree parent dir: {}", e))?;
 
-    operations::create_worktree(&repo, &worktree_path, &worktree_name, &branch_name, base_commit)?;
+    operations::create_worktree(&repo, &worktree_path, &worktree_name, &branch_name, &base_commit)?;
 
     let card_id_owned = card_id.to_string();
     let branch_name_clone = branch_name.clone();
