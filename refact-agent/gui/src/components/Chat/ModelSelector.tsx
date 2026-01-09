@@ -56,7 +56,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   if (!capsData || groupedModels.length === 0) {
     return (
-      <Text size="1" color="gray">
+      <Text size="1" color="gray" style={{ lineHeight: 1 }}>
         {showLabel ? `${label} ` : ""}
         {currentModelName || "No models"}
       </Text>
@@ -65,9 +65,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
   if (compact) {
     return (
-      <Flex align="center" gap="1" style={{ height: "20px" }}>
+      <Flex align="center" gap="1">
         {showLabel && (
-          <Text size="1" color="gray" style={{ lineHeight: "20px" }}>
+          <Text size="1" color="gray" style={{ lineHeight: 1 }}>
             {label}
           </Text>
         )}
@@ -79,6 +79,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         >
           <Select.Trigger
             variant="ghost"
+            className={styles.compactTrigger}
             title={
               disabled
                 ? "Cannot change model while streaming"
@@ -86,9 +87,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             }
             style={{
               cursor: disabled ? "not-allowed" : "pointer",
-              padding: "0 4px",
-              minHeight: "20px",
-              height: "20px",
               opacity: disabled ? 0.5 : 1,
             }}
           />

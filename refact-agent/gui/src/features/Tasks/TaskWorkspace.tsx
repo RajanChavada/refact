@@ -245,6 +245,7 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
         p="2"
         align="center"
         justify="between"
+        gap="2"
         style={{ borderTop: "1px solid var(--gray-4)" }}
       >
         <Text size="1" color="gray">

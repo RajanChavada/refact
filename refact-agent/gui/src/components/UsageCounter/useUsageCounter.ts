@@ -19,6 +19,25 @@ export function useUsageCounter() {
       : undefined;
   const lastUsage = lastAssistantMessage?.usage;
 
+  // Check if the last message has server-executed tools (like web_search)
+  // These can cause temporary inflated token counts during streaming.
+  // We check both server_executed_tools (set after streaming) and tool_calls
+  // with srvtoolu_ prefix (visible during streaming)
+  const hasServerExecutedTools = useMemo(() => {
+    if (!lastAssistantMessage) return false;
+    // Check post-processed server_executed_tools
+    const serverTools = lastAssistantMessage.server_executed_tools;
+    if (Array.isArray(serverTools) && serverTools.length > 0) {
+      return true;
+    }
+    // Check tool_calls during streaming (before post-processing)
+    const toolCalls = lastAssistantMessage.tool_calls;
+    if (Array.isArray(toolCalls)) {
+      return toolCalls.some((tc) => tc.id?.startsWith("srvtoolu_"));
+    }
+    return false;
+  }, [lastAssistantMessage]);
+
   const totalInputTokens = useMemo(() => {
     return calculateUsageInputTokens({
       usage: currentThreadUsage,
@@ -55,9 +74,13 @@ export function useUsageCounter() {
     return messages.length > 0;
   }, [messages.length]);
 
+  // Don't mark context as full when server-executed tools are present
+  // Claude's web_search can report inflated token counts during streaming
+  // that normalize after completion - this prevents false blocking
   const isContextFull = useMemo(() => {
+    if (hasServerExecutedTools) return false;
     return tokenPercentage >= 97;
-  }, [tokenPercentage]);
+  }, [tokenPercentage, hasServerExecutedTools]);
 
   return {
     shouldShow,
@@ -68,5 +91,6 @@ export function useUsageCounter() {
     isWarning,
     isContextFull,
     tokenPercentage,
+    hasServerExecutedTools,
   };
 }

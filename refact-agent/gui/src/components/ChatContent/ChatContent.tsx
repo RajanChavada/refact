@@ -45,6 +45,7 @@ import {
 
 import { LogoAnimation } from "../LogoAnimation/LogoAnimation.tsx";
 import { ChatLoading } from "./ChatLoading";
+import { StreamingTokenCounter } from "../UsageCounter";
 
 export type ChatContentProps = {
   onRetry: (index: number, question: UserMessage["content"]) => void;
@@ -160,7 +161,10 @@ export const ChatContent: React.FC<ChatContentProps> = ({
                 title="stop streaming"
                 onClick={handleManualStopStreamingClick}
               >
-                Stop
+                <Flex align="center" gap="2">
+                  Stop
+                  <StreamingTokenCounter />
+                </Flex>
               </Button>
             )}
             {shouldConfigButtonBeVisible && (
@@ -276,14 +280,15 @@ function renderMessages(
       ...(diffMessagesAfter.length > 0
         ? [<GroupedDiffs key={`diffs-${key}`} diffs={diffMessagesAfter} />]
         : []),
-      <MessageUsageInfo
-        key={`usage-${key}`}
-        usage={head.usage}
-        metering_coins_prompt={head.metering_coins_prompt}
-        metering_coins_generated={head.metering_coins_generated}
-        metering_coins_cache_creation={head.metering_coins_cache_creation}
-        metering_coins_cache_read={head.metering_coins_cache_read}
-      />,
+      <Container key={`usage-${key}`}>
+        <MessageUsageInfo
+          usage={head.usage}
+          metering_coins_prompt={head.metering_coins_prompt}
+          metering_coins_generated={head.metering_coins_generated}
+          metering_coins_cache_creation={head.metering_coins_cache_creation}
+          metering_coins_cache_read={head.metering_coins_cache_read}
+        />
+      </Container>,
     ];
 
     // Skip the tool, context_file, and diff messages we already processed
