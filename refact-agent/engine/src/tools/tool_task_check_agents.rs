@@ -231,7 +231,7 @@ impl Tool for ToolTaskCheckAgents {
         } else if !failed.is_empty() {
             result.push_str("⚠️ **Some agents have failed.** Review their reports and consider replanning.\n");
         } else if !running.is_empty() {
-            result.push_str("⏳ **Agents are still working.** Check again later or click the links to view progress.\n");
+            result.push_str("⏳ **Agents are still working.** Do not check again, wait for the completion message to arrive.\n");
         }
 
         Ok((false, vec![ContextEnum::ChatMessage(ChatMessage {
