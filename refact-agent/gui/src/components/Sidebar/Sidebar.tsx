@@ -24,6 +24,7 @@ import {
   CheckCircledIcon,
   CrossCircledIcon,
   DotFilledIcon,
+  PauseIcon,
 } from "@radix-ui/react-icons";
 import { CloseButton } from "../Buttons/Buttons";
 
@@ -106,8 +107,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ takingNotes, style }) => {
           </Text>
           <Flex direction="column" gap="2">
             {activeTasks.map((task) => {
-              const isActive =
-                task.status === "active" || task.agents_active > 0;
+              const plannerState = task.planner_session_state;
+              const isPlannerWorking =
+                plannerState === "generating" ||
+                plannerState === "executing_tools";
+              const isPlannerPaused =
+                plannerState === "paused" || plannerState === "waiting_ide";
+              const isPlannerError = plannerState === "error";
+              const isCompleted = task.status === "completed";
+              const isFailed = task.status === "abandoned";
               const dateUpdated = new Date(task.updated_at);
               const dateTimeString = dateUpdated.toLocaleString();
               return (
@@ -130,30 +138,58 @@ export const Sidebar: React.FC<SidebarProps> = ({ takingNotes, style }) => {
                       }}
                     >
                       <Flex gap="1" align="center">
-                        {isActive && (
+                        {isPlannerWorking && (
                           <Spinner style={{ minWidth: 16, minHeight: 16 }} />
                         )}
-                        {!isActive && task.status === "completed" && (
-                          <CheckCircledIcon
+                        {!isPlannerWorking && isPlannerPaused && (
+                          <PauseIcon
                             style={{
                               minWidth: 16,
                               minHeight: 16,
-                              color: "var(--green-9)",
+                              color: "var(--yellow-9)",
                             }}
                           />
                         )}
-                        {!isActive && task.status === "abandoned" && (
-                          <CrossCircledIcon
-                            style={{
-                              minWidth: 16,
-                              minHeight: 16,
-                              color: "var(--red-9)",
-                            }}
-                          />
-                        )}
-                        {!isActive &&
-                          task.status !== "completed" &&
-                          task.status !== "abandoned" && (
+                        {!isPlannerWorking &&
+                          !isPlannerPaused &&
+                          isPlannerError && (
+                            <CrossCircledIcon
+                              style={{
+                                minWidth: 16,
+                                minHeight: 16,
+                                color: "var(--red-9)",
+                              }}
+                            />
+                          )}
+                        {!isPlannerWorking &&
+                          !isPlannerPaused &&
+                          !isPlannerError &&
+                          isCompleted && (
+                            <CheckCircledIcon
+                              style={{
+                                minWidth: 16,
+                                minHeight: 16,
+                                color: "var(--green-9)",
+                              }}
+                            />
+                          )}
+                        {!isPlannerWorking &&
+                          !isPlannerPaused &&
+                          !isPlannerError &&
+                          isFailed && (
+                            <CrossCircledIcon
+                              style={{
+                                minWidth: 16,
+                                minHeight: 16,
+                                color: "var(--red-9)",
+                              }}
+                            />
+                          )}
+                        {!isPlannerWorking &&
+                          !isPlannerPaused &&
+                          !isPlannerError &&
+                          !isCompleted &&
+                          !isFailed && (
                             <DotFilledIcon
                               style={{
                                 minWidth: 16,

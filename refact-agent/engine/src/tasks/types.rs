@@ -25,7 +25,7 @@ pub struct TaskMeta {
     pub default_agent_model: Option<String>,
     #[serde(default)]
     pub is_name_generated: bool,
-    #[serde(default, skip_serializing, skip_deserializing)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner_session_state: Option<String>,
 }
 
