@@ -47,7 +47,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ takingNotes, style }) => {
   const history = useAppSelector((app) => app.history, {
     devModeChecks: { stabilityCheck: "never" },
   });
-  const { data: tasks = [] } = useListTasksQuery(undefined);
+  const { data: tasks = [] } = useListTasksQuery(undefined, {
+    pollingInterval: 2000,
+  });
   const [deleteTask] = useDeleteTaskMutation();
 
   const onDeleteHistoryItem = useCallback(

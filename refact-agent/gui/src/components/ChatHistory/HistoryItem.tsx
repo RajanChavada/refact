@@ -64,7 +64,7 @@ export const HistoryItem: React.FC<{
   const getSessionState = (): SessionState | null => {
     if (threadRuntime?.streaming) return "generating";
     if (threadRuntime?.waiting_for_response) return "executing_tools";
-    return chatSessionStates[historyItem.id] ?? null;
+    return chatSessionStates[historyItem.id] as SessionState | null;
   };
 
   const sessionState = getSessionState();
