@@ -248,17 +248,29 @@ pub async fn list_task_trajectories(
         return Ok(vec![]);
     }
 
-    let mut ids = vec![];
+    let mut trajectories: Vec<(String, String)> = vec![];
     let mut entries = fs::read_dir(&traj_dir).await.map_err(|e| e.to_string())?;
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
         let path = entry.path();
         if path.extension().map_or(false, |e| e == "json") {
             if let Some(stem) = path.file_stem() {
-                ids.push(stem.to_string_lossy().to_string());
+                let id = stem.to_string_lossy().to_string();
+                let updated_at = if let Ok(content) = fs::read_to_string(&path).await {
+                    serde_json::from_str::<serde_json::Value>(&content)
+                        .ok()
+                        .and_then(|data| data.get("updated_at").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                trajectories.push((id, updated_at));
             }
         }
     }
-    Ok(ids)
+
+    trajectories.sort_by(|a, b| b.1.cmp(&a.1));
+
+    Ok(trajectories.into_iter().map(|(id, _)| id).collect())
 }
 
 pub fn infer_task_id_from_chat_id(chat_id: &str) -> Option<String> {
