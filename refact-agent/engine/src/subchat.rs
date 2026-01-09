@@ -28,17 +28,24 @@ fn get_context_files_from_messages(messages: &[ChatMessage]) -> Vec<String> {
     let mut paths = Vec::new();
     for msg in messages {
         if msg.role == "context_file" {
-            let files: Vec<ContextFile> = match &msg.content {
-                ChatContent::ContextFiles(files) => files.clone(),
+            match &msg.content {
+                ChatContent::ContextFiles(files) => {
+                    for file in files {
+                        if !paths.contains(&file.file_name) {
+                            paths.push(file.file_name.clone());
+                        }
+                    }
+                }
                 ChatContent::SimpleText(text) => {
-                    serde_json::from_str::<Vec<ContextFile>>(text).unwrap_or_default()
+                    if let Ok(files) = serde_json::from_str::<Vec<ContextFile>>(text) {
+                        for file in files {
+                            if !paths.contains(&file.file_name) {
+                                paths.push(file.file_name.clone());
+                            }
+                        }
+                    }
                 }
-                _ => vec![],
-            };
-            for file in files {
-                if !paths.contains(&file.file_name) {
-                    paths.push(file.file_name.clone());
-                }
+                _ => {}
             }
         }
     }
@@ -675,6 +682,20 @@ async fn execute_pending_tool_calls(
 
     messages.extend(denied_msgs);
     messages.extend(tool_results);
+
+    if let Some(tx_toolid) = &tx_toolid_mb {
+        let subchat_tx = ccx.lock().await.subchat_tx.clone();
+        let context_files = get_context_files_from_messages(&messages);
+        if !context_files.is_empty() {
+            let tool_msg = json!({
+                "tool_call_id": tx_toolid,
+                "subchat_id": format!("{}/{}: ✓", step_idx + 1, max_steps),
+                "attached_files": context_files
+            });
+            let _ = subchat_tx.lock().await.send(tool_msg);
+        }
+    }
+
     Ok(messages)
 }
 

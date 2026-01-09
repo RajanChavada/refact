@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, Semaphore};
@@ -72,17 +73,24 @@ fn get_context_files_from_messages(messages: &[ChatMessage]) -> Vec<String> {
     let mut paths = Vec::new();
     for msg in messages {
         if msg.role == "context_file" {
-            let files: Vec<ContextFile> = match &msg.content {
-                ChatContent::ContextFiles(files) => files.clone(),
+            match &msg.content {
+                ChatContent::ContextFiles(files) => {
+                    for file in files {
+                        if !paths.contains(&file.file_name) {
+                            paths.push(file.file_name.clone());
+                        }
+                    }
+                }
                 ChatContent::SimpleText(text) => {
-                    serde_json::from_str::<Vec<ContextFile>>(text).unwrap_or_default()
+                    if let Ok(files) = serde_json::from_str::<Vec<ContextFile>>(text) {
+                        for file in files {
+                            if !paths.contains(&file.file_name) {
+                                paths.push(file.file_name.clone());
+                            }
+                        }
+                    }
                 }
-                _ => vec![],
-            };
-            for file in files {
-                if !paths.contains(&file.file_name) {
-                    paths.push(file.file_name.clone());
-                }
+                _ => {}
             }
         }
     }
@@ -100,17 +108,17 @@ fn spawn_subchat_bridge(
         let subchat_rx = ccx.lock().await.subchat_rx.clone();
         info!("spawn_subchat_bridge: started listening for subchat messages");
 
-        let mut active_tool_call_ids: Vec<String> = Vec::new();
+        let mut last_attached_files: HashMap<String, Vec<String>> = HashMap::new();
 
         loop {
             if cancel_flag_clone.load(Ordering::Relaxed) {
-                info!("spawn_subchat_bridge: cancelled, sending cleanup events for {} active tools", active_tool_call_ids.len());
+                info!("spawn_subchat_bridge: cancelled, sending cleanup events for {} active tools", last_attached_files.len());
                 let mut session = session_arc.lock().await;
-                for tool_call_id in active_tool_call_ids.drain(..) {
+                for (tool_call_id, attached_files) in last_attached_files.drain() {
                     session.emit(ChatEvent::SubchatUpdate {
                         tool_call_id,
                         subchat_id: String::new(),
-                        attached_files: vec![],
+                        attached_files,
                     });
                 }
                 break;
@@ -130,10 +138,6 @@ fn spawn_subchat_bridge(
                     if let (Some(tool_call_id), Some(subchat_id)) = (tool_call_id, subchat_id) {
                         info!("spawn_subchat_bridge: emitting SubchatUpdate for tool_call_id={}, subchat_id={}", tool_call_id, subchat_id);
 
-                        if !active_tool_call_ids.contains(&tool_call_id.to_string()) {
-                            active_tool_call_ids.push(tool_call_id.to_string());
-                        }
-
                         let mut attached_files: Vec<String> = value
                             .get("attached_files")
                             .and_then(|v| v.as_array())
@@ -152,6 +156,8 @@ fn spawn_subchat_bridge(
                                 }
                             }
                         }
+
+                        last_attached_files.insert(tool_call_id.to_string(), attached_files.clone());
 
                         let mut session = session_arc.lock().await;
                         session.emit(ChatEvent::SubchatUpdate {
