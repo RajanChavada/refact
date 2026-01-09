@@ -639,28 +639,69 @@ export function areAllFieldsBoolean(
   );
 }
 
-export type MemoRecord = {
+export type VecDbMemoRecord = {
   memid: string;
-  thevec?: number[]; // are options nullable?
+  thevec?: number[];
   distance?: number;
   m_type: string;
   m_goal: string;
   m_project: string;
   m_payload: string;
   m_origin: string;
-  // mstat_correct: bigint,
-  // mstat_relevant: bigint,
   mstat_correct: number;
   mstat_relevant: number;
   mstat_times_used: number;
 };
+
+export type KnowledgeMemoRecord = {
+  memid: string;
+  tags: string[];
+  content: string;
+  file_path?: string;
+  line_range?: [number, number];
+  title?: string;
+  created?: string;
+  kind?: string;
+  score?: number;
+};
+
+export type MemoRecord = KnowledgeMemoRecord;
+
 export function isMemoRecord(obj: unknown): obj is MemoRecord {
   if (!obj) return false;
   if (typeof obj !== "object") return false;
   if (!("memid" in obj) || typeof obj.memid !== "string") return false;
-  // TODO: other checks
   return true;
 }
+
+export type KnowledgeGraphNode = {
+  id: string;
+  node_type: string;
+  label: string;
+};
+
+export type KnowledgeGraphEdge = {
+  source: string;
+  target: string;
+  edge_type: string;
+};
+
+export type KnowledgeGraphStats = {
+  doc_count: number;
+  tag_count: number;
+  file_count: number;
+  entity_count: number;
+  edge_count: number;
+  active_docs: number;
+  deprecated_docs: number;
+  trajectory_count: number;
+};
+
+export type KnowledgeGraphResponse = {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  stats: KnowledgeGraphStats;
+};
 
 export type VecDbStatus = {
   files_unprocessed: number;
