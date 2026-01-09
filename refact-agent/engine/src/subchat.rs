@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::collections::HashSet;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, mpsc};
 use serde_json::{json, Value};
 use tracing::info;
@@ -550,47 +549,6 @@ async fn run_subchat_with_wrap_up(
     Ok(final_results.into_iter().next().unwrap_or_default())
 }
 
-fn extract_paths_from_tool_args(tool_name: &str, args_json: &str) -> Vec<String> {
-    let v: Value = match serde_json::from_str(args_json) {
-        Ok(v) => v,
-        Err(_) => return vec![],
-    };
-
-    let keys: &[&str] = match tool_name {
-        "cat" => &["paths"],
-        "tree" => &["path"],
-        "search_semantic" | "search_pattern" => &["scope"],
-        "create_textdoc" | "update_textdoc" | "update_textdoc_regex" | "update_textdoc_by_lines" => {
-            &["path"]
-        }
-        "mv" => &["source", "destination"],
-        "rm" => &["path"],
-        _ => &[],
-    };
-
-    let mut out = Vec::new();
-    for k in keys {
-        if let Some(val) = v.get(*k) {
-            if let Some(s) = val.as_str() {
-                if *k == "paths" {
-                    for part in s.split(',') {
-                        let p = part.trim().split(':').next().unwrap_or("").trim();
-                        if !p.is_empty() && p != "workspace" {
-                            out.push(p.to_string());
-                        }
-                    }
-                } else if s != "workspace" && !s.is_empty() {
-                    out.push(s.to_string());
-                }
-            }
-        }
-    }
-
-    let mut seen = HashSet::new();
-    out.retain(|p| seen.insert(p.clone()));
-    out
-}
-
 fn truncate_args(s: &str, max: usize) -> String {
     if s.len() <= max { return s.to_string(); }
     format!("{}…", &s[..max])
@@ -649,7 +607,6 @@ async fn execute_pending_tool_calls(
     if let Some(tx_toolid) = &tx_toolid_mb {
         let subchat_tx = ccx.lock().await.subchat_tx.clone();
         for tc in &allowed {
-            let paths = extract_paths_from_tool_args(&tc.function.name, &tc.function.arguments);
             let args_truncated = truncate_args(&tc.function.arguments, 200);
             let progress_msg = format!(
                 "{}/{}: {}({})",
@@ -660,8 +617,7 @@ async fn execute_pending_tool_calls(
             );
             let tool_msg = json!({
                 "tool_call_id": tx_toolid,
-                "subchat_id": progress_msg,
-                "attached_files": paths
+                "subchat_id": progress_msg
             });
             let _ = subchat_tx.lock().await.send(tool_msg);
         }

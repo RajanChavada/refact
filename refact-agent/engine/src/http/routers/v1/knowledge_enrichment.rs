@@ -16,6 +16,7 @@ const MAX_QUERY_LENGTH: usize = 2000;
 pub async fn enrich_messages_with_knowledge(
     gcx: Arc<ARwLock<GlobalContext>>,
     messages: &mut Vec<ChatMessage>,
+    current_chat_id: Option<&str>,
 ) {
     let last_user_idx = match messages.iter().rposition(|m| m.role == "user") {
         Some(idx) => idx,
@@ -36,7 +37,7 @@ pub async fn enrich_messages_with_knowledge(
     let existing_paths = get_existing_context_file_paths(messages);
 
     if let Some(knowledge_context) =
-        create_knowledge_context(gcx, &query_normalized, &existing_paths).await
+        create_knowledge_context(gcx, &query_normalized, &existing_paths, current_chat_id).await
     {
         messages.insert(last_user_idx, knowledge_context);
         tracing::info!(
@@ -178,8 +179,9 @@ async fn create_knowledge_context(
     gcx: Arc<ARwLock<GlobalContext>>,
     query_text: &str,
     existing_paths: &HashSet<String>,
+    current_chat_id: Option<&str>,
 ) -> Option<ChatMessage> {
-    let memories = memories_search(gcx.clone(), query_text, KNOWLEDGE_TOP_N, TRAJECTORY_TOP_N)
+    let memories = memories_search(gcx.clone(), query_text, KNOWLEDGE_TOP_N, TRAJECTORY_TOP_N, current_chat_id)
         .await
         .ok()?;
 

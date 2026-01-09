@@ -536,6 +536,17 @@ pub async fn save_trajectory_snapshot(
                 trajectories_dir,
             );
         }
+    } else if let Some(ref task_meta) = snapshot.task_meta {
+        if task_meta.role == "planner" {
+            let user_message_count = count_user_messages(&messages_json);
+            if user_message_count >= 1 {
+                spawn_task_name_generation_task(
+                    gcx.clone(),
+                    task_meta.task_id.clone(),
+                    messages_json,
+                );
+            }
+        }
     }
 
     Ok(())
@@ -814,6 +825,23 @@ fn is_placeholder_title(title: &str) -> bool {
     normalized.is_empty() || normalized == "new chat" || normalized == "untitled"
 }
 
+fn is_placeholder_task_name(name: &str) -> bool {
+    let normalized = name.trim().to_lowercase();
+    normalized.is_empty() || normalized == "new task" || normalized == "untitled"
+}
+
+fn count_user_messages(messages: &[serde_json::Value]) -> usize {
+    messages
+        .iter()
+        .filter(|msg| {
+            msg.get("role")
+                .and_then(|r| r.as_str())
+                .map(|r| r == "user")
+                .unwrap_or(false)
+        })
+        .count()
+}
+
 fn extract_first_user_message(messages: &[serde_json::Value]) -> Option<String> {
     for msg in messages {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -1017,6 +1045,55 @@ fn spawn_title_generation_task(
         };
         if let Some(tx) = &gcx.read().await.trajectory_events_tx {
             let _ = tx.send(event);
+        }
+    });
+}
+
+fn spawn_task_name_generation_task(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    task_id: String,
+    messages: Vec<serde_json::Value>,
+) {
+    tokio::spawn(async move {
+        let task_meta = match crate::tasks::storage::load_task_meta(gcx.clone(), &task_id).await {
+            Ok(meta) => meta,
+            Err(e) => {
+                warn!("Failed to load task meta for name generation: {}", e);
+                return;
+            }
+        };
+
+        if task_meta.is_name_generated {
+            return;
+        }
+
+        if !is_placeholder_task_name(&task_meta.name) {
+            return;
+        }
+
+        let generated_name = generate_title_llm(gcx.clone(), &messages).await;
+        let name = match generated_name {
+            Some(n) => n,
+            None => match extract_first_user_message(&messages) {
+                Some(first_msg) => {
+                    let truncated: String = first_msg.chars().take(60).collect();
+                    if truncated.len() < first_msg.len() {
+                        format!("{}...", truncated.trim_end())
+                    } else {
+                        truncated
+                    }
+                }
+                None => return,
+            },
+        };
+
+        match crate::tasks::storage::update_task_name(gcx.clone(), &task_id, &name).await {
+            Ok(_) => {
+                info!("Updated task {} with generated name: {}", task_id, name);
+            }
+            Err(e) => {
+                warn!("Failed to update task name: {}", e);
+            }
         }
     });
 }

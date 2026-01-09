@@ -38,7 +38,7 @@ impl AtCommand for AtLoadKnowledge {
         let search_key = args.iter().map(|x| x.text.clone()).join(" ");
         let gcx = ccx.lock().await.global_context.clone();
 
-        let memories = memories_search(gcx, &search_key, 5, 0).await?;
+        let memories = memories_search(gcx, &search_key, 5, 0, None).await?;
         let mut seen_memids = HashSet::new();
         let unique_memories: Vec<_> = memories
             .into_iter()

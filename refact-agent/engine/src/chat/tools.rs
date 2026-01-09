@@ -68,6 +68,27 @@ fn is_patch_like_tool(command: &str) -> bool {
     PATCH_LIKE_TOOLS.contains(&command)
 }
 
+fn get_context_files_from_messages(messages: &[ChatMessage]) -> Vec<String> {
+    let mut paths = Vec::new();
+    for msg in messages {
+        if msg.role == "context_file" {
+            let files: Vec<ContextFile> = match &msg.content {
+                ChatContent::ContextFiles(files) => files.clone(),
+                ChatContent::SimpleText(text) => {
+                    serde_json::from_str::<Vec<ContextFile>>(text).unwrap_or_default()
+                }
+                _ => vec![],
+            };
+            for file in files {
+                if !paths.contains(&file.file_name) {
+                    paths.push(file.file_name.clone());
+                }
+            }
+        }
+    }
+    paths
+}
+
 fn spawn_subchat_bridge(
     ccx: Arc<AMutex<AtCommandsContext>>,
     session_arc: Arc<AMutex<ChatSession>>,
@@ -79,9 +100,19 @@ fn spawn_subchat_bridge(
         let subchat_rx = ccx.lock().await.subchat_rx.clone();
         info!("spawn_subchat_bridge: started listening for subchat messages");
 
+        let mut active_tool_call_ids: Vec<String> = Vec::new();
+
         loop {
             if cancel_flag_clone.load(Ordering::Relaxed) {
-                info!("spawn_subchat_bridge: cancelled, exiting");
+                info!("spawn_subchat_bridge: cancelled, sending cleanup events for {} active tools", active_tool_call_ids.len());
+                let mut session = session_arc.lock().await;
+                for tool_call_id in active_tool_call_ids.drain(..) {
+                    session.emit(ChatEvent::SubchatUpdate {
+                        tool_call_id,
+                        subchat_id: String::new(),
+                        attached_files: vec![],
+                    });
+                }
                 break;
             }
 
@@ -99,35 +130,14 @@ fn spawn_subchat_bridge(
                     if let (Some(tool_call_id), Some(subchat_id)) = (tool_call_id, subchat_id) {
                         info!("spawn_subchat_bridge: emitting SubchatUpdate for tool_call_id={}, subchat_id={}", tool_call_id, subchat_id);
 
-                        let mut attached_files: Vec<String> = value
-                            .get("attached_files")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        let files_from_add_message: Vec<String> = value
-                            .get("add_message")
-                            .and_then(|am| am.get("content"))
-                            .and_then(|c| c.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|item| {
-                                        item.get("file_name").and_then(|f| f.as_str())
-                                    })
-                                    .map(|s| s.to_string())
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        for f in files_from_add_message {
-                            if !attached_files.contains(&f) {
-                                attached_files.push(f);
-                            }
+                        if !active_tool_call_ids.contains(&tool_call_id.to_string()) {
+                            active_tool_call_ids.push(tool_call_id.to_string());
                         }
+
+                        let attached_files = {
+                            let session = session_arc.lock().await;
+                            get_context_files_from_messages(&session.messages)
+                        };
 
                         let mut session = session_arc.lock().await;
                         session.emit(ChatEvent::SubchatUpdate {

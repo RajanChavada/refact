@@ -66,7 +66,7 @@ impl Tool for ToolSearchTrajectories {
             _ => 5,
         };
 
-        let memories = memories_search(gcx.clone(), &query, 0, top_n).await?;
+        let memories = memories_search(gcx.clone(), &query, 0, top_n, None).await?;
 
         let output = if memories.is_empty() {
             "No relevant trajectories found.".to_string()

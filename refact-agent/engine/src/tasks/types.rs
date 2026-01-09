@@ -23,6 +23,8 @@ pub struct TaskMeta {
     pub base_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_model: Option<String>,
+    #[serde(default)]
+    pub is_name_generated: bool,
 }
 
 fn default_schema_version() -> u32 {

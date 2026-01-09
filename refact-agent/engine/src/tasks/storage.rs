@@ -167,10 +167,11 @@ pub async fn create_task(gcx: Arc<ARwLock<GlobalContext>>, name: &str) -> Result
     fs::create_dir_all(task_dir.join("trajectories").join("agents")).await.map_err(|e| e.to_string())?;
 
     let now = Utc::now().to_rfc3339();
+    let has_user_provided_name = !name.trim().is_empty() && name.to_lowercase() != "new task";
     let meta = TaskMeta {
         schema_version: 1,
         id: task_id.clone(),
-        name: name.to_string(),
+        name: if has_user_provided_name { name.to_string() } else { "New Task".to_string() },
         status: TaskStatus::Planning,
         created_at: now.clone(),
         updated_at: now,
@@ -181,6 +182,7 @@ pub async fn create_task(gcx: Arc<ARwLock<GlobalContext>>, name: &str) -> Result
         base_branch: None,
         base_commit: None,
         default_agent_model: None,
+        is_name_generated: has_user_provided_name,
     };
 
     save_task_meta(gcx.clone(), &task_id, &meta).await?;
@@ -199,6 +201,15 @@ pub async fn delete_task(gcx: Arc<ARwLock<GlobalContext>>, task_id: &str) -> Res
         fs::remove_dir_all(&task_dir).await.map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+pub async fn update_task_name(gcx: Arc<ARwLock<GlobalContext>>, task_id: &str, name: &str) -> Result<TaskMeta, String> {
+    let mut meta = load_task_meta(gcx.clone(), task_id).await?;
+    meta.name = name.to_string();
+    meta.is_name_generated = true;
+    meta.updated_at = Utc::now().to_rfc3339();
+    save_task_meta(gcx, task_id, &meta).await?;
+    Ok(meta)
 }
 
 pub async fn update_task_stats(gcx: Arc<ARwLock<GlobalContext>>, task_id: &str) -> Result<TaskMeta, String> {

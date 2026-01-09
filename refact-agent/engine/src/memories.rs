@@ -242,6 +242,7 @@ pub async fn memories_search(
     query: &str,
     top_n_memories: usize,
     top_n_trajectories: usize,
+    exclude_trajectory_id: Option<&str>,
 ) -> Result<Vec<MemoRecord>, String> {
     let knowledge_dirs = get_all_knowledge_dirs(gcx.clone()).await;
 
@@ -294,6 +295,16 @@ pub async fn memories_search(
                 })
                 .or_insert(KnowledgeMatch { best_score: score });
         } else if path_str.contains(".refact/trajectories/") && path_str.ends_with(".json") {
+            // Skip current trajectory to avoid self-referential enrichment
+            if let Some(exclude_id) = exclude_trajectory_id {
+                let traj_id = rec.file_path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if traj_id == exclude_id {
+                    continue;
+                }
+            }
             trajectory_matches
                 .entry(rec.file_path.clone())
                 .and_modify(|m| {

@@ -61,7 +61,7 @@ impl Tool for ToolGetKnowledge {
             None => return Err("argument `search_key` is missing".to_string()),
         };
 
-        let memories = memories_search(gcx.clone(), &search_key, 5, 0).await?;
+        let memories = memories_search(gcx.clone(), &search_key, 5, 0, None).await?;
 
         let mut seen_memids = HashSet::new();
         let mut unique_memories: Vec<_> = memories
