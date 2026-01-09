@@ -33,6 +33,19 @@ impl Default for SessionState {
     }
 }
 
+impl std::fmt::Display for SessionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionState::Idle => write!(f, "idle"),
+            SessionState::Generating => write!(f, "generating"),
+            SessionState::ExecutingTools => write!(f, "executing_tools"),
+            SessionState::Paused => write!(f, "paused"),
+            SessionState::WaitingIde => write!(f, "waiting_ide"),
+            SessionState::Error => write!(f, "error"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskMeta {
     pub task_id: String,

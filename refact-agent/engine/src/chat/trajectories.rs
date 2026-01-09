@@ -57,8 +57,8 @@ pub struct TrajectoryMeta {
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub card_id: Option<String>,
-    #[serde(default)]
-    pub is_streaming: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1140,7 +1140,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         task_role,
         agent_id,
         card_id,
-        is_streaming: false,
+        session_state: None,
     }
 }
 
@@ -1171,7 +1171,7 @@ pub async fn handle_v1_trajectories_list(
             }
         }
     }
-    enrich_with_streaming_state(gcx, &mut result).await;
+    enrich_with_session_state(gcx, &mut result).await;
     result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -1236,7 +1236,7 @@ pub async fn handle_v1_trajectories_all(
         }
     }
 
-    enrich_with_streaming_state(gcx, &mut result).await;
+    enrich_with_session_state(gcx, &mut result).await;
     result.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -1245,7 +1245,7 @@ pub async fn handle_v1_trajectories_all(
         .unwrap())
 }
 
-async fn enrich_with_streaming_state(
+async fn enrich_with_session_state(
     gcx: Arc<ARwLock<GlobalContext>>,
     trajectories: &mut Vec<TrajectoryMeta>,
 ) {
@@ -1254,11 +1254,7 @@ async fn enrich_with_streaming_state(
     for traj in trajectories.iter_mut() {
         if let Some(session_arc) = sessions.get(&traj.id) {
             let session = session_arc.lock().await;
-            if session.runtime.state != SessionState::Idle
-                && session.runtime.state != SessionState::Error
-            {
-                traj.is_streaming = true;
-            }
+            traj.session_state = Some(session.runtime.state.to_string());
         }
     }
 }

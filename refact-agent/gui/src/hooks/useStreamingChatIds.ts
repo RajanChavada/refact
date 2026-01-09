@@ -1,15 +1,24 @@
 import { useMemo } from "react";
-import { useListTrajectoriesQuery } from "../services/refact/trajectories";
+import {
+  useListTrajectoriesQuery,
+  TrajectoryMeta,
+} from "../services/refact/trajectories";
 
-export function useStreamingChatIds(): Set<string> {
+export type SessionState = NonNullable<TrajectoryMeta["session_state"]>;
+
+export function useChatSessionStates(): Record<string, SessionState> {
   const { data: trajectories } = useListTrajectoriesQuery(undefined, {
     pollingInterval: 2000,
   });
 
   return useMemo(() => {
-    if (!trajectories) return new Set<string>();
-    return new Set(
-      trajectories.filter((t) => t.is_streaming).map((t) => t.id),
-    );
+    if (!trajectories) return {};
+    const states: Record<string, SessionState> = {};
+    for (const t of trajectories) {
+      if (t.session_state) {
+        states[t.id] = t.session_state;
+      }
+    }
+    return states;
   }, [trajectories]);
 }

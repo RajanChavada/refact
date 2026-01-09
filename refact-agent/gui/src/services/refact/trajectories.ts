@@ -16,7 +16,7 @@ export type TrajectoryMeta = {
   task_role?: string;
   agent_id?: string;
   card_id?: string;
-  is_streaming?: boolean;
+  session_state?: "idle" | "generating" | "executing_tools" | "paused" | "waiting_ide" | "error";
 };
 
 export type TrajectoryData = {

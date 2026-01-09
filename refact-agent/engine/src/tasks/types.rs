@@ -26,7 +26,7 @@ pub struct TaskMeta {
     #[serde(default)]
     pub is_name_generated: bool,
     #[serde(default, skip_serializing, skip_deserializing)]
-    pub planner_streaming: bool,
+    pub planner_session_state: Option<String>,
 }
 
 fn default_schema_version() -> u32 {

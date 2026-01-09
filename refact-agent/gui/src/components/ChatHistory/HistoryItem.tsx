@@ -5,6 +5,8 @@ import {
   DotFilledIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  PauseIcon,
+  CrossCircledIcon,
 } from "@radix-ui/react-icons";
 import { CloseButton } from "../Buttons/Buttons";
 import { IconButton } from "@radix-ui/themes";
@@ -12,7 +14,7 @@ import { OpenInNewWindowIcon } from "@radix-ui/react-icons";
 import type { ChatHistoryItem } from "../../features/History/historySlice";
 import { isUserMessage } from "../../services/refact";
 import { useAppSelector } from "../../hooks";
-import { useStreamingChatIds } from "../../hooks/useStreamingChatIds";
+import { useChatSessionStates, SessionState } from "../../hooks/useStreamingChatIds";
 import { getTotalCostMeteringForMessages } from "../../utils/getMetering";
 import { Coin } from "../../images";
 
@@ -40,7 +42,7 @@ export const HistoryItem: React.FC<{
   const dateCreated = new Date(historyItem.createdAt);
   const dateTimeString = dateCreated.toLocaleString();
   const threads = useAppSelector((app) => app.chat.threads);
-  const streamingChatIds = useStreamingChatIds();
+  const chatSessionStates = useChatSessionStates();
 
   const totalCost = useMemo(() => {
     const totals = getTotalCostMeteringForMessages(historyItem.messages);
@@ -58,9 +60,17 @@ export const HistoryItem: React.FC<{
   const threadRuntime = threads[historyItem.id] as
     | { streaming: boolean; waiting_for_response: boolean }
     | undefined;
-  const isStreaming = threadRuntime?.streaming ?? streamingChatIds.has(historyItem.id);
-  const isWaiting = threadRuntime?.waiting_for_response ?? false;
-  const isBusy = isStreaming || isWaiting;
+
+  const getSessionState = (): SessionState | null => {
+    if (threadRuntime?.streaming) return "generating";
+    if (threadRuntime?.waiting_for_response) return "executing_tools";
+    return chatSessionStates[historyItem.id] ?? null;
+  };
+
+  const sessionState = getSessionState();
+  const isWorking = sessionState === "generating" || sessionState === "executing_tools";
+  const isPaused = sessionState === "paused" || sessionState === "waiting_ide";
+  const isError = sessionState === "error";
   return (
     <Box style={{ position: "relative", width: "100%" }}>
       <Card
@@ -82,8 +92,14 @@ export const HistoryItem: React.FC<{
           }}
         >
           <Flex gap="1" align="center">
-            {isBusy && <Spinner style={{ minWidth: 16, minHeight: 16 }} />}
-            {!isBusy && historyItem.read === false && (
+            {isWorking && <Spinner style={{ minWidth: 16, minHeight: 16 }} />}
+            {!isWorking && isPaused && (
+              <PauseIcon style={{ minWidth: 16, minHeight: 16, color: "var(--yellow-9)" }} />
+            )}
+            {!isWorking && !isPaused && isError && (
+              <CrossCircledIcon style={{ minWidth: 16, minHeight: 16, color: "var(--red-9)" }} />
+            )}
+            {!isWorking && !isPaused && !isError && historyItem.read === false && (
               <DotFilledIcon style={{ minWidth: 16, minHeight: 16 }} />
             )}
             <Text
