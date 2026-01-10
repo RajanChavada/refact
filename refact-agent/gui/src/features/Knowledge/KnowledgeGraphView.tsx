@@ -5,7 +5,7 @@ import type Cytoscape from "cytoscape";
 import fcose from "cytoscape-fcose";
 import { Flex, Text } from "@radix-ui/themes";
 import type { KnowledgeGraphNode, KnowledgeGraphEdge } from "../../services/refact/types";
-import styles from "./KnowledgeGraph.module.css";
+import styles from "./KnowledgeGraphView.module.css";
 
 cytoscape.use(fcose);
 
