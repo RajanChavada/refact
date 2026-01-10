@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
 import cytoscape from "cytoscape";
 import type Cytoscape from "cytoscape";
@@ -76,14 +76,6 @@ export function KnowledgeGraph() {
     return null;
   }
 
-  const computeDegree = (
-    nodeId: string,
-    edges: KnowledgeGraphEdge[],
-  ): number => {
-    return edges.filter((e) => e.source === nodeId || e.target === nodeId)
-      .length;
-  };
-
   const filteredNodes = graph.nodes.filter((node) => {
     const nodeType = node.node_type.toLowerCase();
     if (nodeType.includes("doc_")) {
@@ -99,19 +91,31 @@ export function KnowledgeGraph() {
       filteredNodeIds.has(edge.source) && filteredNodeIds.has(edge.target),
   );
 
+  const degreeMap = useMemo(() => {
+    const map = new Map<string, number>();
+    filteredEdges.forEach((edge) => {
+      map.set(edge.source, (map.get(edge.source) ?? 0) + 1);
+      map.set(edge.target, (map.get(edge.target) ?? 0) + 1);
+    });
+    filteredNodes.forEach((node) => {
+      if (!map.has(node.id)) map.set(node.id, 1);
+    });
+    return map;
+  }, [filteredEdges, filteredNodes]);
+
   const elements: CytoscapeElement[] = [
     ...filteredNodes.map((node) => ({
       data: {
         id: node.id,
         label: node.label,
         type: node.node_type,
-        degree: computeDegree(node.id, filteredEdges),
+        degree: degreeMap.get(node.id) ?? 1,
       },
       group: "nodes" as const,
     })),
     ...filteredEdges.map((edge) => ({
       data: {
-        id: `${edge.source}-${edge.target}`,
+        id: `${edge.source}|${edge.target}|${edge.edge_type}`,
         source: edge.source,
         target: edge.target,
         label: edge.edge_type,
@@ -119,14 +123,6 @@ export function KnowledgeGraph() {
       group: "edges" as const,
     })),
   ];
-
-  const getColorForType = (type: string): string => {
-    if (type.includes("doc_code")) return colors.kind.code;
-    if (type.includes("doc_decision")) return colors.kind.decision;
-    if (type.includes("doc_trajectory")) return colors.kind.trajectory;
-    if (type.includes("doc_preference")) return colors.kind.preference;
-    return colors.kind.other;
-  };
 
   const stylesheet: any[] = [
     {
@@ -144,12 +140,48 @@ export function KnowledgeGraph() {
         "text-max-width": "80px",
       },
     },
-    ...filteredNodes.map((node) => ({
-      selector: `node[id="${node.id}"]`,
+    {
+      selector: 'node[type="doc_code"]',
       style: {
-        "background-color": getColorForType(node.node_type),
+        "background-color": colors.kind.code,
       },
-    })),
+    },
+    {
+      selector: 'node[type="doc_decision"]',
+      style: {
+        "background-color": colors.kind.decision,
+      },
+    },
+    {
+      selector: 'node[type="doc_trajectory"]',
+      style: {
+        "background-color": colors.kind.trajectory,
+      },
+    },
+    {
+      selector: 'node[type="doc_preference"]',
+      style: {
+        "background-color": colors.kind.preference,
+      },
+    },
+    {
+      selector: 'node[type="tag"]',
+      style: {
+        "background-color": colors.kind.other,
+      },
+    },
+    {
+      selector: 'node[type="file"]',
+      style: {
+        "background-color": colors.kind.other,
+      },
+    },
+    {
+      selector: 'node[type="entity"]',
+      style: {
+        "background-color": colors.kind.other,
+      },
+    },
     {
       selector: "edge",
       style: {
