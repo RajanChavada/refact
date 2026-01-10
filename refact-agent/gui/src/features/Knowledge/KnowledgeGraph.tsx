@@ -3,7 +3,7 @@ import CytoscapeComponent from "react-cytoscapejs";
 import cytoscape from "cytoscape";
 import type Cytoscape from "cytoscape";
 import fcose from "cytoscape-fcose";
-import { Flex, Text, Checkbox, Button } from "@radix-ui/themes";
+import { Flex, Text, Checkbox } from "@radix-ui/themes";
 import { useGetKnowledgeGraphQuery } from "../../services/refact/knowledgeGraphApi";
 import { useKnowledgeGraphTheme } from "./useKnowledgeGraphTheme";
 import { buildSubgraph } from "./knowledgeGraphSubgraph";
