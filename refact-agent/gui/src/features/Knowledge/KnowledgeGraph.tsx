@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
+import cytoscape from "cytoscape";
 import type Cytoscape from "cytoscape";
 import fcose from "cytoscape-fcose";
 import { Flex, Text, Checkbox } from "@radix-ui/themes";
@@ -8,9 +9,8 @@ import { useKnowledgeGraphTheme } from "./useKnowledgeGraphTheme";
 import styles from "./KnowledgeGraph.module.css";
 import type { KnowledgeGraphEdge } from "../../services/refact/types";
 
-// @ts-ignore - fcose is a Cytoscape extension
-const CytoscapeLib = require("cytoscape");
-CytoscapeLib.use(fcose);
+// Register fcose layout extension
+cytoscape.use(fcose);
 
 type FilterState = {
   kinds: Set<string>;
