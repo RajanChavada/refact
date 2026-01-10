@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, Semaphore};
@@ -108,17 +107,17 @@ fn spawn_subchat_bridge(
         let subchat_rx = ccx.lock().await.subchat_rx.clone();
         info!("spawn_subchat_bridge: started listening for subchat messages");
 
-        let mut last_attached_files: HashMap<String, Vec<String>> = HashMap::new();
+        let mut active_tool_call_ids: Vec<String> = Vec::new();
 
         loop {
             if cancel_flag_clone.load(Ordering::Relaxed) {
-                info!("spawn_subchat_bridge: cancelled, sending cleanup events for {} active tools", last_attached_files.len());
+                info!("spawn_subchat_bridge: cancelled, sending cleanup events for {} active tools", active_tool_call_ids.len());
                 let mut session = session_arc.lock().await;
-                for (tool_call_id, attached_files) in last_attached_files.drain() {
+                for tool_call_id in active_tool_call_ids.drain(..) {
                     session.emit(ChatEvent::SubchatUpdate {
                         tool_call_id,
                         subchat_id: String::new(),
-                        attached_files,
+                        attached_files: vec![],
                     });
                 }
                 break;
@@ -138,6 +137,10 @@ fn spawn_subchat_bridge(
                     if let (Some(tool_call_id), Some(subchat_id)) = (tool_call_id, subchat_id) {
                         info!("spawn_subchat_bridge: emitting SubchatUpdate for tool_call_id={}, subchat_id={}", tool_call_id, subchat_id);
 
+                        if !active_tool_call_ids.contains(&tool_call_id.to_string()) {
+                            active_tool_call_ids.push(tool_call_id.to_string());
+                        }
+
                         let mut attached_files: Vec<String> = value
                             .get("attached_files")
                             .and_then(|v| v.as_array())
@@ -156,8 +159,6 @@ fn spawn_subchat_bridge(
                                 }
                             }
                         }
-
-                        last_attached_files.insert(tool_call_id.to_string(), attached_files.clone());
 
                         let mut session = session_arc.lock().await;
                         session.emit(ChatEvent::SubchatUpdate {
@@ -536,13 +537,25 @@ pub async fn execute_tools_with_session(
         }
     }
 
-    let cancel_flag = spawn_subchat_bridge(ccx.clone(), session_arc);
+    let cancel_flag = spawn_subchat_bridge(ccx.clone(), session_arc.clone());
 
     let result =
         execute_tools_inner(gcx, ccx, tool_calls, chat_mode, budget, options, &prompt_messages).await;
 
     cancel_flag.store(true, Ordering::Relaxed);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let context_files = get_context_files_from_messages(&result.0);
+    if !context_files.is_empty() {
+        let mut session = session_arc.lock().await;
+        for tc in tool_calls {
+            session.emit(ChatEvent::SubchatUpdate {
+                tool_call_id: tc.id.clone(),
+                subchat_id: "/tool:files".to_string(),
+                attached_files: context_files.clone(),
+            });
+        }
+    }
 
     result
 }

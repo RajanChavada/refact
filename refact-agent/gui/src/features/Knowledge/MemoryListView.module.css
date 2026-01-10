@@ -1,6 +1,8 @@
 .container {
   padding: var(--space-3);
   background-color: var(--color-surface);
+  overflow-y: auto;
+  height: 100%;
 }
 
 .grid {

@@ -689,7 +689,7 @@ async fn execute_pending_tool_calls(
         if !context_files.is_empty() {
             let tool_msg = json!({
                 "tool_call_id": tx_toolid,
-                "subchat_id": format!("{}/{}: ✓", step_idx + 1, max_steps),
+                "subchat_id": "/tool:files",
                 "attached_files": context_files
             });
             let _ = subchat_tx.lock().await.send(tool_msg);
