@@ -351,27 +351,91 @@ export function KnowledgeGraph() {
     ? graph.nodes.find((n) => n.id === selectedNode)
     : null;
 
+  const filteredNodeIds = useMemo(() => {
+    return new Set(filteredNodes.map((n) => n.id));
+  }, [filteredNodes]);
+
+  useEffect(() => {
+    if (selectedNode && !filteredNodeIds.has(selectedNode)) {
+      setSelectedNode(null);
+    }
+  }, [selectedNode, filteredNodeIds]);
+
+  const resetFilters = useCallback(() => {
+    setFilters({
+      kinds: new Set(["code", "decision", "trajectory", "preference"]),
+      statuses: new Set(["active", "deprecated"]),
+      tags: new Set<string>(),
+    });
+    setVisibleNodeGroups({
+      docs: true,
+      tags: true,
+      files: true,
+      entities: false,
+    });
+  }, []);
+
+  const focusSeedLabel = useMemo(() => {
+    if (!focusSeedId) return "";
+    const node = graph.nodes.find((n) => n.id === focusSeedId);
+    return node?.label || focusSeedId;
+  }, [focusSeedId, graph.nodes]);
+
   return (
     <div className={styles.container}>
-      <CytoscapeComponent
-        elements={elements}
-        style={{ width: "100%", height: "100%" }}
-        stylesheet={stylesheet}
-        cy={(cy: any) => {
-          cyRef.current = cy;
-        }}
-        className={styles.graphContainer}
-      />
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        <div className={styles.modeHeader}>
+          <span className={styles.modeIndicator}>
+            {mode === "overview" ? "📊 Overview" : `🔍 Focus: ${focusSeedLabel}`}
+          </span>
+          
+          {mode === "focus" && (
+            <div className={styles.focusControls}>
+              <div className={styles.depthToggle}>
+                <button
+                  className={`${styles.depthButton} ${focusDepth === 1 ? styles.active : ""}`}
+                  onClick={() => setFocusDepth(1)}
+                >
+                  1-hop
+                </button>
+                <button
+                  className={`${styles.depthButton} ${focusDepth === 2 ? styles.active : ""}`}
+                  onClick={() => setFocusDepth(2)}
+                >
+                  2-hop
+                </button>
+              </div>
+              <button className={styles.backButton} onClick={handleBackToOverview}>
+                ← Back
+              </button>
+            </div>
+          )}
+        </div>
+
+        {filteredNodes.length === 0 ? (
+          <div className={styles.emptyState}>
+            <div className={styles.emptyStateIcon}>🔍</div>
+            <div className={styles.emptyStateText}>
+              <p>No nodes match the current filters</p>
+              <button className={styles.resetButton} onClick={resetFilters}>
+                Reset Filters
+              </button>
+            </div>
+          </div>
+        ) : (
+          <CytoscapeComponent
+            elements={elements}
+            style={{ width: "100%", height: "100%" }}
+            stylesheet={stylesheet}
+            cy={(cy: any) => {
+              cyRef.current = cy;
+            }}
+            className={styles.graphContainer}
+          />
+        )}
+      </div>
 
       <div className={styles.sidebar}>
-        {mode === "focus" && (
-          <div className={styles.filterSection}>
-            <Button onClick={handleBackToOverview} size="2" variant="soft">
-              ← Back to Overview
-            </Button>
-          </div>
-        )}
-
         <div className={styles.filterSection}>
           <div className={styles.filterTitle}>
             {mode === "overview" ? "Document Types" : "View Mode"}
@@ -411,25 +475,6 @@ export function KnowledgeGraph() {
                 />
                 <Text size="2">Entities</Text>
               </label>
-              <div className={styles.filterOptions}>
-                <Text size="1" color="gray">Depth:</Text>
-                <Flex gap="2">
-                  <Button
-                    size="1"
-                    variant={focusDepth === 1 ? "solid" : "soft"}
-                    onClick={() => setFocusDepth(1)}
-                  >
-                    1
-                  </Button>
-                  <Button
-                    size="1"
-                    variant={focusDepth === 2 ? "solid" : "soft"}
-                    onClick={() => setFocusDepth(2)}
-                  >
-                    2
-                  </Button>
-                </Flex>
-              </div>
             </div>
           )}
         </div>

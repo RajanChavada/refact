@@ -94,3 +94,104 @@
   font-weight: 600;
   color: var(--accent-11);
 }
+
+.modeHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--gray-a6);
+  font-size: 12px;
+  color: var(--gray-11);
+  margin-bottom: var(--space-3);
+}
+
+.modeIndicator {
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.focusControls {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.depthToggle {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.depthButton {
+  padding: 4px 8px;
+  border: 1px solid var(--gray-a7);
+  border-radius: var(--radius-1);
+  font-size: 11px;
+  cursor: pointer;
+  background-color: var(--color-surface);
+  color: var(--gray-11);
+  transition: all 0.2s;
+}
+
+.depthButton:hover {
+  background-color: var(--gray-a2);
+}
+
+.depthButton.active {
+  background-color: var(--accent-9);
+  color: white;
+  border-color: var(--accent-9);
+}
+
+.backButton {
+  padding: var(--space-2);
+  border: 1px solid var(--gray-a7);
+  border-radius: var(--radius-1);
+  background-color: var(--color-surface);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--gray-11);
+  transition: all 0.2s;
+}
+
+.backButton:hover {
+  background-color: var(--gray-a2);
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--gray-10);
+}
+
+.emptyStateIcon {
+  font-size: 48px;
+  opacity: 0.3;
+}
+
+.emptyStateText {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.resetButton {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--gray-a7);
+  border-radius: var(--radius-1);
+  background-color: var(--color-surface);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--gray-11);
+  transition: all 0.2s;
+  margin-top: var(--space-2);
+}
+
+.resetButton:hover {
+  background-color: var(--gray-a2);
+}
