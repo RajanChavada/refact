@@ -103,33 +103,36 @@ export function useStreamingVoiceRecording(
     [cleanupStream],
   );
 
-  const sendBufferedAudio = useCallback(async (final: boolean) => {
-    const hasAudio = bufferRef.current.length > 0;
+  const sendBufferedAudio = useCallback(
+    async (final: boolean) => {
+      const hasAudio = bufferRef.current.length > 0;
 
-    if (!hasAudio && !final) return;
+      if (!hasAudio && !final) return;
 
-    let base64 = "";
+      let base64 = "";
 
-    if (hasAudio) {
-      const totalLength = bufferRef.current.reduce(
-        (acc, arr) => acc + arr.length,
-        0,
-      );
-      const combined = new Float32Array(totalLength);
-      let offset = 0;
-      for (const arr of bufferRef.current) {
-        combined.set(arr, offset);
-        offset += arr.length;
+      if (hasAudio) {
+        const totalLength = bufferRef.current.reduce(
+          (acc, arr) => acc + arr.length,
+          0,
+        );
+        const combined = new Float32Array(totalLength);
+        let offset = 0;
+        for (const arr of bufferRef.current) {
+          combined.set(arr, offset);
+          offset += arr.length;
+        }
+
+        if (!final) bufferRef.current = [];
+
+        const pcmBuffer = floatTo16BitPCM(combined);
+        base64 = arrayBufferToBase64(pcmBuffer);
       }
 
-      if (!final) bufferRef.current = [];
-
-      const pcmBuffer = floatTo16BitPCM(combined);
-      base64 = arrayBufferToBase64(pcmBuffer);
-    }
-
-    await sendVoiceChunk(port, sessionIdRef.current, base64, final);
-  }, [port]);
+      await sendVoiceChunk(port, sessionIdRef.current, base64, final);
+    },
+    [port],
+  );
 
   const startRecording = useCallback(async () => {
     setError(null);

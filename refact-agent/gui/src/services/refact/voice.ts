@@ -108,7 +108,9 @@ export function subscribeToVoiceStream(
 ): () => void {
   const params = new URLSearchParams();
   if (language) params.set("language", language);
-  const url = `${getVoiceApiBase(port)}/stream/${sessionId}/subscribe?${params.toString()}`;
+  const url = `${getVoiceApiBase(
+    port,
+  )}/stream/${sessionId}/subscribe?${params.toString()}`;
 
   const eventSource = new EventSource(url);
 
@@ -135,15 +137,18 @@ export async function sendVoiceChunk(
   isFinal: boolean,
   language?: string,
 ): Promise<void> {
-  const response = await fetch(`${getVoiceApiBase(port)}/stream/${sessionId}/chunk`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      audio_data: audioData,
-      is_final: isFinal,
-      language,
-    }),
-  });
+  const response = await fetch(
+    `${getVoiceApiBase(port)}/stream/${sessionId}/chunk`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        audio_data: audioData,
+        is_final: isFinal,
+        language,
+      }),
+    },
+  );
 
   if (!response.ok) {
     const error = await response.text();
