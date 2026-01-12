@@ -5,6 +5,7 @@ import {
   downloadVoiceModel,
   VoiceStatusResponse,
 } from "../services/refact/voice";
+import { useConfig } from "./useConfig";
 
 export interface UseVoiceInputResult {
   isRecording: boolean;
@@ -23,6 +24,8 @@ export interface UseVoiceInputResult {
 export function useVoiceInput(
   onTranscript: (text: string) => void,
 ): UseVoiceInputResult {
+  const config = useConfig();
+  const port = config.lspPort;
   const {
     isRecording,
     isFinishing,
@@ -31,7 +34,7 @@ export function useVoiceInput(
     startRecording,
     stopRecording,
     cancelRecording,
-  } = useStreamingVoiceRecording();
+  } = useStreamingVoiceRecording(port);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<VoiceStatusResponse | null>(null);
 
@@ -42,16 +45,16 @@ export function useVoiceInput(
   }, [recordingError]);
 
   useEffect(() => {
-    getVoiceStatus()
+    getVoiceStatus(port)
       .then(setStatus)
       .catch(() => setStatus(null));
-  }, []);
+  }, [port]);
 
   useEffect(() => {
     if (!status?.is_downloading) return;
 
     const interval = setInterval(() => {
-      getVoiceStatus()
+      getVoiceStatus(port)
         .then(setStatus)
         .catch(() => {
           // Silently ignore errors during polling
@@ -59,7 +62,7 @@ export function useVoiceInput(
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [status?.is_downloading]);
+  }, [status?.is_downloading, port]);
 
   const toggleRecording = useCallback(async (): Promise<string | null> => {
     setError(null);
@@ -86,10 +89,10 @@ export function useVoiceInput(
         const message =
           err instanceof Error ? err.message : "Failed to start recording";
         if (message.includes("Model not downloaded")) {
-          downloadVoiceModel().catch(() => {
+          downloadVoiceModel(port).catch(() => {
             // Silently ignore download errors
           });
-          const newStatus = await getVoiceStatus().catch(() => null);
+          const newStatus = await getVoiceStatus(port).catch(() => null);
           if (newStatus) setStatus(newStatus);
         }
         setError(message);

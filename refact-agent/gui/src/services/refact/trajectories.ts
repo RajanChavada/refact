@@ -1,6 +1,7 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import { ChatThread } from "../../features/Chat/Thread/types";
 import { ChatMessages } from "./types";
+import { RootState } from "../../app/store";
 
 export type TrajectoryMeta = {
   id: string;
@@ -100,37 +101,80 @@ export function trajectoryDataToChatThread(data: TrajectoryData): ChatThread {
 
 export const trajectoriesApi = createApi({
   reducerPath: "trajectoriesApi",
-  baseQuery: fetchBaseQuery({ baseUrl: "/v1" }),
+  baseQuery: fetchBaseQuery({
+    prepareHeaders: (headers, { getState }) => {
+      const token = (getState() as RootState).config.apiKey;
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+      return headers;
+    },
+  }),
   tagTypes: ["Trajectory"],
   endpoints: (builder) => ({
     listTrajectories: builder.query<TrajectoryMeta[], undefined>({
-      query: () => "/trajectories",
+      queryFn: async (_args, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/trajectories`;
+        const result = await baseQuery({ url });
+        if (result.error) return { error: result.error };
+        return { data: result.data as TrajectoryMeta[] };
+      },
       providesTags: ["Trajectory"],
     }),
     listAllTrajectories: builder.query<TrajectoryMeta[], undefined>({
-      query: () => "/trajectories/all",
+      queryFn: async (_args, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/trajectories/all`;
+        const result = await baseQuery({ url });
+        if (result.error) return { error: result.error };
+        return { data: result.data as TrajectoryMeta[] };
+      },
       providesTags: ["Trajectory"],
     }),
     getTrajectory: builder.query<TrajectoryData, string>({
-      query: (id) => `/trajectories/${id}`,
+      queryFn: async (id, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/trajectories/${id}`;
+        const result = await baseQuery({ url });
+        if (result.error) return { error: result.error };
+        return { data: result.data as TrajectoryData };
+      },
       providesTags: (_result, _error, id) => [{ type: "Trajectory", id }],
     }),
     saveTrajectory: builder.mutation<undefined, TrajectoryData>({
-      query: (data) => ({
-        url: `/trajectories/${data.id}`,
-        method: "PUT",
-        body: data,
-      }),
+      queryFn: async (data, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/trajectories/${data.id}`;
+        const result = await baseQuery({
+          url,
+          method: "PUT",
+          body: data,
+        });
+        if (result.error) return { error: result.error };
+        return { data: undefined };
+      },
       invalidatesTags: (_result, _error, data) => [
         { type: "Trajectory", id: data.id },
         "Trajectory",
       ],
     }),
     deleteTrajectory: builder.mutation<undefined, string>({
-      query: (id) => ({
-        url: `/trajectories/${id}`,
-        method: "DELETE",
-      }),
+      queryFn: async (id, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/trajectories/${id}`;
+        const result = await baseQuery({
+          url,
+          method: "DELETE",
+        });
+        if (result.error) return { error: result.error };
+        return { data: undefined };
+      },
       invalidatesTags: ["Trajectory"],
     }),
   }),

@@ -34,7 +34,9 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
+export function useStreamingVoiceRecording(
+  port: number,
+): UseStreamingVoiceRecordingResult {
   const [isRecording, setIsRecording] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -126,8 +128,8 @@ export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
       base64 = arrayBufferToBase64(pcmBuffer);
     }
 
-    await sendVoiceChunk(sessionIdRef.current, base64, final);
-  }, []);
+    await sendVoiceChunk(port, sessionIdRef.current, base64, final);
+  }, [port]);
 
   const startRecording = useCallback(async () => {
     setError(null);
@@ -141,6 +143,7 @@ export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
     recordingStartTimeRef.current = Date.now();
 
     unsubscribeRef.current = subscribeToVoiceStream(
+      port,
       sessionIdRef.current,
       undefined,
       handleEvent,
@@ -178,7 +181,7 @@ export function useStreamingVoiceRecording(): UseStreamingVoiceRecordingResult {
     }, 1000);
 
     setIsRecording(true);
-  }, [handleEvent, sendBufferedAudio, cleanupStream]);
+  }, [port, handleEvent, sendBufferedAudio, cleanupStream]);
 
   const stopRecording = useCallback(async (): Promise<string> => {
     if (!isRecording) throw new Error("Not recording");
