@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { KnowledgeMemoRecord } from "../../services/refact/types";
 import styles from "./MemoryListView.module.css";
 
@@ -34,6 +35,18 @@ export function MemoryListView({
   onSelectId,
   linkedIds,
 }: MemoryListViewProps) {
+  const cardRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  useEffect(() => {
+    if (selectedId && cardRefs.current.has(selectedId)) {
+      const element = cardRefs.current.get(selectedId);
+      element?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    }
+  }, [selectedId]);
+
   if (memories.length === 0) {
     return (
       <div className={styles.emptyState}>
@@ -55,6 +68,13 @@ export function MemoryListView({
           return (
             <button
               key={memory.memid}
+              ref={(el) => {
+                if (el) {
+                  cardRefs.current.set(memory.memid, el);
+                } else {
+                  cardRefs.current.delete(memory.memid);
+                }
+              }}
               className={`${styles.card} ${isSelected ? styles.selected : ""}`}
               onClick={() => onSelectId(memory.memid)}
               type="button"

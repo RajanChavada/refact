@@ -146,10 +146,14 @@ export function KnowledgeGraphView({
       {
         selector: "node:selected",
         style: {
-          "border-width": 3,
-          "border-color": "#8B5CF6",
-          width: "mapData(degree, 1, 20, 35, 70)",
-          height: "mapData(degree, 1, 20, 35, 70)",
+          "border-width": 5,
+          "border-color": "#FFFFFF",
+          "border-opacity": 1,
+          width: "mapData(degree, 1, 20, 40, 80)",
+          height: "mapData(degree, 1, 20, 40, 80)",
+          "background-color": "#A78BFA",
+          "box-shadow": "0 0 20px #8B5CF6",
+          "z-index": 999,
         },
       },
     ];
@@ -258,12 +262,25 @@ export function KnowledgeGraphView({
   }, [cyReady, elements]);
 
   useEffect(() => {
-    if (!cyRef.current || !cyReady || !selectedId) return;
+    if (!cyRef.current || !cyReady) return;
 
-    const node = cyRef.current.$id(selectedId);
-    if (node.length > 0) {
-      node.select();
-      cyRef.current.center(node);
+    cyRef.current.$("node:selected").unselect();
+
+    if (selectedId) {
+      const node = cyRef.current.$id(selectedId);
+      if (node.length > 0) {
+        node.select();
+
+        const currentZoom = cyRef.current.zoom();
+        const targetZoom = Math.max(currentZoom, 1.5);
+
+        cyRef.current.animate({
+          center: { eles: node },
+          zoom: targetZoom,
+          duration: 400,
+          easing: "ease-out",
+        });
+      }
     }
   }, [cyReady, selectedId]);
 

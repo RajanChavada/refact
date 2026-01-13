@@ -1,5 +1,5 @@
 import React, { forwardRef, useCallback } from "react";
-import { IconButton, Button, Flex } from "@radix-ui/themes";
+import { IconButton, Button, Flex, HoverCard, Text } from "@radix-ui/themes";
 import {
   PaperPlaneIcon,
   ExitIcon,
@@ -25,9 +25,18 @@ export const AgentIntegrationsButton = forwardRef<
   HTMLButtonElement,
   IconButtonProps
 >((props, ref) => (
-  <IconButton variant="ghost" {...props} ref={ref}>
-    <PuzzleIcon />
-  </IconButton>
+  <HoverCard.Root>
+    <HoverCard.Trigger>
+      <IconButton variant="ghost" {...props} ref={ref}>
+        <PuzzleIcon />
+      </IconButton>
+    </HoverCard.Trigger>
+    <HoverCard.Content size="1" side="top">
+      <Text as="p" size="2">
+        Set up Agent Integrations
+      </Text>
+    </HoverCard.Content>
+  </HoverCard.Root>
 ));
 
 AgentIntegrationsButton.displayName = "AgentIntegrationsButton";
@@ -39,9 +48,18 @@ export const ThreadHistoryButton: React.FC<IconButtonProps> = (props) => (
 );
 
 export const BackToSideBarButton: React.FC<IconButtonProps> = (props) => (
-  <IconButton variant="ghost" {...props}>
-    <ExitIcon style={{ transform: "scaleX(-1)" }} />
-  </IconButton>
+  <HoverCard.Root>
+    <HoverCard.Trigger>
+      <IconButton variant="ghost" {...props}>
+        <ExitIcon style={{ transform: "scaleX(-1)" }} />
+      </IconButton>
+    </HoverCard.Trigger>
+    <HoverCard.Content size="1" side="top">
+      <Text as="p" size="2">
+        Return to sidebar
+      </Text>
+    </HoverCard.Content>
+  </HoverCard.Root>
 );
 
 export const CloseButton: React.FC<

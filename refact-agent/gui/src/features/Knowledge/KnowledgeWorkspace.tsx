@@ -11,7 +11,7 @@ export function KnowledgeWorkspace() {
     data: graph,
     isLoading,
     error,
-  } = useGetKnowledgeGraphQuery(undefined);
+  } = useGetKnowledgeGraphQuery({ includeContent: true });
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const allDocNodes = useMemo(() => {

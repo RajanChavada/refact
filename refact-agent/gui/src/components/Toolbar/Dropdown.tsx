@@ -50,15 +50,8 @@ type DropdownProps = {
   handleNavigation: (to: DropdownNavigationOptions) => void;
 };
 
-function linkForBugReports(host: Config["host"]): string {
-  switch (host) {
-    case "vscode":
-      return "https://github.com/smallcloudai/refact-vscode/issues";
-    case "jetbrains":
-      return "https://github.com/smallcloudai/refact-intellij/issues";
-    default:
-      return "https://github.com/smallcloudai/refact-chat-js/issues";
-  }
+function linkForBugReports(_host: Config["host"]): string {
+  return "https://github.com/smallcloudai/refact/issues";
 }
 
 function linkForAccount(host: Config["host"]): string {

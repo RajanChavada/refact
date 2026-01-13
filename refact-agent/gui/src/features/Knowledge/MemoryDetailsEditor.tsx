@@ -139,74 +139,76 @@ export function MemoryDetailsEditor({
 
   return (
     <div className={styles.container}>
-      <div className={styles.field}>
-        <label className={styles.label}>
-          TITLE {isDirty && <span className={styles.dirtyIndicator}>●</span>}
-        </label>
-        <TextField.Root
-          value={draft.title}
-          onChange={(e) => handleFieldChange("title", e.target.value)}
-          placeholder="Untitled"
-          className={styles.input}
-        />
-      </div>
-
-      <div className={styles.field}>
-        <label className={styles.label}>KIND</label>
-        <div className={styles.readOnlyValue}>{draft.kind}</div>
-      </div>
-
-      <div className={styles.field}>
-        <label className={styles.label}>CREATED</label>
-        <div className={styles.readOnlyValue}>{memory.created ?? "—"}</div>
-      </div>
-
-      <div className={styles.field}>
-        <label className={styles.label}>TAGS</label>
-        {draft.tags.length > 0 && (
-          <div className={styles.tagsContainer}>
-            {draft.tags.map((tag) => (
-              <span key={tag} className={styles.tag}>
-                {tag}
-                <button
-                  className={styles.tagRemove}
-                  onClick={() => handleRemoveTag(tag)}
-                  aria-label={`Remove ${tag}`}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <TextField.Root
-          value={tagsInput}
-          onChange={(e) => setTagsInput(e.target.value)}
-          onBlur={handleTagsBlur}
-          placeholder="comma, separated, tags"
-          className={styles.input}
-        />
-      </div>
-
-      <div className={styles.field}>
-        <label className={styles.label}>FILE PATH</label>
-        <div className={styles.readOnlyValue}>
-          {memory.file_path ?? (
-            <span className={styles.warning}>
-              ⚠️ This memory has no file path and cannot be edited
-            </span>
-          )}
+      <div className={styles.scrollArea}>
+        <div className={styles.field}>
+          <label className={styles.label}>
+            TITLE {isDirty && <span className={styles.dirtyIndicator}>●</span>}
+          </label>
+          <TextField.Root
+            value={draft.title}
+            onChange={(e) => handleFieldChange("title", e.target.value)}
+            placeholder="Untitled"
+            className={styles.input}
+          />
         </div>
-      </div>
 
-      <div className={styles.field}>
-        <label className={styles.label}>CONTENT</label>
-        <textarea
-          value={draft.content}
-          onChange={(e) => handleFieldChange("content", e.target.value)}
-          className={styles.textarea}
-          placeholder="Memory content..."
-        />
+        <div className={styles.field}>
+          <label className={styles.label}>KIND</label>
+          <div className={styles.readOnlyValue}>{draft.kind}</div>
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>CREATED</label>
+          <div className={styles.readOnlyValue}>{memory.created ?? "—"}</div>
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>TAGS</label>
+          {draft.tags.length > 0 && (
+            <div className={styles.tagsContainer}>
+              {draft.tags.map((tag) => (
+                <span key={tag} className={styles.tag}>
+                  {tag}
+                  <button
+                    className={styles.tagRemove}
+                    onClick={() => handleRemoveTag(tag)}
+                    aria-label={`Remove ${tag}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <TextField.Root
+            value={tagsInput}
+            onChange={(e) => setTagsInput(e.target.value)}
+            onBlur={handleTagsBlur}
+            placeholder="comma, separated, tags"
+            className={styles.input}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>FILE PATH</label>
+          <div className={styles.readOnlyValue}>
+            {memory.file_path ?? (
+              <span className={styles.warning}>
+                ⚠️ This memory has no file path and cannot be edited
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>CONTENT</label>
+          <textarea
+            value={draft.content}
+            onChange={(e) => handleFieldChange("content", e.target.value)}
+            className={styles.textarea}
+            placeholder="Memory content..."
+          />
+        </div>
       </div>
 
       <div className={styles.actions}>

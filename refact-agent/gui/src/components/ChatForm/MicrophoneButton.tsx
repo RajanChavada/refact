@@ -1,5 +1,10 @@
-import React, { useEffect, useRef } from "react";
-import { IconButton, Spinner } from "@radix-ui/themes";
+import React, {
+  useEffect,
+  useRef,
+  useImperativeHandle,
+  forwardRef,
+} from "react";
+import { IconButton, Spinner, HoverCard, Text } from "@radix-ui/themes";
 import { useVoiceInput } from "../../hooks/useVoiceInput";
 import { useAppDispatch } from "../../hooks";
 import { setError } from "../../features/Errors/errorsSlice";
@@ -12,12 +17,14 @@ interface MicrophoneButtonProps {
   disabled?: boolean;
 }
 
-export const MicrophoneButton: React.FC<MicrophoneButtonProps> = ({
-  onTranscript,
-  onLiveTranscript,
-  onRecordingChange,
-  disabled,
-}) => {
+export interface MicrophoneButtonRef {
+  toggleRecording: () => Promise<string | null>;
+}
+
+export const MicrophoneButton = forwardRef<
+  MicrophoneButtonRef,
+  MicrophoneButtonProps
+>(({ onTranscript, onLiveTranscript, onRecordingChange, disabled }, ref) => {
   const dispatch = useAppDispatch();
   const {
     isRecording,
@@ -32,6 +39,14 @@ export const MicrophoneButton: React.FC<MicrophoneButtonProps> = ({
   const prevTranscriptRef = useRef(liveTranscript);
   const prevRecordingRef = useRef(isRecording);
   const prevFinishingRef = useRef(isFinishing);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      toggleRecording,
+    }),
+    [toggleRecording],
+  );
 
   useEffect(() => {
     if (error) {
@@ -64,26 +79,37 @@ export const MicrophoneButton: React.FC<MicrophoneButtonProps> = ({
   const isActive = isRecording || isFinishing;
 
   return (
-    <IconButton
-      type="button"
-      variant={isActive ? "solid" : "ghost"}
-      color={isActive ? "red" : "gray"}
-      size="1"
-      title={undefined}
-      disabled={!!disabled || isDownloading || isFinishing}
-      onClick={() => void toggleRecording()}
-      className={
-        isRecording
-          ? styles.recording
-          : isFinishing
-            ? styles.finishing
-            : undefined
-      }
-    >
-      {isDownloading ? <Spinner size="1" /> : <MicrophoneIcon />}
-    </IconButton>
+    <HoverCard.Root>
+      <HoverCard.Trigger>
+        <IconButton
+          type="button"
+          variant={isActive ? "solid" : "ghost"}
+          color={isActive ? "red" : undefined}
+          size="1"
+          title={undefined}
+          disabled={!!disabled || isDownloading || isFinishing}
+          onClick={() => void toggleRecording()}
+          className={
+            isRecording
+              ? styles.recording
+              : isFinishing
+                ? styles.finishing
+                : undefined
+          }
+        >
+          {isDownloading ? <Spinner size="1" /> : <MicrophoneIcon />}
+        </IconButton>
+      </HoverCard.Trigger>
+      <HoverCard.Content size="1" side="top">
+        <Text as="p" size="2">
+          Voice input (Ctrl+Shift+Space)
+        </Text>
+      </HoverCard.Content>
+    </HoverCard.Root>
   );
-};
+});
+
+MicrophoneButton.displayName = "MicrophoneButton";
 
 const MicrophoneIcon: React.FC = () => (
   <svg

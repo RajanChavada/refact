@@ -1,5 +1,12 @@
 import React, { createContext, useCallback } from "react";
-import { Button, Slot, IconButton, Flex } from "@radix-ui/themes";
+import {
+  Button,
+  Slot,
+  IconButton,
+  Flex,
+  HoverCard,
+  Text,
+} from "@radix-ui/themes";
 import { Cross1Icon, ImageIcon } from "@radix-ui/react-icons";
 import { DropzoneInputProps, FileRejection, useDropzone } from "react-dropzone";
 import { useAttachedImages } from "../../hooks/useAttachedImages";
@@ -104,17 +111,26 @@ export const AttachImagesButton = () => {
         return (
           <>
             <input {...inputProps} style={{ display: "none" }} />
-            <IconButton
-              variant="ghost"
-              size="1"
-              title="Attach images"
-              disabled={inputProps.disabled}
-              onClick={(event) => {
-                attachFileOnClick(event, open);
-              }}
-            >
-              <ImageIcon />
-            </IconButton>
+            <HoverCard.Root>
+              <HoverCard.Trigger>
+                <IconButton
+                  variant="ghost"
+                  size="1"
+                  title={undefined}
+                  disabled={inputProps.disabled}
+                  onClick={(event) => {
+                    attachFileOnClick(event, open);
+                  }}
+                >
+                  <ImageIcon />
+                </IconButton>
+              </HoverCard.Trigger>
+              <HoverCard.Content size="1" side="top">
+                <Text as="p" size="2">
+                  Attach images
+                </Text>
+              </HoverCard.Content>
+            </HoverCard.Root>
           </>
         );
       }}

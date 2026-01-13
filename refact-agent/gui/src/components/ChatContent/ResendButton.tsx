@@ -1,5 +1,5 @@
 import React from "react";
-import { IconButton, Tooltip } from "@radix-ui/themes";
+import { IconButton, HoverCard, Text } from "@radix-ui/themes";
 import { useAppSelector, useChatActions } from "../../hooks";
 import {
   selectIsStreaming,
@@ -33,11 +33,23 @@ export const ResendButton = () => {
   if (!shouldShow) return null;
 
   return (
-    <Tooltip content="Resend last messages">
-      <IconButton type="button" variant="ghost" onClick={handleResend} size="1">
-        <ResendIcon />
-      </IconButton>
-    </Tooltip>
+    <HoverCard.Root>
+      <HoverCard.Trigger>
+        <IconButton
+          type="button"
+          variant="ghost"
+          onClick={handleResend}
+          size="1"
+        >
+          <ResendIcon />
+        </IconButton>
+      </HoverCard.Trigger>
+      <HoverCard.Content size="1" side="top">
+        <Text as="p" size="2">
+          Resend last messages
+        </Text>
+      </HoverCard.Content>
+    </HoverCard.Root>
   );
 };
 

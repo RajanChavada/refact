@@ -15,6 +15,24 @@ vi.mock("react-cytoscapejs", () => ({
     elements: unknown[];
   }) => {
     if (cy) {
+      const mockNode = {
+        data: vi.fn((key: string) => {
+          if (key === "label") return "Mock Label";
+          return "mock-value";
+        }),
+        style: vi.fn(),
+        id: vi.fn(() => "mock-id"),
+      };
+
+      const mockCollection = {
+        forEach: vi.fn((callback: (node: unknown) => void) => {
+          callback(mockNode);
+        }),
+        length: 1,
+        select: vi.fn(),
+        unselect: vi.fn(),
+      };
+
       const mockCy = {
         on: vi.fn(),
         off: vi.fn(),
@@ -25,13 +43,10 @@ vi.mock("react-cytoscapejs", () => ({
           run: vi.fn(),
           stop: vi.fn(),
         })),
-        elements: vi.fn(() => ({
-          forEach: vi.fn(),
-        })),
-        $id: vi.fn(() => ({
-          length: 1,
-          select: vi.fn(),
-        })),
+        elements: vi.fn(() => mockCollection),
+        animate: vi.fn(),
+        $id: vi.fn(() => mockCollection),
+        $: vi.fn(() => mockCollection),
       };
       cy(mockCy);
     }

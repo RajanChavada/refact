@@ -48,7 +48,7 @@ import { ToolConfirmation } from "./ToolConfirmation";
 import { selectThreadConfirmation } from "../../features/Chat";
 import { AttachImagesButton, FileList } from "../Dropzone";
 import { ResendButton } from "../ChatContent/ResendButton";
-import { MicrophoneButton } from "./MicrophoneButton";
+import { MicrophoneButton, MicrophoneButtonRef } from "./MicrophoneButton";
 import { useAttachedImages } from "../../hooks/useAttachedImages";
 import {
   clearChatError,
@@ -114,6 +114,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const attachedFiles = useAttachedFiles();
   const shouldShowBalanceLow = useAppSelector(showBalanceLowCallout);
   const attachedImages = useAppSelector(selectThreadImages);
+  const microphoneRef = React.useRef<MicrophoneButtonRef>(null);
 
   const shouldAgentCapabilitiesBeShown = useMemo(() => {
     return threadToolUse === "agent";
@@ -146,6 +147,13 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     isOnline,
     isContextFull,
   ]);
+
+  const disableMicrophone = useMemo(() => {
+    if (allDisabled) return true;
+    if (isContextFull) return true;
+    if (!isOnline) return true;
+    return false;
+  }, [allDisabled, isContextFull, isOnline]);
 
   const isModelSelectVisible = useMemo(() => messages.length < 1, [messages]);
 
@@ -323,6 +331,20 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     [],
   );
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && event.code === "Space") {
+        event.preventDefault();
+        if (!disableMicrophone && microphoneRef.current) {
+          void microphoneRef.current.toggleRecording();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [disableMicrophone]);
+
   if (globalError) {
     return (
       <Flex direction="column" mt="2" gap="2">
@@ -482,6 +504,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                     <AttachImagesButton />
                   )}
                 <MicrophoneButton
+                  ref={microphoneRef}
                   onTranscript={(text) => {
                     setValue((prev) => {
                       if (prev.trim()) {
@@ -492,7 +515,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                   }}
                   onLiveTranscript={handleLiveTranscript}
                   onRecordingChange={handleRecordingChange}
-                  disabled={disableSend}
+                  disabled={disableMicrophone}
                 />
                 <ResendButton />
                 <SendButtonWithDropdown
