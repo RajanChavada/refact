@@ -84,13 +84,18 @@ export function useUsageCounter() {
     return (currentSessionTokens / maxContextTokens) * 100;
   }, [currentSessionTokens, maxContextTokens]);
 
+  // Don't show warnings when server-executed tools are present
+  // Claude's web_search can report inflated token counts during streaming
+  // that normalize after completion - this prevents false warnings
   const isWarning = useMemo(() => {
+    if (hasServerExecutedTools) return false;
     return tokenPercentage >= 85;
-  }, [tokenPercentage]);
+  }, [tokenPercentage, hasServerExecutedTools]);
 
   const isOverflown = useMemo(() => {
+    if (hasServerExecutedTools) return false;
     return tokenPercentage >= 97;
-  }, [tokenPercentage]);
+  }, [tokenPercentage, hasServerExecutedTools]);
 
   const shouldShow = useMemo(() => {
     return messages.length > 0;

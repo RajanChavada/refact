@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { v4 as uuidv4 } from "uuid";
 import {
   subscribeToVoiceStream,
   sendVoiceChunk,
@@ -142,7 +143,7 @@ export function useStreamingVoiceRecording(
     finalizeRejectRef.current = null;
     bufferRef.current = [];
 
-    sessionIdRef.current = crypto.randomUUID();
+    sessionIdRef.current = uuidv4();
     recordingStartTimeRef.current = Date.now();
 
     unsubscribeRef.current = subscribeToVoiceStream(

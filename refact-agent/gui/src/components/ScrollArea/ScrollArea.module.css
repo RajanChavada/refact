@@ -17,3 +17,21 @@
 .full_height :global(.rt-ScrollAreaViewport > *) {
   height: 100%;
 }
+
+.vertical :global(.rt-ScrollAreaScrollbar[data-orientation="vertical"]) {
+  width: 5px;
+}
+
+.vertical :global(.rt-ScrollAreaThumb) {
+  background-color: var(--gray-a3);
+  border-radius: 2px;
+  transition: background-color 150ms ease-out;
+}
+
+.vertical :global(.rt-ScrollAreaScrollbar:hover .rt-ScrollAreaThumb) {
+  background-color: var(--gray-a5);
+}
+
+.vertical :global(.rt-ScrollAreaThumb:active) {
+  background-color: var(--gray-a7);
+}

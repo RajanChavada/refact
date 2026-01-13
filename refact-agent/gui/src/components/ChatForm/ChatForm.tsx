@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
 
 import { Flex, Card, Text } from "@radix-ui/themes";
 import styles from "./ChatForm.module.css";
@@ -99,7 +99,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const [isVoiceActive, setIsVoiceActive] = React.useState(false);
   const [liveTranscript, setLiveTranscript] = React.useState("");
   const [inputResetKey, setInputResetKey] = React.useState(0);
-  const [trajectoryOpen, setTrajectoryOpen] = useState(false);
   const isOnline = useIsOnline();
   const {
     isWarning,
@@ -310,11 +309,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     setIsSendImmediately,
   ]);
 
-  useEffect(() => {
-    if (isContextFull && !trajectoryOpen) {
-      setTrajectoryOpen(true);
-    }
-  }, [isContextFull, trajectoryOpen]);
+
 
   const handleLiveTranscript = useCallback((text: string) => {
     setLiveTranscript(text);
@@ -382,21 +377,21 @@ export const ChatForm: React.FC<ChatFormProps> = ({
       )}
       {shouldShowUsage && isContextFull && (
         <Flex mb="2" gap="2" align="center">
-          <Callout type="error">
+          <Callout type="error" preventClose>
             Context is full ({Math.round(tokenPercentage)}%). Please compress or
             handoff to continue.
           </Callout>
-          <TrajectoryButton
-            forceOpen={trajectoryOpen}
-            onOpenChange={setTrajectoryOpen}
-          />
+          <TrajectoryButton />
         </Flex>
       )}
       {shouldShowUsage && isWarning && !isContextFull && (
-        <Callout type="warning" mb="2">
-          Context is almost full ({Math.round(tokenPercentage)}%). Consider
-          compressing or handing off soon.
-        </Callout>
+        <Flex mb="2" gap="2" align="center">
+          <Callout type="warning" preventClose>
+            Context is almost full ({Math.round(tokenPercentage)}%). Consider
+            compressing or handing off soon.
+          </Callout>
+          <TrajectoryButton />
+        </Flex>
       )}
 
       <Flex
