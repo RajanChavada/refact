@@ -1783,6 +1783,7 @@ mod tests {
                 task_meta: None,
                 parent_id: Some("parent-chat-id".to_string()),
                 link_type: Some("subagent".to_string()),
+                root_chat_id: Some("root-chat-id".to_string()),
             },
             messages: vec![ChatMessage::new("user".to_string(), "Hello".to_string())],
             runtime: super::super::types::RuntimeState::default(),

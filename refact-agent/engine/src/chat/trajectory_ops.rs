@@ -819,7 +819,8 @@ mod tests {
             "You are an assistant"
         );
         assert_eq!(selected[1].role, "user");
-        assert_eq!(selected[1].content.content_text_only(), "second question");
+        assert_eq!(selected[2].role, "user");
+        assert_eq!(selected[2].content.content_text_only(), "second question");
     }
 
     #[tokio::test]
@@ -885,7 +886,8 @@ mod tests {
 
         assert_system_prefix(&selected);
         assert_eq!(selected[0].role, "user");
-        assert_eq!(selected[1].role, "assistant");
+        assert_eq!(selected[1].role, "user");
+        assert_eq!(selected[2].role, "assistant");
     }
 
     #[tokio::test]
@@ -907,8 +909,8 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(roles(&selected), vec!["system"]);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(roles(&selected), vec!["system", "user"]);
     }
 
     #[tokio::test]
@@ -956,7 +958,7 @@ mod tests {
 
         assert_system_prefix(&selected);
         assert!(selected.iter().all(|m| m.role != "tool"));
-        assert_eq!(roles(&selected), vec!["system", "user", "assistant"]);
+        assert_eq!(roles(&selected), vec!["system", "user", "user", "assistant"]);
     }
 
     #[tokio::test]
@@ -980,10 +982,9 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        // Order: system -> preserved_tool_call -> preserved_tool_result -> user -> assistant
         assert_eq!(
             roles(&selected),
-            vec!["system", "assistant", "tool", "user", "assistant"]
+            vec!["system", "assistant", "tool", "user", "user", "assistant"]
         );
         assert_eq!(selected[1].tool_calls.as_ref().unwrap()[0].id, "tc1");
         assert_eq!(selected[2].tool_call_id, "tc1");
@@ -1011,7 +1012,7 @@ mod tests {
         assert_system_prefix(&selected);
         assert_eq!(
             roles(&selected),
-            vec!["system", "assistant", "tool", "user", "assistant"]
+            vec!["system", "assistant", "tool", "user", "user", "assistant"]
         );
     }
 
@@ -1037,7 +1038,7 @@ mod tests {
         assert_system_prefix(&selected);
         assert_eq!(
             roles(&selected),
-            vec!["system", "assistant", "tool", "user", "assistant"]
+            vec!["system", "assistant", "tool", "user", "user", "assistant"]
         );
     }
 
@@ -1055,7 +1056,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(selected.is_empty());
+        assert_eq!(roles(&selected), vec!["user"]);
     }
 
     #[tokio::test]
@@ -1071,8 +1072,8 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(selected.len(), 2);
-        assert_eq!(roles(&selected), vec!["system", "system"]);
+        assert_eq!(selected.len(), 3);
+        assert_eq!(roles(&selected), vec!["system", "system", "user"]);
     }
 
     #[tokio::test]
@@ -1141,7 +1142,7 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(roles(&selected), vec!["system", "user"]);
+        assert_eq!(roles(&selected), vec!["system", "user", "user"]);
     }
 
     #[tokio::test]
@@ -1174,7 +1175,7 @@ mod tests {
         assert_system_prefix(&selected);
         assert_eq!(
             roles(&selected),
-            vec!["system", "assistant", "diff", "user", "assistant"]
+            vec!["system", "assistant", "diff", "user", "user", "assistant"]
         );
     }
 
@@ -1206,7 +1207,7 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(roles(&selected), vec!["system", "user", "assistant"]);
+        assert_eq!(roles(&selected), vec!["system", "user", "user", "assistant"]);
     }
 
     #[tokio::test]
@@ -1232,19 +1233,14 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        // Order: system -> preserved_assistant -> preserved_tool -> user -> assistant
         assert_eq!(
             roles(&selected),
-            vec!["system", "assistant", "tool", "user", "assistant"]
+            vec!["system", "assistant", "tool", "user", "user", "assistant"]
         );
 
-        // The preserved tool pair should come before the conversation
         let tool_idx = selected.iter().position(|m| m.role == "tool").unwrap();
         let user_idx = selected.iter().position(|m| m.role == "user").unwrap();
-        assert!(
-            tool_idx < user_idx,
-            "Preserved tools should come before conversation"
-        );
+        assert!(tool_idx < user_idx);
     }
 
     #[tokio::test]
@@ -1281,6 +1277,7 @@ mod tests {
                 "assistant",
                 "tool",
                 "user",
+                "user",
                 "assistant"
             ]
         );
@@ -1292,8 +1289,8 @@ mod tests {
         let tool_idx = selected.iter().position(|m| m.role == "tool").unwrap();
         let user_idx = selected.iter().position(|m| m.role == "user").unwrap();
 
-        assert!(cf_idx < tool_idx, "Context files should come before tools");
-        assert!(tool_idx < user_idx, "Tools should come before conversation");
+        assert!(cf_idx < tool_idx);
+        assert!(tool_idx < user_idx);
     }
 
     #[tokio::test]
@@ -1371,7 +1368,7 @@ mod tests {
             ..Default::default()
         };
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        let result = handoff_select(&messages, &opts, gcx, true).await;
+        let result = handoff_select(&messages, &opts, gcx, true, "test-trajectory-id").await;
         assert!(
             result.is_ok(),
             "Should succeed when llm_summary_for_excluded=false"
