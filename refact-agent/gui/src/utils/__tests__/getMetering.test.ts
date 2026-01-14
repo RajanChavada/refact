@@ -19,8 +19,16 @@ type MeteringExtra = {
 type MessageWithExtra = {
   role: "assistant";
   content: string;
-  usage?: { completion_tokens: number; prompt_tokens: number; total_tokens: number };
-  tool_calls?: { id: string; function: { name: string; arguments: string }; index: number }[];
+  usage?: {
+    completion_tokens: number;
+    prompt_tokens: number;
+    total_tokens: number;
+  };
+  tool_calls?: {
+    id: string;
+    function: { name: string; arguments: string };
+    index: number;
+  }[];
   metering_coins_prompt?: number;
   metering_coins_generated?: number;
   metering_coins_cache_creation?: number;
@@ -43,7 +51,11 @@ describe("getMetering", () => {
         {
           role: "assistant",
           content: "Hi there",
-          usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 10 + 20 },
+          usage: {
+            completion_tokens: 10,
+            prompt_tokens: 20,
+            total_tokens: 10 + 20,
+          },
           extra: {
             metering_coins_prompt: 100,
             metering_coins_generated: 50,
@@ -69,7 +81,11 @@ describe("getMetering", () => {
         {
           role: "assistant",
           content: "Hi there",
-          usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 10 + 20 },
+          usage: {
+            completion_tokens: 10,
+            prompt_tokens: 20,
+            total_tokens: 10 + 20,
+          },
           metering_coins_prompt: 200,
           metering_coins_generated: 100,
           metering_coins_cache_creation: 10,
@@ -92,7 +108,11 @@ describe("getMetering", () => {
         {
           role: "assistant",
           content: "Test",
-          usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 10 + 20 },
+          usage: {
+            completion_tokens: 10,
+            prompt_tokens: 20,
+            total_tokens: 10 + 20,
+          },
           metering_coins_prompt: 300,
           metering_coins_generated: 150,
           metering_coins_cache_creation: 20,
@@ -121,7 +141,11 @@ describe("getMetering", () => {
         {
           role: "assistant",
           content: "First",
-          usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 10 + 20 },
+          usage: {
+            completion_tokens: 10,
+            prompt_tokens: 20,
+            total_tokens: 10 + 20,
+          },
           extra: {
             metering_coins_prompt: 100,
             metering_coins_generated: 50,
@@ -133,7 +157,11 @@ describe("getMetering", () => {
         {
           role: "assistant",
           content: "Second",
-          usage: { completion_tokens: 15, prompt_tokens: 25, total_tokens: 15 + 25 },
+          usage: {
+            completion_tokens: 15,
+            prompt_tokens: 25,
+            total_tokens: 15 + 25,
+          },
           extra: {
             metering_coins_prompt: 150,
             metering_coins_generated: 75,
@@ -176,7 +204,11 @@ describe("getMetering", () => {
           role: "assistant",
           content: "Let me delegate this",
           tool_calls: [
-            { id: "call_123", function: { name: "subagent", arguments: "{}" }, index: 0 },
+            {
+              id: "call_123",
+              function: { name: "subagent", arguments: "{}" },
+              index: 0,
+            },
           ],
         } satisfies MessageWithExtra,
         {
@@ -268,7 +300,11 @@ describe("getMetering", () => {
         {
           role: "assistant",
           content: "Test",
-          usage: { completion_tokens: 10, prompt_tokens: 20, total_tokens: 10 + 20 },
+          usage: {
+            completion_tokens: 10,
+            prompt_tokens: 20,
+            total_tokens: 10 + 20,
+          },
           extra: {
             metering_coins_prompt: 100,
             metering_coins_generated: 50,
