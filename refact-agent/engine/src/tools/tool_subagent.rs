@@ -161,12 +161,14 @@ impl Tool for ToolSubagent {
         };
         let max_steps = max_steps.min(50).max(1);
 
-        let (gcx, parent_chat_id, parent_subchat_tx) = {
+        let (gcx, parent_chat_id, parent_root_chat_id, parent_subchat_tx, parent_abort_flag) = {
             let ccx_lock = ccx.lock().await;
             (
                 ccx_lock.global_context.clone(),
                 ccx_lock.chat_id.clone(),
+                ccx_lock.root_chat_id.clone(),
                 ccx_lock.subchat_tx.clone(),
+                ccx_lock.abort_flag.clone(),
             )
         };
 
@@ -197,6 +199,7 @@ impl Tool for ToolSubagent {
             Some(title),
             Some(parent_chat_id),
             Some("subagent".to_string()),
+            Some(parent_root_chat_id),
             if tools.is_empty() {
                 None
             } else {
@@ -207,6 +210,7 @@ impl Tool for ToolSubagent {
             None,
             Some(tool_call_id.clone()),
             Some(parent_subchat_tx),
+            Some(parent_abort_flag),
         )
         .await?;
 
@@ -231,7 +235,24 @@ impl Tool for ToolSubagent {
             config.model
         );
 
-        let result = run_subchat(gcx, messages, config).await?;
+        let result = match run_subchat(gcx, messages, config).await {
+            Ok(r) => r,
+            Err(e) if e == "Aborted" || e.starts_with("Aborted") => {
+                return Ok((
+                    false,
+                    vec![ContextEnum::ChatMessage(ChatMessage {
+                        role: "tool".to_string(),
+                        content: ChatContent::SimpleText("Subagent aborted by user.".to_string()),
+                        tool_calls: None,
+                        tool_call_id: tool_call_id.clone(),
+                        tool_failed: Some(true),
+                        output_filter: Some(OutputFilter::no_limits()),
+                        ..Default::default()
+                    })],
+                ));
+            }
+            Err(e) => return Err(e),
+        };
 
         let last_assistant = result.messages.iter().rev().find(|m| m.role == "assistant");
         let result_content = last_assistant

@@ -369,6 +369,7 @@ impl Tool for ToolTaskSpawnAgent {
                 }),
                 parent_id: None,
                 link_type: None,
+                root_chat_id: None,
             };
 
             let user_prompt = build_agent_prompt(

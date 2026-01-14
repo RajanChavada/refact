@@ -105,13 +105,19 @@ fn spawn_subchat_bridge(
     let cancel_flag_clone = cancel_flag.clone();
 
     tokio::spawn(async move {
-        let subchat_rx = ccx.lock().await.subchat_rx.clone();
+        let (subchat_rx, abort_flag) = {
+            let ccx_locked = ccx.lock().await;
+            (ccx_locked.subchat_rx.clone(), ccx_locked.abort_flag.clone())
+        };
         info!("spawn_subchat_bridge: started listening for subchat messages");
 
         let mut active_tool_call_ids: Vec<String> = Vec::new();
 
         loop {
-            if cancel_flag_clone.load(Ordering::Relaxed) {
+            let should_stop =
+                cancel_flag_clone.load(Ordering::Relaxed) || abort_flag.load(Ordering::Relaxed);
+
+            if should_stop {
                 info!(
                     "spawn_subchat_bridge: cancelled, sending cleanup events for {} active tools",
                     active_tool_call_ids.len()
@@ -375,6 +381,7 @@ pub async fn check_tools_confirmation(
             false,
             messages.to_vec(),
             String::new(),
+            None,
             false,
             String::new(),
             None,
@@ -467,13 +474,14 @@ pub async fn execute_tools_with_session(
         return (vec![], false);
     }
 
-    let prompt_messages = {
+    let (prompt_messages, session_abort_flag) = {
         let session = session_arc.lock().await;
-        if session.last_prompt_messages.is_empty() {
+        let msgs = if session.last_prompt_messages.is_empty() {
             messages.to_vec()
         } else {
             session.last_prompt_messages.clone()
-        }
+        };
+        (msgs, session.abort_flag.clone())
     };
 
     let n_ctx = get_effective_n_ctx(gcx.clone(), thread).await;
@@ -511,17 +519,19 @@ pub async fn execute_tools_with_session(
     };
 
     let ccx = Arc::new(AMutex::new(
-        AtCommandsContext::new(
+        AtCommandsContext::new_with_abort(
             gcx.clone(),
             n_ctx,
             CHAT_TOP_N,
             false,
             messages.to_vec(),
             thread.id.clone(),
+            thread.root_chat_id.clone(),
             false,
             thread.model.clone(),
             thread.task_meta.clone(),
             code_workdir,
+            Some(session_abort_flag),
         )
         .await,
     ));
@@ -788,6 +798,7 @@ pub async fn execute_tools(
             false,
             messages.to_vec(),
             thread.id.clone(),
+            thread.root_chat_id.clone(),
             false,
             thread.model.clone(),
             thread.task_meta.clone(),

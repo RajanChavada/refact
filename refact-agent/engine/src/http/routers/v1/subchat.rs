@@ -41,6 +41,7 @@ pub async fn handle_v1_subchat(
         None,
         None,
         None,
+        None,
         Some(post.tools_turn_on.clone()),
         post.wrap_up_depth.max(1),
         false,

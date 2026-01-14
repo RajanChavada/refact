@@ -215,6 +215,7 @@ pub async fn handle_v1_tools_check_if_confirmation_needed(
             false,
             post.messages.clone(),
             "".to_string(),
+            None,
             false,
             "".to_string(),
             None,

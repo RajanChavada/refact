@@ -10,7 +10,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use std::collections::HashMap;
+
 use crate::at_commands::at_commands::AtCommandsContext;
+use crate::chat::find_trajectory_path;
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::files_correction::get_project_dirs;
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
@@ -58,6 +61,60 @@ fn generate_filename(content: &str) -> String {
     } else {
         format!("{}_{}_{}.md", timestamp, short_uuid, slug)
     }
+}
+
+async fn load_parent_id_from_trajectory(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    path: &PathBuf,
+) -> Option<String> {
+    let text = get_file_text_from_memory_or_disk(gcx, path).await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("parent_id").and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+async fn load_root_chat_id_from_trajectory(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    path: &PathBuf,
+) -> Option<String> {
+    let text = get_file_text_from_memory_or_disk(gcx, path).await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("root_chat_id").and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+async fn resolve_root_chat_id(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    start_id: &str,
+    cache: &mut HashMap<String, String>,
+) -> String {
+    if let Some(r) = cache.get(start_id) {
+        return r.clone();
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut current = start_id.to_string();
+
+    for _ in 0..50 {
+        if !seen.insert(current.clone()) {
+            cache.insert(start_id.to_string(), start_id.to_string());
+            return start_id.to_string();
+        }
+
+        let Some(path) = find_trajectory_path(gcx.clone(), &current).await else {
+            cache.insert(start_id.to_string(), current.clone());
+            return current;
+        };
+
+        match load_parent_id_from_trajectory(gcx.clone(), &path).await {
+            None => {
+                cache.insert(start_id.to_string(), current.clone());
+                return current;
+            }
+            Some(parent) => current = parent,
+        }
+    }
+
+    cache.insert(start_id.to_string(), start_id.to_string());
+    start_id.to_string()
 }
 
 pub fn create_frontmatter(
@@ -273,8 +330,6 @@ pub async fn memories_search(
         .map_err(|e| format!("VecDB search failed: {}", e))?;
     drop(vecdb_guard);
 
-    use std::collections::HashMap;
-
     struct KnowledgeMatch {
         best_score: f32,
     }
@@ -285,6 +340,12 @@ pub async fn memories_search(
 
     let mut knowledge_matches: HashMap<PathBuf, KnowledgeMatch> = HashMap::new();
     let mut trajectory_matches: HashMap<PathBuf, TrajectoryMatch> = HashMap::new();
+
+    let mut root_cache: HashMap<String, String> = HashMap::new();
+    let exclude_root = match exclude_trajectory_id {
+        Some(id) => Some(resolve_root_chat_id(gcx.clone(), id, &mut root_cache).await),
+        None => None,
+    };
 
     for rec in search_result.results.iter() {
         let path_str = rec.file_path.to_string_lossy().to_string();
@@ -300,17 +361,28 @@ pub async fn memories_search(
                 })
                 .or_insert(KnowledgeMatch { best_score: score });
         } else if path_str.contains(".refact/trajectories/") && path_str.ends_with(".json") {
-            // Skip current trajectory to avoid self-referential enrichment
-            if let Some(exclude_id) = exclude_trajectory_id {
-                let traj_id = rec
-                    .file_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if traj_id == exclude_id {
-                    continue;
+            let traj_id = rec
+                .file_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            if let Some(ref ex_root) = exclude_root {
+                if !traj_id.is_empty() {
+                    let candidate_root = if let Some(cached) = root_cache.get(&traj_id) {
+                        cached.clone()
+                    } else if let Some(stored_root) = load_root_chat_id_from_trajectory(gcx.clone(), &rec.file_path).await {
+                        root_cache.insert(traj_id.clone(), stored_root.clone());
+                        stored_root
+                    } else {
+                        resolve_root_chat_id(gcx.clone(), &traj_id, &mut root_cache).await
+                    };
+                    if candidate_root == *ex_root {
+                        continue;
+                    }
                 }
             }
+
             trajectory_matches
                 .entry(rec.file_path.clone())
                 .and_modify(|m| {

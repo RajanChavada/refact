@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, mpsc};
 use serde_json::{json, Value};
 use tracing::info;
@@ -100,6 +101,7 @@ pub struct SubchatConfig {
     pub title: Option<String>,
     pub parent_id: Option<String>,
     pub link_type: Option<String>,
+    pub root_chat_id: Option<String>,
     pub tools: ToolsPolicy,
     pub max_steps: usize,
     pub prepend_system_prompt: bool,
@@ -110,8 +112,8 @@ pub struct SubchatConfig {
     pub temperature: Option<f32>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub parent_tool_call_id: Option<String>,
-    /// Parent's subchat_tx for forwarding tool progress to parent chat
     pub parent_subchat_tx: Option<Arc<AMutex<mpsc::UnboundedSender<Value>>>>,
+    pub abort_flag: Option<Arc<AtomicBool>>,
 }
 
 pub struct SubchatResult {
@@ -211,6 +213,7 @@ pub async fn resolve_subchat_config(
     title: Option<String>,
     parent_id: Option<String>,
     link_type: Option<String>,
+    root_chat_id: Option<String>,
     tools: Option<Vec<String>>,
     max_steps: usize,
     prepend_system_prompt: bool,
@@ -224,10 +227,12 @@ pub async fn resolve_subchat_config(
         title,
         parent_id,
         link_type,
+        root_chat_id,
         tools,
         max_steps,
         prepend_system_prompt,
         wrap_up,
+        None,
         None,
         None,
     )
@@ -242,12 +247,14 @@ pub async fn resolve_subchat_config_with_parent(
     title: Option<String>,
     parent_id: Option<String>,
     link_type: Option<String>,
+    root_chat_id: Option<String>,
     tools: Option<Vec<String>>,
     max_steps: usize,
     prepend_system_prompt: bool,
     wrap_up: Option<WrapUpConfig>,
     parent_tool_call_id: Option<String>,
     parent_subchat_tx: Option<Arc<AMutex<mpsc::UnboundedSender<Value>>>>,
+    abort_flag: Option<Arc<AtomicBool>>,
 ) -> Result<SubchatConfig, String> {
     if max_steps == 0 {
         return Err("max_steps must be > 0".to_string());
@@ -275,6 +282,7 @@ pub async fn resolve_subchat_config_with_parent(
         title,
         parent_id,
         link_type,
+        root_chat_id,
         tools: ToolsPolicy::from_option(tools),
         max_steps,
         prepend_system_prompt,
@@ -286,6 +294,7 @@ pub async fn resolve_subchat_config_with_parent(
         reasoning_effort: params.subchat_reasoning_effort,
         parent_tool_call_id,
         parent_subchat_tx,
+        abort_flag,
     })
 }
 
@@ -314,17 +323,19 @@ pub async fn run_subchat(
         .unwrap_or_else(|| format!("subchat-{}", Uuid::new_v4()));
 
     let ccx = Arc::new(AMutex::new(
-        AtCommandsContext::new(
+        AtCommandsContext::new_with_abort(
             gcx.clone(),
             config.n_ctx,
             1,
             false,
             messages.clone(),
             chat_id.clone(),
+            config.root_chat_id.clone(),
             false,
             config.model.clone(),
             None,
             None,
+            config.abort_flag.clone(),
         )
         .await,
     ));
@@ -405,6 +416,7 @@ pub async fn run_subchat_once(
         None,
         None,
         None,
+        None,
         Some(vec![]),
         1,
         false,
@@ -422,6 +434,7 @@ pub async fn run_subchat_once(
             false,
             messages.clone(),
             chat_id.clone(),
+            config.root_chat_id.clone(),
             false,
             config.model.clone(),
             None,
@@ -457,6 +470,13 @@ pub async fn run_subchat_once(
     })
 }
 
+fn is_aborted(abort_flag: &Option<Arc<AtomicBool>>) -> bool {
+    abort_flag
+        .as_ref()
+        .map(|f| f.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
 async fn run_subchat_loop(
     ccx: Arc<AMutex<AtCommandsContext>>,
     config: &SubchatConfig,
@@ -465,6 +485,10 @@ async fn run_subchat_loop(
     usage: &mut ChatUsage,
 ) -> Result<Vec<ChatMessage>, String> {
     for step in 0..config.max_steps {
+        if is_aborted(&config.abort_flag) {
+            return Err("Aborted".to_string());
+        }
+
         let results = subchat_single_internal(
             ccx.clone(),
             &config.model,
@@ -495,6 +519,10 @@ async fn run_subchat_loop(
             config.parent_tool_call_id.clone(),
         )
         .await?;
+
+        if is_aborted(&config.abort_flag) {
+            return Err("Aborted".to_string());
+        }
     }
 
     Ok(messages)
@@ -511,6 +539,10 @@ async fn run_subchat_with_wrap_up(
     let mut step_n = 0;
 
     loop {
+        if is_aborted(&config.abort_flag) {
+            return Err("Aborted".to_string());
+        }
+
         if has_final_answer(&messages) {
             break;
         }
@@ -564,6 +596,14 @@ async fn run_subchat_with_wrap_up(
         .await?;
 
         step_n += 1;
+
+        if is_aborted(&config.abort_flag) {
+            return Err("Aborted".to_string());
+        }
+    }
+
+    if is_aborted(&config.abort_flag) {
+        return Err("Aborted".to_string());
     }
 
     messages = execute_pending_tool_calls(
@@ -732,9 +772,13 @@ async fn subchat_stream(
     reasoning_effort: Option<ReasoningEffort>,
     only_deterministic_messages: bool,
 ) -> Result<Vec<Vec<ChatMessage>>, String> {
-    let (gcx, effective_n_ctx) = {
+    let (gcx, effective_n_ctx, abort_flag) = {
         let ccx_locked = ccx.lock().await;
-        (ccx_locked.global_context.clone(), ccx_locked.n_ctx)
+        (
+            ccx_locked.global_context.clone(),
+            ccx_locked.n_ctx,
+            ccx_locked.abort_flag.clone(),
+        )
     };
 
     let caps = try_load_caps_quickly_if_not_present(gcx.clone(), 0)
@@ -806,7 +850,7 @@ async fn subchat_stream(
         } else {
             None
         },
-        abort_flag: None,
+        abort_flag: Some(abort_flag),
     };
 
     let mut collector = NoopCollector;

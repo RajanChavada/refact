@@ -89,6 +89,8 @@ pub struct ThreadParams {
     pub parent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_chat_id: Option<String>,
 }
 
 impl Default for ThreadParams {
@@ -108,6 +110,7 @@ impl Default for ThreadParams {
             task_meta: None,
             parent_id: None,
             link_type: None,
+            root_chat_id: None,
         }
     }
 }

@@ -58,6 +58,8 @@ pub struct TrajectoryMeta {
     pub card_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_chat_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,6 +101,7 @@ pub struct TrajectorySnapshot {
     pub task_meta: Option<super::types::TaskMeta>,
     pub parent_id: Option<String>,
     pub link_type: Option<String>,
+    pub root_chat_id: Option<String>,
 }
 
 impl TrajectorySnapshot {
@@ -121,6 +124,7 @@ impl TrajectorySnapshot {
             task_meta: session.thread.task_meta.clone(),
             parent_id: session.thread.parent_id.clone(),
             link_type: session.thread.link_type.clone(),
+            root_chat_id: session.thread.root_chat_id.clone(),
         }
     }
 }
@@ -159,7 +163,7 @@ fn fix_tool_call_indexes(messages: &mut [ChatMessage]) {
     }
 }
 
-async fn find_trajectory_path(gcx: Arc<ARwLock<GlobalContext>>, chat_id: &str) -> Option<PathBuf> {
+pub async fn find_trajectory_path(gcx: Arc<ARwLock<GlobalContext>>, chat_id: &str) -> Option<PathBuf> {
     let traj_dirs = get_all_trajectories_dirs(gcx.clone()).await;
     if let Some(path) = traj_dirs
         .iter()
@@ -280,6 +284,10 @@ pub async fn load_trajectory_for_chat(
             .map(|s| s.to_string()),
         link_type: t
             .get("link_type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        root_chat_id: t
+            .get("root_chat_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
     };
@@ -422,6 +430,7 @@ pub async fn save_trajectory_as(
         task_meta: thread.task_meta.clone(),
         parent_id: thread.parent_id.clone(),
         link_type: thread.link_type.clone(),
+        root_chat_id: thread.root_chat_id.clone(),
     };
     if let Err(e) = save_trajectory_snapshot(gcx, snapshot).await {
         warn!("Failed to save trajectory: {}", e);
@@ -466,6 +475,10 @@ pub async fn save_trajectory_snapshot(
     if let Some(ref link_type) = snapshot.link_type {
         trajectory["link_type"] = serde_json::Value::String(link_type.clone());
     }
+
+    let effective_root = snapshot.root_chat_id.clone()
+        .unwrap_or_else(|| snapshot.chat_id.clone());
+    trajectory["root_chat_id"] = serde_json::Value::String(effective_root);
 
     if let Some(ref task_meta) = snapshot.task_meta {
         trajectory["task_meta"] = serde_json::to_value(task_meta).unwrap_or_default();
@@ -1128,6 +1141,11 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         .get("link_type")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let root_chat_id = data
+        .extra
+        .get("root_chat_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     TrajectoryMeta {
         id: data.id.clone(),
@@ -1144,6 +1162,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         agent_id,
         card_id,
         session_state: None,
+        root_chat_id,
     }
 }
 

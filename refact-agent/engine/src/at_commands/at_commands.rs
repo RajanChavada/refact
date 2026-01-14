@@ -2,6 +2,7 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::mpsc;
 
 use async_trait::async_trait;
@@ -33,6 +34,7 @@ pub struct AtCommandsContext {
     #[allow(dead_code)]
     pub correction_only_up_to_step: usize,
     pub chat_id: String,
+    pub root_chat_id: String,
     pub current_model: String,
     pub should_execute_remotely: bool,
     pub task_meta: Option<TaskMeta>,
@@ -44,6 +46,7 @@ pub struct AtCommandsContext {
 
     pub subchat_tx: Arc<AMutex<mpsc::UnboundedSender<serde_json::Value>>>,
     pub subchat_rx: Arc<AMutex<mpsc::UnboundedReceiver<serde_json::Value>>>,
+    pub abort_flag: Arc<AtomicBool>,
 }
 
 impl AtCommandsContext {
@@ -54,12 +57,45 @@ impl AtCommandsContext {
         is_preview: bool,
         messages: Vec<ChatMessage>,
         chat_id: String,
+        root_chat_id: Option<String>,
         should_execute_remotely: bool,
         current_model: String,
         task_meta: Option<TaskMeta>,
         code_workdir: Option<PathBuf>,
     ) -> Self {
+        Self::new_with_abort(
+            global_context,
+            n_ctx,
+            top_n,
+            is_preview,
+            messages,
+            chat_id,
+            root_chat_id,
+            should_execute_remotely,
+            current_model,
+            task_meta,
+            code_workdir,
+            None,
+        )
+        .await
+    }
+
+    pub async fn new_with_abort(
+        global_context: Arc<ARwLock<GlobalContext>>,
+        n_ctx: usize,
+        top_n: usize,
+        is_preview: bool,
+        messages: Vec<ChatMessage>,
+        chat_id: String,
+        root_chat_id: Option<String>,
+        should_execute_remotely: bool,
+        current_model: String,
+        task_meta: Option<TaskMeta>,
+        code_workdir: Option<PathBuf>,
+        abort_flag: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let effective_root = root_chat_id.unwrap_or_else(|| chat_id.clone());
         AtCommandsContext {
             global_context: global_context.clone(),
             n_ctx,
@@ -70,6 +106,7 @@ impl AtCommandsContext {
             pp_skeleton: true,
             correction_only_up_to_step: 0,
             chat_id,
+            root_chat_id: effective_root,
             current_model,
             should_execute_remotely,
             task_meta,
@@ -79,6 +116,7 @@ impl AtCommandsContext {
             postprocess_parameters: PostprocessSettings::new(),
             subchat_tx: Arc::new(AMutex::new(tx)),
             subchat_rx: Arc::new(AMutex::new(rx)),
+            abort_flag: abort_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
         }
     }
 }

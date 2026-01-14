@@ -269,6 +269,7 @@ pub async fn handle_handoff_apply(
         task_meta,
         parent_id: Some(chat_id.clone()),
         link_type: Some("handoff".to_string()),
+        root_chat_id: thread.root_chat_id.clone().or_else(|| Some(chat_id.clone())),
     };
 
     save_trajectory_snapshot_with_parent(gcx.clone(), snapshot, &chat_id, "handoff")
