@@ -76,5 +76,6 @@ export function useThinking() {
     shouldBeTeasing,
     noteText,
     areCapsInitialized: !caps.uninitialized,
+    supportsBoostReasoning,
   };
 }
