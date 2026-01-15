@@ -212,7 +212,6 @@ export interface ApplyPatchToolCall extends ParsedRawTextDocToolCall {
   function: {
     name: "apply_patch";
     arguments: {
-      path: string;
       patch: string;
     };
   };
@@ -222,8 +221,6 @@ export const isApplyPatchToolCall = (
   toolCall: ParsedRawTextDocToolCall,
 ): toolCall is ApplyPatchToolCall => {
   if (toolCall.function.name !== "apply_patch") return false;
-  if (!("path" in toolCall.function.arguments)) return false;
-  if (typeof toolCall.function.arguments.path !== "string") return false;
   if (!("patch" in toolCall.function.arguments)) return false;
   if (typeof toolCall.function.arguments.patch !== "string") return false;
   return true;

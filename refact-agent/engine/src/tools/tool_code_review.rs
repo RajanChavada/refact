@@ -23,9 +23,8 @@ use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present}
 use crate::postprocessing::pp_context_files::postprocess_context_files;
 use crate::postprocessing::pp_command_output::OutputFilter;
 use crate::tokens::count_text_tokens_with_fallback;
-use crate::memories::{memories_add_enriched, EnrichmentParams};
 
-pub struct ToolStrategicPlanning {
+pub struct ToolCodeReview {
     pub config_path: String,
 }
 
@@ -33,20 +32,20 @@ const MAX_FILES: usize = 30;
 const GATHER_FILES_MAX_STEPS: usize = 10;
 static TOKENS_EXTRA_BUDGET_PERCENT: f32 = 0.06;
 
-static GATHER_FILES_SYSTEM_PROMPT: &str = r#"You are a focused sub-agent that identifies relevant files for strategic planning.
+static GATHER_FILES_SYSTEM_PROMPT: &str = r#"You are a focused sub-agent that identifies relevant files for code review.
 
 Your task:
-1. Analyze the conversation to understand the problem
+1. Analyze the conversation to understand what code needs to be reviewed
 2. Use the available tools to explore the codebase and find all relevant files
-3. Read key files to understand their purpose
+3. Include the main files being discussed and related files that might be affected
 
 Consider:
 - Files explicitly mentioned in the conversation
-- Files that would need to be modified to solve the problem
+- Files that were recently modified or discussed
 - Related test files
-- Configuration files that might be affected
+- Configuration files
 - Dependencies and imports
-- Similar patterns from past solutions (use knowledge tool)
+- Integration points with other modules
 
 After your investigation, output your final recommendations in this EXACT format:
 
@@ -55,7 +54,7 @@ path/to/file1.ext
 path/to/file2.ext
 END_FILES
 
-Include up to 30 most important files, prioritized by relevance to solving the problem.
+Include up to 30 most important files, prioritized by relevance to the review.
 Only include files that actually exist and that you've verified."#;
 
 static GATHER_FILES_RETRY_PROMPT: &str = r#"Your response was not in the required format. Please output the list of relevant files in this EXACT format:
@@ -67,17 +66,39 @@ END_FILES
 
 Include only the files you found during your investigation."#;
 
-static SOLVER_PROMPT: &str = r#"Your task is to identify and solve the problem by the given conversation and context files.
-The solution must be robust and complete and addressing all corner cases.
-Also make a couple of alternative ways to solve the problem, if the initial solution doesn't work."#;
+static REVIEW_PROMPT: &str = r#"Your task is to perform a thorough code review based on the conversation and context files.
 
-static GUARDRAILS_PROMPT: &str = r#"💿 Now confirm the plan with the user"#;
+The code MUST be:
+- WITHOUT comments (code should be self-explanatory)
+- Simple and concise
+- No fallbacks, no dead code (unless it states explicitly in the user's request)
+- Following the project's existing patterns and style
+
+Review for:
+1. **Bugs and Issues**: Logic errors, edge cases, potential crashes, null/undefined handling
+2. **Integration Problems**: Incompatibilities with existing code, breaking changes, API mismatches
+3. **Missing Tests**: Identify code paths that lack test coverage (if tests are applicable)
+4. **Consistency**: Naming conventions, code style, architectural patterns
+5. **Security**: Input validation, data sanitization, authentication/authorization issues
+6. **Performance**: Inefficient algorithms, unnecessary allocations, N+1 queries
+7. **Error Handling**: Missing error cases, unhelpful error messages, swallowed exceptions
+8. **Code Smells**: Duplication, overly complex functions, tight coupling
+
+For each issue found:
+- Describe the problem clearly
+- Explain why it's a problem
+- Suggest a concrete fix
+
+If the code is good, acknowledge what's done well.
+Prioritize issues by severity: Critical > Major > Minor > Suggestion"#;
+
+static GUARDRAILS_PROMPT: &str = r#"💿 Review the findings with the user and discuss any necessary changes"#;
 
 static ENTERTAINMENT_MESSAGES: &[&str] = &[
-    "1/4: 📋 Gathering context from files...",
-    "2/4: 💡 Formulating solution approaches...",
-    "3/4: 📝 Drafting the strategic plan...",
-    "4/4: 🔄 Refining the solution...",
+    "1/4: 📋 Loading files for review...",
+    "2/4: 🔍 Analyzing code quality...",
+    "3/4: 🐛 Checking for issues...",
+    "4/4: 📝 Compiling review findings...",
 ];
 
 static GATHER_FILES_TOOLS: &[&str] = &[
@@ -201,10 +222,10 @@ async fn gather_relevant_files(
 
     let config = resolve_subchat_config_with_parent(
         gcx.clone(),
-        "strategic_planning_gather_files",
+        "code_review_gather_files",
         true,
         None,
-        Some("Strategic Planning: Gathering Files".to_string()),
+        Some("Code Review: Gathering Files".to_string()),
         Some(parent_chat_id),
         Some("gather_files".to_string()),
         Some(parent_root_chat_id),
@@ -235,19 +256,19 @@ async fn gather_relevant_files(
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: ChatContent::SimpleText(
-            "Based on the conversation above, identify all relevant files for solving this problem.".to_string()
+            "Based on the conversation above, identify all relevant files that need to be reviewed.".to_string()
         ),
         ..Default::default()
     });
 
-    tracing::info!("strategic_planning: starting file-gathering subagent");
+    tracing::info!("code_review: starting file-gathering subagent");
     let result = run_subchat(gcx.clone(), messages.clone(), config).await?;
 
     let response = get_last_assistant_content(&result.messages);
     let mut files = parse_relevant_files_from_response(&response);
 
     if files.is_empty() {
-        tracing::info!("strategic_planning: file list not properly formatted, requesting retry");
+        tracing::info!("code_review: file list not properly formatted, requesting retry");
 
         let mut retry_messages = result.messages.clone();
         retry_messages.push(ChatMessage {
@@ -256,7 +277,7 @@ async fn gather_relevant_files(
             ..Default::default()
         });
 
-        let retry_result = run_subchat_once(gcx.clone(), "strategic_planning_gather_files", retry_messages).await?;
+        let retry_result = run_subchat_once(gcx.clone(), "code_review_gather_files", retry_messages).await?;
         let retry_response = get_last_assistant_content(&retry_result.messages);
         files = parse_relevant_files_from_response(&retry_response);
 
@@ -265,7 +286,7 @@ async fn gather_relevant_files(
         }
     }
 
-    tracing::info!("strategic_planning: gathered {} files", files.len());
+    tracing::info!("code_review: gathered {} files", files.len());
 
     let mut valid_paths = Vec::new();
     let mut seen = HashSet::new();
@@ -275,7 +296,7 @@ async fn gather_relevant_files(
             seen.insert(path.clone());
             valid_paths.push(path);
         } else {
-            tracing::warn!("strategic_planning: skipping invalid path: {}", file_str);
+            tracing::warn!("code_review: skipping invalid path: {}", file_str);
         }
     }
 
@@ -288,7 +309,7 @@ async fn gather_relevant_files(
     Ok((valid_paths, result.usage))
 }
 
-async fn make_planning_prompt(
+async fn make_review_prompt(
     gcx: Arc<ARwLock<GlobalContext>>,
     subchat_params: &SubchatParameters,
     important_paths: &[PathBuf],
@@ -321,7 +342,7 @@ async fn make_planning_prompt(
     }
 
     let mut tokens_budget: i64 = (subchat_params.subchat_n_ctx - required_tokens) as i64;
-    let final_message = SOLVER_PROMPT.to_string();
+    let final_message = REVIEW_PROMPT.to_string();
     tokens_budget -= count_text_tokens_with_fallback(tokenizer.clone(), &final_message) as i64;
 
     let mut context = String::new();
@@ -344,7 +365,7 @@ async fn make_planning_prompt(
                 });
             }
             Err(_) => {
-                tracing::warn!("strategic_planning: failed to read file '{:?}'", p);
+                tracing::warn!("code_review: failed to read file '{:?}'", p);
             }
         }
     }
@@ -387,13 +408,13 @@ async fn make_planning_prompt(
                 context_file.file_content
             ));
         }
-        Ok(format!("{final_message}\n\n# Conversation\n{context}\n\n# Files context\n{files_context}"))
+        Ok(format!("{final_message}\n\n# Conversation\n{context}\n\n# Files to Review\n{files_context}"))
     } else {
         Ok(format!("{final_message}\n\n# Conversation\n{context}"))
     }
 }
 
-async fn execute_strategic_planning(
+async fn execute_code_review(
     gcx: Arc<ARwLock<GlobalContext>>,
     ccx: Arc<AMutex<AtCommandsContext>>,
     important_paths: Vec<PathBuf>,
@@ -406,9 +427,9 @@ async fn execute_strategic_planning(
     let cancel_token = tokio_util::sync::CancellationToken::new();
     spawn_entertainment_task(subchat_tx, tool_call_id.clone(), cancel_token.clone());
 
-    let subchat_params = resolve_subchat_params(gcx.clone(), "strategic_planning").await?;
+    let subchat_params = resolve_subchat_params(gcx.clone(), "code_review").await?;
 
-    let prompt = make_planning_prompt(
+    let prompt = make_review_prompt(
         gcx.clone(),
         &subchat_params,
         &important_paths,
@@ -418,16 +439,16 @@ async fn execute_strategic_planning(
 
     let history: Vec<ChatMessage> = vec![ChatMessage::new("user".to_string(), prompt)];
 
-    let result = run_subchat_once(gcx.clone(), "strategic_planning", history).await;
+    let result = run_subchat_once(gcx.clone(), "code_review", history).await;
 
     cancel_token.cancel();
 
     let result = result?;
-    let initial_solution = result
+    let review_response = result
         .messages
         .last()
         .cloned()
-        .ok_or("No response from strategic planning")?;
+        .ok_or("No response from code review")?;
 
     let filenames: Vec<String> = important_paths
         .iter()
@@ -435,53 +456,34 @@ async fn execute_strategic_planning(
         .collect();
 
     let files_section = format!(
-        "# Files Analyzed ({})\n{}\n\n",
+        "# Files Reviewed ({})\n{}\n\n",
         filenames.len(),
         filenames.iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n")
     );
 
-    let solution_content = format!("{}# Solution\n{}", files_section, initial_solution.content.content_text_only());
-
-    let enrichment_params = EnrichmentParams {
-        base_tags: vec!["planning".to_string(), "strategic".to_string()],
-        base_filenames: filenames,
-        base_kind: "decision".to_string(),
-        base_title: Some("Strategic Plan".to_string()),
-    };
-
-    let memory_note = match memories_add_enriched(ccx.clone(), &solution_content, enrichment_params).await {
-        Ok(path) => {
-            format!("\n\n---\n📝 **This plan has been saved to the knowledge base:** `{}`", path.display())
-        }
-        Err(e) => {
-            tracing::warn!("strategic_planning: failed to save memory: {}", e);
-            String::new()
-        }
-    };
-
-    let final_message = format!("{}{}", solution_content, memory_note);
+    let review_content = format!("{}# Code Review\n{}", files_section, review_response.content.content_text_only());
     let metering = result.metering;
 
-    Ok((final_message, result.usage, metering))
+    Ok((review_content, result.usage, metering))
 }
 
 #[async_trait]
-impl Tool for ToolStrategicPlanning {
+impl Tool for ToolCodeReview {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
     fn tool_description(&self) -> ToolDesc {
         ToolDesc {
-            name: "strategic_planning".to_string(),
-            display_name: "Strategic Planning".to_string(),
+            name: "code_review".to_string(),
+            display_name: "Code Review".to_string(),
             source: ToolSource {
                 source_type: ToolSourceType::Builtin,
                 config_path: self.config_path.clone(),
             },
             agentic: true,
             experimental: false,
-            description: "Strategically plan a solution for a complex problem or create a comprehensive approach. Automatically identifies relevant files from the codebase.".to_string(),
+            description: "Perform a thorough code review. Automatically identifies relevant files and checks for bugs, integration issues, missing tests, code style, and consistency.".to_string(),
             parameters: vec![],
             parameters_required: vec![],
         }
@@ -500,7 +502,7 @@ impl Tool for ToolStrategicPlanning {
             ccx_lock.messages.clone()
         };
 
-        tracing::info!("strategic_planning: phase 1 - gathering relevant files");
+        tracing::info!("code_review: phase 1 - gathering relevant files");
         let (important_paths, gather_usage) = gather_relevant_files(
             gcx.clone(),
             ccx.clone(),
@@ -510,11 +512,11 @@ impl Tool for ToolStrategicPlanning {
         .await?;
 
         tracing::info!(
-            "strategic_planning: phase 2 - creating plan with {} files",
+            "code_review: phase 2 - performing review on {} files",
             important_paths.len()
         );
 
-        let (final_message, plan_usage, metering) = execute_strategic_planning(
+        let (final_message, review_usage, metering) = execute_code_review(
             gcx,
             ccx.clone(),
             important_paths,
@@ -524,9 +526,9 @@ impl Tool for ToolStrategicPlanning {
         .await?;
 
         let combined_usage = ChatUsage {
-            prompt_tokens: gather_usage.prompt_tokens + plan_usage.prompt_tokens,
-            completion_tokens: gather_usage.completion_tokens + plan_usage.completion_tokens,
-            total_tokens: gather_usage.total_tokens + plan_usage.total_tokens,
+            prompt_tokens: gather_usage.prompt_tokens + review_usage.prompt_tokens,
+            completion_tokens: gather_usage.completion_tokens + review_usage.completion_tokens,
+            total_tokens: gather_usage.total_tokens + review_usage.total_tokens,
             ..Default::default()
         };
 

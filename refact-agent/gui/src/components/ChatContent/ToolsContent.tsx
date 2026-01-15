@@ -373,6 +373,16 @@ function processToolCalls(
     return processToolCalls(tail, toolResults, features, [...processed, elem]);
   }
 
+  if (head.function.name === "code_review") {
+    const elem = (
+      <CodeReviewTool
+        key={`code-review-tool-${processed.length}`}
+        toolCall={head}
+      />
+    );
+    return processToolCalls(tail, toolResults, features, [...processed, elem]);
+  }
+
   if (head.function.name === "deep_research") {
     const elem = (
       <DeepResearchTool
@@ -1827,8 +1837,14 @@ const SubagentTool: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
   );
 };
 
-interface StrategicPlanningArgs {
-  important_paths?: string;
+function parseFilesFromResult(content: string | undefined): string[] {
+  if (!content) return [];
+  const match = content.match(/# Files (?:Analyzed|Reviewed) \(\d+\)\n([\s\S]*?)\n\n/);
+  if (!match) return [];
+  return match[1]
+    .split("\n")
+    .map((line) => line.replace(/^- /, "").trim())
+    .filter(Boolean);
 }
 
 const StrategicPlanningTool: React.FC<{ toolCall: ToolCall }> = ({
@@ -1844,22 +1860,6 @@ const StrategicPlanningTool: React.FC<{ toolCall: ToolCall }> = ({
 
   const inProgress = !maybeResult;
 
-  const args = useMemo<StrategicPlanningArgs>(() => {
-    try {
-      return JSON.parse(toolCall.function.arguments) as StrategicPlanningArgs;
-    } catch {
-      return {};
-    }
-  }, [toolCall.function.arguments]);
-
-  const paths = useMemo(() => {
-    if (!args.important_paths) return [];
-    return args.important_paths
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean);
-  }, [args.important_paths]);
-
   const handleHide = useCallback(() => {
     setOpen(false);
     scrollOnHide();
@@ -1867,6 +1867,12 @@ const StrategicPlanningTool: React.FC<{ toolCall: ToolCall }> = ({
 
   const subchatLog: string[] = toolCall.subchat_log ?? [];
   const currentStep = subchatLog.slice(-1)[0];
+
+  const files = useMemo(() => {
+    if (!maybeResult?.content || typeof maybeResult.content !== "string")
+      return [];
+    return parseFilesFromResult(maybeResult.content);
+  }, [maybeResult?.content]);
 
   return (
     <Container py="1">
@@ -1888,21 +1894,121 @@ const StrategicPlanningTool: React.FC<{ toolCall: ToolCall }> = ({
                   <Spinner size="1" />
                 ) : (
                   <Text weight="light" size="1">
-                    🎯
+                    🧠
                   </Text>
                 )}
                 <Flex gap="1" align="start" direction="column">
                   <Text weight="light" size="1">
-                    Strategic Planning
+                    Planning
                   </Text>
-                  <Text weight="light" size="1" color="gray">
-                    {paths.length} files:{" "}
-                    {paths
-                      .slice(0, 3)
-                      .map((p) => truncatePath(p, 20))
-                      .join(", ")}
-                    {paths.length > 3 ? ", …" : ""}
+                  {files.length > 0 && (
+                    <Text weight="light" size="1" color="gray">
+                      {files.length} files:{" "}
+                      {files
+                        .slice(0, 3)
+                        .map((p) => truncatePath(p, 20))
+                        .join(", ")}
+                      {files.length > 3 ? ", …" : ""}
+                    </Text>
+                  )}
+                  {currentStep &&
+                    (() => {
+                      const parsed = parseProgressEntry(currentStep);
+                      return (
+                        <Flex direction="column" gap="1">
+                          {parsed.step && (
+                            <Text weight="light" size="1">
+                              {parsed.step}:
+                            </Text>
+                          )}
+                          {parsed.lines.map((line, i) => (
+                            <Text key={i} weight="light" size="1" ml="3">
+                              {parsed.step ? "🔨 " : ""}
+                              {line}
+                            </Text>
+                          ))}
+                        </Flex>
+                      );
+                    })()}
+                </Flex>
+              </Flex>
+              <Chevron open={open} />
+            </Flex>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            {maybeResult?.content &&
+              typeof maybeResult.content === "string" && (
+                <Result onClose={handleHide}>{maybeResult.content}</Result>
+              )}
+          </Collapsible.Content>
+        </Collapsible.Root>
+      </AnimatedText>
+    </Container>
+  );
+};
+
+const CodeReviewTool: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
+  const [open, setOpen] = React.useState(false);
+  const ref = useRef(null);
+  const scrollOnHide = useHideScroll(ref);
+
+  const maybeResult = useAppSelector((state) =>
+    selectToolResultById(state, toolCall.id),
+  );
+
+  const inProgress = !maybeResult;
+
+  const handleHide = useCallback(() => {
+    setOpen(false);
+    scrollOnHide();
+  }, [scrollOnHide]);
+
+  const subchatLog: string[] = toolCall.subchat_log ?? [];
+  const currentStep = subchatLog.slice(-1)[0];
+
+  const files = useMemo(() => {
+    if (!maybeResult?.content || typeof maybeResult.content !== "string")
+      return [];
+    return parseFilesFromResult(maybeResult.content);
+  }, [maybeResult?.content]);
+
+  return (
+    <Container py="1">
+      <AnimatedText as="div" weight="light" size="1" animating={inProgress}>
+        <Collapsible.Root open={open} onOpenChange={setOpen}>
+          <Collapsible.Trigger asChild>
+            <Flex
+              gap="2"
+              align="end"
+              onClick={() => setOpen((prev) => !prev)}
+              ref={ref}
+            >
+              <Flex
+                gap="2"
+                align="start"
+                style={{ cursor: "pointer", flex: 1 }}
+              >
+                {inProgress ? (
+                  <Spinner size="1" />
+                ) : (
+                  <Text weight="light" size="1">
+                    🔍
                   </Text>
+                )}
+                <Flex gap="1" align="start" direction="column">
+                  <Text weight="light" size="1">
+                    Code Review
+                  </Text>
+                  {files.length > 0 && (
+                    <Text weight="light" size="1" color="gray">
+                      {files.length} files:{" "}
+                      {files
+                        .slice(0, 3)
+                        .map((p) => truncatePath(p, 20))
+                        .join(", ")}
+                      {files.length > 3 ? ", …" : ""}
+                    </Text>
+                  )}
                   {currentStep &&
                     (() => {
                       const parsed = parseProgressEntry(currentStep);

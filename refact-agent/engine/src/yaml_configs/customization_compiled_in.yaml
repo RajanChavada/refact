@@ -103,7 +103,7 @@ AGENT_EXPLORATION_INSTRUCTIONS: |
   - `search_trajectories()` - find relevant past conversations
   - `get_trajectory_context()` - retrieve messages from a trajectory
 
-  **For complex analysis**: delegate to `strategic_planning()` with relevant file paths
+  **For complex analysis**: delegate to `strategic_planning()` which automatically gathers relevant files
 
 
 AGENT_EXECUTION_INSTRUCTIONS: |
@@ -119,6 +119,7 @@ AGENT_EXECUTION_INSTRUCTIONS: |
 
   5. Validate via Delegation
     - Delegate test runs: `subagent(task="Run tests and report failures", tools="shell,cat")`
+    - For significant changes, run `code_review()` to check for bugs, missing tests, and code quality issues
     - Review results and decide on next steps
     - Iterate until green or explain the blocker to user
 
@@ -141,6 +142,17 @@ PROMPT_AGENTIC_TOOLS: |
   - Exploring/investigating code ("find all usages of X", "understand module Y")
   - Searching across the codebase ("find files matching Z", "search for pattern P")
   - Any task requiring multiple read-only tool calls to complete
+
+  **Use strategic_planning() when**:
+  - Complex problems requiring multi-step solutions
+  - Architectural decisions affecting multiple files
+  - Breaking down large tasks into actionable steps
+
+  **Use code_review() when**:
+  - After implementing significant changes
+  - Before finalizing a pull request or merge
+  - When user asks to review code quality
+  - To validate code for bugs, missing tests, and consistency
 
   **Do it yourself when**:
   - Whole file reads to orient yourself (`cat()` files from subagents, `tree()` once)
@@ -284,8 +296,9 @@ PROMPT_TASK_PLANNER: |
   ## 3) Mandatory Strategic Planning
   After context gathering, before cards, call:
   ```
-  strategic_planning(important_paths="file1.rs,file2.rs,...")
+  strategic_planning()
   ```
+  The tool automatically gathers relevant files from the conversation context.
   Use the result to finalize: architecture, specs, edge cases, file list, test plan.
 
   ## 4) Card Creation
@@ -338,7 +351,7 @@ PROMPT_TASK_PLANNER: |
   If "Nothing to Merge" → investigate why (no commit? wrong directory?), create fix card.
 
   After merges, run compilation/tests:
-  - **Pass** → Continue
+  - **Pass** → Run `code_review()` for significant changes to catch bugs, missing tests, and style issues
   - **Fail (tiny fix)** → Use `update_textdoc` yourself
   - **Fail (larger)** → Create new card, spawn agent
 
@@ -350,7 +363,7 @@ PROMPT_TASK_PLANNER: |
   ## Tools Reference
   **Codebase investigation:** `subagent`, `tree`, `cat`, `search_pattern`, `search_symbol_definition`, `search_semantic`, `knowledge`
   **External research:** `deep_research` (comprehensive), `web_search` (quick lookup), `web` (fetch specific URL)
-  **Planning:** `strategic_planning`, `task_board_create_card`, `task_board_update_card`
+  **Planning:** `strategic_planning`, `code_review`, `task_board_create_card`, `task_board_update_card`
   **Execution:** `task_spawn_agent`, `task_check_agents`, `task_ready_cards`
   **Completion:** `task_merge_agent`, `task_mark_card_done`, `task_mark_card_failed`
   **Direct fixes:** `update_textdoc`, `cat`, `shell`
@@ -555,6 +568,27 @@ system_prompts:
 
 
 subchat_tool_parameters:
+  code_review_gather_files:
+    subchat_model_type: "light"
+    subchat_n_ctx: 200000
+    subchat_max_new_tokens: 8192
+    subchat_temperature: 0.2
+    subchat_tokens_for_rag: 0
+    subchat_reasoning_effort: null
+  code_review:
+    subchat_model_type: "thinking"
+    subchat_n_ctx: 400000
+    subchat_max_new_tokens: 128000
+    subchat_temperature: null
+    subchat_tokens_for_rag: 200000
+    subchat_reasoning_effort: "high"
+  strategic_planning_gather_files:
+    subchat_model_type: "light"
+    subchat_n_ctx: 200000
+    subchat_max_new_tokens: 8192
+    subchat_temperature: 0.2
+    subchat_tokens_for_rag: 0
+    subchat_reasoning_effort: null
   strategic_planning:
     subchat_model_type: "thinking"
     subchat_n_ctx: 400000

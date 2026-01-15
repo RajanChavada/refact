@@ -170,6 +170,11 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
                 config_path: config_path.clone(),
             },
         ),
+        Box::new(
+            crate::tools::tool_code_review::ToolCodeReview {
+                config_path: config_path.clone(),
+            },
+        ),
         Box::new(crate::tools::tool_deep_research::ToolDeepResearch {
             config_path: config_path.clone(),
         }),
