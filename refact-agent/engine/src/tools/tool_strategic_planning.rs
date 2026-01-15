@@ -17,7 +17,7 @@ use crate::call_validation::{
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::caps::resolve_chat_model;
 use crate::custom_error::ScratchError;
-use crate::files_correction::canonicalize_normalized_path;
+use crate::files_correction::correct_to_nearest_filename;
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present};
 use crate::postprocessing::pp_context_files::postprocess_context_files;
@@ -270,10 +270,13 @@ async fn gather_relevant_files(
     let mut valid_paths = Vec::new();
     let mut seen = HashSet::new();
     for file_str in files {
-        let path = canonicalize_normalized_path(PathBuf::from(&file_str));
-        if path.exists() && !seen.contains(&path) {
-            seen.insert(path.clone());
-            valid_paths.push(path);
+        let candidates = correct_to_nearest_filename(gcx.clone(), &file_str, false, 1).await;
+        if let Some(corrected) = candidates.first() {
+            let path = PathBuf::from(corrected);
+            if !seen.contains(&path) {
+                seen.insert(path.clone());
+                valid_paths.push(path);
+            }
         } else {
             tracing::warn!("strategic_planning: skipping invalid path: {}", file_str);
         }
