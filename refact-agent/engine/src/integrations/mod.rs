@@ -17,7 +17,6 @@ pub mod integr_gitlab;
 pub mod integr_mysql;
 pub mod integr_pdb;
 pub mod integr_postgres;
-pub mod integr_shell;
 pub mod mcp;
 
 pub mod config_chat;
@@ -56,9 +55,6 @@ pub fn integration_from_name(n: &str) -> Result<Box<dyn IntegrationTrait + Send 
             ..Default::default()
         }) as Box<dyn IntegrationTrait + Send + Sync>),
         "docker" => Ok(Box::new(docker::integr_docker::ToolDocker {
-            ..Default::default()
-        }) as Box<dyn IntegrationTrait + Send + Sync>),
-        "shell" => Ok(Box::new(integr_shell::ToolShell {
             ..Default::default()
         }) as Box<dyn IntegrationTrait + Send + Sync>),
         cmdline if cmdline.starts_with("cmdline_") => {
@@ -104,7 +100,6 @@ pub fn integrations_list(allow_experimental: bool) -> Vec<&'static str> {
         "mcp_stdio_TEMPLATE",
         "mcp_sse_TEMPLATE",
         "docker",
-        "shell",
     ];
     if allow_experimental {
         integrations.extend(vec!["isolation"]);

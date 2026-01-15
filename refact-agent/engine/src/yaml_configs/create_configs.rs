@@ -37,18 +37,10 @@ pub async fn yaml_configs_try_create_all(gcx: Arc<ARwLock<GlobalContext>>) -> St
             "builtin_tools.yaml",
             include_str!("default_builtin_tools.yaml"),
         ),
-        (
-            "integrations.d/shell.yaml",
-            include_str!("default_shell.yaml"),
-        ),
     ];
 
     for (file_name, content) in files {
-        let file_path = if file_name == "integrations.d/shell.yaml" {
-            config_dir.join("integrations.d").join("shell.yaml")
-        } else {
-            config_dir.join(file_name)
-        };
+        let file_path = config_dir.join(file_name);
 
         if let Err(e) = _yaml_file_exists_or_create(gcx.clone(), &file_path, content).await {
             tracing::warn!("{}", e);
