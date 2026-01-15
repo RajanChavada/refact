@@ -1745,7 +1745,7 @@ interface ShellServiceArgs {
   workdir?: string;
 }
 
-const ACTION_ICONS: Record<string, string> = {
+const ACTION_ICONS: Partial<Record<string, string>> = {
   start: "▶️",
   stop: "⏹️",
   restart: "🔄",
@@ -1954,7 +1954,9 @@ const SubagentTool: React.FC<{ toolCall: ToolCall }> = ({ toolCall }) => {
 
 function parseFilesFromResult(content: string | undefined): string[] {
   if (!content) return [];
-  const match = content.match(/# Files (?:Analyzed|Reviewed) \(\d+\)\n([\s\S]*?)\n\n/);
+  const match = content.match(
+    /# Files (?:Analyzed|Reviewed) \(\d+\)\n([\s\S]*?)\n\n/,
+  );
   if (!match) return [];
   return match[1]
     .split("\n")

@@ -162,6 +162,9 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_shell_service::ToolShellService {
             config_path: config_path.clone(),
         }),
+        Box::new(crate::tools::tool_add_workspace_folder::ToolAddWorkspaceFolder {
+            config_path: config_path.clone(),
+        }),
     ];
 
     let deep_analysis_tools: Vec<Box<dyn Tool + Send>> = vec![

@@ -102,7 +102,7 @@ const TextDocHeader = forwardRef<HTMLDivElement, TextDocHeaderProps>(
     const handleOpenFile = useCallback(async () => {
       if (!toolCall.function.arguments.path) return;
       await queryPathThenOpenFile({
-        file_path: toolCall.function.arguments.path,
+        file_path: toolCall.function.arguments.path as string,
       });
     }, [toolCall.function.arguments.path, queryPathThenOpenFile]);
 
