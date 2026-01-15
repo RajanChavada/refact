@@ -195,7 +195,6 @@ fn parse_update_file(lines: &[&str], start: usize) -> Result<(FileOperation, usi
     let mut move_to = None;
     let mut chunks = Vec::new();
 
-    // Check for optional Move to
     if i < lines.len() && lines[i].trim().starts_with("*** Move to:") {
         let move_path = lines[i]
             .trim()
@@ -213,11 +212,9 @@ fn parse_update_file(lines: &[&str], start: usize) -> Result<(FileOperation, usi
         i += 1;
     }
 
-    // Parse hunks
     while i < lines.len() {
         let line = lines[i].trim();
 
-        // Check for next file operation or end
         if line.starts_with("*** Add File:")
             || line.starts_with("*** Delete File:")
             || line.starts_with("*** Update File:")
@@ -226,7 +223,6 @@ fn parse_update_file(lines: &[&str], start: usize) -> Result<(FileOperation, usi
             break;
         }
 
-        // Parse a hunk starting with @@ or directly with diff lines
         if line.starts_with("@@") || line.starts_with('+') || line.starts_with('-') || line.starts_with(' ') {
             let (chunk, next_i) = parse_hunk(lines, i)?;
             chunks.push(chunk);
@@ -241,7 +237,6 @@ fn parse_update_file(lines: &[&str], start: usize) -> Result<(FileOperation, usi
         }
     }
 
-    // Require at least one hunk for Update operations
     if chunks.is_empty() {
         return Err(ParseError::InvalidHunk {
             message: "Update File requires at least one hunk".to_string(),
@@ -255,17 +250,14 @@ fn parse_update_file(lines: &[&str], start: usize) -> Result<(FileOperation, usi
 pub fn validate_relative_path(path: &str) -> Result<PathBuf, String> {
     let path = path.trim();
 
-    // Reject empty paths
     if path.is_empty() {
         return Err("Path cannot be empty".to_string());
     }
 
-    // Reject absolute paths (Unix)
     if path.starts_with('/') {
         return Err(format!("Absolute paths not allowed: '{}'", path));
     }
 
-    // Reject absolute paths (Windows)
     if path.len() >= 2 {
         let bytes = path.as_bytes();
         if bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
@@ -276,14 +268,12 @@ pub fn validate_relative_path(path: &str) -> Result<PathBuf, String> {
         return Err(format!("UNC paths not allowed: '{}'", path));
     }
 
-    // Reject backslashes (potential traversal on Unix via mixed separators)
     if path.contains('\\') {
         return Err(format!("Backslashes not allowed in paths: '{}'", path));
     }
 
     let path_buf = PathBuf::from(path);
 
-    // Check for path traversal
     let mut depth: i32 = 0;
     for component in path_buf.components() {
         match component {
@@ -337,7 +327,7 @@ fn compute_replacements(
 
     for (seq, chunk) in chunks.iter().enumerate() {
         for ctx in &chunk.change_context {
-            if let Some(idx) = seek_sequence_forward(original_lines, &[ctx.clone()], line_index, false) {
+            if let Some(idx) = seek_sequence(original_lines, &[ctx.clone()], line_index, false) {
                 line_index = idx + 1;
             } else {
                 return Err(format!("Failed to find context '{}' in file", ctx));
@@ -631,21 +621,17 @@ mod tests {
 
     #[test]
     fn test_validate_relative_path() {
-        // Valid relative paths
         assert!(validate_relative_path("src/file.rs").is_ok());
         assert!(validate_relative_path("file.txt").is_ok());
         assert!(validate_relative_path("a/b/c/d.txt").is_ok());
 
-        // Invalid: absolute paths
         assert!(validate_relative_path("/etc/passwd").is_err());
         assert!(validate_relative_path("C:\\Windows\\file.txt").is_err());
         assert!(validate_relative_path("\\\\server\\share").is_err());
 
-        // Invalid: path traversal
         assert!(validate_relative_path("../escape.txt").is_err());
         assert!(validate_relative_path("a/../../escape.txt").is_err());
 
-        // Valid: .. that doesn't escape
         assert!(validate_relative_path("a/b/../c.txt").is_ok());
     }
 
@@ -725,7 +711,6 @@ mod tests {
 
     #[test]
     fn test_unicode_normalization() {
-        // EN DASH (\u{2013}) should match ASCII dash
         let original = "import foo \u{2013} comment\n";
         let chunks = vec![UpdateChunk {
             change_context: vec![],
@@ -834,5 +819,96 @@ mod tests {
         ];
         let result = apply_update_chunks(original, &chunks).unwrap();
         assert_eq!(result, "a\nB\nc\nd\nE\nf\ng\n");
+    }
+
+    #[test]
+    fn test_context_based_insertion_not_eof() {
+        let original = "fn a() {}\n\nfn b() {}\n";
+        let chunks = vec![UpdateChunk {
+            change_context: vec!["fn a() {}".to_string()],
+            old_lines: vec![],
+            new_lines: vec!["".to_string(), "fn inserted() {}".to_string()],
+            is_end_of_file: false,
+        }];
+        let result = apply_update_chunks(original, &chunks).unwrap();
+        assert!(result.contains("fn a() {}\n\nfn inserted() {}"));
+        assert!(result.find("fn inserted()").unwrap() < result.find("fn b()").unwrap());
+    }
+
+    #[test]
+    fn test_eof_hunk_matches_last_occurrence() {
+        let original = "block\nend\n\nblock\nend\n";
+        let chunks = vec![UpdateChunk {
+            change_context: vec![],
+            old_lines: vec!["block".to_string(), "end".to_string()],
+            new_lines: vec!["BLOCK".to_string(), "END".to_string()],
+            is_end_of_file: true,
+        }];
+        let result = apply_update_chunks(original, &chunks).unwrap();
+        assert_eq!(result, "block\nend\n\nBLOCK\nEND\n");
+    }
+
+    #[test]
+    fn test_whitespace_tolerant_matching() {
+        let original = "foo  \nbar\t\nbaz\n";
+        let chunks = vec![UpdateChunk {
+            change_context: vec![],
+            old_lines: vec!["foo".to_string(), "bar".to_string()],
+            new_lines: vec!["FOO".to_string(), "BAR".to_string()],
+            is_end_of_file: false,
+        }];
+        let result = apply_update_chunks(original, &chunks).unwrap();
+        assert_eq!(result, "FOO\nBAR\nbaz\n");
+    }
+
+    #[test]
+    fn test_trailing_whitespace_in_patch() {
+        let original = "line1\nline2\nline3\n";
+        let chunks = vec![UpdateChunk {
+            change_context: vec![],
+            old_lines: vec!["line2  ".to_string()],
+            new_lines: vec!["LINE2".to_string()],
+            is_end_of_file: false,
+        }];
+        let result = apply_update_chunks(original, &chunks).unwrap();
+        assert_eq!(result, "line1\nLINE2\nline3\n");
+    }
+
+    #[test]
+    fn test_sequential_insertions_at_cursor() {
+        let original = "header\n\nfooter\n";
+        let chunks = vec![
+            UpdateChunk {
+                change_context: vec!["header".to_string()],
+                old_lines: vec![],
+                new_lines: vec!["insert1".to_string()],
+                is_end_of_file: false,
+            },
+            UpdateChunk {
+                change_context: vec![],
+                old_lines: vec![],
+                new_lines: vec!["insert2".to_string()],
+                is_end_of_file: false,
+            },
+        ];
+        let result = apply_update_chunks(original, &chunks).unwrap();
+        assert!(result.contains("insert1"));
+        assert!(result.contains("insert2"));
+        let pos1 = result.find("insert1").unwrap();
+        let pos2 = result.find("insert2").unwrap();
+        assert!(pos1 < pos2);
+    }
+
+    #[test]
+    fn test_non_eof_insertion_uses_cursor() {
+        let original = "a\nb\nc\nd\n";
+        let chunks = vec![UpdateChunk {
+            change_context: vec!["b".to_string()],
+            old_lines: vec![],
+            new_lines: vec!["X".to_string()],
+            is_end_of_file: false,
+        }];
+        let result = apply_update_chunks(original, &chunks).unwrap();
+        assert_eq!(result, "a\nb\nX\nc\nd\n");
     }
 }
