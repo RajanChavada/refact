@@ -14,6 +14,7 @@ mod tool_rm;
 mod tool_search;
 mod tool_search_trajectories;
 mod tool_shell;
+mod tool_shell_service;
 mod tool_strategic_planning;
 mod tool_subagent;
 mod tool_trajectory_context;

@@ -364,6 +364,7 @@ pub async fn get_available_tools_by_chat_mode(
                 "get_trajectory_context",
                 "web",
                 "shell",
+                "shell_service",
                 "subagent",
                 "deep_research",
                 "strategic_planning",
