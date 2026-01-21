@@ -812,15 +812,6 @@ impl AstSymbolInstance for VariableDefinition {
     }
 }
 
-/*
-FunctionDeclaration
-*/
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
-pub struct FunctionCaller {
-    pub inference_info: String,
-    pub guid: Option<Uuid>,
-}
-
 #[derive(Eq, Hash, PartialEq, Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionArg {
     pub name: String,
