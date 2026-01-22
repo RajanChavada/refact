@@ -68,6 +68,13 @@ export const ConnectionStatusIndicator: React.FC = () => {
   const isReconnecting =
     sseStatus === "connecting" || backendStatus === "unknown";
 
+  const getStatusClass = () => {
+    if (isRefreshing) return styles.statusRefreshing;
+    if (isConnected) return styles.statusConnected;
+    if (isReconnecting) return styles.statusReconnecting;
+    return styles.statusDisconnected;
+  };
+
   if (isConnected) {
     return (
       <HoverCard.Root>
@@ -76,7 +83,7 @@ export const ConnectionStatusIndicator: React.FC = () => {
             type="button"
             onClick={() => void handleRefresh()}
             disabled={isRefreshing}
-            className={styles.statusButton}
+            className={`${styles.statusButton} ${getStatusClass()}`}
           >
             <Flex align="center" gap="1" className={styles.indicator}>
               {isRefreshing ? (
@@ -103,7 +110,9 @@ export const ConnectionStatusIndicator: React.FC = () => {
           type="button"
           onClick={() => void handleRefresh()}
           disabled={isRefreshing || isReconnecting}
-          className={styles.statusButton}
+          className={`${styles.statusButton} ${getStatusClass()} ${
+            isReconnecting ? styles.reconnectingPulse : ""
+          }`}
         >
           <Flex align="center" className={styles.indicator}>
             {isRefreshing ? (

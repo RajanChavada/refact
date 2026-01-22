@@ -14,6 +14,9 @@ export function useTasksSubscription() {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const lastActivityAtRef = useRef<number>(0);
+
+  const STALE_THRESHOLD_MS = 45_000;
 
   const connect = useCallback(() => {
     if (disconnectRef.current) {
@@ -29,6 +32,7 @@ export function useTasksSubscription() {
     const apiKey = config.apiKey ?? null;
 
     const onEvent = (envelope: TaskEventEnvelope) => {
+      lastActivityAtRef.current = Date.now();
       switch (envelope.type) {
         case "snapshot":
           dispatch(
@@ -124,6 +128,25 @@ export function useTasksSubscription() {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+    };
+  }, [connect]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+
+      const lastActivity = lastActivityAtRef.current;
+      const isStale =
+        lastActivity > 0 && Date.now() - lastActivity > STALE_THRESHOLD_MS;
+
+      if (isStale && disconnectRef.current) {
+        connect();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [connect]);
 }

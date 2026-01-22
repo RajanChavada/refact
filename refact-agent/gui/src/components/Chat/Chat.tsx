@@ -18,7 +18,6 @@ import { DropzoneProvider } from "../Dropzone";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
 import { Checkpoints } from "../../features/Checkpoints";
 import { EnhancedModelSelector } from "./EnhancedModelSelector";
-import { ConnectionBanner } from "../ConnectionStatus";
 
 export type ChatProps = {
   host: Config["host"];
@@ -89,16 +88,11 @@ export const Chat: React.FC<ChatProps> = ({
         width="100%"
         px="1"
       >
-        <ConnectionBanner />
         <Flex
           direction="column"
           style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}
         >
-          <ChatContent
-            key={`chat-content-${chatId}`}
-            onRetry={handleRetry}
-            onStopStreaming={handleAbort}
-          />
+          <ChatContent onRetry={handleRetry} onStopStreaming={handleAbort} />
         </Flex>
 
         <Flex direction="column" style={{ flex: "0 0 auto" }}>

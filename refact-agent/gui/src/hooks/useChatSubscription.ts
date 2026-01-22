@@ -64,6 +64,7 @@ export function useChatSubscription(
   const [error, setError] = useState<Error | null>(null);
 
   const lastSeqRef = useRef<bigint>(0n);
+  const lastActivityAtRef = useRef<number>(0);
   const callbacksRef = useRef({
     onEvent,
     onConnected,
@@ -71,6 +72,8 @@ export function useChatSubscription(
     onError,
   });
   callbacksRef.current = { onEvent, onConnected, onDisconnected, onError };
+
+  const STALE_THRESHOLD_MS = 45_000;
 
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -157,6 +160,7 @@ export function useChatSubscription(
               }
               lastSeqRef.current = seq;
             }
+            lastActivityAtRef.current = Date.now();
             dispatch(applyChatEvent(envelope));
             callbacksRef.current.onEvent?.(envelope);
           } catch (err) {
@@ -242,6 +246,26 @@ export function useChatSubscription(
       reconnect();
     }
   }, [sseRefreshRequested, chatId, enabled, dispatch, reconnect]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!chatId || !enabled) return;
+
+      const lastActivity = lastActivityAtRef.current;
+      const isStale =
+        lastActivity > 0 && Date.now() - lastActivity > STALE_THRESHOLD_MS;
+
+      if (isStale && unsubscribeRef.current) {
+        reconnect();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [chatId, enabled, reconnect]);
 
   return {
     status,

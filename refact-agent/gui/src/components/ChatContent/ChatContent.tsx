@@ -1,11 +1,10 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useEffect, useState } from "react";
 import {
   ChatMessages,
   DiffMessage,
   isChatContextFileMessage,
   isDiffMessage,
   isToolMessage,
-  isUserMessage,
   isSystemMessage,
   UserMessage,
 } from "../../services/refact";
@@ -16,33 +15,28 @@ import styles from "./ChatContent.module.css";
 import { ContextFiles } from "./ContextFiles";
 import { SystemPrompt } from "./SystemPrompt";
 import { AssistantInput } from "./AssistantInput";
-
 import { PlainText } from "./PlainText";
 import { MessageUsageInfo } from "./MessageUsageInfo";
-import { useAppDispatch, useDiffFileReload } from "../../hooks";
-import { useAppSelector } from "../../hooks";
+import { useAppDispatch, useAppSelector, useDiffFileReload } from "../../hooks";
 import {
   selectIntegration,
-  selectIsStreaming,
-  selectIsWaiting,
-  selectMessages,
-  selectQueuedItems,
-  selectSnapshotReceived,
-  selectThread,
+  selectIsStreamingById,
+  selectIsWaitingById,
+  selectMessagesById,
+  selectQueuedItemsById,
+  selectSnapshotReceivedById,
+  selectThreadById,
+  selectChatId,
+  selectThreadConfirmationById,
+  selectThreadPauseById,
 } from "../../features/Chat/Thread/selectors";
-import { takeWhile } from "../../utils";
 import { GroupedDiffs } from "./DiffContent";
 import { popBackTo } from "../../features/Pages/pagesSlice";
 import { ChatLinks, UncommittedChangesWarning } from "../ChatLinks";
 import { telemetryApi } from "../../services/refact/telemetry";
 import { PlaceHolderText } from "./PlaceHolderText";
-
 import { QueuedMessage } from "./QueuedMessage";
-import {
-  selectThreadConfirmation,
-  selectThreadPause,
-} from "../../features/Chat";
-
+import { selectSseConnectionForChat } from "../../features/Connection";
 import { LogoAnimation } from "../LogoAnimation/LogoAnimation.tsx";
 import { ChatLoading } from "./ChatLoading";
 import { StreamingTokenCounter } from "../UsageCounter";
@@ -57,23 +51,53 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   onRetry,
 }) => {
   const dispatch = useAppDispatch();
-  const pauseReasonsWithPause = useAppSelector(selectThreadConfirmation);
-  const messages = useAppSelector(selectMessages);
-  const queuedItems = useAppSelector(selectQueuedItems);
-  const isStreaming = useAppSelector(selectIsStreaming);
-  const snapshotReceived = useAppSelector(selectSnapshotReceived);
-  const thread = useAppSelector(selectThread);
+  const chatId = useAppSelector(selectChatId);
+  const [renderChatId, setRenderChatId] = useState(chatId);
+
+  useEffect(() => {
+    if (chatId === renderChatId) return;
+    const rafId = requestAnimationFrame(() => {
+      setRenderChatId(chatId);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [chatId, renderChatId]);
+
+  const switching = chatId !== renderChatId;
+
+  const pauseReasonsWithPause = useAppSelector((s) =>
+    selectThreadConfirmationById(s, renderChatId),
+  );
+  const messages = useAppSelector((s) => selectMessagesById(s, renderChatId));
+  const queuedItems = useAppSelector((s) =>
+    selectQueuedItemsById(s, renderChatId),
+  );
+  const isStreaming = useAppSelector((s) =>
+    selectIsStreamingById(s, renderChatId),
+  );
+  const snapshotReceived = useAppSelector((s) =>
+    selectSnapshotReceivedById(s, renderChatId),
+  );
+  const thread = useAppSelector((s) => selectThreadById(s, renderChatId));
+  const sseConnection = useAppSelector((s) =>
+    selectSseConnectionForChat(s, renderChatId),
+  );
+  const sseStatus = sseConnection?.status ?? null;
 
   const isConfig = thread !== null && thread.mode === "CONFIGURE";
-  const isWaiting = useAppSelector(selectIsWaiting);
+  const isWaiting = useAppSelector((s) => selectIsWaitingById(s, renderChatId));
   const [sendTelemetryEvent] =
     telemetryApi.useLazySendTelemetryChatEventQuery();
   const integrationMeta = useAppSelector(selectIntegration);
-  const isWaitingForConfirmation = useAppSelector(selectThreadPause);
+  const isWaitingForConfirmation = useAppSelector((s) =>
+    selectThreadPauseById(s, renderChatId),
+  );
 
-  const onRetryWrapper = (index: number, question: UserMessage["content"]) => {
-    onRetry(index, question);
-  };
+  const onRetryWrapper = useCallback(
+    (index: number, question: UserMessage["content"]) => {
+      onRetry(index, question);
+    },
+    [onRetry],
+  );
 
   const handleReturnToConfigurationClick = useCallback(() => {
     onStopStreaming();
@@ -107,8 +131,12 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     return isConfig && !integrationMeta?.path?.includes("project_summary");
   }, [isConfig, integrationMeta?.path]);
 
-  // Dedicated hook for handling file reloads
   useDiffFileReload();
+
+  const showLoading =
+    switching ||
+    (!snapshotReceived && messages.length === 0) ||
+    (sseStatus === "connecting" && messages.length === 0);
 
   return (
     <ScrollAreaWithAnchor.ScrollArea
@@ -124,14 +152,15 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         p="2"
         gap="1"
       >
-        {!snapshotReceived && messages.length === 0 && <ChatLoading />}
-        {(snapshotReceived || messages.length > 0) && messages.length === 0 && (
+        {showLoading && <ChatLoading />}
+        {!showLoading && messages.length === 0 && (
           <Container>
             <PlaceHolderText />
           </Container>
         )}
-        {(snapshotReceived || messages.length > 0) &&
-          renderMessages(messages, onRetryWrapper, isWaiting)}
+        {!showLoading &&
+          messages.length > 0 &&
+          renderMessagesFast(messages, onRetryWrapper)}
         <Container>
           <UncommittedChangesWarning />
         </Container>
@@ -201,168 +230,182 @@ export const ChatContent: React.FC<ChatContentProps> = ({
 
 ChatContent.displayName = "ChatContent";
 
-function renderMessages(
+function getMessageKey(message: ChatMessages[number], index: number): string {
+  if (message.message_id) return message.message_id;
+  if ("tool_call_id" in message && message.tool_call_id) {
+    return `${message.role}-${message.tool_call_id}-${index}`;
+  }
+  return `${message.role}-${index}`;
+}
+
+function renderMessagesFast(
   messages: ChatMessages,
   onRetry: (index: number, question: UserMessage["content"]) => void,
-  waiting: boolean,
-  memo: React.ReactNode[] = [],
-  index = 0,
-) {
-  if (messages.length === 0) return memo;
-  const [head, ...tail] = messages;
-  if (head.role === "tool") {
-    return renderMessages(tail, onRetry, waiting, memo, index + 1);
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  if (messages.length === 0) return nodes;
+
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
   }
 
-  if (head.role === "plain_text") {
-    const key = "plain-text-" + index;
-    const nextMemo = [...memo, <PlainText key={key}>{head.content}</PlainText>];
-    return renderMessages(tail, onRetry, waiting, nextMemo, index + 1);
-  }
+  for (let i = 0; i < messages.length; i++) {
+    const head = messages[i];
 
-  if (head.role === "assistant") {
-    const key = "assistant-input-" + index;
+    if (isToolMessage(head)) continue;
 
-    // Find context_file, tool, and diff messages that follow this assistant message
-    const contextFilesAfter: React.ReactNode[] = [];
-    const diffMessagesAfter: DiffMessage[] = [];
-    let skipCount = 0;
-    let tempTail = tail;
-
-    // Skip tool messages and collect context_file/diff messages until we hit another message type
-    while (tempTail.length > 0) {
-      const nextMsg = tempTail[0];
-      if (isToolMessage(nextMsg)) {
-        // Skip tool messages (they're handled internally)
-        skipCount++;
-        tempTail = tempTail.slice(1);
-      } else if (isChatContextFileMessage(nextMsg)) {
-        if (
-          nextMsg.tool_call_id === "knowledge_enrichment" ||
-          nextMsg.tool_call_id === "project_context"
-        ) {
-          break;
-        }
-        const ctxKey = "context-file-" + (index + 1 + skipCount);
-        contextFilesAfter.push(
-          <ContextFiles
-            key={ctxKey}
-            files={nextMsg.content}
-            toolCallId={nextMsg.tool_call_id}
-          />,
-        );
-        skipCount++;
-        tempTail = tempTail.slice(1);
-      } else if (isDiffMessage(nextMsg)) {
-        // Collect diff messages to render after assistant (before usage info)
-        diffMessagesAfter.push(nextMsg);
-        skipCount++;
-        tempTail = tempTail.slice(1);
-      } else {
-        // Stop at any other message type (user, assistant, etc.)
-        break;
-      }
+    if (head.role === "plain_text") {
+      const key = getMessageKey(head, i);
+      nodes.push(<PlainText key={key}>{head.content}</PlainText>);
+      continue;
     }
 
-    const nextMemo = [
-      ...memo,
-      <AssistantInput
-        key={key}
-        message={head.content}
-        reasoningContent={head.reasoning_content}
-        thinkingBlocks={head.thinking_blocks}
-        toolCalls={head.tool_calls}
-        serverExecutedTools={head.server_executed_tools}
-        citations={head.citations}
-      />,
-      ...contextFilesAfter,
-      // Render diff messages before usage info so coins appear after diffs
-      ...(diffMessagesAfter.length > 0
-        ? [<GroupedDiffs key={`diffs-${key}`} diffs={diffMessagesAfter} />]
-        : []),
-      <Container key={`usage-${key}`}>
-        <MessageUsageInfo
-          usage={head.usage}
-          metering_coins_prompt={head.metering_coins_prompt}
-          metering_coins_generated={head.metering_coins_generated}
-          metering_coins_cache_creation={head.metering_coins_cache_creation}
-          metering_coins_cache_read={head.metering_coins_cache_read}
-        />
-      </Container>,
-    ];
+    if (head.role === "assistant") {
+      const key = getMessageKey(head, i);
+      const contextFilesAfter: React.ReactNode[] = [];
+      const diffMessagesAfter: DiffMessage[] = [];
 
-    // Skip the tool, context_file, and diff messages we already processed
-    const newTail = tail.slice(skipCount);
-    return renderMessages(
-      newTail,
-      onRetry,
-      waiting,
-      nextMemo,
-      index + 1 + skipCount,
-    );
+      let j = i + 1;
+      while (j < messages.length) {
+        const nextMsg = messages[j];
+
+        if (isToolMessage(nextMsg)) {
+          j++;
+          continue;
+        }
+
+        if (isChatContextFileMessage(nextMsg)) {
+          if (
+            nextMsg.tool_call_id === "knowledge_enrichment" ||
+            nextMsg.tool_call_id === "project_context"
+          ) {
+            break;
+          }
+          const ctxKey = getMessageKey(nextMsg, j);
+          contextFilesAfter.push(
+            <ContextFiles
+              key={ctxKey}
+              files={nextMsg.content}
+              toolCallId={nextMsg.tool_call_id}
+            />,
+          );
+          j++;
+          continue;
+        }
+
+        if (isDiffMessage(nextMsg)) {
+          diffMessagesAfter.push(nextMsg);
+          j++;
+          continue;
+        }
+
+        break;
+      }
+
+      nodes.push(
+        <AssistantInput
+          key={key}
+          message={head.content}
+          reasoningContent={head.reasoning_content}
+          thinkingBlocks={head.thinking_blocks}
+          toolCalls={head.tool_calls}
+          serverExecutedTools={head.server_executed_tools}
+          citations={head.citations}
+        />,
+      );
+
+      for (const ctxNode of contextFilesAfter) {
+        nodes.push(ctxNode);
+      }
+
+      if (diffMessagesAfter.length > 0) {
+        nodes.push(
+          <GroupedDiffs key={`diffs-${key}`} diffs={diffMessagesAfter} />,
+        );
+      }
+
+      nodes.push(
+        <Container key={`usage-${key}`}>
+          <MessageUsageInfo
+            usage={head.usage}
+            metering_coins_prompt={head.metering_coins_prompt}
+            metering_coins_generated={head.metering_coins_generated}
+            metering_coins_cache_creation={head.metering_coins_cache_creation}
+            metering_coins_cache_read={head.metering_coins_cache_read}
+          />
+        </Container>,
+      );
+
+      i = j - 1;
+      continue;
+    }
+
+    if (head.role === "user") {
+      const key = getMessageKey(head, i);
+
+      if (i === lastUserIdx) {
+        nodes.push(
+          <ScrollAreaWithAnchor.ScrollAnchor
+            key={`${key}-anchor`}
+            behavior="smooth"
+            block="start"
+          />,
+        );
+      }
+
+      nodes.push(
+        <UserInput onRetry={onRetry} key={key} messageIndex={i}>
+          {head.content}
+        </UserInput>,
+      );
+      continue;
+    }
+
+    if (isChatContextFileMessage(head)) {
+      const key = getMessageKey(head, i);
+      nodes.push(
+        <ContextFiles
+          key={key}
+          files={head.content}
+          toolCallId={head.tool_call_id}
+        />,
+      );
+      continue;
+    }
+
+    if (isSystemMessage(head)) {
+      const key = getMessageKey(head, i);
+      nodes.push(<SystemPrompt key={key} content={head.content} />);
+      continue;
+    }
+
+    if (isDiffMessage(head)) {
+      const key = getMessageKey(head, i);
+      const diffs: DiffMessage[] = [head];
+      let j = i + 1;
+      while (j < messages.length) {
+        const m = messages[j];
+        if (isToolMessage(m)) {
+          j++;
+          continue;
+        }
+        if (isDiffMessage(m)) {
+          diffs.push(m);
+          j++;
+          continue;
+        }
+        break;
+      }
+
+      nodes.push(<GroupedDiffs key={`diffs-${key}`} diffs={diffs} />);
+      i = j - 1;
+      continue;
+    }
   }
 
-  if (head.role === "user") {
-    const key = "user-input-" + index;
-    const isLastUserMessage = !tail.some(isUserMessage);
-    const nextMemo = [
-      ...memo,
-      isLastUserMessage && (
-        <ScrollAreaWithAnchor.ScrollAnchor
-          key={`${key}-anchor`}
-          behavior="smooth"
-          block="start"
-          // my="-2"
-        />
-      ),
-      <UserInput onRetry={onRetry} key={key} messageIndex={index}>
-        {head.content}
-      </UserInput>,
-    ];
-    return renderMessages(tail, onRetry, waiting, nextMemo, index + 1);
-  }
-
-  if (isChatContextFileMessage(head)) {
-    const key = "context-file-" + index;
-    const nextMemo = [
-      ...memo,
-      <ContextFiles
-        key={key}
-        files={head.content}
-        toolCallId={head.tool_call_id}
-      />,
-    ];
-    return renderMessages(tail, onRetry, waiting, nextMemo, index + 1);
-  }
-
-  if (isSystemMessage(head)) {
-    const key = "system-" + index;
-    const nextMemo = [
-      ...memo,
-      <SystemPrompt key={key} content={head.content} />,
-    ];
-    return renderMessages(tail, onRetry, waiting, nextMemo, index + 1);
-  }
-
-  if (isDiffMessage(head)) {
-    const restInTail = takeWhile(tail, (message) => {
-      return isDiffMessage(message) || isToolMessage(message);
-    });
-
-    const nextTail = tail.slice(restInTail.length);
-    const diffMessages = [head, ...restInTail.filter(isDiffMessage)];
-    const key = "diffs-" + index;
-
-    const nextMemo = [...memo, <GroupedDiffs key={key} diffs={diffMessages} />];
-
-    return renderMessages(
-      nextTail,
-      onRetry,
-      waiting,
-      nextMemo,
-      index + diffMessages.length,
-    );
-  }
-
-  return renderMessages(tail, onRetry, waiting, memo, index + 1);
+  return nodes;
 }

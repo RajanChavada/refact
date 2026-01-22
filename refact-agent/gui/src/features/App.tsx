@@ -43,6 +43,7 @@ import { integrationsApi } from "../services/refact";
 import { LoginPage } from "./Login";
 import { TaskList, TaskWorkspace } from "./Tasks";
 import { KnowledgeWorkspace } from "./Knowledge";
+import { ChatLoading } from "../components/ChatContent/ChatLoading";
 
 import styles from "./App.module.css";
 import classNames from "classnames";
@@ -88,6 +89,27 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
   };
 
   const config = useConfig();
+
+  const desiredPage = pages[pages.length - 1];
+  const [renderedPage, setRenderedPage] = useState(desiredPage);
+
+  useEffect(() => {
+    if (desiredPage === renderedPage) return;
+    if (
+      desiredPage.name === renderedPage.name &&
+      desiredPage.name !== "task workspace" &&
+      desiredPage.name !== "thread history page"
+    ) {
+      setRenderedPage(desiredPage);
+      return;
+    }
+    const rafId = requestAnimationFrame(() => {
+      setRenderedPage(desiredPage);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [desiredPage, renderedPage]);
+
+  const pageSwitching = desiredPage !== renderedPage;
 
   const isLoggedIn =
     isPageInHistory("history") ||
@@ -151,33 +173,31 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
     dispatch(integrationsApi.util.resetApiState());
   };
 
-  const page = pages[pages.length - 1];
-
   const activeTab: Tab | undefined = useMemo(() => {
-    if (page.name === "chat") {
+    if (desiredPage.name === "chat") {
       return {
         type: "chat",
         id: chatId,
       };
     }
-    if (page.name === "history") {
+    if (desiredPage.name === "history") {
       return {
         type: "dashboard",
       };
     }
-    if (page.name === "task workspace") {
+    if (desiredPage.name === "task workspace") {
       return {
         type: "task",
-        taskId: page.taskId,
+        taskId: desiredPage.taskId,
         taskName: "",
       };
     }
-    if (page.name === "knowledge graph") {
+    if (desiredPage.name === "knowledge graph") {
       return {
         type: "dashboard",
       };
     }
-  }, [page, chatId]);
+  }, [desiredPage, chatId]);
 
   return (
     <Flex
@@ -186,21 +206,25 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
       style={style}
       className={classNames(styles.rootFlex, {
         [styles.integrationsPagePadding]:
-          page.name === "integrations page" && isPaddingApplied,
+          renderedPage.name === "integrations page" && isPaddingApplied,
       })}
     >
       <PageWrapper
         host={config.host}
         style={{
-          paddingRight: page.name === "integrations page" ? 0 : undefined,
+          paddingRight:
+            renderedPage.name === "integrations page" ? 0 : undefined,
         }}
       >
         <UserSurvey />
-        {page.name === "login page" && <LoginPage />}
+        {renderedPage.name === "login page" && <LoginPage />}
         {activeTab && <Toolbar activeTab={activeTab} />}
-        {page.name === "welcome" && <Welcome onPressNext={startTour} />}
-        {page.name === "tour end" && <TourEnd />}
-        {page.name === "history" && (
+        {pageSwitching && <ChatLoading />}
+        {!pageSwitching && renderedPage.name === "welcome" && (
+          <Welcome onPressNext={startTour} />
+        )}
+        {!pageSwitching && renderedPage.name === "tour end" && <TourEnd />}
+        {!pageSwitching && renderedPage.name === "history" && (
           <Sidebar
             takingNotes={false}
             onOpenChatInTab={undefined}
@@ -210,17 +234,18 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
             }}
           />
         )}
-        {page.name === "chat" && (
+        {!pageSwitching && renderedPage.name === "chat" && (
           <Chat
             host={config.host}
             tabbed={config.tabbed}
             backFromChat={goBack}
           />
         )}
-        {page.name === "fill in the middle debug page" && (
-          <FIMDebug host={config.host} tabbed={config.tabbed} />
-        )}
-        {page.name === "statistics page" && (
+        {!pageSwitching &&
+          renderedPage.name === "fill in the middle debug page" && (
+            <FIMDebug host={config.host} tabbed={config.tabbed} />
+          )}
+        {!pageSwitching && renderedPage.name === "statistics page" && (
           <Statistics
             backFromStatistic={goBack}
             tabbed={config.tabbed}
@@ -228,7 +253,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
             onCloseStatistic={goBack}
           />
         )}
-        {page.name === "integrations page" && (
+        {!pageSwitching && renderedPage.name === "integrations page" && (
           <Integrations
             backFromIntegrations={goBackFromIntegrations}
             tabbed={config.tabbed}
@@ -237,29 +262,33 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
             handlePaddingShift={handlePaddingShift}
           />
         )}
-        {page.name === "providers page" && (
+        {!pageSwitching && renderedPage.name === "providers page" && (
           <Providers
             backFromProviders={goBack}
             tabbed={config.tabbed}
             host={config.host}
           />
         )}
-        {page.name === "thread history page" && (
+        {!pageSwitching && renderedPage.name === "thread history page" && (
           <ThreadHistory
             backFromThreadHistory={goBack}
             tabbed={config.tabbed}
             host={config.host}
             onCloseThreadHistory={goBack}
-            chatId={page.chatId}
+            chatId={renderedPage.chatId}
           />
         )}
-        {page.name === "tasks list" && <TaskList />}
-        {page.name === "task workspace" && (
-          <TaskWorkspace taskId={page.taskId} />
+        {!pageSwitching && renderedPage.name === "tasks list" && <TaskList />}
+        {!pageSwitching && renderedPage.name === "task workspace" && (
+          <TaskWorkspace taskId={renderedPage.taskId} />
         )}
-        {page.name === "knowledge graph" && <KnowledgeWorkspace />}
+        {!pageSwitching && renderedPage.name === "knowledge graph" && (
+          <KnowledgeWorkspace />
+        )}
       </PageWrapper>
-      {page.name !== "welcome" && <Tour page={pages[pages.length - 1].name} />}
+      {renderedPage.name !== "welcome" && (
+        <Tour page={pages[pages.length - 1].name} />
+      )}
     </Flex>
   );
 };

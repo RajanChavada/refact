@@ -43,6 +43,7 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
     | "error";
   message_count?: number;
   root_chat_id?: string;
+  total_coins?: number;
 };
 
 export type HistoryMeta = Pick<
@@ -239,6 +240,7 @@ function trajectoryMetaToHistoryItem(meta: TrajectoryMeta): ChatHistoryItem {
     session_state: meta.session_state,
     message_count: meta.message_count,
     root_chat_id: meta.root_chat_id,
+    total_coins: meta.total_coins,
   };
 }
 
@@ -316,6 +318,7 @@ export const historySlice = createSlice({
           existing.session_state = meta.session_state;
           existing.message_count = meta.message_count;
           existing.root_chat_id = meta.root_chat_id;
+          existing.total_coins = meta.total_coins;
         }
       }
     },

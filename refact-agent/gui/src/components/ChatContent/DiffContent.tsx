@@ -116,123 +116,61 @@ export const DiffTitle: React.FC<{
   diffs: Record<string, DiffChunk[]>;
 }> = ({ diffs }): React.ReactNode[] => {
   const entries = Object.entries(diffs);
+  const nodes: React.ReactNode[] = [];
 
-  function process(
-    items: [string, DiffChunk[]][],
-    memo: React.ReactNode[] = [],
-  ): React.ReactNode[] {
-    if (items.length === 0) return memo;
-    const [head, ...tail] = items;
-    const [fullPath, diffForFile] = head;
+  for (const [fullPath, diffForFile] of entries) {
     const name = filename(fullPath);
 
-    // Check if this is a rename action
     const renameAction = diffForFile.find(
       (diff) => diff.file_action === "rename" && diff.file_name_rename,
     );
 
-    const addLength = diffForFile.reduce<number>((acc, diff) => {
-      return acc + (diff.lines_add ? diff.lines_add.split("\n").length : 0);
-    }, 0);
-    const removeLength = diffForFile.reduce<number>((acc, diff) => {
-      return (
-        acc + (diff.lines_remove ? diff.lines_remove.split("\n").length : 0)
-      );
-    }, 0);
+    let addLength = 0;
+    let removeLength = 0;
+    for (const diff of diffForFile) {
+      if (diff.lines_add) addLength += diff.lines_add.split("\n").length;
+      if (diff.lines_remove)
+        removeLength += diff.lines_remove.split("\n").length;
+    }
     const adds = "+".repeat(addLength);
     const removes = "-".repeat(removeLength);
 
-    // Directly return the element based on condition
-    if (renameAction?.file_name_rename) {
-      // Display rename information
-      const newName = filename(renameAction.file_name_rename);
-      return process(
-        tail,
-        memo.length > 0
-          ? [
-              ...memo,
-              ", ",
-              <Text
-                style={{ display: "inline-block" }}
-                key={fullPath + "-" + diffForFile.length}
-              >
-                {name}{" "}
-                <Text color="orange" style={{ fontStyle: "italic" }}>
-                  → {newName}
-                </Text>
-              </Text>,
-            ]
-          : [
-              <Text
-                style={{ display: "inline-block" }}
-                key={fullPath + "-" + diffForFile.length}
-              >
-                {name}{" "}
-                <Text color="orange" style={{ fontStyle: "italic" }}>
-                  → {newName}
-                </Text>
-              </Text>,
-            ],
-      );
-    } else {
-      return process(
-        tail,
-        memo.length > 0
-          ? [
-              ...memo,
-              ", ",
-              <Text
-                style={{ display: "inline-block" }}
-                key={fullPath + "-" + diffForFile.length}
-              >
-                {name}{" "}
-                <Text
-                  color="red"
-                  wrap="wrap"
-                  style={{ wordBreak: "break-all" }}
-                >
-                  {removes}
-                </Text>
-                <Text
-                  color="green"
-                  wrap="wrap"
-                  style={{ wordBreak: "break-all" }}
-                >
-                  {adds}
-                </Text>
-              </Text>,
-            ]
-          : [
-              <Text
-                style={{ display: "inline-block" }}
-                key={fullPath + "-" + diffForFile.length}
-              >
-                {name}{" "}
-                <Text
-                  color="red"
-                  wrap="wrap"
-                  style={{ wordBreak: "break-all" }}
-                >
-                  {removes}
-                </Text>
-                <Text
-                  color="green"
-                  wrap="wrap"
-                  style={{ wordBreak: "break-all" }}
-                >
-                  {adds}
-                </Text>
-              </Text>,
-            ],
-      );
+    if (nodes.length > 0) {
+      nodes.push(", ");
     }
 
-    // const nextMemo = memo.length > 0 ? [...memo, ", ", element] : [element];
-
-    // return process(tail, nextMemo);
+    if (renameAction?.file_name_rename) {
+      const newName = filename(renameAction.file_name_rename);
+      nodes.push(
+        <Text
+          style={{ display: "inline-block" }}
+          key={fullPath + "-" + diffForFile.length}
+        >
+          {name}{" "}
+          <Text color="orange" style={{ fontStyle: "italic" }}>
+            → {newName}
+          </Text>
+        </Text>,
+      );
+    } else {
+      nodes.push(
+        <Text
+          style={{ display: "inline-block" }}
+          key={fullPath + "-" + diffForFile.length}
+        >
+          {name}{" "}
+          <Text color="red" wrap="wrap" style={{ wordBreak: "break-all" }}>
+            {removes}
+          </Text>
+          <Text color="green" wrap="wrap" style={{ wordBreak: "break-all" }}>
+            {adds}
+          </Text>
+        </Text>,
+      );
+    }
   }
 
-  return process(entries);
+  return nodes;
 };
 
 export const DiffContent: React.FC<{
@@ -347,10 +285,10 @@ type GroupedDiffsProps = {
 };
 
 export const GroupedDiffs: React.FC<GroupedDiffsProps> = ({ diffs }) => {
-  const chunks = diffs.reduce<DiffMessage["content"]>(
-    (acc, diff) => [...acc, ...diff.content],
-    [],
-  );
+  const chunks: DiffMessage["content"] = [];
+  for (const diff of diffs) {
+    chunks.push(...diff.content);
+  }
 
   const groupedByFileName = groupBy(chunks, (chunk) => chunk.file_name);
 

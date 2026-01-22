@@ -1,22 +1,7 @@
-import {
-  DropdownMenu,
-  Flex,
-  HoverCard,
-  IconButton,
-  Spinner,
-  TabNav,
-  Text,
-  TextField,
-} from "@radix-ui/themes";
+import { IconButton, TextField, HoverCard, Text } from "@radix-ui/themes";
 import { Dropdown, DropdownNavigationOptions } from "./Dropdown";
-import {
-  Cross1Icon,
-  DotFilledIcon,
-  DotsVerticalIcon,
-  HomeIcon,
-  PlusIcon,
-  CheckboxIcon,
-} from "@radix-ui/react-icons";
+import { Cross1Icon, PlusIcon, CheckboxIcon } from "@radix-ui/react-icons";
+import { RefactIcon } from "../../images";
 import { newChatAction } from "../../events";
 import { restart, useTourRefs } from "../../features/Tour";
 import { popBackTo, push } from "../../features/Pages/pagesSlice";
@@ -35,14 +20,10 @@ import {
   MouseEvent,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  deleteChatById,
-  updateChatTitleById,
-} from "../../features/History/historySlice";
+import { updateChatTitleById } from "../../features/History/historySlice";
 import {
   saveTitle,
   selectAllThreads,
@@ -53,13 +34,12 @@ import {
   clearThreadPauseReasons,
   setThreadConfirmationStatus,
 } from "../../features/Chat";
-import { TruncateLeft } from "../Text";
+import { StatusDot, type StatusDotState } from "../StatusDot";
 import {
   useAppDispatch,
   useAppSelector,
   useEventsBusForIDE,
 } from "../../hooks";
-import { useWindowDimensions } from "../../hooks/useWindowDimensions";
 import { telemetryApi } from "../../services/refact/telemetry";
 
 import styles from "./Toolbar.module.css";
@@ -69,10 +49,6 @@ import { ConnectionStatusIndicator } from "../ConnectionStatus";
 export type DashboardTab = {
   type: "dashboard";
 };
-
-function isDashboardTab(tab: Tab): tab is DashboardTab {
-  return tab.type === "dashboard";
-}
 
 export type ChatTab = {
   type: "chat";
@@ -99,12 +75,32 @@ export type ToolbarProps = {
   activeTab: Tab;
 };
 
+function getChatTabStatusState(
+  streaming: boolean,
+  waiting: boolean,
+  paused: boolean,
+  hasError: boolean,
+  read: boolean,
+): StatusDotState {
+  if (hasError) {
+    return "error";
+  }
+  if (paused) {
+    return "paused";
+  }
+  if (streaming || waiting) {
+    return "streaming";
+  }
+  if (!read) {
+    return "unread";
+  }
+  return "idle";
+}
+
 export const Toolbar = ({ activeTab }: ToolbarProps) => {
   const dispatch = useAppDispatch();
-  const tabNav = useRef<HTMLElement | null>(null);
-  const [tabNavWidth, setTabNavWidth] = useState(0);
-  const { width: windowWidth } = useWindowDimensions();
-  const [focus, setFocus] = useState<HTMLElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const activeTabRef = useRef<HTMLDivElement | null>(null);
 
   const refs = useTourRefs();
   const [sendTelemetryEvent] =
@@ -200,11 +196,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
     const currentThread = allThreads[currentChatId] as
       | { thread: { messages: unknown[] } }
       | undefined;
-    if (currentThread && currentThread.thread.messages.length === 0) {
-      dispatch(closeThread({ id: currentChatId }));
-    }
 
-    dispatch(newChatAction());
     dispatch(clearThreadPauseReasons({ id: currentChatId }));
     dispatch(
       setThreadConfirmationStatus({
@@ -213,6 +205,12 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
         confirmationStatus: true,
       }),
     );
+
+    if (currentThread && currentThread.thread.messages.length === 0) {
+      dispatch(closeThread({ id: currentChatId }));
+    }
+
+    dispatch(newChatAction());
     handleNavigation("chat");
     void sendTelemetryEvent({
       scope: `openNewChat`,
@@ -246,7 +244,6 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
 
   const goToTab = useCallback(
     (tab: Tab) => {
-      // Auto-close empty chat tab when navigating away
       if (isChatTab(activeTab)) {
         const currentThread = allThreads[activeTab.id];
         const isNavigatingToSameTab = isChatTab(tab) && tab.id === activeTab.id;
@@ -291,38 +288,14 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
   );
 
   useEffect(() => {
-    if (!tabNav.current) {
-      return;
+    if (activeTabRef.current?.scrollIntoView) {
+      activeTabRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
     }
-    setTabNavWidth(tabNav.current.offsetWidth);
-  }, [tabNav, windowWidth]);
-
-  useEffect(() => {
-    if (focus === null) return;
-
-    // the function scrollIntoView doesn't always exist, and will crash on unit tests
-    // eslint-disable-next-line  @typescript-eslint/no-unnecessary-condition
-    if (focus.scrollIntoView) {
-      focus.scrollIntoView();
-    }
-  }, [focus]);
-
-  const shouldCollapse = useMemo(() => {
-    const dashboardWidth = windowWidth < 400 ? 47 : 70;
-    const totalWidth = dashboardWidth + 140 * (tabs.length + openTasks.length);
-    return tabNavWidth < totalWidth;
-  }, [tabNavWidth, tabs.length, openTasks.length, windowWidth]);
-
-  const handleChatThreadDeletion = useCallback(
-    (tabId: string) => {
-      dispatch(deleteChatById(tabId));
-      dispatch(closeThread({ id: tabId }));
-      if (activeTab.type === "chat" && activeTab.id === tabId) {
-        goToTab({ type: "dashboard" });
-      }
-    },
-    [dispatch, activeTab, goToTab],
-  );
+  }, [currentChatId, activeTab]);
 
   const handleChatThreadRenaming = useCallback(
     (tabId: string, currentTitle: string) => {
@@ -398,263 +371,215 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
     [dispatch, activeTab, tabs, goToTab],
   );
 
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (scrollContainerRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      scrollContainerRef.current.scrollLeft += event.deltaY;
-    }
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    if (container.scrollWidth <= container.clientWidth) return;
+    event.preventDefault();
+    container.scrollLeft += event.deltaY || event.deltaX;
   }, []);
 
   return (
-    <Flex align="center" m="4px" gap="4px" style={{ alignSelf: "stretch" }}>
-      <Flex
-        flexGrow="1"
-        align="center"
-        maxHeight="40px"
-        overflowY="hidden"
+    <div className={styles.toolbar}>
+      <div className={styles.toolbarSection}>
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton
+              size="1"
+              variant="ghost"
+              className={styles.homeButton}
+              ref={(x) => refs.setBack(x)}
+              onClick={() => {
+                setRenameState(null);
+                goToTab({ type: "dashboard" });
+              }}
+            >
+              <RefactIcon style={{ color: "#E7150D" }} />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="bottom">
+            <Text as="p" size="2">
+              Home
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
+      </div>
+
+      <div className={styles.toolbarDivider} />
+
+      <div
+        ref={scrollContainerRef}
+        className={styles.tabsContainer}
         onWheel={handleWheel}
-        style={{ minWidth: 0, position: "relative", display: "flex" }}
       >
-        <div className={styles.homeButtonWrapper}>
-          <HoverCard.Root>
-            <HoverCard.Trigger>
-              <IconButton
-                variant={isDashboardTab(activeTab) ? "soft" : "outline"}
-                ref={(x) => refs.setBack(x)}
-                onClick={() => {
-                  setRenameState(null);
-                  goToTab({ type: "dashboard" });
-                }}
-              >
-                <HomeIcon />
-              </IconButton>
-            </HoverCard.Trigger>
-            <HoverCard.Content size="1" side="bottom">
-              <Text as="p" size="2">
-                Home
-              </Text>
-            </HoverCard.Content>
-          </HoverCard.Root>
-        </div>
+        <div role="tablist" className={styles.tabList}>
+          {openTasks.map((task) => {
+            const isActive =
+              isTaskTab(activeTab) && activeTab.taskId === task.id;
+            const taskName = task.name.trim() || "Task";
+            const isRenaming =
+              renameState?.kind === "task" && renameState.id === task.id;
 
-        <div ref={scrollContainerRef} className={styles.scrollContainer}>
-          <TabNav.Root
-            style={{ display: "flex" }}
-            ref={tabNav}
-            className={styles.tabNav}
-          >
-            {openTasks.map((task) => {
-              const isActive =
-                isTaskTab(activeTab) && activeTab.taskId === task.id;
-              const taskName = task.name.trim() || "Task";
-              const isRenaming =
-                renameState?.kind === "task" && renameState.id === task.id;
-
-              if (isRenaming) {
-                return (
+            if (isRenaming) {
+              return (
+                <div key={`task-${task.id}`} className={styles.tabWrap}>
                   <TextField.Root
-                    my="auto"
-                    key={`task-${task.id}`}
                     autoComplete="off"
                     onKeyUp={(e) => handleKeyUpOnTaskRename(e, task.id)}
                     onBlur={() => setRenameState(null)}
                     autoFocus
-                    size="2"
+                    size="1"
                     value={renameState.value}
                     onChange={handleRenameChange}
                     className={styles.RenameInput}
                   />
-                );
-              }
+                </div>
+              );
+            }
 
-              return (
-                <TabNav.Link
-                  active={isActive}
-                  key={`task-${task.id}`}
+            return (
+              <div
+                key={`task-${task.id}`}
+                className={styles.tabWrap}
+                ref={isActive ? activeTabRef : undefined}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`${styles.tabButton} ${
+                    isActive ? styles.tabButtonActive : ""
+                  }`}
                   onClick={() =>
                     goToTab({ type: "task", taskId: task.id, taskName })
                   }
-                  style={{ minWidth: 0, maxWidth: "150px", cursor: "pointer" }}
+                  onDoubleClick={() => handleTaskRenaming(task.id, taskName)}
                   title={taskName}
                 >
-                  <Flex gap="2" align="center">
-                    <CheckboxIcon />
-                    <TruncateLeft
-                      style={{
-                        maxWidth: shouldCollapse ? "25px" : "80px",
-                      }}
-                    >
-                      {taskName}
-                    </TruncateLeft>
-                    <Flex gap="1" align="center">
-                      <DropdownMenu.Root>
-                        <DropdownMenu.Trigger>
-                          <IconButton
-                            size="1"
-                            variant="ghost"
-                            color="gray"
-                            title="Task actions"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <DotsVerticalIcon />
-                          </IconButton>
-                        </DropdownMenu.Trigger>
-                        <DropdownMenu.Content
-                          size="1"
-                          side="bottom"
-                          align="end"
-                          style={{ minWidth: 110 }}
-                        >
-                          <DropdownMenu.Item
-                            onClick={() =>
-                              handleTaskRenaming(task.id, taskName)
-                            }
-                          >
-                            Rename
-                          </DropdownMenu.Item>
-                        </DropdownMenu.Content>
-                      </DropdownMenu.Root>
-                      <IconButton
-                        size="1"
-                        variant="ghost"
-                        color="gray"
-                        title="Close task tab"
-                        onClick={(e) => handleCloseTaskTab(e, task.id)}
-                      >
-                        <Cross1Icon />
-                      </IconButton>
-                    </Flex>
-                  </Flex>
-                </TabNav.Link>
-              );
-            })}
-            {tabs.map((tab) => {
-              const isActive = isChatTab(activeTab) && activeTab.id === tab.id;
-              const isRenaming =
-                renameState?.kind === "chat" && renameState.id === tab.id;
+                  <span className={styles.tabStatus}>
+                    <StatusDot state="idle" size="small" />
+                  </span>
+                  <span className={styles.tabTitle}>{taskName}</span>
+                </button>
+                <button
+                  type="button"
+                  className={styles.tabClose}
+                  title="Close task tab"
+                  onClick={(e) => handleCloseTaskTab(e, task.id)}
+                >
+                  <Cross1Icon width={10} height={10} />
+                </button>
+              </div>
+            );
+          })}
 
-              if (isRenaming) {
-                return (
+          {tabs.map((tab) => {
+            const isActive = isChatTab(activeTab) && activeTab.id === tab.id;
+            const isRenaming =
+              renameState?.kind === "chat" && renameState.id === tab.id;
+
+            if (isRenaming) {
+              return (
+                <div key={tab.id} className={styles.tabWrap}>
                   <TextField.Root
-                    my="auto"
-                    key={tab.id}
                     autoComplete="off"
                     onKeyUp={(e) => handleKeyUpOnRename(e, tab.id)}
                     onBlur={() => setRenameState(null)}
                     autoFocus
-                    size="2"
+                    size="1"
                     value={renameState.value}
                     onChange={handleRenameChange}
                     className={styles.RenameInput}
                   />
-                );
-              }
-              return (
-                <TabNav.Link
-                  active={isActive}
-                  key={tab.id}
+                </div>
+              );
+            }
+
+            const statusState = getChatTabStatusState(
+              tab.streaming,
+              tab.waiting,
+              tab.paused,
+              tab.hasError,
+              tab.read,
+            );
+
+            return (
+              <div
+                key={tab.id}
+                className={styles.tabWrap}
+                ref={isActive ? activeTabRef : undefined}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`${styles.tabButton} ${
+                    isActive ? styles.tabButtonActive : ""
+                  }`}
                   onClick={() => goToTab({ type: "chat", id: tab.id })}
-                  style={{ minWidth: 0, maxWidth: "150px", cursor: "pointer" }}
-                  ref={isActive ? setFocus : undefined}
+                  onDoubleClick={() =>
+                    handleChatThreadRenaming(tab.id, tab.title)
+                  }
                   title={tab.title}
                 >
-                  {(tab.streaming || tab.waiting) && <Spinner mr="1" />}
-                  {!tab.streaming && !tab.waiting && !tab.read && (
-                    <DotFilledIcon />
-                  )}
-                  <Flex gap="2" align="center">
-                    <TruncateLeft
-                      style={{
-                        maxWidth: shouldCollapse ? "25px" : "80px",
-                      }}
-                    >
-                      {tab.title}
-                    </TruncateLeft>
-                    <Flex gap="1" align="center">
-                      <DropdownMenu.Root>
-                        <DropdownMenu.Trigger>
-                          <IconButton
-                            size="1"
-                            variant="ghost"
-                            color="gray"
-                            title="Tab actions"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <DotsVerticalIcon />
-                          </IconButton>
-                        </DropdownMenu.Trigger>
-                        <DropdownMenu.Content
-                          size="1"
-                          side="bottom"
-                          align="end"
-                          style={{ minWidth: 110 }}
-                        >
-                          <DropdownMenu.Item
-                            onClick={() =>
-                              handleChatThreadRenaming(tab.id, tab.title)
-                            }
-                          >
-                            Rename
-                          </DropdownMenu.Item>
-                          <DropdownMenu.Item
-                            onClick={() => handleChatThreadDeletion(tab.id)}
-                            color="red"
-                          >
-                            Delete chat
-                          </DropdownMenu.Item>
-                        </DropdownMenu.Content>
-                      </DropdownMenu.Root>
-                      <IconButton
-                        size="1"
-                        variant="ghost"
-                        color="gray"
-                        title="Close tab"
-                        onClick={(e) => handleCloseTab(e, tab.id)}
-                      >
-                        <Cross1Icon />
-                      </IconButton>
-                    </Flex>
-                  </Flex>
-                </TabNav.Link>
-              );
-            })}
-          </TabNav.Root>
+                  <span className={styles.tabStatus}>
+                    <StatusDot state={statusState} size="small" />
+                  </span>
+                  <span className={styles.tabTitle}>{tab.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className={styles.tabClose}
+                  title="Close tab"
+                  onClick={(e) => handleCloseTab(e, tab.id)}
+                >
+                  <Cross1Icon width={10} height={10} />
+                </button>
+              </div>
+            );
+          })}
         </div>
-      </Flex>
-      <ConnectionStatusIndicator />
-      <HoverCard.Root>
-        <HoverCard.Trigger>
-          <IconButton variant="outline" onClick={onCreateNewTask}>
-            <CheckboxIcon />
-          </IconButton>
-        </HoverCard.Trigger>
-        <HoverCard.Content size="1" side="bottom">
-          <Text as="p" size="2">
-            New Task
-          </Text>
-        </HoverCard.Content>
-      </HoverCard.Root>
-      <HoverCard.Root>
-        <HoverCard.Trigger>
-          <IconButton
-            variant="outline"
-            ref={(x) => refs.setNewChat(x)}
-            onClick={onCreateNewChat}
-            disabled={!newChatEnabled}
-          >
-            <PlusIcon />
-          </IconButton>
-        </HoverCard.Trigger>
-        <HoverCard.Content size="1" side="bottom">
-          <Text as="p" size="2">
-            New chat
-          </Text>
-        </HoverCard.Content>
-      </HoverCard.Root>
-      <Dropdown handleNavigation={handleNavigation} />
-    </Flex>
+      </div>
+
+      <div className={styles.toolbarDivider} />
+
+      <div className={styles.toolbarSection}>
+        <ConnectionStatusIndicator />
+
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton size="1" variant="ghost" onClick={onCreateNewTask}>
+              <CheckboxIcon />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="bottom">
+            <Text as="p" size="2">
+              New Task
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
+
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton
+              size="1"
+              variant="ghost"
+              ref={(x) => refs.setNewChat(x)}
+              onClick={onCreateNewChat}
+              disabled={!newChatEnabled}
+            >
+              <PlusIcon />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="bottom">
+            <Text as="p" size="2">
+              New Chat
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
+
+        <Dropdown handleNavigation={handleNavigation} useGhostTrigger />
+      </div>
+    </div>
   );
 };

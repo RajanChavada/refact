@@ -48,6 +48,8 @@ export type DropdownNavigationOptions =
 
 type DropdownProps = {
   handleNavigation: (to: DropdownNavigationOptions) => void;
+  triggerClassName?: string;
+  useGhostTrigger?: boolean;
 };
 
 function linkForBugReports(_host: Config["host"]): string {
@@ -67,6 +69,8 @@ function linkForAccount(host: Config["host"]): string {
 
 export const Dropdown: React.FC<DropdownProps> = ({
   handleNavigation,
+  triggerClassName,
+  useGhostTrigger,
 }: DropdownProps) => {
   const refs = useTourRefs();
   const user = useGetUser();
@@ -121,9 +125,23 @@ export const Dropdown: React.FC<DropdownProps> = ({
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger>
-        <IconButton variant="outline" ref={(x) => refs.setMore(x)}>
-          <HamburgerMenuIcon />
-        </IconButton>
+        {triggerClassName ? (
+          <button
+            type="button"
+            className={triggerClassName}
+            ref={(x) => refs.setMore(x)}
+          >
+            <HamburgerMenuIcon />
+          </button>
+        ) : (
+          <IconButton
+            size="1"
+            variant={useGhostTrigger ? "ghost" : "outline"}
+            ref={(x) => refs.setMore(x)}
+          >
+            <HamburgerMenuIcon />
+          </IconButton>
+        )}
       </DropdownMenu.Trigger>
 
       <DropdownMenu.Content>

@@ -81,6 +81,9 @@ export function useTrajectoriesSubscription(): {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const lastActivityAtRef = useRef<number>(0);
+
+  const STALE_THRESHOLD_MS = 45_000;
 
   const processEvent = useCallback(
     (data: TrajectoryEvent) => {
@@ -183,6 +186,7 @@ export function useTrajectoriesSubscription(): {
           const { done, value } = await reader.read();
           if (done) break;
 
+          lastActivityAtRef.current = Date.now();
           buffer += decoder.decode(value, { stream: true });
           buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
@@ -311,6 +315,25 @@ export function useTrajectoriesSubscription(): {
       }
     };
   }, [connect, loadInitialHistory]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+
+      const lastActivity = lastActivityAtRef.current;
+      const isStale =
+        lastActivity > 0 && Date.now() - lastActivity > STALE_THRESHOLD_MS;
+
+      if (isStale && abortControllerRef.current) {
+        connect();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [connect]);
 
   return { retryInitialLoad };
 }

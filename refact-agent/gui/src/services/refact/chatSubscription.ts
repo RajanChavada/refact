@@ -194,7 +194,7 @@ export type SubscriptionOptions = {
 };
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
-const DEFAULT_IDLE_TIMEOUT_MS = 75_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
 
 export function subscribeToChatEvents(
   chatId: string,
@@ -312,6 +312,9 @@ export function subscribeToChatEvents(
               continue;
             }
             normalizeSeq(parsed);
+            if (parsed.chat_id !== chatId) {
+              continue;
+            }
             callbacks.onEvent(parsed);
           } catch {
             continue;
@@ -320,8 +323,10 @@ export function subscribeToChatEvents(
       }
 
       clearTimers();
-      if (abortController.signal.aborted && abortReason) {
-        callbacks.onError(new Error(abortReason));
+      if (abortController.signal.aborted) {
+        if (abortReason) {
+          callbacks.onError(new Error(abortReason));
+        }
         abortReason = null;
         disconnect(false);
         return;

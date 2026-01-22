@@ -74,6 +74,8 @@ pub struct TrajectoryMeta {
     pub session_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_chat_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_coins: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1172,6 +1174,36 @@ fn spawn_task_name_generation_task(
     });
 }
 
+fn calculate_total_coins_from_messages(messages: &[serde_json::Value]) -> Option<f64> {
+    let mut total: f64 = 0.0;
+    let mut found_any = false;
+
+    for msg in messages {
+        if let Some(extra) = msg.get("extra").and_then(|e| e.as_object()) {
+            for (key, value) in extra {
+                if key.starts_with("metering_coins_") {
+                    if let Some(coins) = value.as_f64() {
+                        total += coins;
+                        found_any = true;
+                    }
+                }
+            }
+        }
+        if let Some(obj) = msg.as_object() {
+            for (key, value) in obj {
+                if key.starts_with("metering_coins_") {
+                    if let Some(coins) = value.as_f64() {
+                        total += coins;
+                        found_any = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if found_any { Some(total) } else { None }
+}
+
 fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
     let task_meta_json = data.extra.get("task_meta");
     let task_id = task_meta_json
@@ -1207,6 +1239,8 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let total_coins = calculate_total_coins_from_messages(&data.messages);
+
     TrajectoryMeta {
         id: data.id.clone(),
         title: data.title.clone(),
@@ -1223,6 +1257,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         card_id,
         session_state: None,
         root_chat_id,
+        total_coins,
     }
 }
 

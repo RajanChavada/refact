@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { IconButton, Popover } from "@radix-ui/themes";
+import { HoverCard, IconButton, Popover, Text } from "@radix-ui/themes";
 import { ArchiveIcon } from "@radix-ui/react-icons";
 import { TrajectoryPopoverContent } from "./TrajectoryPopover";
 
@@ -26,15 +26,23 @@ export const TrajectoryButton: React.FC<TrajectoryButtonProps> = ({
   return (
     <Popover.Root open={open} onOpenChange={handleOpenChange}>
       <Popover.Trigger>
-        <IconButton
-          variant="ghost"
-          size="1"
-          title="Trajectory: Compress or Handoff"
-          data-testid="trajectory-button"
-          aria-label="Open trajectory options"
-        >
-          <ArchiveIcon />
-        </IconButton>
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton
+              variant="ghost"
+              size="1"
+              data-testid="trajectory-button"
+              aria-label="Open trajectory options"
+            >
+              <ArchiveIcon />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="bottom">
+            <Text as="p" size="2">
+              Compress or Handoff
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
       </Popover.Trigger>
       <TrajectoryPopoverContent onClose={() => handleOpenChange(false)} />
     </Popover.Root>

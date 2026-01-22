@@ -44,6 +44,8 @@ export type TabDisplayData = {
   read: boolean;
   streaming: boolean;
   waiting: boolean;
+  paused: boolean;
+  hasError: boolean;
 };
 
 export const selectTabsDisplayData = createSelector(
@@ -59,6 +61,8 @@ export const selectTabsDisplayData = createSelector(
           read: runtime.thread.read,
           streaming: runtime.streaming,
           waiting: runtime.waiting_for_response,
+          paused: runtime.confirmation.pause,
+          hasError: runtime.error !== null,
         };
       })
       .filter((t): t is TabDisplayData => t !== null),
@@ -244,6 +248,9 @@ export const selectQueuedItems = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.queued_items ??
   EMPTY_QUEUED;
 
+export const selectQueuedItemsById = (state: RootState, chatId: string) =>
+  state.chat.threads[chatId]?.queued_items ?? EMPTY_QUEUED;
+
 export const selectQueuedItemsCount = createSelector(
   selectQueuedItems,
   (queued) => queued.length,
@@ -310,6 +317,9 @@ export const selectThreadPauseReasons = (state: RootState) =>
 
 export const selectThreadPause = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.confirmation.pause ?? false;
+
+export const selectThreadPauseById = (state: RootState, chatId: string) =>
+  state.chat.threads[chatId]?.confirmation.pause ?? false;
 
 export const selectThreadConfirmationStatus = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.confirmation.status ??

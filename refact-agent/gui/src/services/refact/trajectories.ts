@@ -25,6 +25,7 @@ export type TrajectoryMeta = {
     | "waiting_ide"
     | "error";
   root_chat_id?: string;
+  total_coins?: number;
 };
 
 export type TrajectoryData = {

@@ -35,9 +35,12 @@ export function useAllChatsSubscription() {
     new Map(),
   );
   const lastActivityDispatchRef = useRef<Map<string, number>>(new Map());
+  const lastActivityAtRef = useRef<Map<string, number>>(new Map());
   const portRef = useRef(port);
   const apiKeyRef = useRef(apiKey);
   const subscribeRef = useRef<((chatId: string) => void) | null>(null);
+
+  const STALE_THRESHOLD_MS = 45_000;
 
   const ACTIVITY_THROTTLE_MS = 500;
 
@@ -140,6 +143,7 @@ export function useAllChatsSubscription() {
           },
           onActivity: () => {
             const now = Date.now();
+            lastActivityAtRef.current.set(chatId, now);
             const lastDispatch =
               lastActivityDispatchRef.current.get(chatId) ?? 0;
             if (now - lastDispatch >= ACTIVITY_THROTTLE_MS) {
@@ -170,6 +174,7 @@ export function useAllChatsSubscription() {
         seqMapRef.current.delete(chatId);
         retryCountRef.current.delete(chatId);
         lastActivityDispatchRef.current.delete(chatId);
+        lastActivityAtRef.current.delete(chatId);
         dispatch(removeSseConnection({ chatId }));
       }
     },
@@ -191,6 +196,7 @@ export function useAllChatsSubscription() {
     retryCountRef.current.clear();
     timeoutRef.current.clear();
     lastActivityDispatchRef.current.clear();
+    lastActivityAtRef.current.clear();
     dispatch(clearAllSseConnections());
   }, [dispatch]);
 
@@ -238,7 +244,20 @@ export function useAllChatsSubscription() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         const chatId = Array.from(desiredIdsRef.current)[0];
-        if (chatId && !subscriptionsRef.current.has(chatId)) {
+        if (!chatId) return;
+
+        const lastActivity = lastActivityAtRef.current.get(chatId) ?? 0;
+        const isStale =
+          lastActivity > 0 && Date.now() - lastActivity > STALE_THRESHOLD_MS;
+
+        if (isStale && subscriptionsRef.current.has(chatId)) {
+          retryCountRef.current.set(chatId, 0);
+          unsubscribe(chatId);
+          subscribe(chatId);
+          return;
+        }
+
+        if (!subscriptionsRef.current.has(chatId)) {
           retryCountRef.current.set(chatId, 0);
           subscribe(chatId);
         }
@@ -249,5 +268,5 @@ export function useAllChatsSubscription() {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [subscribe]);
+  }, [subscribe, unsubscribe]);
 }
