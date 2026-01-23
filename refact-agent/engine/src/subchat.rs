@@ -22,6 +22,7 @@ use crate::chat::stream_core::{
 use crate::chat::tools::{execute_tools, ExecuteToolsOptions};
 use crate::chat::types::ThreadParams;
 use crate::chat::trajectories::save_trajectory_as;
+use crate::chat::trajectory_ops::sanitize_messages_for_new_thread;
 use crate::yaml_configs::customization_loader::load_customization;
 use crate::custom_error::YamlError;
 
@@ -322,6 +323,7 @@ pub async fn run_subchat(
         .clone()
         .unwrap_or_else(|| format!("subchat-{}", Uuid::new_v4()));
 
+    let messages = sanitize_messages_for_new_thread(&messages);
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new_with_abort(
             gcx.clone(),
@@ -425,6 +427,7 @@ pub async fn run_subchat_once(
 
     let chat_id = format!("subchat-{}", Uuid::new_v4());
 
+    let messages = sanitize_messages_for_new_thread(&messages);
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new(
             gcx.clone(),
