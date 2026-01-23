@@ -7,6 +7,9 @@
   border-radius: 8px;
   background-color: var(--gray-1);
   flex-shrink: 0; /* this one should fix issue with shrinking */
+  /* Force GPU compositing to fix JCEF repaint issues in JetBrains IDEs */
+  transform: translateZ(0);
+  will-change: transform;
   & pre {
     margin: 0;
   }

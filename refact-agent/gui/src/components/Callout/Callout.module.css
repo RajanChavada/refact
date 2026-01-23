@@ -11,6 +11,8 @@
     transform 0.3s ease-in-out,
     visibility 0.3s ease-in-out,
     opacity 0.3s ease-in-out;
+  /* Force GPU compositing to fix JCEF repaint issues in JetBrains IDEs */
+  will-change: transform, opacity, visibility;
 }
 
 .callout_box_warning {
