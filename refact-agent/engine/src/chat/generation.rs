@@ -18,7 +18,7 @@ use super::trajectories::{maybe_save_trajectory, check_external_reload_pending};
 use super::tools::{process_tool_calls_once, ToolStepOutcome};
 use super::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
-use super::stream_core::{run_llm_stream, StreamRunParams, StreamCollector, normalize_tool_call};
+use super::stream_core::{run_llm_stream, StreamRunParams, StreamCollector, normalize_tool_call, ChoiceFinal};
 use super::queue::inject_priority_messages_if_any;
 use super::config::tokens;
 
@@ -459,7 +459,7 @@ async fn run_streaming_generation(
     session_arc: Arc<AMutex<ChatSession>>,
     prompt: String,
     model_rec: crate::caps::BaseModelRecord,
-    parameters: SamplingParameters,
+    mut parameters: SamplingParameters,
     abort_flag: Arc<AtomicBool>,
     chat_mode: ChatMode,
 ) -> Result<(), String> {
@@ -484,60 +484,109 @@ async fn run_streaming_generation(
         request_attempt_id: Uuid::new_v4().to_string(),
     });
 
-    let params = StreamRunParams {
-        prompt,
-        model_rec,
-        sampling: parameters,
-        meta,
-        abort_flag: Some(abort_flag),
-    };
+    const TEMPERATURE_BUMP: f32 = 0.1;
+    const MAX_TEMPERATURE: f32 = 0.5;
+    let base_temp = parameters.temperature.unwrap_or(0.0).min(MAX_TEMPERATURE);
+    let max_attempts = ((MAX_TEMPERATURE - base_temp) / TEMPERATURE_BUMP).floor() as usize + 1;
+    let mut attempt = 0;
 
-    enum CollectorEvent {
-        DeltaOps(Vec<DeltaOp>),
-        Usage(ChatUsage),
-    }
+    let result = loop {
+        attempt += 1;
+        let current_temp = base_temp + TEMPERATURE_BUMP * (attempt - 1) as f32;
+        parameters.temperature = Some(current_temp);
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CollectorEvent>();
+        let params = StreamRunParams {
+            prompt: prompt.clone(),
+            model_rec: model_rec.clone(),
+            sampling: parameters.clone(),
+            meta: meta.clone(),
+            abort_flag: Some(abort_flag.clone()),
+        };
 
-    struct SessionCollector {
-        tx: tokio::sync::mpsc::UnboundedSender<CollectorEvent>,
-    }
-
-    impl StreamCollector for SessionCollector {
-        fn on_delta_ops(&mut self, _choice_idx: usize, ops: Vec<DeltaOp>) {
-            let _ = self.tx.send(CollectorEvent::DeltaOps(ops));
+        enum CollectorEvent {
+            DeltaOps(Vec<DeltaOp>),
+            Usage(ChatUsage),
         }
 
-        fn on_usage(&mut self, usage: &ChatUsage) {
-            let _ = self.tx.send(CollectorEvent::Usage(usage.clone()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CollectorEvent>();
+
+        struct SessionCollector {
+            tx: tokio::sync::mpsc::UnboundedSender<CollectorEvent>,
         }
 
-        fn on_finish(&mut self, _choice_idx: usize, _finish_reason: Option<String>) {}
-    }
+        impl StreamCollector for SessionCollector {
+            fn on_delta_ops(&mut self, _choice_idx: usize, ops: Vec<DeltaOp>) {
+                let _ = self.tx.send(CollectorEvent::DeltaOps(ops));
+            }
 
-    let mut collector = SessionCollector { tx };
+            fn on_usage(&mut self, usage: &ChatUsage) {
+                let _ = self.tx.send(CollectorEvent::Usage(usage.clone()));
+            }
 
-    let session_arc_emitter = session_arc.clone();
-    let emitter_task = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let mut session = session_arc_emitter.lock().await;
-            match event {
-                CollectorEvent::DeltaOps(ops) => {
-                    session.emit_stream_delta(ops);
-                }
-                CollectorEvent::Usage(usage) => {
-                    session.draft_usage = Some(usage);
+            fn on_finish(&mut self, _choice_idx: usize, _finish_reason: Option<String>) {}
+        }
+
+        let mut collector = SessionCollector { tx };
+
+        let session_arc_emitter = session_arc.clone();
+        let emitter_task = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let mut session = session_arc_emitter.lock().await;
+                match event {
+                    CollectorEvent::DeltaOps(ops) => {
+                        session.emit_stream_delta(ops);
+                    }
+                    CollectorEvent::Usage(usage) => {
+                        session.draft_usage = Some(usage);
+                    }
                 }
             }
+        });
+
+        let results = run_llm_stream(gcx.clone(), params, &mut collector).await;
+        drop(collector);
+        let _ = emitter_task.await;
+        let results = results?;
+
+        let result = results.into_iter().next().unwrap_or_default();
+
+        if is_result_empty(&result) {
+            if attempt < max_attempts {
+                let next_temp = (base_temp + TEMPERATURE_BUMP * attempt as f32).min(MAX_TEMPERATURE);
+                warn!(
+                    "Empty assistant response at T={:.1}, retrying with T={:.1} (attempt {}/{})",
+                    current_temp, next_temp, attempt, max_attempts
+                );
+                {
+                    let mut session = session_arc.lock().await;
+                    if let Some(ref mut draft) = session.draft_message {
+                        draft.content = ChatContent::SimpleText(String::new());
+                        draft.tool_calls = None;
+                        draft.reasoning_content = None;
+                        draft.thinking_blocks = None;
+                        draft.citations = Vec::new();
+                        draft.extra = serde_json::Map::new();
+                    }
+                    session.draft_usage = None;
+                }
+                continue;
+            } else {
+                return Err(format!(
+                    "Empty assistant response after {} attempts (T={:.1})",
+                    max_attempts, current_temp
+                ));
+            }
         }
-    });
 
-    let results = run_llm_stream(gcx.clone(), params, &mut collector).await;
-    drop(collector);
-    let _ = emitter_task.await;
-    let results = results?;
+        if !result.tool_calls_raw.is_empty() {
+            let parsed: Vec<_> = result.tool_calls_raw.iter().filter_map(|tc| normalize_tool_call(tc)).collect();
+            if parsed.is_empty() {
+                return Err("Model returned tool_calls but none were parsable".to_string());
+            }
+        }
 
-    let result = results.into_iter().next().unwrap_or_default();
+        break result;
+    };
 
     {
         let mut session = session_arc.lock().await;
@@ -579,6 +628,14 @@ async fn run_streaming_generation(
     }
 
     Ok(())
+}
+
+fn is_result_empty(result: &ChoiceFinal) -> bool {
+    result.content.trim().is_empty()
+        && result.tool_calls_raw.is_empty()
+        && result.reasoning.trim().is_empty()
+        && result.thinking_blocks.is_empty()
+        && result.citations.is_empty()
 }
 
 #[cfg(test)]

@@ -1452,7 +1452,6 @@ export const CHAT_WITH_KNOWLEDGE_TOOL: ChatThread = {
   model: "",
   tool_use: "agent",
   mode: "AGENT",
-  read: true,
   isTitleGenerated: true,
   new_chat_suggested: {
     wasSuggested: false,

@@ -1,5 +1,11 @@
 import React, { useState, useCallback } from "react";
-import { Text, IconButton, TextField, HoverCard } from "@radix-ui/themes";
+import {
+  Text,
+  IconButton,
+  TextField,
+  HoverCard,
+  Badge,
+} from "@radix-ui/themes";
 import { Cross1Icon, Pencil1Icon, CheckIcon } from "@radix-ui/react-icons";
 import { StatusDot, StatusDotState } from "../StatusDot";
 import { CircularProgress } from "./CircularProgress";
@@ -11,6 +17,7 @@ export interface TaskItemCompactProps {
   onClick: () => void;
   onDelete: (id: string) => void;
   onRename?: (id: string, newName: string) => void;
+  badge?: string;
 }
 
 function getTaskStatusDotState(task: TaskMeta): StatusDotState {
@@ -119,6 +126,7 @@ export const TaskItemCompact: React.FC<TaskItemCompactProps> = ({
   onClick,
   onDelete,
   onRename,
+  badge,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.name);
@@ -212,6 +220,11 @@ export const TaskItemCompact: React.FC<TaskItemCompactProps> = ({
 
       <div className={styles.leftSection}>
         <StatusDot state={statusState} size="small" tooltipText={tooltipText} />
+        {badge && (
+          <Badge size="1" color="gray" variant="soft" style={{ flexShrink: 0 }}>
+            {badge}
+          </Badge>
+        )}
       </div>
 
       <div className={styles.titleSection}>

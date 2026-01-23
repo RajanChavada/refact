@@ -2,13 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use super::kg_structs::{KnowledgeDoc, KnowledgeGraph};
 
-struct RelatedDoc {
-    id: String,
-    score: f64,
+#[derive(Debug, Clone)]
+pub struct RelatedDoc {
+    pub id: String,
+    pub score: f64,
 }
 
 impl KnowledgeGraph {
-    fn find_related(&self, doc_id: &str, max_results: usize) -> Vec<RelatedDoc> {
+    pub fn find_related(&self, doc_id: &str, max_results: usize) -> Vec<RelatedDoc> {
         let Some(doc) = self.docs.get(doc_id) else {
             return vec![];
         };
@@ -86,7 +87,7 @@ impl KnowledgeGraph {
         expanded
     }
 
-    fn find_similar_docs(
+    pub fn find_similar_docs(
         &self,
         tags: &[String],
         filenames: &[String],

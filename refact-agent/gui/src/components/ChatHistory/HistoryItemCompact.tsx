@@ -13,14 +13,14 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  TokensIcon,
 } from "@radix-ui/react-icons";
-import { StatusDot, StatusDotState } from "../StatusDot";
+import { StatusDot } from "../StatusDot";
+import { Coin } from "../../images";
 import type { ChatHistoryItem } from "../../features/History/historySlice";
 import {
-  useChatSessionStates,
-  SessionState,
-} from "../../hooks/useStreamingChatIds";
+  getStatusFromSessionState,
+  getStatusTooltip,
+} from "../../utils/sessionStatus";
 import styles from "./HistoryItemCompact.module.css";
 
 export interface HistoryItemCompactProps {
@@ -34,44 +34,6 @@ export interface HistoryItemCompactProps {
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   isChild?: boolean;
-}
-
-function getStatusDotState(
-  sessionState: SessionState | null,
-  isUnread: boolean,
-): StatusDotState {
-  if (sessionState === "generating" || sessionState === "executing_tools") {
-    return "streaming";
-  }
-  if (sessionState === "paused" || sessionState === "waiting_ide") {
-    return "paused";
-  }
-  if (sessionState === "error") {
-    return "error";
-  }
-  if (isUnread) {
-    return "unread";
-  }
-  return "idle";
-}
-
-function getStatusTooltip(
-  sessionState: SessionState | null,
-  isUnread: boolean,
-): string {
-  if (sessionState === "generating" || sessionState === "executing_tools") {
-    return "Generating response...";
-  }
-  if (sessionState === "paused" || sessionState === "waiting_ide") {
-    return "Waiting for confirmation";
-  }
-  if (sessionState === "error") {
-    return "An error occurred";
-  }
-  if (isUnread) {
-    return "Unread messages";
-  }
-  return "Idle";
 }
 
 function formatDateTime(dateString: string): string {
@@ -152,14 +114,14 @@ export const HistoryItemCompact: React.FC<HistoryItemCompactProps> = ({
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(historyItem.title);
-  const chatSessionStates = useChatSessionStates();
-  const sessionState = chatSessionStates[historyItem.id] as SessionState | null;
-  const isUnread = historyItem.read === false;
-  const statusState = getStatusDotState(sessionState, isUnread);
-  const statusTooltip = getStatusTooltip(sessionState, isUnread);
+  const statusState = getStatusFromSessionState(historyItem.session_state);
+  const statusTooltip = getStatusTooltip(historyItem.session_state);
   const dateTimeString = formatDateTime(historyItem.updatedAt);
   const messageCount = historyItem.message_count ?? historyItem.messages.length;
   const totalCoins = historyItem.total_coins;
+  const linesAdded = historyItem.total_lines_added ?? 0;
+  const linesRemoved = historyItem.total_lines_removed ?? 0;
+  const hasLineChanges = linesAdded > 0 || linesRemoved > 0;
   const hasChildren = childCount !== undefined && childCount > 0;
 
   const handleStartEdit = useCallback(
@@ -331,12 +293,7 @@ export const HistoryItemCompact: React.FC<HistoryItemCompactProps> = ({
             className={styles.editInput}
           />
         ) : (
-          <Text
-            as="span"
-            size="2"
-            weight={isUnread ? "bold" : "regular"}
-            className={styles.title}
-          >
+          <Text as="span" size="2" weight="regular" className={styles.title}>
             {historyItem.title}
           </Text>
         )}
@@ -349,9 +306,21 @@ export const HistoryItemCompact: React.FC<HistoryItemCompactProps> = ({
         </Text>
         {totalCoins !== undefined && totalCoins > 0 && (
           <>
-            <TokensIcon width={12} height={12} />
+            <span className={styles.statsSeparator} />
+            <Coin width={12} height={12} />
             <Text size="1" color="gray">
               {formatCoins(totalCoins)}
+            </Text>
+          </>
+        )}
+        {hasLineChanges && (
+          <>
+            <span className={styles.statsSeparator} />
+            <Text size="1" className={styles.linesAdded}>
+              +{linesAdded}
+            </Text>
+            <Text size="1" className={styles.linesRemoved}>
+              -{linesRemoved}
             </Text>
           </>
         )}

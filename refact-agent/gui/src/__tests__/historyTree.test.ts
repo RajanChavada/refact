@@ -20,7 +20,6 @@ const createItem = (
   increase_max_tokens: false,
   automatic_patch: false,
   project_name: undefined,
-  read: true,
   isTitleGenerated: true,
   createdAt: "2024-01-01T00:00:00Z",
   last_user_message_id: "",

@@ -37,35 +37,25 @@ export const selectOpenThreadIds = (state: RootState) =>
   state.chat.open_thread_ids;
 export const selectAllThreads = (state: RootState) => state.chat.threads;
 
-// Memoized selector for tab display data - prevents Toolbar re-renders on streaming updates
 export type TabDisplayData = {
   id: string;
   title: string;
-  read: boolean;
-  streaming: boolean;
-  waiting: boolean;
-  paused: boolean;
-  hasError: boolean;
+  session_state?: string;
 };
 
 export const selectTabsDisplayData = createSelector(
-  [selectOpenThreadIds, selectAllThreads],
-  (openIds, threads): TabDisplayData[] =>
-    openIds
-      .map((id) => {
-        const runtime = threads[id];
-        if (!runtime) return null;
-        return {
-          id,
-          title: runtime.thread.title ?? "New Chat",
-          read: runtime.thread.read,
-          streaming: runtime.streaming,
-          waiting: runtime.waiting_for_response,
-          paused: runtime.confirmation.pause,
-          hasError: runtime.error !== null,
-        };
-      })
-      .filter((t): t is TabDisplayData => t !== null),
+  [selectOpenThreadIds, (state: RootState) => state.history.chats],
+  (openIds, historyChats): TabDisplayData[] =>
+    openIds.map((id) => {
+      const historyItem = historyChats[id] as
+        | (typeof historyChats)[string]
+        | undefined;
+      return {
+        id,
+        title: historyItem?.title ?? "New Chat",
+        session_state: historyItem?.session_state,
+      };
+    }),
 );
 
 export const selectRuntimeById = (

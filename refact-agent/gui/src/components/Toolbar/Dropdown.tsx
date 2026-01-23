@@ -124,25 +124,34 @@ export const Dropdown: React.FC<DropdownProps> = ({
 
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger>
-        {triggerClassName ? (
-          <button
-            type="button"
-            className={triggerClassName}
-            ref={(x) => refs.setMore(x)}
-          >
-            <HamburgerMenuIcon />
-          </button>
-        ) : (
-          <IconButton
-            size="1"
-            variant={useGhostTrigger ? "ghost" : "outline"}
-            ref={(x) => refs.setMore(x)}
-          >
-            <HamburgerMenuIcon />
-          </IconButton>
-        )}
-      </DropdownMenu.Trigger>
+      <HoverCard.Root>
+        <HoverCard.Trigger>
+          <DropdownMenu.Trigger>
+            {triggerClassName ? (
+              <button
+                type="button"
+                className={triggerClassName}
+                ref={(x) => refs.setMore(x)}
+              >
+                <HamburgerMenuIcon />
+              </button>
+            ) : (
+              <IconButton
+                size="1"
+                variant={useGhostTrigger ? "ghost" : "outline"}
+                ref={(x) => refs.setMore(x)}
+              >
+                <HamburgerMenuIcon />
+              </IconButton>
+            )}
+          </DropdownMenu.Trigger>
+        </HoverCard.Trigger>
+        <HoverCard.Content size="1" side="bottom">
+          <Text as="p" size="2">
+            Menu
+          </Text>
+        </HoverCard.Content>
+      </HoverCard.Root>
 
       <DropdownMenu.Content>
         {user.data && (

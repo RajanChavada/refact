@@ -49,7 +49,7 @@ pub struct TrajectoryEvent {
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrajectoryMeta {
     pub id: String,
     pub title: String,
@@ -76,6 +76,10 @@ pub struct TrajectoryMeta {
     pub root_chat_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_coins: Option<f64>,
+    #[serde(default)]
+    pub total_lines_added: i64,
+    #[serde(default)]
+    pub total_lines_removed: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1174,6 +1178,40 @@ fn spawn_task_name_generation_task(
     });
 }
 
+fn calculate_line_changes_from_messages(messages: &[serde_json::Value]) -> (i64, i64) {
+    let mut total_added: i64 = 0;
+    let mut total_removed: i64 = 0;
+
+    for msg in messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role != "diff" {
+            continue;
+        }
+
+        let content = match msg.get("content") {
+            Some(serde_json::Value::String(s)) => s.as_str(),
+            _ => continue,
+        };
+
+        if let Ok(chunks) = serde_json::from_str::<Vec<serde_json::Value>>(content) {
+            for chunk in chunks {
+                if let Some(lines_add) = chunk.get("lines_add").and_then(|v| v.as_str()) {
+                    if !lines_add.is_empty() {
+                        total_added += lines_add.lines().count() as i64;
+                    }
+                }
+                if let Some(lines_remove) = chunk.get("lines_remove").and_then(|v| v.as_str()) {
+                    if !lines_remove.is_empty() {
+                        total_removed += lines_remove.lines().count() as i64;
+                    }
+                }
+            }
+        }
+    }
+
+    (total_added, total_removed)
+}
+
 fn calculate_total_coins_from_messages(messages: &[serde_json::Value]) -> Option<f64> {
     let mut total: f64 = 0.0;
     let mut found_any = false;
@@ -1240,6 +1278,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         .map(|s| s.to_string());
 
     let total_coins = calculate_total_coins_from_messages(&data.messages);
+    let (total_lines_added, total_lines_removed) = calculate_line_changes_from_messages(&data.messages);
 
     TrajectoryMeta {
         id: data.id.clone(),
@@ -1258,6 +1297,8 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         session_state: None,
         root_chat_id,
         total_coins,
+        total_lines_added,
+        total_lines_removed,
     }
 }
 
@@ -1386,6 +1427,43 @@ pub async fn handle_v1_trajectories_list(
         .header("Content-Type", "application/json")
         .body(Body::from(json))
         .unwrap())
+}
+
+pub async fn list_all_trajectories_meta(
+    gcx: Arc<ARwLock<GlobalContext>>,
+) -> Result<Vec<TrajectoryMeta>, String> {
+    let mut result: Vec<TrajectoryMeta> = Vec::new();
+
+    let trajectories_dir = get_trajectories_dir(gcx.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if trajectories_dir.exists() {
+        let mut entries = fs::read_dir(&trajectories_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&path).await {
+                if let Ok(data) = serde_json::from_str::<TrajectoryData>(&content) {
+                    result.push(trajectory_data_to_meta(&data));
+                }
+            }
+        }
+    }
+
+    enrich_with_session_state(gcx, &mut result).await;
+    result.sort_by(|a, b| {
+        match b.updated_at.cmp(&a.updated_at) {
+            std::cmp::Ordering::Equal => b.id.cmp(&a.id),
+            other => other,
+        }
+    });
+
+    Ok(result)
 }
 
 pub async fn handle_v1_trajectories_all(

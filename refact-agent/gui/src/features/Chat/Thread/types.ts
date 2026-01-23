@@ -36,7 +36,6 @@ export type ChatThread = {
   createdAt?: string;
   updatedAt?: string;
   tool_use?: ToolUse;
-  read?: boolean;
   isTitleGenerated?: boolean;
   boost_reasoning?: boolean;
   integration?: IntegrationMeta | null;

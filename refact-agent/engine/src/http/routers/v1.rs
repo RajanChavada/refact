@@ -105,6 +105,7 @@ mod knowledge_ops;
 pub mod links;
 pub mod lsp_like_handlers;
 pub mod providers;
+mod sidebar;
 pub mod snippet_accepted;
 pub mod status;
 pub mod sync_files;
@@ -263,6 +264,7 @@ pub fn make_v1_router() -> Router {
             "/voice/stream/:session_id/chunk",
             post(handle_v1_voice_stream_chunk),
         )
+        .route("/sidebar/subscribe", get(sidebar::handle_sidebar_subscribe))
         .route("/tasks", get(handle_list_tasks))
         .route("/tasks", post(handle_create_task))
         .route("/tasks/subscribe", get(handle_tasks_subscribe))

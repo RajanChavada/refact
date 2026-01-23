@@ -2,7 +2,6 @@ import React, { useMemo } from "react";
 import { Card, Flex, Text, Box, Spinner, Badge } from "@radix-ui/themes";
 import {
   ChatBubbleIcon,
-  DotFilledIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   PauseIcon,
@@ -12,12 +11,9 @@ import { CloseButton } from "../Buttons/Buttons";
 import { IconButton } from "@radix-ui/themes";
 import { OpenInNewWindowIcon } from "@radix-ui/react-icons";
 import type { ChatHistoryItem } from "../../features/History/historySlice";
-import {
-  useChatSessionStates,
-  SessionState,
-} from "../../hooks/useStreamingChatIds";
 import { getTotalCostMeteringForMessages } from "../../utils/getMetering";
 import { Coin } from "../../images";
+import { getStatusFromSessionState } from "../../utils/sessionStatus";
 
 export const HistoryItem: React.FC<{
   historyItem: ChatHistoryItem;
@@ -42,8 +38,6 @@ export const HistoryItem: React.FC<{
 }) => {
   const dateCreated = new Date(historyItem.createdAt);
   const dateTimeString = dateCreated.toLocaleString();
-  const chatSessionStates = useChatSessionStates();
-
   const totalCost = useMemo(() => {
     const totals = getTotalCostMeteringForMessages(historyItem.messages);
 
@@ -57,15 +51,10 @@ export const HistoryItem: React.FC<{
     );
   }, [historyItem.messages]);
 
-  const getSessionState = (): SessionState | null => {
-    return chatSessionStates[historyItem.id] as SessionState | null;
-  };
-
-  const sessionState = getSessionState();
-  const isWorking =
-    sessionState === "generating" || sessionState === "executing_tools";
-  const isPaused = sessionState === "paused" || sessionState === "waiting_ide";
-  const isError = sessionState === "error";
+  const statusState = getStatusFromSessionState(historyItem.session_state);
+  const isWorking = statusState === "streaming";
+  const isPaused = statusState === "paused";
+  const isError = statusState === "error";
   return (
     <Box style={{ position: "relative", width: "100%" }}>
       <Card
@@ -102,12 +91,6 @@ export const HistoryItem: React.FC<{
                 style={{ minWidth: 16, minHeight: 16, color: "var(--red-9)" }}
               />
             )}
-            {!isWorking &&
-              !isPaused &&
-              !isError &&
-              historyItem.read === false && (
-                <DotFilledIcon style={{ minWidth: 16, minHeight: 16 }} />
-              )}
             <Text
               as="div"
               size="2"

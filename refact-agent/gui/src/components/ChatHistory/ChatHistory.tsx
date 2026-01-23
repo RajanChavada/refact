@@ -4,19 +4,25 @@ import { ChatLoading } from "../ChatContent/ChatLoading";
 import { ScrollArea } from "../ScrollArea";
 import { HistoryItem } from "./HistoryItem";
 import { HistoryItemCompact } from "./HistoryItemCompact";
+import { TaskItemCompact } from "./TaskItemCompact";
 import {
   ChatHistoryItem,
   HistoryTreeNode,
   buildHistoryTree,
 } from "../../features/History/historySlice";
+import type { TaskMeta } from "../../services/refact/tasks";
 
 export type ChatHistoryProps = {
   history: Record<string, ChatHistoryItem>;
+  tasks?: TaskMeta[];
   isLoading?: boolean;
   onHistoryItemClick: (id: ChatHistoryItem) => void;
   onDeleteHistoryItem: (id: string) => void;
   onRenameHistoryItem?: (id: string, newTitle: string) => void;
   onOpenChatInTab?: (id: string) => void;
+  onTaskClick?: (taskId: string) => void;
+  onDeleteTask?: (taskId: string) => void;
+  onRenameTask?: (taskId: string, newName: string) => void;
   currentChatId?: string;
   treeView?: boolean;
   compactView?: boolean;
@@ -27,6 +33,7 @@ export type ChatHistoryProps = {
   onRetryLoadMore?: () => void;
   hasConnectionError?: boolean;
   noScroll?: boolean;
+  scrollContainerRef?: React.RefObject<HTMLDivElement>;
 };
 
 type TreeNodeProps = {
@@ -140,21 +147,85 @@ const TreeNode = memo(
 
 TreeNode.displayName = "TreeNode";
 
-function getSortedHistory(
+type UnifiedItem =
+  | { type: "chat"; item: ChatHistoryItem }
+  | { type: "tree"; item: HistoryTreeNode }
+  | { type: "task"; item: TaskMeta };
+
+function getActiveTasks(tasks: TaskMeta[] = []): TaskMeta[] {
+  return tasks.filter(
+    (t) =>
+      t.status === "active" || t.status === "planning" || t.status === "paused",
+  );
+}
+
+function getUpdatedAt(item: UnifiedItem): string {
+  switch (item.type) {
+    case "chat":
+    case "tree":
+      return item.item.updatedAt;
+    case "task":
+      return item.item.updated_at;
+  }
+}
+
+function getSortedUnifiedList(
   history: Record<string, ChatHistoryItem>,
-): ChatHistoryItem[] {
-  return Object.values(history)
+  tasks: TaskMeta[] = [],
+  useTree: boolean,
+  historyTree: HistoryTreeNode[],
+): UnifiedItem[] {
+  const activeTasks = getActiveTasks(tasks);
+
+  if (useTree) {
+    // In tree mode, merge tree root nodes with tasks
+    const treeItems: UnifiedItem[] = historyTree.map((item) => ({
+      type: "tree" as const,
+      item,
+    }));
+
+    const taskItems: UnifiedItem[] = activeTasks.map((item) => ({
+      type: "task" as const,
+      item,
+    }));
+
+    return [...treeItems, ...taskItems].sort((a, b) =>
+      getUpdatedAt(b).localeCompare(getUpdatedAt(a)),
+    );
+  }
+
+  // In flat mode, merge chats with tasks
+  const chatItems: UnifiedItem[] = Object.values(history)
     .filter((item) => !item.task_id)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    .map((item) => ({ type: "chat" as const, item }));
+
+  const taskItems: UnifiedItem[] = activeTasks.map((item) => ({
+    type: "task" as const,
+    item,
+  }));
+
+  return [...chatItems, ...taskItems].sort((a, b) =>
+    getUpdatedAt(b).localeCompare(getUpdatedAt(a)),
+  );
+}
+
+function hasChildChatsInHistory(
+  history: Record<string, ChatHistoryItem>,
+): boolean {
+  return Object.values(history).some((item) => !!item.parent_id);
 }
 
 export const ChatHistory = memo(
   ({
     history,
+    tasks = [],
     onHistoryItemClick,
     onDeleteHistoryItem,
     onRenameHistoryItem,
     onOpenChatInTab,
+    onTaskClick,
+    onDeleteTask,
+    onRenameTask,
     currentChatId,
     treeView = false,
     compactView = true,
@@ -166,9 +237,18 @@ export const ChatHistory = memo(
     onRetryLoadMore,
     hasConnectionError = false,
     noScroll = false,
+    scrollContainerRef,
   }: ChatHistoryProps) => {
-    const sortedHistory = useMemo(() => getSortedHistory(history), [history]);
     const historyTree = useMemo(() => buildHistoryTree(history), [history]);
+    const hasChildChats = useMemo(
+      () => hasChildChatsInHistory(history),
+      [history],
+    );
+    const showTree = treeView || hasChildChats;
+    const unifiedList = useMemo(
+      () => getSortedUnifiedList(history, tasks, showTree, historyTree),
+      [history, tasks, showTree, historyTree],
+    );
     const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
     const loadMoreRef = useRef<HTMLDivElement>(null);
 
@@ -187,36 +267,37 @@ export const ChatHistory = memo(
     useEffect(() => {
       if (!onLoadMore || !hasMore || isLoadingMore) return;
 
+      const loadMoreElement = loadMoreRef.current;
+      if (!loadMoreElement) return;
+
+      // Find the scroll container - either passed ref or use viewport
+      const root = scrollContainerRef?.current ?? null;
+
       const observer = new IntersectionObserver(
         (entries) => {
           if (entries[0]?.isIntersecting) {
             onLoadMore();
           }
         },
-        { threshold: 0.1 },
+        {
+          threshold: 0.1,
+          root,
+        },
       );
 
-      const currentRef = loadMoreRef.current;
-      if (currentRef) {
-        observer.observe(currentRef);
-      }
+      observer.observe(loadMoreElement);
 
       return () => {
-        if (currentRef) {
-          observer.unobserve(currentRef);
-        }
+        observer.disconnect();
       };
-    }, [onLoadMore, hasMore, isLoadingMore]);
-
-    const hasChildChats = sortedHistory.some((item) => !!item.parent_id);
-    const showTree = treeView || hasChildChats;
+    }, [onLoadMore, hasMore, isLoadingMore, scrollContainerRef]);
 
     const content = (
       <Flex
         justify="center"
-        align={sortedHistory.length > 0 ? "center" : "start"}
-        pl="2"
-        pr="2"
+        align={unifiedList.length > 0 ? "center" : "start"}
+        pl="1"
+        pr="1"
         gap="1"
         direction="column"
       >
@@ -224,13 +305,30 @@ export const ChatHistory = memo(
           <Box style={{ width: "100%" }}>
             <ChatLoading />
           </Box>
-        ) : sortedHistory.length !== 0 ? (
+        ) : unifiedList.length !== 0 ? (
           <>
-            {showTree
-              ? historyTree.map((node) => (
+            {unifiedList.map((unified) => {
+              if (unified.type === "task") {
+                return (
+                  <Box
+                    key={`task-${unified.item.id}`}
+                    style={{ width: "100%" }}
+                  >
+                    <TaskItemCompact
+                      task={unified.item}
+                      onClick={() => onTaskClick?.(unified.item.id)}
+                      onDelete={(id) => onDeleteTask?.(id)}
+                      onRename={onRenameTask}
+                      badge="Task"
+                    />
+                  </Box>
+                );
+              }
+              if (unified.type === "tree") {
+                return (
                   <TreeNode
-                    key={node.id}
-                    node={node}
+                    key={unified.item.id}
+                    node={unified.item}
                     depth={0}
                     onHistoryItemClick={onHistoryItemClick}
                     onDeleteHistoryItem={onDeleteHistoryItem}
@@ -241,28 +339,31 @@ export const ChatHistory = memo(
                     onToggleExpand={handleToggleExpand}
                     compactView={compactView}
                   />
-                ))
-              : sortedHistory.map((item) =>
-                  compactView ? (
-                    <HistoryItemCompact
-                      key={item.id}
-                      historyItem={item}
-                      onClick={() => onHistoryItemClick(item)}
-                      onDelete={onDeleteHistoryItem}
-                      onRename={onRenameHistoryItem}
-                      disabled={item.id === currentChatId}
-                    />
-                  ) : (
-                    <HistoryItem
-                      onClick={() => onHistoryItemClick(item)}
-                      onOpenInTab={onOpenChatInTab}
-                      onDelete={onDeleteHistoryItem}
-                      key={item.id}
-                      historyItem={item}
-                      disabled={item.id === currentChatId}
-                    />
-                  ),
-                )}
+                );
+              }
+              // type === "chat"
+              return compactView ? (
+                <Box key={unified.item.id} style={{ width: "100%" }}>
+                  <HistoryItemCompact
+                    historyItem={unified.item}
+                    onClick={() => onHistoryItemClick(unified.item)}
+                    onDelete={onDeleteHistoryItem}
+                    onRename={onRenameHistoryItem}
+                    disabled={unified.item.id === currentChatId}
+                  />
+                </Box>
+              ) : (
+                <Box key={unified.item.id} style={{ width: "100%" }}>
+                  <HistoryItem
+                    onClick={() => onHistoryItemClick(unified.item)}
+                    onOpenInTab={onOpenChatInTab}
+                    onDelete={onDeleteHistoryItem}
+                    historyItem={unified.item}
+                    disabled={unified.item.id === currentChatId}
+                  />
+                </Box>
+              );
+            })}
             {loadMoreError && onRetryLoadMore && (
               <Flex
                 py="2"
@@ -293,7 +394,7 @@ export const ChatHistory = memo(
           </>
         ) : (
           <Text size="2" color={hasConnectionError ? "red" : "gray"}>
-            {hasConnectionError ? "Unable to load chats" : "No chats yet"}
+            {hasConnectionError ? "Unable to load" : "No chats yet"}
           </Text>
         )}
       </Flex>

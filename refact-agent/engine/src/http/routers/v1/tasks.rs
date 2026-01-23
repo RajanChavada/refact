@@ -85,7 +85,7 @@ async fn enrich_task_with_session_state(gcx: Arc<ARwLock<GlobalContext>>, task: 
     }
 }
 
-async fn list_tasks_with_session_state(
+pub async fn list_tasks_with_session_state(
     gcx: Arc<ARwLock<GlobalContext>>,
 ) -> Result<Vec<TaskMeta>, String> {
     let mut tasks = storage::list_tasks(gcx.clone()).await?;

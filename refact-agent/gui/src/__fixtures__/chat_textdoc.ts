@@ -1092,7 +1092,6 @@ export const CHAT_WITH_TEXTDOC: ChatThread = {
   last_user_message_id: "e6304800-f080-425c-b1e3-c1f2ce267792",
   tool_use: "agent",
   mode: "AGENT",
-  read: true,
   isTitleGenerated: true,
   createdAt: "2025-02-14T06:47:26.640Z",
   updatedAt: "2025-02-14T06:47:26.640Z",

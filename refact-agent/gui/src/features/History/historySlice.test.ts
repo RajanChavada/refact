@@ -370,6 +370,8 @@ describe("session_state handling", () => {
           mode: "AGENT",
           message_count: 5,
           session_state: "generating",
+          total_lines_added: 0,
+          total_lines_removed: 0,
         },
       ]),
     );
@@ -402,6 +404,8 @@ describe("session_state handling", () => {
           mode: "AGENT",
           message_count: 5,
           session_state: "executing_tools",
+          total_lines_added: 0,
+          total_lines_removed: 0,
         },
       ]),
     );

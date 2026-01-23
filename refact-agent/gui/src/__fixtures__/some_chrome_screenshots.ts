@@ -209,7 +209,6 @@ export const CHAT_WITH_MULTI_MODAL: ChatThread = {
   title: "Index.html Screenshots",
   model: "gpt-4o",
   tool_use: "agent",
-  read: true,
   isTitleGenerated: true,
   createdAt: "2024-11-12T08:33:06.826Z",
   updatedAt: "2024-11-12T11:53:45.561Z",

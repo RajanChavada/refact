@@ -284,3 +284,37 @@ export const chatSessionAbort: HttpHandler = http.post(
     return HttpResponse.json({ status: "ok" });
   },
 );
+
+// Sidebar subscription endpoint (SSE)
+export const sidebarSubscribe: HttpHandler = http.get(
+  "http://127.0.0.1:8001/v1/sidebar/subscribe",
+  () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        // Send initial snapshot with empty data
+        const snapshot = JSON.stringify({
+          category: "snapshot",
+          trajectories: [],
+          tasks: [],
+        });
+        controller.enqueue(encoder.encode(`data: ${snapshot}\n\n`));
+      },
+    });
+    return new HttpResponse(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  },
+);
+
+// Tasks list endpoint
+export const emptyTasks: HttpHandler = http.get(
+  "http://127.0.0.1:8001/v1/tasks",
+  () => {
+    return HttpResponse.json([]);
+  },
+);

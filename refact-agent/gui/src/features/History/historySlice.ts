@@ -8,10 +8,13 @@ import {
   ChatThread,
   isLspChatMode,
   maybeAppendToolCallResultFromIdeToMessages,
-  restoreChat,
   setChatMode,
   SuggestedChat,
   applyChatEvent,
+  newChatAction,
+  createChatWithId,
+  restoreChat,
+  switchToThread,
 } from "../Chat/Thread";
 import {
   trajectoriesApi,
@@ -44,6 +47,8 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
   message_count?: number;
   root_chat_id?: string;
   total_coins?: number;
+  total_lines_added?: number;
+  total_lines_removed?: number;
 };
 
 export type HistoryMeta = Pick<
@@ -226,7 +231,6 @@ function trajectoryMetaToHistoryItem(meta: TrajectoryMeta): ChatHistoryItem {
     increase_max_tokens: false,
     automatic_patch: false,
     project_name: undefined,
-    read: true,
     isTitleGenerated: true,
     createdAt: meta.created_at,
     last_user_message_id: "",
@@ -241,6 +245,8 @@ function trajectoryMetaToHistoryItem(meta: TrajectoryMeta): ChatHistoryItem {
     message_count: meta.message_count,
     root_chat_id: meta.root_chat_id,
     total_coins: meta.total_coins,
+    total_lines_added: meta.total_lines_added,
+    total_lines_removed: meta.total_lines_removed,
   };
 }
 
@@ -263,6 +269,7 @@ export const historySlice = createSlice({
     saveChat: (state, action: PayloadAction<ChatThread>) => {
       if (action.payload.messages.length === 0) return;
       const chat = chatThreadToHistoryItem(action.payload);
+      chat.message_count = action.payload.messages.length;
       chat.messages = [];
       if (chat.id in state.chats) {
         const existing = state.chats[chat.id];
@@ -331,21 +338,48 @@ export const historySlice = createSlice({
       state.pagination.hasMore = action.payload.hasMore;
     },
 
-    markChatAsUnread: (state, action: PayloadAction<string>) => {
-      if (action.payload in state.chats) {
-        state.chats[action.payload].read = false;
-      }
-    },
-
-    markChatAsRead: (state, action: PayloadAction<string>) => {
-      if (action.payload in state.chats) {
-        state.chats[action.payload].read = true;
-      }
-    },
-
     deleteChatById: (state, action: PayloadAction<string>) => {
-      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-      delete state.chats[action.payload];
+      const { [action.payload]: _, ...rest } = state.chats;
+      state.chats = rest;
+    },
+
+    upsertChatStub: (
+      state,
+      action: PayloadAction<{
+        id: string;
+        title?: string;
+        model?: string;
+        session_state?: ChatHistoryItem["session_state"];
+      }>,
+    ) => {
+      const { id, title, model, session_state } = action.payload;
+      if (id in state.chats) {
+        if (title) state.chats[id].title = title;
+        if (model) state.chats[id].model = model;
+        if (session_state) state.chats[id].session_state = session_state;
+        return;
+      }
+      const now = new Date().toISOString();
+      state.chats[id] = {
+        id,
+        title: title ?? "New Chat",
+        model: model ?? "",
+        mode: "AGENT",
+        tool_use: "agent",
+        messages: [],
+        boost_reasoning: false,
+        context_tokens_cap: undefined,
+        include_project_info: true,
+        increase_max_tokens: false,
+        automatic_patch: false,
+        project_name: undefined,
+        isTitleGenerated: false,
+        createdAt: now,
+        last_user_message_id: "",
+        updatedAt: now,
+        session_state: session_state ?? "idle",
+        message_count: 0,
+      };
     },
 
     updateChatTitleById: (
@@ -447,8 +481,7 @@ export const {
   hydrateHistoryFromMeta,
   setPagination,
   deleteChatById,
-  markChatAsUnread,
-  markChatAsRead,
+  upsertChatStub,
   updateChatTitleById,
   updateChatMetaById,
   clearHistory,
@@ -502,16 +535,6 @@ startHistoryListening({
 });
 
 startHistoryListening({
-  actionCreator: restoreChat,
-  effect: (action, listenerApi) => {
-    const chat = listenerApi.getState().chat;
-    const runtime = chat.threads[action.payload.id];
-    if (!runtime || runtime.streaming) return;
-    listenerApi.dispatch(markChatAsRead(action.payload.id));
-  },
-});
-
-startHistoryListening({
   actionCreator: setChatMode,
   effect: (action, listenerApi) => {
     const state = listenerApi.getState();
@@ -530,6 +553,65 @@ startHistoryListening({
   effect: (action, listenerApi) => {
     void listenerApi.dispatch(
       trajectoriesApi.endpoints.deleteTrajectory.initiate(action.payload),
+    );
+  },
+});
+
+startHistoryListening({
+  actionCreator: newChatAction,
+  effect: (_, listenerApi) => {
+    const state = listenerApi.getState();
+    const id = state.chat.current_thread_id;
+    const runtime = state.chat.threads[id];
+    if (!runtime) return;
+    listenerApi.dispatch(
+      upsertChatStub({
+        id,
+        title: runtime.thread.title ? runtime.thread.title : undefined,
+        model: runtime.thread.model ? runtime.thread.model : undefined,
+      }),
+    );
+  },
+});
+
+startHistoryListening({
+  actionCreator: createChatWithId,
+  effect: (action, listenerApi) => {
+    listenerApi.dispatch(
+      upsertChatStub({
+        id: action.payload.id,
+        title: action.payload.title,
+        model: action.payload.model,
+      }),
+    );
+  },
+});
+
+startHistoryListening({
+  actionCreator: restoreChat,
+  effect: (action, listenerApi) => {
+    listenerApi.dispatch(
+      upsertChatStub({
+        id: action.payload.id,
+        title: action.payload.title,
+        model: action.payload.model,
+      }),
+    );
+  },
+});
+
+startHistoryListening({
+  actionCreator: switchToThread,
+  effect: (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const runtime = state.chat.threads[action.payload.id];
+    if (!runtime) return;
+    listenerApi.dispatch(
+      upsertChatStub({
+        id: action.payload.id,
+        title: runtime.thread.title ? runtime.thread.title : undefined,
+        model: runtime.thread.model ? runtime.thread.model : undefined,
+      }),
     );
   },
 });

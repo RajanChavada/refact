@@ -24,7 +24,7 @@
 
 .circularProgressBg {
   fill: none;
-  stroke: transparent;
+  stroke: var(--gray-a5);
 }
 
 .circularProgressFill {
@@ -34,11 +34,15 @@
 }
 
 .circularProgressFillWarning {
+  fill: none;
   stroke: var(--yellow-9);
+  transition: stroke-dashoffset 0.3s ease;
 }
 
 .circularProgressFillOverflown {
+  fill: none;
   stroke: var(--red-9);
+  transition: stroke-dashoffset 0.3s ease;
 }
 
 .usageCounterContainerInline {

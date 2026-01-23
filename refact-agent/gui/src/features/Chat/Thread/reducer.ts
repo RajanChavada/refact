@@ -404,7 +404,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
         state.open_thread_ids.push(action.payload.id);
       }
       state.current_thread_id = action.payload.id;
-      existingRt.thread.read = true;
       // Don't reset snapshot_received - thread was already hydrated
       return;
     }
@@ -422,7 +421,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
         tool_use: action.payload.tool_use ?? state.tool_use,
         mode,
         new_chat_suggested: { wasSuggested: false },
-        read: true,
       },
       streaming: false,
       waiting_for_response: false,
@@ -461,7 +459,6 @@ export const chatReducer = createReducer(initialState, (builder) => {
       // Don't reset snapshot_received on tab switches.
       // The flag means "thread has been hydrated at least once", not "currently connected".
       state.current_thread_id = id;
-      existingRt.thread.read = true;
     }
   });
 

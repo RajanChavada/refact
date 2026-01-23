@@ -444,7 +444,6 @@ export const CHAT_CONFIG_THREAD: Chat = {
           path: "",
           project: "",
         },
-        read: true,
         new_chat_suggested: {
           wasSuggested: false,
         },

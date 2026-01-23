@@ -3,6 +3,7 @@ import { Dropdown, DropdownNavigationOptions } from "./Dropdown";
 import { Cross1Icon, PlusIcon, CheckboxIcon } from "@radix-ui/react-icons";
 import { RefactIcon } from "../../images";
 import { newChatAction } from "../../events";
+import { getStatusFromSessionState } from "../../utils/sessionStatus";
 import { restart, useTourRefs } from "../../features/Tour";
 import { popBackTo, push } from "../../features/Pages/pagesSlice";
 import {
@@ -34,7 +35,7 @@ import {
   clearThreadPauseReasons,
   setThreadConfirmationStatus,
 } from "../../features/Chat";
-import { StatusDot, type StatusDotState } from "../StatusDot";
+import { StatusDot } from "../StatusDot";
 import {
   useAppDispatch,
   useAppSelector,
@@ -74,28 +75,6 @@ export type Tab = DashboardTab | ChatTab | TaskTab;
 export type ToolbarProps = {
   activeTab: Tab;
 };
-
-function getChatTabStatusState(
-  streaming: boolean,
-  waiting: boolean,
-  paused: boolean,
-  hasError: boolean,
-  read: boolean,
-): StatusDotState {
-  if (hasError) {
-    return "error";
-  }
-  if (paused) {
-    return "paused";
-  }
-  if (streaming || waiting) {
-    return "streaming";
-  }
-  if (!read) {
-    return "unread";
-  }
-  return "idle";
-}
 
 export const Toolbar = ({ activeTab }: ToolbarProps) => {
   const dispatch = useAppDispatch();
@@ -495,13 +474,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
               );
             }
 
-            const statusState = getChatTabStatusState(
-              tab.streaming,
-              tab.waiting,
-              tab.paused,
-              tab.hasError,
-              tab.read,
-            );
+            const statusState = getStatusFromSessionState(tab.session_state);
 
             return (
               <div

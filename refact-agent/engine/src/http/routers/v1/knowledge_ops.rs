@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::io::Write;
 use axum::Extension;
 use axum::http::{Response, StatusCode};
 use hyper::Body;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock as ARwLock;
 use tokio::fs;
@@ -12,9 +14,46 @@ use tempfile::NamedTempFile;
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
-use crate::knowledge_graph::KnowledgeFrontmatter;
+use crate::knowledge_graph::{KnowledgeFrontmatter, build_knowledge_graph};
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
+
+const AUTO_LINK_MAX_LINKS: usize = 5;
+const AUTO_LINK_MIN_SCORE: f64 = 3.0;
+const AUTO_LINK_MAX_TOTAL: usize = 10;
+const VALID_STATUSES: &[&str] = &["active", "deprecated", "archived"];
+
+fn extract_entities(content: &str) -> Vec<String> {
+    let backtick_re =
+        Regex::new(r"`([a-zA-Z_][a-zA-Z0-9_:]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)`").unwrap();
+    let mut entities: HashSet<String> = HashSet::new();
+
+    for caps in backtick_re.captures_iter(content) {
+        let entity = caps.get(1).unwrap().as_str().to_string();
+        if entity.len() >= 3 && entity.len() <= 100 {
+            entities.insert(entity);
+        }
+    }
+
+    entities.into_iter().collect()
+}
+
+fn sanitize_string(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '\n' && *c != '\r')
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn sanitize_and_dedupe_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .map(|s| sanitize_string(&s))
+        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+        .collect()
+}
 
 #[derive(Deserialize)]
 pub struct UpdateMemoryPost {
@@ -29,6 +68,12 @@ pub struct UpdateMemoryPost {
     pub kind: Option<String>,
     #[serde(default)]
     pub filenames: Option<Vec<String>>,
+    #[serde(default)]
+    pub links: Option<Vec<String>>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub auto_link: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -85,10 +130,11 @@ async fn validate_knowledge_path(
         ));
     }
 
-    if canonical.extension().map(|e| e != "md").unwrap_or(true) {
+    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "md" && ext != "mdx" {
         return Err(ScratchError::new(
             StatusCode::BAD_REQUEST,
-            "Only .md files allowed".to_string(),
+            "Only .md and .mdx files allowed".to_string(),
         ));
     }
 
@@ -113,29 +159,87 @@ pub async fn handle_v1_knowledge_update_memory(
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let (mut frontmatter, _) = KnowledgeFrontmatter::parse(&existing_text);
+    let (mut frontmatter, content_start) = KnowledgeFrontmatter::parse(&existing_text);
 
     if let Some(title) = post.title {
-        frontmatter.title = Some(title);
+        frontmatter.title = Some(sanitize_string(&title));
     }
     if let Some(tags) = post.tags {
-        frontmatter.tags = tags;
+        frontmatter.tags = sanitize_and_dedupe_strings(tags);
     }
     if let Some(kind) = post.kind {
-        frontmatter.kind = Some(kind);
+        let kind = sanitize_string(&kind);
+        if !kind.is_empty() {
+            frontmatter.kind = Some(kind);
+        }
     }
     if let Some(filenames) = post.filenames {
-        frontmatter.filenames = filenames;
+        frontmatter.filenames = sanitize_and_dedupe_strings(filenames);
+    }
+    if let Some(links) = post.links {
+        frontmatter.links = sanitize_and_dedupe_strings(links);
+    }
+    if let Some(status) = post.status {
+        let status = sanitize_string(&status);
+        if !status.is_empty() {
+            if !VALID_STATUSES.contains(&status.as_str()) {
+                return Err(ScratchError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid status '{}'. Must be one of: {}", status, VALID_STATUSES.join(", ")),
+                ));
+            }
+            frontmatter.status = Some(status);
+        }
     }
     frontmatter.updated = Some(Local::now().format("%Y-%m-%d").to_string());
 
-    let content_to_write = post.content.unwrap_or_else(|| {
-        existing_text
-            .split("\n\n")
-            .skip(1)
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    });
+    let existing_body = existing_text.get(content_start..).unwrap_or("").to_string();
+    let content_to_write = post.content.unwrap_or(existing_body);
+
+    let auto_link_enabled = post.auto_link.unwrap_or(true);
+    if auto_link_enabled {
+        let entities = extract_entities(&content_to_write);
+        let kg = build_knowledge_graph(gcx.clone()).await;
+        let similar_docs = kg.find_similar_docs(
+            &frontmatter.tags,
+            &frontmatter.filenames,
+            &entities,
+        );
+
+        let doc_id = frontmatter.id.clone().unwrap_or_else(|| file_path.to_string_lossy().to_string());
+        let suggested_links: Vec<String> = similar_docs
+            .into_iter()
+            .filter(|(id, score)| {
+                if *score < AUTO_LINK_MIN_SCORE || *id == doc_id {
+                    return false;
+                }
+                if let Some(doc) = kg.docs.get(id) {
+                    if doc.frontmatter.kind_or_default() == "trajectory" {
+                        return false;
+                    }
+                    if !doc.frontmatter.is_active() {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(AUTO_LINK_MAX_LINKS)
+            .map(|(id, _)| id)
+            .collect();
+
+        for link in suggested_links {
+            if frontmatter.links.len() >= AUTO_LINK_MAX_TOTAL {
+                break;
+            }
+            if !frontmatter.links.contains(&link) {
+                frontmatter.links.push(link);
+            }
+        }
+    }
+
+    let doc_id = frontmatter.id.clone().unwrap_or_else(|| file_path.to_string_lossy().to_string());
+    frontmatter.links.retain(|link| link != &doc_id);
+
     let new_content = format!("{}\n\n{}", frontmatter.to_yaml(), content_to_write.trim());
 
     let dir = file_path

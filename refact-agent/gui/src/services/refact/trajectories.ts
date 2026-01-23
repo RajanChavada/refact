@@ -26,6 +26,8 @@ export type TrajectoryMeta = {
     | "error";
   root_chat_id?: string;
   total_coins?: number;
+  total_lines_added: number;
+  total_lines_removed: number;
 };
 
 export type TrajectoryData = {
@@ -43,7 +45,6 @@ export type TrajectoryData = {
   increase_max_tokens?: boolean;
   automatic_patch?: boolean;
   project_name?: string;
-  read?: boolean;
   isTitleGenerated?: boolean;
 };
 
@@ -99,7 +100,6 @@ export function chatThreadToTrajectoryData(
     increase_max_tokens: thread.increase_max_tokens,
     automatic_patch: thread.automatic_patch,
     project_name: thread.project_name,
-    read: thread.read,
     isTitleGenerated: thread.isTitleGenerated,
   };
 }
@@ -118,7 +118,6 @@ export function trajectoryDataToChatThread(data: TrajectoryData): ChatThread {
     increase_max_tokens: data.increase_max_tokens ?? false,
     automatic_patch: data.automatic_patch ?? false,
     project_name: data.project_name,
-    read: data.read,
     isTitleGenerated: data.isTitleGenerated,
     createdAt: data.created_at,
     last_user_message_id: "",

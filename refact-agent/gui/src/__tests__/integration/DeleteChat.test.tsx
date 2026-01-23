@@ -1,4 +1,4 @@
-import { render } from "../../utils/test-utils";
+import { render, waitFor } from "../../utils/test-utils";
 import { describe, expect, it } from "vitest";
 import {
   server,
@@ -14,26 +14,30 @@ import {
   chatSessionSubscribe,
   chatSessionCommand,
   chatSessionAbort,
+  sidebarSubscribe,
+  emptyTasks,
 } from "../../utils/mockServer";
 import { InnerApp } from "../../features/App";
 import { HistoryState } from "../../features/History/historySlice";
 
 describe("Delete a Chat form history", () => {
-  server.use(
-    goodUser,
-    goodPing,
-    chatLinks,
-    telemetryChat,
-    telemetryNetwork,
-    goodCaps,
-    emptyTrajectories,
-    trajectorySave,
-    trajectoryDelete,
-    chatSessionSubscribe,
-    chatSessionCommand,
-    chatSessionAbort,
-  );
   it("can delete a chat", async () => {
+    server.use(
+      goodUser,
+      goodPing,
+      chatLinks,
+      telemetryChat,
+      telemetryNetwork,
+      goodCaps,
+      emptyTrajectories,
+      trajectorySave,
+      trajectoryDelete,
+      chatSessionSubscribe,
+      chatSessionCommand,
+      chatSessionAbort,
+      sidebarSubscribe,
+      emptyTasks,
+    );
     const now = new Date().toISOString();
     const history: HistoryState = {
       chats: {
@@ -49,7 +53,6 @@ describe("Delete a Chat form history", () => {
           },
           createdAt: now,
           updatedAt: now,
-          read: true,
         },
       },
       isLoading: false,
@@ -77,16 +80,21 @@ describe("Delete a Chat form history", () => {
 
     const restoreButtonText = await app.findByText(itemTitleToDelete);
 
-    const deleteButton =
-      restoreButtonText.parentElement?.parentElement?.parentElement?.querySelector(
-        '[title="delete chat"]',
-      );
+    // Find the delete button - in compact view, it uses aria-label="Delete"
+    let container = restoreButtonText.parentElement;
+    while (container && !container.querySelector('[aria-label="Delete"]')) {
+      container = container.parentElement;
+    }
+    const deleteButton = container?.querySelector('[aria-label="Delete"]');
 
     expect(deleteButton).not.toBeNull();
 
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     await user.click(deleteButton!);
 
-    expect(store.getState().history.chats).toEqual({});
+    // Wait for the deletion to be processed
+    await waitFor(() => {
+      expect(store.getState().history.chats).toEqual({});
+    });
   });
 });

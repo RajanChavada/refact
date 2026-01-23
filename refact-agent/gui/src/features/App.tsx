@@ -8,8 +8,7 @@ import {
   useConfig,
   useEffectOnce,
   useEventsBusForIDE,
-  useTrajectoriesSubscription,
-  useTasksSubscription,
+  useSidebarSubscription,
   useAllChatsSubscription,
 } from "../hooks";
 import { useBrowserOnlineStatus } from "../hooks/useBrowserOnlineStatus";
@@ -77,8 +76,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
   useEventBusForWeb();
   useEventBusForApp();
   usePatchesAndDiffsEventsForIDE();
-  useTrajectoriesSubscription();
-  useTasksSubscription();
+  useSidebarSubscription();
   useAllChatsSubscription();
   useBrowserOnlineStatus();
 

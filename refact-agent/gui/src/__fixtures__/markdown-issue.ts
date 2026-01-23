@@ -483,7 +483,6 @@ export const MARKDOWN_ISSUE: ChatThread = {
   },
   currentMaximumContextTokens: 64000,
   currentMessageContextTokens: 1,
-  read: true,
   isTitleGenerated: true,
   createdAt: "2025-03-04T06:49:31.563Z",
   updatedAt: "2025-03-04T06:49:31.563Z",

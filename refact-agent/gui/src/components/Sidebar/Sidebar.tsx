@@ -1,11 +1,6 @@
-import React, { useCallback } from "react";
-import { Box, Flex, Spinner, Text } from "@radix-ui/themes";
-import { Loading } from "../Loading";
-import {
-  ChatHistory,
-  type ChatHistoryProps,
-  TaskItemCompact,
-} from "../ChatHistory";
+import React, { useCallback, useRef } from "react";
+import { Box, Flex, Spinner } from "@radix-ui/themes";
+import { ChatHistory, type ChatHistoryProps } from "../ChatHistory";
 import { ScrollArea } from "../ScrollArea";
 import {
   useAppSelector,
@@ -56,13 +51,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ takingNotes, style }) => {
   const historyLoadError = useAppSelector((app) => app.history.loadError);
   const {
     data: tasks,
-    isFetching: tasksIsFetching,
+    isLoading: tasksIsLoading,
     isError: tasksIsError,
   } = useListTasksQuery(undefined, {
     refetchOnMountOrArgChange: true,
   });
-  const tasksIsLoading =
-    tasksIsFetching || (tasks === undefined && !tasksIsError);
   const [deleteTask] = useDeleteTaskMutation();
   const [updateTaskMeta] = useUpdateTaskMetaMutation();
   const {
@@ -111,17 +104,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ takingNotes, style }) => {
     [updateTaskMeta],
   );
 
-  const activeTasks = (tasks ?? []).filter(
-    (t) =>
-      t.status === "active" || t.status === "planning" || t.status === "paused",
-  );
-
   const onRenameChat = useCallback(
     (id: string, newTitle: string) => {
       dispatch(updateChatTitleById({ chatId: id, newTitle }));
     },
     [dispatch],
   );
+
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   return (
     <Flex
@@ -133,70 +123,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ takingNotes, style }) => {
       }}
     >
       <FeatureMenu />
-      <Flex mt="4">
+      <Flex mt="1">
         <Box position="absolute" ml="5" mt="2">
           <Spinner loading={takingNotes} title="taking notes" />
         </Box>
       </Flex>
 
       <Box style={{ overflow: "hidden", flex: 1 }}>
-        <ScrollArea scrollbars="vertical">
-          <Box p="2">
-            <Text
-              size="2"
-              weight="medium"
-              color="gray"
-              mb="2"
-              style={{ display: "block" }}
-            >
-              Tasks
-            </Text>
-            {tasksIsLoading ? (
-              <Loading />
-            ) : activeTasks.length > 0 ? (
-              <Flex direction="column" gap="1">
-                {activeTasks.map((task) => (
-                  <TaskItemCompact
-                    key={task.id}
-                    task={task}
-                    onClick={() => handleTaskClick(task.id)}
-                    onDelete={handleDeleteTask}
-                    onRename={handleRenameTask}
-                  />
-                ))}
-              </Flex>
-            ) : (
-              <Text size="2" color={tasksIsError ? "red" : "gray"}>
-                {tasksIsError ? "Unable to load tasks" : "No active tasks"}
-              </Text>
-            )}
-          </Box>
-
-          <Box p="2" pt="0">
-            <Text
-              size="2"
-              weight="medium"
-              color="gray"
-              mb="2"
-              style={{ display: "block" }}
-            >
-              Chats
-            </Text>
-          </Box>
+        <ScrollArea scrollbars="vertical" ref={scrollAreaRef}>
           <ChatHistory
             history={history}
-            isLoading={historyIsLoading}
+            tasks={tasks}
+            isLoading={historyIsLoading || tasksIsLoading}
             onHistoryItemClick={onHistoryItemClick}
             onDeleteHistoryItem={onDeleteHistoryItem}
             onRenameHistoryItem={onRenameChat}
+            onTaskClick={handleTaskClick}
+            onDeleteTask={handleDeleteTask}
+            onRenameTask={handleRenameTask}
             onLoadMore={loadMoreHistory}
             hasMore={hasMoreHistory}
             isLoadingMore={isLoadingMoreHistory}
             loadMoreError={loadMoreError}
             onRetryLoadMore={retryLoadMore}
-            hasConnectionError={!!historyLoadError}
+            hasConnectionError={!!historyLoadError || tasksIsError}
             compactView={true}
             noScroll={true}
+            scrollContainerRef={scrollAreaRef}
           />
         </ScrollArea>
       </Box>
