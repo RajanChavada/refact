@@ -1,7 +1,7 @@
 # Refact Agent GUI - Developer Guide
 
 **Last Updated**: January 2025
-**Version**: 2.0.10-alpha.3
+**Version**: 7.0.0
 **Repository**: https://github.com/smallcloudai/refact/tree/main/refact-agent/gui
 
 ---
@@ -4272,7 +4272,7 @@ fetch("http://127.0.0.1:8001/v1/chats/subscribe?chat_id=test").then((r) =>
 
 ## Version History
 
-**Current**: v2.0.10-alpha.3
+**Current**: v7.0.0
 
 **Major Architecture Changes** (January 2025):
 

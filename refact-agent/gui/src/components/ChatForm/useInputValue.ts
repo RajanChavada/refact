@@ -40,9 +40,7 @@ export function useInputValue(
 
         if (payload.messages && payload.messages.length > 0) {
           debugRefact(`[DEBUG]: payload messages: `, payload.messages);
-          setIsSendImmediately(true);
-          // Use thunk to send messages - it reads fresh chatId from Redux state
-          // to avoid stale closure issues when IDE sends events in quick succession
+          setIsSendImmediately(payload.send_immediately);
           void dispatch(
             sendIdeMessagesToCurrentChat({
               messages: payload.messages,

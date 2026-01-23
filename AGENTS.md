@@ -1141,7 +1141,7 @@ refact-agent/gui/src/__tests__/chatContract.test.ts
 
 #### 2. Alpha Status
 
-- Current version: `2.0.10-alpha.3`
+- Current version: `7.0.0`
 - Testing: Comprehensive test suite passes
 - Production readiness: Technically ready
 - Merge timeline: Unknown

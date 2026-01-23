@@ -24,6 +24,7 @@ import {
 } from "../../../services/refact";
 import {
   sendUserMessage,
+  sendChatCommand,
   type MessageContent,
 } from "../../../services/refact/chatCommands";
 import { selectLspPort, selectApiKey } from "../../Config/configSlice";
@@ -69,11 +70,6 @@ export interface TaskMeta {
   card_id?: string;
 }
 
-/**
- * Send messages from IDE (e.g., CodeLens) to the current chat.
- * This thunk reads chatId fresh from Redux state to avoid stale closure issues
- * that occur when the IDE sends events in quick succession.
- */
 export const sendIdeMessagesToCurrentChat = createAsyncThunk(
   "chatThread/sendIdeMessagesToCurrentChat",
   async (arg: { messages: ChatMessages; priority?: boolean }, api) => {
@@ -82,6 +78,21 @@ export const sendIdeMessagesToCurrentChat = createAsyncThunk(
     const port = selectLspPort(state);
     const apiKey = selectApiKey(state) ?? undefined;
     if (!chatId || !port) return;
+
+    const patch: Record<string, unknown> = { tool_use: state.chat.tool_use };
+
+    const runtime = state.chat.threads[chatId];
+    if (runtime?.thread.model) patch.model = runtime.thread.model;
+    if (runtime?.thread.mode) patch.mode = runtime.thread.mode;
+    if (runtime?.thread.boost_reasoning !== undefined)
+      patch.boost_reasoning = runtime.thread.boost_reasoning;
+
+    if (Object.keys(patch).length > 0) {
+      await sendChatCommand(chatId, port, apiKey, {
+        type: "set_params",
+        patch,
+      });
+    }
 
     for (const m of arg.messages) {
       if (!isUserMessage(m)) continue;

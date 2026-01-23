@@ -1,7 +1,7 @@
 # Refact Agent Engine - Developer Guide
 
 **Last Updated**: January 2025  
-**Version**: 0.10.30  
+**Version**: 7.0.0  
 **Repository**: https://github.com/smallcloudai/refact/tree/main/refact-agent/engine
 
 ---
@@ -1221,7 +1221,7 @@ Whisper-based transcription (optional), streaming sessions, models: tiny to larg
 
 ---
 
-**Last Updated**: January 2025 | **Version**: 0.10.30
+**Last Updated**: January 2025 | **Version**: 7.0.0
 
 
 
