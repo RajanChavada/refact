@@ -224,9 +224,23 @@ export const chatReducer = createReducer(initialState, (builder) => {
     const currentRt = getCurrentRuntime(state);
     const lastParams = getLastThreadParams();
 
+    const allowedModes: LspChatMode[] = ["AGENT", "EXPLORE", "NO_TOOLS"];
+    const currentIsTask = Boolean(
+      currentRt?.thread.is_task_chat ?? currentRt?.thread.task_meta?.task_id,
+    );
+    const fromCurrent =
+      !currentIsTask &&
+      currentRt?.thread.mode &&
+      allowedModes.includes(currentRt.thread.mode)
+        ? currentRt.thread.mode
+        : undefined;
+    const fromStorage =
+      lastParams.mode && allowedModes.includes(lastParams.mode)
+        ? lastParams.mode
+        : undefined;
     const mode = getThreadMode({
       tool_use: state.tool_use,
-      maybeMode: currentRt?.thread.mode ?? lastParams.mode,
+      maybeMode: fromCurrent ?? fromStorage,
     });
     const newRuntime = createThreadRuntime(state.tool_use, null, mode);
 

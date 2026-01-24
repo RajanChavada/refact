@@ -51,6 +51,12 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
   total_lines_removed?: number;
 };
 
+export function isTaskChatLike(
+  x: Partial<Pick<ChatHistoryItem, "task_id" | "task_meta" | "is_task_chat">>,
+): boolean {
+  return Boolean(x.task_id ?? x.task_meta?.task_id ?? x.is_task_chat);
+}
+
 export type HistoryMeta = Pick<
   ChatHistoryItem,
   "id" | "title" | "createdAt" | "model" | "updatedAt"
@@ -83,7 +89,7 @@ export function buildHistoryTree(
   chats: Record<string, ChatHistoryItem>,
 ): HistoryTreeNode[] {
   const nodes = Object.values(chats)
-    .filter((x) => !x.task_id)
+    .filter((x) => !isTaskChatLike(x))
     .map((x) => ({ ...x, children: [] as HistoryTreeNode[] }));
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -187,6 +193,7 @@ function chatThreadToHistoryItem(thread: ChatThread): ChatHistoryItem {
     isTitleGenerated: thread.isTitleGenerated,
     automatic_patch: thread.automatic_patch,
     mode: updatedMode,
+    task_id: thread.task_meta?.task_id,
   };
 }
 
@@ -268,6 +275,7 @@ export const historySlice = createSlice({
 
     saveChat: (state, action: PayloadAction<ChatThread>) => {
       if (action.payload.messages.length === 0) return;
+      if (isTaskChatLike(action.payload)) return;
       const chat = chatThreadToHistoryItem(action.payload);
       chat.message_count = action.payload.messages.length;
       chat.messages = [];
@@ -280,12 +288,12 @@ export const historySlice = createSlice({
           chat.title = existing.title;
           chat.isTitleGenerated = true;
         }
-        chat.parent_id = existing.parent_id;
-        chat.link_type = existing.link_type;
-        chat.task_id = existing.task_id;
-        chat.task_role = existing.task_role;
-        chat.agent_id = existing.agent_id;
-        chat.card_id = existing.card_id;
+        chat.parent_id = chat.parent_id ?? existing.parent_id;
+        chat.link_type = chat.link_type ?? existing.link_type;
+        chat.task_id = chat.task_id ?? existing.task_id;
+        chat.task_role = chat.task_role ?? existing.task_role;
+        chat.agent_id = chat.agent_id ?? existing.agent_id;
+        chat.card_id = chat.card_id ?? existing.card_id;
       }
       state.chats[chat.id] = chat;
     },
@@ -466,7 +474,7 @@ export const historySlice = createSlice({
 
     getHistory: (state): ChatHistoryItem[] =>
       Object.values(state.chats)
-        .filter((item) => !item.task_id)
+        .filter((item) => !isTaskChatLike(item))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
 
     getHistoryTree: (state): HistoryTreeNode[] => buildHistoryTree(state.chats),
@@ -564,6 +572,7 @@ startHistoryListening({
     const id = state.chat.current_thread_id;
     const runtime = state.chat.threads[id];
     if (!runtime) return;
+    if (isTaskChatLike(runtime.thread)) return;
     listenerApi.dispatch(
       upsertChatStub({
         id,
@@ -577,6 +586,7 @@ startHistoryListening({
 startHistoryListening({
   actionCreator: createChatWithId,
   effect: (action, listenerApi) => {
+    if (action.payload.isTaskChat ?? action.payload.taskMeta?.task_id) return;
     listenerApi.dispatch(
       upsertChatStub({
         id: action.payload.id,
@@ -590,6 +600,7 @@ startHistoryListening({
 startHistoryListening({
   actionCreator: restoreChat,
   effect: (action, listenerApi) => {
+    if (isTaskChatLike(action.payload)) return;
     listenerApi.dispatch(
       upsertChatStub({
         id: action.payload.id,
@@ -606,6 +617,7 @@ startHistoryListening({
     const state = listenerApi.getState();
     const runtime = state.chat.threads[action.payload.id];
     if (!runtime) return;
+    if (isTaskChatLike(runtime.thread)) return;
     listenerApi.dispatch(
       upsertChatStub({
         id: action.payload.id,

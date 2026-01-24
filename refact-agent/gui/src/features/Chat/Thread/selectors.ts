@@ -15,6 +15,7 @@ import {
   ThreadConfirmation,
   ImageFile,
 } from "./types";
+import type { SessionState } from "../../../utils/sessionStatus";
 
 const EMPTY_MESSAGES: ChatMessages = [];
 const EMPTY_QUEUED: QueuedItem[] = [];
@@ -31,6 +32,17 @@ const DEFAULT_CONFIRMATION_STATUS = {
   confirmationStatus: true,
 } as const;
 
+function deriveSessionStateFromRuntime(
+  rt: ChatThreadRuntime | undefined,
+): SessionState | undefined {
+  if (!rt) return undefined;
+  if (rt.error) return "error";
+  if (rt.confirmation.pause) return "paused";
+  if (rt.streaming) return "generating";
+  if (rt.waiting_for_response) return "executing_tools";
+  return "idle";
+}
+
 export const selectCurrentThreadId = (state: RootState) =>
   state.chat.current_thread_id;
 export const selectOpenThreadIds = (state: RootState) =>
@@ -44,16 +56,22 @@ export type TabDisplayData = {
 };
 
 export const selectTabsDisplayData = createSelector(
-  [selectOpenThreadIds, (state: RootState) => state.history.chats],
-  (openIds, historyChats): TabDisplayData[] =>
+  [
+    selectOpenThreadIds,
+    selectAllThreads,
+    (state: RootState) => state.history.chats,
+  ],
+  (openIds, threads, historyChats): TabDisplayData[] =>
     openIds.map((id) => {
+      const runtime = threads[id];
       const historyItem = historyChats[id] as
         | (typeof historyChats)[string]
         | undefined;
+      const liveSessionState = deriveSessionStateFromRuntime(runtime);
       return {
         id,
-        title: historyItem?.title ?? "New Chat",
-        session_state: historyItem?.session_state,
+        title: runtime?.thread.title ?? historyItem?.title ?? "New Chat",
+        session_state: liveSessionState ?? historyItem?.session_state,
       };
     }),
 );

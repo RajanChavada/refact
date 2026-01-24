@@ -79,6 +79,9 @@ pub async fn handle_v1_chat_subscribe(
                     }
                 }
                 _ = heartbeat_interval.tick() => {
+                    if session_for_stream.lock().await.closed {
+                        break;
+                    }
                     yield Ok::<_, std::convert::Infallible>(format!(": hb {}\n\n", chrono::Utc::now().timestamp()));
                 }
             }

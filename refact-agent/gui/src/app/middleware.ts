@@ -8,7 +8,6 @@ import {
   newChatAction,
   restoreChat,
   newIntegrationChat,
-  upsertToolCall,
   applyChatEvent,
   clearThreadPauseReasons,
   setThreadConfirmationStatus,
@@ -48,6 +47,9 @@ import {
 import { setThemeMode, updateConfig } from "../features/Config/configSlice";
 import { nextTip } from "../features/TipOfTheDay";
 import { telemetryApi } from "../services/refact/telemetry";
+import { tasksApi } from "../services/refact/tasks";
+import { closeTask } from "../features/Tasks/tasksSlice";
+import { closeThread } from "../features/Chat/Thread";
 import { CONFIG_PATH_URL, FULL_PATH_URL } from "../services/refact/consts";
 import {
   ideToolCallResponse,
@@ -461,23 +463,24 @@ startListening({
     const { toolCallId, accepted } = action.payload;
 
     listenerApi.dispatch(upsertToolCallIntoHistory(action.payload));
-    listenerApi.dispatch(upsertToolCall(action.payload));
 
     const port = state.config.lspPort;
+    if (!port) return;
+
     const apiKey = state.config.apiKey;
+    const content =
+      accepted === true
+        ? "The user accepted the changes."
+        : accepted === false
+          ? "The user rejected the changes."
+          : "The user applied the changes with modifications.";
 
     try {
-      const { sendChatCommand } = await import(
-        "../services/refact/chatCommands"
-      );
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "ide_tool_result",
         tool_call_id: toolCallId,
-        content:
-          accepted === true
-            ? "Tool executed successfully"
-            : "Tool execution rejected",
-        tool_failed: accepted !== true,
+        content,
+        tool_failed: accepted === false,
       });
     } catch {
       // Silently ignore - backend may not support this command
@@ -831,5 +834,26 @@ startListening({
     } catch {
       // Best effort - ignore if backend rejects
     }
+  },
+});
+
+startListening({
+  matcher: tasksApi.endpoints.deleteTask.matchFulfilled,
+  effect: (action, listenerApi) => {
+    const taskId = action.meta.arg.originalArgs;
+    const state = listenerApi.getState();
+
+    for (const [threadId, runtime] of Object.entries(state.chat.threads)) {
+      if (!runtime) continue;
+      const thread = runtime.thread;
+      if (
+        thread.task_meta?.task_id === taskId ||
+        (thread.is_task_chat && thread.id.includes(taskId))
+      ) {
+        listenerApi.dispatch(closeThread({ id: threadId, force: true }));
+      }
+    }
+
+    listenerApi.dispatch(closeTask(taskId));
   },
 });

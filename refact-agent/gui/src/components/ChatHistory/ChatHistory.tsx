@@ -9,6 +9,7 @@ import {
   ChatHistoryItem,
   HistoryTreeNode,
   buildHistoryTree,
+  isTaskChatLike,
 } from "../../features/History/historySlice";
 import type { TaskMeta } from "../../services/refact/tasks";
 
@@ -196,7 +197,7 @@ function getSortedUnifiedList(
 
   // In flat mode, merge chats with tasks
   const chatItems: UnifiedItem[] = Object.values(history)
-    .filter((item) => !item.task_id)
+    .filter((item) => !isTaskChatLike(item))
     .map((item) => ({ type: "chat" as const, item }));
 
   const taskItems: UnifiedItem[] = activeTasks.map((item) => ({

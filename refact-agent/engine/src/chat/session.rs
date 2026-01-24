@@ -101,6 +101,11 @@ impl ChatSession {
             && self.last_activity.elapsed() > session_idle_timeout()
     }
 
+    pub fn close_event_channel(&mut self) {
+        let (new_tx, _) = broadcast::channel(limits().event_channel_capacity);
+        self.event_tx = new_tx;
+    }
+
     pub fn emit(&mut self, event: ChatEvent) {
         self.event_seq += 1;
         let envelope = EventEnvelope {
@@ -510,8 +515,15 @@ pub async fn get_or_create_session_with_trajectory(
 ) -> Arc<AMutex<ChatSession>> {
     {
         let sessions_read = sessions.read().await;
-        if let Some(session) = sessions_read.get(chat_id) {
-            return session.clone();
+        if let Some(session_arc) = sessions_read.get(chat_id) {
+            let session = session_arc.lock().await;
+            if !session.closed {
+                return session_arc.clone();
+            }
+            drop(session);
+            drop(sessions_read);
+            let mut sessions_write = sessions.write().await;
+            sessions_write.remove(chat_id);
         }
     }
 
@@ -595,6 +607,7 @@ pub fn start_session_cleanup_task(gcx: Arc<ARwLock<GlobalContext>>) {
                 {
                     let mut session = session_arc.lock().await;
                     session.closed = true;
+                    session.close_event_channel();
                     session.queue_notify.notify_one();
                 }
                 super::trajectories::maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
