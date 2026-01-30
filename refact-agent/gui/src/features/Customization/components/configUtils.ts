@@ -207,7 +207,8 @@ export function safeMessageArray(value: unknown): MessageTemplate[] {
 
 export function safeSelectionRange(value: unknown): [number, number] | null {
   if (!Array.isArray(value) || value.length !== 2) return null;
-  const [min, max] = value;
+  const min: unknown = value[0];
+  const max: unknown = value[1];
   if (typeof min !== "number" || typeof max !== "number") return null;
   if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
   return [min, max];

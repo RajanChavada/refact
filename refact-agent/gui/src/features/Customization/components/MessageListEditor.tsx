@@ -53,6 +53,7 @@ export const MessageListEditor: React.FC<MessageListEditorProps> = ({
 
   useEffect(() => {
     setInternal(toInternal(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- valueKey is derived from value, used for deep comparison
   }, [valueKey]);
 
   const emit = useCallback(
