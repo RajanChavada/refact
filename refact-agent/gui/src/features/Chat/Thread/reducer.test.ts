@@ -439,6 +439,7 @@ describe("Chat Thread Reducer - Event-based (Stateless Trajectory UI)", () => {
         reasons: [
           {
             type: "confirmation",
+            tool_name: "shell",
             command: "shell rm -rf /",
             rule: "dangerous_command",
             tool_call_id: "call_123",

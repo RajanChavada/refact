@@ -117,6 +117,14 @@ export const selectThreadToolUse = (state: RootState) =>
 export const selectAutomaticPatch = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread.automatic_patch;
 
+export const selectAutoApproveEditingTools = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.thread
+    .auto_approve_editing_tools ?? false;
+
+export const selectAutoApproveDangerousCommands = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.thread
+    .auto_approve_dangerous_commands ?? false;
+
 export const selectCheckpointsEnabled = (state: RootState) =>
   state.chat.checkpoints_enabled;
 

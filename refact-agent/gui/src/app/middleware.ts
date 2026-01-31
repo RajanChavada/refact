@@ -25,6 +25,8 @@ import {
   setChatMode,
   setChatModel,
   setAutomaticPatch,
+  setAutoApproveEditingTools,
+  setAutoApproveDangerousCommands,
   setIncreaseMaxTokens,
   setAreFollowUpsEnabled,
   setSystemPrompt,
@@ -618,6 +620,54 @@ startListening({
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "set_params",
         patch: { automatic_patch: action.payload.value },
+      });
+    } catch {
+      /* ignore */
+    }
+  },
+});
+
+startListening({
+  actionCreator: setAutoApproveEditingTools,
+  effect: async (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+    const chatId = action.payload.chatId;
+
+    if (!port || !chatId) return;
+
+    try {
+      const { sendChatCommand } = await import(
+        "../services/refact/chatCommands"
+      );
+      await sendChatCommand(chatId, port, apiKey ?? undefined, {
+        type: "set_params",
+        patch: { auto_approve_editing_tools: action.payload.value },
+      });
+    } catch {
+      /* ignore */
+    }
+  },
+});
+
+startListening({
+  actionCreator: setAutoApproveDangerousCommands,
+  effect: async (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+    const chatId = action.payload.chatId;
+
+    if (!port || !chatId) return;
+
+    try {
+      const { sendChatCommand } = await import(
+        "../services/refact/chatCommands"
+      );
+      await sendChatCommand(chatId, port, apiKey ?? undefined, {
+        type: "set_params",
+        patch: { auto_approve_dangerous_commands: action.payload.value },
       });
     } catch {
       /* ignore */

@@ -82,7 +82,7 @@ export const ToolConfirmation: React.FC<ToolConfirmationProps> = ({
 
   const resolvedReasons = useMemo((): ResolvedPauseReason[] => {
     return pauseReasons.map((r) => {
-      let toolName = toolCallsById.get(r.tool_call_id)?.function.name;
+      let toolName = r.tool_name || toolCallsById.get(r.tool_call_id)?.function.name;
       if (!toolName) {
         const cmd = r.command.trim();
         if (cmd) {

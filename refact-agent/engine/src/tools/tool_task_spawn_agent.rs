@@ -362,6 +362,8 @@ impl Tool for ToolTaskSpawnAgent {
                 checkpoints_enabled: false,
                 is_title_generated: true,
                 automatic_patch: false,
+                auto_approve_editing_tools: true,
+                auto_approve_dangerous_commands: false,
                 task_meta: Some(TaskMeta {
                     task_id: task_id.clone(),
                     role: "agents".to_string(),

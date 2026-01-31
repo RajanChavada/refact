@@ -302,6 +302,14 @@ export const setAutomaticPatch = createAction<PayloadWithChatAndBoolean>(
   "chatThread/setAutomaticPatch",
 );
 
+export const setAutoApproveEditingTools = createAction<PayloadWithChatAndBoolean>(
+  "chatThread/setAutoApproveEditingTools",
+);
+
+export const setAutoApproveDangerousCommands = createAction<PayloadWithChatAndBoolean>(
+  "chatThread/setAutoApproveDangerousCommands",
+);
+
 export const saveTitle = createAction<PayloadWithIdAndTitle>(
   "chatThread/saveTitle",
 );

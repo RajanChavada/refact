@@ -21,6 +21,8 @@ export type ThreadParams = {
   is_title_generated: boolean;
   use_compression?: boolean;
   automatic_patch?: boolean;
+  auto_approve_editing_tools?: boolean;
+  auto_approve_dangerous_commands?: boolean;
   task_meta?: {
     task_id: string;
     role: string;
@@ -31,6 +33,7 @@ export type ThreadParams = {
 
 export type PauseReason = {
   type: string;
+  tool_name: string;
   command: string;
   rule: string;
   tool_call_id: string;

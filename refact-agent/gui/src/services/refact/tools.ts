@@ -205,6 +205,7 @@ export type Tool = {
 
 export type ToolConfirmationPauseReason = {
   type: "confirmation" | "denial";
+  tool_name: string;
   command: string;
   rule: string;
   tool_call_id: string;

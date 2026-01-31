@@ -32,6 +32,8 @@ import {
   setIsWaitingForResponse,
   setMaxNewTokens,
   setAutomaticPatch,
+  setAutoApproveEditingTools,
+  setAutoApproveDangerousCommands,
   setLastUserMessageId,
   setEnabledCheckpoints,
   setBoostReasoning,
@@ -332,6 +334,16 @@ export const chatReducer = createReducer(initialState, (builder) => {
   builder.addCase(setAutomaticPatch, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
     if (rt) rt.thread.automatic_patch = action.payload.value;
+  });
+
+  builder.addCase(setAutoApproveEditingTools, (state, action) => {
+    const rt = getRuntime(state, action.payload.chatId);
+    if (rt) rt.thread.auto_approve_editing_tools = action.payload.value;
+  });
+
+  builder.addCase(setAutoApproveDangerousCommands, (state, action) => {
+    const rt = getRuntime(state, action.payload.chatId);
+    if (rt) rt.thread.auto_approve_dangerous_commands = action.payload.value;
   });
 
   builder.addCase(setIsNewChatSuggested, (state, action) => {
@@ -754,6 +766,14 @@ export const chatReducer = createReducer(initialState, (builder) => {
             event.thread.is_title_generated,
           automatic_patch:
             event.thread.automatic_patch ?? existing?.automatic_patch ?? false,
+          auto_approve_editing_tools:
+            event.thread.auto_approve_editing_tools ??
+            existing?.auto_approve_editing_tools ??
+            false,
+          auto_approve_dangerous_commands:
+            event.thread.auto_approve_dangerous_commands ??
+            existing?.auto_approve_dangerous_commands ??
+            false,
           increase_max_tokens: existing?.increase_max_tokens ?? false,
           new_chat_suggested: { wasSuggested: false },
           is_task_chat: isTaskChat,
@@ -840,6 +860,17 @@ export const chatReducer = createReducer(initialState, (builder) => {
           typeof params.automatic_patch === "boolean"
         )
           rt.thread.automatic_patch = params.automatic_patch;
+        if (
+          "auto_approve_editing_tools" in params &&
+          typeof params.auto_approve_editing_tools === "boolean"
+        )
+          rt.thread.auto_approve_editing_tools = params.auto_approve_editing_tools;
+        if (
+          "auto_approve_dangerous_commands" in params &&
+          typeof params.auto_approve_dangerous_commands === "boolean"
+        )
+          rt.thread.auto_approve_dangerous_commands =
+            params.auto_approve_dangerous_commands;
         if ("task_meta" in params && params.task_meta != null) {
           rt.thread.task_meta = params.task_meta as ChatThread["task_meta"];
           rt.thread.is_task_chat = true;

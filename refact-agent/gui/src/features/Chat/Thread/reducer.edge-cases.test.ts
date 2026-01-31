@@ -409,6 +409,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
         reasons: [
           {
             type: "confirmation",
+            tool_name: "shell",
             command: "shell",
             rule: "deny_all",
             tool_call_id: "tc-1",
@@ -433,6 +434,7 @@ describe("Chat Thread Reducer - Edge Cases", () => {
         reasons: [
           {
             type: "confirmation",
+            tool_name: "shell",
             command: "shell",
             rule: "deny_all",
             tool_call_id: "tc-1",

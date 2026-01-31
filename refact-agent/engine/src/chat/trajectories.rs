@@ -350,6 +350,14 @@ pub async fn load_trajectory_for_chat(
             .get("automatic_patch")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        auto_approve_editing_tools: t
+            .get("auto_approve_editing_tools")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        auto_approve_dangerous_commands: t
+            .get("auto_approve_dangerous_commands")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         task_meta,
         parent_id: t
             .get("parent_id")
