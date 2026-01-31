@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use itertools::Itertools;
 use regex::Regex;
 use serde_json::Value;
@@ -61,6 +61,9 @@ async fn search_single_file(
     file_results
 }
 
+/// Maximum concurrent file reads to avoid overwhelming I/O
+const MAX_CONCURRENT_FILE_READS: usize = 32;
+
 async fn search_files_with_regex(
     gcx: Arc<ARwLock<GlobalContext>>,
     pattern: &str,
@@ -71,23 +74,23 @@ async fn search_files_with_regex(
         .await
         .and_then(|files| validate_scope_files(files, scope))?;
     let regex_arc = Arc::new(regex);
-    let results_mutex = Arc::new(AMutex::new(Vec::new()));
-    let search_futures = files_to_search.into_iter().map(|file_path| {
-        let gcx_clone = gcx.clone();
-        let regex_clone = regex_arc.clone();
-        let results_mutex_clone = results_mutex.clone();
-        async move {
-            let file_results = search_single_file(gcx_clone, file_path, &regex_clone).await;
-            if !file_results.is_empty() {
-                let mut results = results_mutex_clone.lock().await;
-                results.extend(file_results);
+
+    // Use bounded concurrency to avoid overwhelming I/O with thousands of files
+    let results: Vec<Vec<ContextFile>> = stream::iter(files_to_search)
+        .map(|file_path| {
+            let gcx_clone = gcx.clone();
+            let regex_clone = regex_arc.clone();
+            async move {
+                search_single_file(gcx_clone, file_path, &regex_clone).await
             }
-        }
-    });
-    join_all(search_futures).await;
-    let mut results = results_mutex.lock().await.clone();
-    results.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-    Ok(results)
+        })
+        .buffer_unordered(MAX_CONCURRENT_FILE_READS)
+        .collect()
+        .await;
+
+    let mut flat_results: Vec<ContextFile> = results.into_iter().flatten().collect();
+    flat_results.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    Ok(flat_results)
 }
 
 fn path_depth(path: &str) -> usize {
@@ -198,6 +201,7 @@ impl Tool for ToolRegexSearch {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: true,
             description: "Search for files and folders whose names or paths match the given regular expression pattern, and also search for text matches inside files using the same pattern. Reports both path matches and text matches in separate sections.".to_string(),
             parameters: vec![
                 ToolParam {

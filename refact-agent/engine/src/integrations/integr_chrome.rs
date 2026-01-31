@@ -320,6 +320,7 @@ impl Tool for ToolChrome {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "A real web browser with graphical interface.".to_string(),
             parameters: vec![ToolParam {
                 name: "commands".to_string(),

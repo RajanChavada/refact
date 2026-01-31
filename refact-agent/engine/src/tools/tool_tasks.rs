@@ -46,6 +46,7 @@ impl Tool for ToolTasksSet {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Set the task progress list shown to the user. Use to track multi-step work. \
                 Pass complete task list each time (replaces previous). \
                 Each task needs: id (unique string), content (description), status (pending/in_progress/completed/failed).".to_string(),

@@ -451,6 +451,7 @@ impl Tool for ToolService {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: self.cfg.description.clone(),
             parameters,
             parameters_required,

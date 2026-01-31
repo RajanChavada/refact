@@ -249,6 +249,7 @@ impl Tool for ToolStrategicPlanning {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Strategically plan a solution for a complex problem or create a comprehensive approach. Automatically identifies relevant files from the codebase.".to_string(),
             parameters: vec![],
             parameters_required: vec![],

@@ -243,6 +243,8 @@ const ToolTab: React.FC<{
   const toolDesc =
     typeof tool?.description === "string" ? tool.description : "";
   const agentic = typeof tool?.agentic === "boolean" ? tool.agentic : false;
+  const allowParallel =
+    typeof tool?.allow_parallel === "boolean" ? tool.allow_parallel : false;
   const parameters = Array.isArray(tool?.parameters)
     ? (tool.parameters as ToolParameter[])
     : [];
@@ -260,6 +262,7 @@ const ToolTab: React.FC<{
               patch(["tool"], {
                 description: "",
                 agentic: false,
+                allow_parallel: false,
                 parameters: [],
                 required: [],
               });
@@ -293,6 +296,17 @@ const ToolTab: React.FC<{
             <Text size="2">Agentic</Text>
             <Text size="1" color="gray">
               (tool can make multiple calls)
+            </Text>
+          </Flex>
+
+          <Flex align="center" gap="2">
+            <Switch
+              checked={allowParallel}
+              onCheckedChange={(c) => patch(["tool", "allow_parallel"], c)}
+            />
+            <Text size="2">Allow Parallel</Text>
+            <Text size="1" color="gray">
+              (tool can run concurrently with other parallel tools)
             </Text>
           </Flex>
 

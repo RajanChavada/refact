@@ -140,6 +140,7 @@ impl Tool for ToolTaskBoardGet {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Get task board state. Without card_id returns summary (id, title, column, priority, depends_on). With card_id returns full card details including instructions, status_updates, final_report.".to_string(),
             parameters: vec![
                 ToolParam { name: "task_id".to_string(), param_type: "string".to_string(), description: "Task UUID (optional if in task context)".to_string() },
@@ -258,6 +259,7 @@ impl Tool for ToolTaskBoardCreateCard {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Create a new card on the task board.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -381,6 +383,7 @@ impl Tool for ToolTaskBoardUpdateCard {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Update an existing card's fields.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -513,6 +516,7 @@ impl Tool for ToolTaskBoardMoveCard {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Move a card to a different column.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -610,6 +614,7 @@ impl Tool for ToolTaskBoardDeleteCard {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Delete a card from the board.".to_string(),
             parameters: vec![ToolParam {
                 name: "card_id".to_string(),
@@ -673,6 +678,7 @@ impl Tool for ToolTaskReadyCards {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Get cards that are ready to be worked on (all dependencies satisfied)."
                 .to_string(),
             parameters: vec![],

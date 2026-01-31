@@ -229,6 +229,7 @@ impl Tool for ToolCodeReview {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Perform a thorough code review. Automatically identifies relevant files and checks for bugs, integration issues, missing tests, code style, and consistency.".to_string(),
             parameters: vec![],
             parameters_required: vec![],

@@ -146,6 +146,7 @@ impl Tool for ToolUpdateTextDocByLines {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Replaces line ranges in an existing file with new content. Line numbers are 1-based and inclusive. Supports multiple non-overlapping ranges.".to_string(),
             parameters: vec![
                 ToolParam {

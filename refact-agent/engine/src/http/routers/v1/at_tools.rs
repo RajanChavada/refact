@@ -153,6 +153,7 @@ pub async fn handle_v1_post_tools(
             tool.name,
             ToolConfig {
                 enabled: tool.enabled,
+                allow_parallel: None,
             },
         )
         .await

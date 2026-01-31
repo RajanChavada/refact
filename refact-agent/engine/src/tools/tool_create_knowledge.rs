@@ -30,6 +30,7 @@ impl Tool for ToolCreateKnowledge {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Creates a new knowledge entry. Uses AI to enrich metadata and check for outdated documents. Use it if you need to remember something.".to_string(),
             parameters: vec![
                 ToolParam {

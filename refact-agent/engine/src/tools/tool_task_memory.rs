@@ -80,6 +80,7 @@ impl Tool for ToolTaskMemorySave {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Saves a memory/note for the current task. Use this to record decisions, assumptions, API quirks, investigation results, or any useful information that should be shared with other agents and future planner iterations. Memories are automatically injected into all task chats.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -240,6 +241,7 @@ impl Tool for ToolTaskMemoriesGet {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Retrieves all saved memories for the current task. Returns the content of all memory files from the task's memories folder.".to_string(),
             parameters: vec![
                 ToolParam {

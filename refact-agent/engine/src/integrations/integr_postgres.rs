@@ -160,6 +160,7 @@ impl Tool for ToolPostgres {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "PostgreSQL integration, can run a single query per call.".to_string(),
             parameters: vec![
                 ToolParam {

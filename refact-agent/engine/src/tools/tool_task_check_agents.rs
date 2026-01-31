@@ -150,6 +150,7 @@ impl Tool for ToolTaskCheckAgents {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: true,
             description: "Check the status of all spawned agents for a task. Shows their board status (primary) and live session state (if available). Agents mark themselves done via task_agent_finish(). Agents that fail (streaming errors, timeouts, stuck) are automatically marked as failed.".to_string(),
             parameters: vec![
                 ToolParam {

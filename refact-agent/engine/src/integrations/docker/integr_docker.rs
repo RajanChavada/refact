@@ -182,6 +182,7 @@ impl Tool for ToolDocker {
             },
             agentic: true,
             experimental: true,
+            allow_parallel: false,
             description: "Access to docker cli, in a non-interactive way, don't open a shell."
                 .to_string(),
             parameters: vec![ToolParam {

@@ -91,6 +91,7 @@ impl Tool for ToolGitlab {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Access to glab command line command, to fetch issues, review PRs.".to_string(),
             parameters: vec![
                 ToolParam {

@@ -197,6 +197,7 @@ impl Tool for ToolUndoTextDoc {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Undo recent file edits from this session. Reverts to previous version."
                 .to_string(),
             parameters: vec![

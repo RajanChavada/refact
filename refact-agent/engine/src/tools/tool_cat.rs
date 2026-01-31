@@ -128,6 +128,7 @@ impl Tool for ToolCat {
                 config_path: self.config_path.clone(),
             },
             experimental: false,
+            allow_parallel: true,
             description: "Like cat in console, but better: it can read multiple files and images. Prefer to open full files.".to_string(),
             parameters: vec![
                 ToolParam {

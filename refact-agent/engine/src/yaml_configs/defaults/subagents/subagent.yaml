@@ -8,6 +8,7 @@ has_code: true
 tool:
   description: Delegate a specific task to a sub-agent that works independently
   agentic: true
+  allow_parallel: true
   parameters:
     - name: task
       type: string

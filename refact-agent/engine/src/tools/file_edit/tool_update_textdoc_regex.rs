@@ -171,6 +171,7 @@ impl Tool for ToolUpdateTextDocRegex {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Updates an existing document using pattern matching. By default treats pattern as literal text (literal:true). Set literal:false for regex.".to_string(),
             parameters: vec![
                 ToolParam {

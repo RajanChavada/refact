@@ -39,6 +39,7 @@ impl Tool for ToolTaskMergeAgent {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Merge an agent's work back to the main branch and cleanup the worktree. The agent must have completed work on a card with an associated git branch and worktree.".to_string(),
             parameters: vec![
                 ToolParam {

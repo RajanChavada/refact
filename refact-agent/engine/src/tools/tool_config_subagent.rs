@@ -78,6 +78,7 @@ impl Tool for ToolConfigSubagent {
         };
 
         let agentic = self.config.tool.as_ref().map(|t| t.agentic).unwrap_or(true);
+        let allow_parallel = self.config.tool.as_ref().map(|t| t.allow_parallel).unwrap_or(false);
 
         ToolDesc {
             name: self.config.id.clone(),
@@ -88,6 +89,7 @@ impl Tool for ToolConfigSubagent {
             },
             agentic,
             experimental: false,
+            allow_parallel,
             description,
             parameters: self.build_tool_params(),
             parameters_required: self.build_required_params(),

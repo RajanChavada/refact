@@ -565,6 +565,7 @@ impl Tool for ToolShellService {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Manage background services (start/stop/status/logs/restart). Use this for long-running processes like web servers, databases, or any command that runs until Ctrl+C. For one-time commands, use the shell tool instead.".to_string(),
             parameters: vec![
                 ToolParam {

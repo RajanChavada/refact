@@ -149,6 +149,7 @@ impl Tool for ToolUpdateTextDoc {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Updates an existing document by replacing specific text, use this if file already exists. Optimized for large files or small changes where simple string replacement is sufficient. Avoid trailing spaces and tabs.".to_string(),
             parameters: vec![
                 ToolParam {

@@ -272,6 +272,7 @@ impl Tool for ToolMCP {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: self
                 .mcp_tool
                 .description

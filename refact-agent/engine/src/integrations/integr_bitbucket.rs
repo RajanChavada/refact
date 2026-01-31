@@ -269,6 +269,7 @@ impl Tool for ToolBitbucket {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Access to Bitbucket API, to fetch issues, review PRs.".to_string(),
             parameters: vec![
                 ToolParam {

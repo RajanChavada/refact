@@ -221,6 +221,8 @@ pub struct SubagentToolSchema {
     #[serde(default)]
     pub agentic: bool,
     #[serde(default)]
+    pub allow_parallel: bool,
+    #[serde(default)]
     pub parameters: Vec<ToolParameter>,
     #[serde(default)]
     pub required: Vec<String>,

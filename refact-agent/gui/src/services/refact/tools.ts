@@ -196,6 +196,7 @@ export type ToolSpec = {
   parameters_required?: string[];
   agentic: boolean;
   experimental?: boolean;
+  allow_parallel?: boolean;
 };
 
 export type Tool = {

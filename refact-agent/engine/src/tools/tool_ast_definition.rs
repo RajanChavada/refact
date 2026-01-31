@@ -141,6 +141,7 @@ impl Tool for ToolAstDefinition {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: true,
             description: "Find definition of a symbol in the project using AST".to_string(),
             parameters: vec![
                 ToolParam {

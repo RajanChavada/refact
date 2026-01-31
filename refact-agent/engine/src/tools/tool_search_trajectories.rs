@@ -29,6 +29,7 @@ impl Tool for ToolSearchTrajectories {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Search past chat trajectories for relevant patterns, solutions, and context. Returns matching trajectory IDs with message ranges that can be expanded using get_trajectory_context.".to_string(),
             parameters: vec![
                 ToolParam {

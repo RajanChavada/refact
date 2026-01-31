@@ -376,6 +376,7 @@ impl Tool for ToolApplyPatch {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: APPLY_PATCH_DESCRIPTION.to_string(),
             parameters: vec![
                 ToolParam {

@@ -195,6 +195,7 @@ impl Tool for ToolUpdateTextDocAnchored {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Edit file by finding anchor text. More reliable than exact string match. Use 'replace_between' to replace content between two anchors, or 'insert_after'/'insert_before' to insert at anchor.".to_string(),
             parameters: vec![
                 ToolParam {

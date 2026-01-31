@@ -91,6 +91,7 @@ impl Tool for ToolGithub {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Access to gh command line command, to fetch issues, review PRs.".to_string(),
             parameters: vec![
                 ToolParam {

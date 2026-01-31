@@ -104,6 +104,7 @@ impl Tool for ToolTaskAgentUpdate {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Add a progress update to the assigned card.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -189,6 +190,7 @@ impl Tool for ToolTaskAgentComplete {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Mark the assigned card as complete with a final report.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -278,6 +280,7 @@ impl Tool for ToolTaskAgentFail {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Mark the assigned card as failed with an explanation.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -375,6 +378,7 @@ impl Tool for ToolTaskAssignAgent {
             source: make_source(),
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Assign an agent to a card and move it to Doing.".to_string(),
             parameters: vec![
                 ToolParam {

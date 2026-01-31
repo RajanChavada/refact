@@ -86,6 +86,8 @@ pub struct ToolDesc {
     pub agentic: bool,
     #[serde(default)]
     pub experimental: bool,
+    #[serde(default)]
+    pub allow_parallel: bool,
     pub description: String,
     pub parameters: Vec<ToolParam>,
     pub parameters_required: Vec<String>,
@@ -96,11 +98,13 @@ pub struct ToolDesc {
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct ToolConfig {
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_parallel: Option<bool>,
 }
 
 impl Default for ToolConfig {
     fn default() -> Self {
-        ToolConfig { enabled: true }
+        ToolConfig { enabled: true, allow_parallel: None }
     }
 }
 

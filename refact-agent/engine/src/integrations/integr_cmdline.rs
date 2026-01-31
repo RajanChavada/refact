@@ -364,6 +364,7 @@ impl Tool for ToolCmdline {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: self.cfg.description.clone(),
             parameters: self.cfg.parameters.clone(),
             parameters_required,

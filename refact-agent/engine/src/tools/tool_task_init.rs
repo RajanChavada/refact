@@ -68,6 +68,7 @@ impl Tool for ToolTaskInit {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Create a new task workspace for planning and orchestrating work."
                 .to_string(),
             parameters: vec![ToolParam {

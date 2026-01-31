@@ -30,6 +30,7 @@ impl Tool for ToolTrajectoryContext {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: true,
             description:
                 "Get more context from a specific trajectory around given message indices."
                     .to_string(),

@@ -95,6 +95,7 @@ impl Tool for ToolSubagent {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Delegate a specific task to a sub-agent that works independently. Use this when you need to perform a focused task that requires multiple tool calls without cluttering the main conversation. The subagent has its own context and does not see the parent conversation.".to_string(),
             parameters: vec![
                 ToolParam {

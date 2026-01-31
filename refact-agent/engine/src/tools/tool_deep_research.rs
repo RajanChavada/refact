@@ -139,6 +139,7 @@ impl Tool for ToolDeepResearch {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Conduct comprehensive web research on a topic. Use this tool when you need up-to-date information from the internet, market analysis, technical documentation research, or synthesis of information from multiple web sources. The research takes several minutes and produces a detailed, citation-rich report. Do NOT use for questions about the current codebase - use code exploration tools instead.".to_string(),
             parameters: vec![
                 ToolParam {

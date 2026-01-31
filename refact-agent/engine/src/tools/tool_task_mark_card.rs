@@ -57,6 +57,7 @@ impl Tool for ToolTaskMarkCardDone {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Manually mark a card as done. Use this if an agent completed work but forgot to call task_agent_finish(), or to finalize a card after reviewing the agent's work.".to_string(),
             parameters: vec![
                 ToolParam {
@@ -161,6 +162,7 @@ impl Tool for ToolTaskMarkCardFailed {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: false,
             description: "Manually mark a card as failed. Use this to resolve stuck agents, mark cards that cannot be completed, or when an agent errored without calling task_agent_finish().".to_string(),
             parameters: vec![
                 ToolParam {

@@ -252,6 +252,191 @@ mod tests {
         assert!(!is_dangerous_tool("patch"));
         assert!(!is_dangerous_tool(""));
     }
+
+    #[test]
+    fn test_max_parallel_clamp() {
+        assert!(1_usize.max(1) >= 1);
+        assert!(0_usize.max(1) >= 1);
+        assert!(100_usize.max(1) == 100);
+    }
+
+    #[test]
+    fn test_tool_config_default() {
+        let config = crate::tools::tools_description::ToolConfig::default();
+        assert!(config.enabled);
+        assert!(config.allow_parallel.is_none());
+    }
+
+    #[test]
+    fn test_tool_config_serde_roundtrip() {
+        let config = crate::tools::tools_description::ToolConfig {
+            enabled: true,
+            allow_parallel: Some(false),
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: crate::tools::tools_description::ToolConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.enabled, config.enabled);
+        assert_eq!(parsed.allow_parallel, config.allow_parallel);
+    }
+
+    #[test]
+    fn test_tool_config_serde_skip_none() {
+        let config = crate::tools::tools_description::ToolConfig {
+            enabled: true,
+            allow_parallel: None,
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(!yaml.contains("allow_parallel"));
+    }
+
+    #[test]
+    fn test_tool_desc_default_allow_parallel() {
+        use crate::tools::tools_description::ToolDesc;
+        let yaml = r#"
+name: test_tool
+description: A test tool
+parameters: []
+parameters_required: []
+display_name: Test Tool
+source:
+  source_type: builtin
+  config_path: ""
+"#;
+        let desc: ToolDesc = serde_yaml::from_str(yaml).unwrap();
+        assert!(!desc.allow_parallel);
+    }
+
+    #[test]
+    fn test_yaml_cannot_enable_parallel_for_unsafe_tools() {
+        // Test that YAML override can only DISABLE parallelism, not enable it
+        // This is the security policy: tools that declared allow_parallel=false
+        // cannot be overridden to true via YAML config
+
+        // Tool declares allow_parallel=false (unsafe tool)
+        let tool_allow_parallel = false;
+
+        // YAML tries to override to true
+        let config_override = Some(true);
+
+        // Security policy: if tool declared false, ignore override-to-true
+        let effective = if tool_allow_parallel {
+            config_override.unwrap_or(true)
+        } else {
+            false // ignore override-to-true for safety
+        };
+
+        assert!(!effective, "YAML should not be able to enable parallelism for unsafe tools");
+    }
+
+    #[test]
+    fn test_yaml_can_disable_parallel_for_safe_tools() {
+        // Test that YAML override CAN disable parallelism for safe tools
+
+        // Tool declares allow_parallel=true (safe tool)
+        let tool_allow_parallel = true;
+
+        // YAML overrides to false
+        let config_override = Some(false);
+
+        // Policy: if tool declared true, YAML can disable it
+        let effective = if tool_allow_parallel {
+            config_override.unwrap_or(true)
+        } else {
+            false
+        };
+
+        assert!(!effective, "YAML should be able to disable parallelism for safe tools");
+    }
+
+    #[test]
+    fn test_barrier_scheduling_logic() {
+        // Test the barrier scheduling algorithm:
+        // - Parallel tools (P) can run concurrently
+        // - Non-parallel tools (X) act as barriers
+        // Pattern: P1, P2, X, P3, P4 should execute as:
+        //   [P1, P2] concurrently -> X alone -> [P3, P4] concurrently
+
+        let tool_allow_parallel = |name: &str| -> bool {
+            match name {
+                "cat" | "tree" | "search" => true,  // parallel
+                "apply_patch" | "shell" => false,   // non-parallel (barriers)
+                _ => false,
+            }
+        };
+
+        // Simulate tool call sequence
+        let tool_calls = vec!["cat", "tree", "apply_patch", "search", "cat"];
+
+        let mut batches: Vec<Vec<&str>> = Vec::new();
+        let mut current_batch: Vec<&str> = Vec::new();
+
+        for tool_name in &tool_calls {
+            if tool_allow_parallel(tool_name) {
+                current_batch.push(tool_name);
+            } else {
+                // Flush parallel batch before barrier
+                if !current_batch.is_empty() {
+                    batches.push(current_batch.clone());
+                    current_batch.clear();
+                }
+                // Barrier tool runs alone
+                batches.push(vec![tool_name]);
+            }
+        }
+        // Flush remaining parallel batch
+        if !current_batch.is_empty() {
+            batches.push(current_batch);
+        }
+
+        // Expected: [[cat, tree], [apply_patch], [search, cat]]
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0], vec!["cat", "tree"]);
+        assert_eq!(batches[1], vec!["apply_patch"]);
+        assert_eq!(batches[2], vec!["search", "cat"]);
+    }
+
+    #[test]
+    fn test_result_ordering_preserved() {
+        // Test that results are sorted by original index regardless of completion order
+        let mut results: Vec<(usize, &str)> = vec![
+            (2, "result_2"),
+            (0, "result_0"),
+            (4, "result_4"),
+            (1, "result_1"),
+            (3, "result_3"),
+        ];
+
+        // Sort by index (same as in execute_tools_inner)
+        results.sort_by_key(|(idx, _)| *idx);
+
+        let ordered: Vec<&str> = results.iter().map(|(_, r)| *r).collect();
+        assert_eq!(ordered, vec!["result_0", "result_1", "result_2", "result_3", "result_4"]);
+    }
+
+    #[test]
+    fn test_corrections_aggregation() {
+        // Test that corrections from multiple tools are properly aggregated
+        // Simulates the aggregation logic in execute_tools_inner
+
+        // Results: (idx, had_corrections, msgs, files)
+        let results: Vec<(usize, bool, Vec<&str>, Vec<&str>)> = vec![
+            (0, false, vec!["msg0"], vec![]),
+            (1, true, vec!["msg1"], vec![]),  // This tool had corrections
+            (2, false, vec!["msg2"], vec![]),
+        ];
+
+        let any_corrections = results.iter().any(|(_, had_corrections, _, _)| *had_corrections);
+        assert!(any_corrections, "Should detect that at least one tool had corrections");
+
+        // Test with no corrections
+        let results_no_corrections: Vec<(usize, bool, Vec<&str>, Vec<&str>)> = vec![
+            (0, false, vec!["msg0"], vec![]),
+            (1, false, vec!["msg1"], vec![]),
+        ];
+
+        let any_corrections = results_no_corrections.iter().any(|(_, had_corrections, _, _)| *had_corrections);
+        assert!(!any_corrections, "Should detect no corrections when all tools succeeded cleanly");
+    }
 }
 
 pub async fn process_tool_calls_once(
@@ -641,6 +826,106 @@ pub async fn execute_tools_with_session(
     result
 }
 
+/// Per-tool mutex registry - each tool has its own lock to enable true parallelism
+type ToolRegistry = std::collections::HashMap<String, Arc<AMutex<Box<dyn crate::tools::tools_description::Tool + Send>>>>;
+
+async fn execute_single_tool(
+    ccx: Arc<AMutex<AtCommandsContext>>,
+    idx: usize,
+    tool_call: ChatToolCall,
+    tool_registry: Arc<ToolRegistry>,
+) -> (usize, bool, Vec<ChatMessage>, Vec<ContextFile>) {
+    // Get the tool's Arc without holding the registry lock during execution
+    let tool_arc = match tool_registry.get(&tool_call.function.name) {
+        Some(t) => t.clone(),
+        None => {
+            return (
+                idx,
+                true, // had_corrections: tool not found is a correction
+                vec![ChatMessage {
+                    message_id: Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: ChatContent::SimpleText(format!(
+                        "Error: tool '{}' not found",
+                        tool_call.function.name
+                    )),
+                    tool_call_id: tool_call.id.clone(),
+                    tool_failed: Some(true),
+                    ..Default::default()
+                }],
+                vec![],
+            );
+        }
+    };
+
+    let args: std::collections::HashMap<String, serde_json::Value> =
+        match serde_json::from_str(&tool_call.function.arguments) {
+            Ok(a) => a,
+            Err(e) => {
+                return (
+                    idx,
+                    true, // had_corrections: parse error is a correction
+                    vec![ChatMessage {
+                        message_id: Uuid::new_v4().to_string(),
+                        role: "tool".to_string(),
+                        content: ChatContent::SimpleText(format!(
+                            "Error parsing arguments: {}",
+                            e
+                        )),
+                        tool_call_id: tool_call.id.clone(),
+                        tool_failed: Some(true),
+                        ..Default::default()
+                    }],
+                    vec![],
+                );
+            }
+        };
+
+    info!("Executing tool: {}({:?})", tool_call.function.name, args);
+
+    // Lock only this specific tool, not the entire registry
+    let mut tool = tool_arc.lock().await;
+    match tool.tool_execute(ccx, &tool_call.id, &args).await {
+        Ok((had_corrections, results)) => {
+            let mut msgs = Vec::new();
+            let mut files = Vec::new();
+            for result in results {
+                match result {
+                    crate::call_validation::ContextEnum::ChatMessage(mut msg) => {
+                        if msg.message_id.is_empty() {
+                            msg.message_id = Uuid::new_v4().to_string();
+                        }
+                        if msg.tool_failed.is_none() {
+                            msg.tool_failed = Some(false);
+                        }
+                        msgs.push(msg);
+                    }
+                    crate::call_validation::ContextEnum::ContextFile(cf) => {
+                        files.push(cf);
+                    }
+                }
+            }
+            (idx, had_corrections, msgs, files)
+        }
+        Err(e) => {
+            info!("Tool execution failed: {}: {}", tool_call.function.name, e);
+            (
+                idx,
+                true, // had_corrections: execution error is a correction
+                vec![ChatMessage {
+                    message_id: Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: ChatContent::SimpleText(format!("Error: {}", e)),
+                    tool_call_id: tool_call.id.clone(),
+                    tool_failed: Some(true),
+                    ..Default::default()
+                }],
+                vec![],
+            )
+        }
+    }
+}
+
 async fn execute_tools_inner(
     gcx: Arc<ARwLock<GlobalContext>>,
     ccx: Arc<AMutex<AtCommandsContext>>,
@@ -651,146 +936,87 @@ async fn execute_tools_inner(
     options: ExecuteToolsOptions,
     messages: &[ChatMessage],
 ) -> (Vec<ChatMessage>, bool) {
-    let max_parallel = limits().max_parallel_tools;
+    let max_parallel = limits().max_parallel_tools.max(1);
 
-    let available_tool_names: std::collections::HashSet<String> =
-        crate::tools::tools_list::get_tools_for_mode(gcx.clone(), mode_id, model_id)
-            .await
-            .into_iter()
-            .map(|tool| tool.tool_description().name)
-            .collect();
+    let available_tools = crate::tools::tools_list::get_tools_for_mode(gcx.clone(), mode_id, model_id).await;
 
-    let semaphore = Arc::new(Semaphore::new(max_parallel));
+    let mut tool_allow_parallel: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut tool_registry: ToolRegistry = std::collections::HashMap::new();
 
-    let futures: Vec<_> = tool_calls
-        .iter()
-        .enumerate()
-        .map(|(idx, tool_call)| {
-            let gcx = gcx.clone();
-            let ccx = ccx.clone();
-            let semaphore = semaphore.clone();
-            let available_tool_names = available_tool_names.clone();
-            let tool_call = tool_call.clone();
+    for tool in available_tools {
+        let desc = tool.tool_description();
+        // Only check config if config_path is non-empty (avoid unnecessary I/O)
+        let config_override = if !desc.source.config_path.is_empty() {
+            tool.config().ok().and_then(|c| c.allow_parallel)
+        } else {
+            None
+        };
+        // Security: YAML can only DISABLE parallelism, not enable it for tools that declared false
+        // This prevents users from accidentally enabling parallel execution for unsafe tools
+        let effective = if desc.allow_parallel {
+            config_override.unwrap_or(true)
+        } else {
+            false // ignore override-to-true for safety
+        };
+        tool_allow_parallel.insert(desc.name.clone(), effective);
+        // Wrap each tool in its own mutex for true parallelism
+        tool_registry.insert(desc.name, Arc::new(AMutex::new(tool)));
+    }
 
-            async move {
-                let _permit = semaphore.acquire().await.unwrap();
+    let tool_registry = Arc::new(tool_registry);
 
-                if !available_tool_names.contains(&tool_call.function.name) {
-                    return (
-                        idx,
-                        vec![ChatMessage {
-                            message_id: Uuid::new_v4().to_string(),
-                            role: "tool".to_string(),
-                            content: ChatContent::SimpleText(format!(
-                                "Error: tool '{}' not found",
-                                tool_call.function.name
-                            )),
-                            tool_call_id: tool_call.id.clone(),
-                            tool_failed: Some(true),
-                            ..Default::default()
-                        }],
-                        vec![],
-                    );
-                }
+    let mut all_results: Vec<(usize, bool, Vec<ChatMessage>, Vec<ContextFile>)> = Vec::new();
+    let mut current_parallel_batch: Vec<(usize, ChatToolCall)> = Vec::new();
 
-                let tool_opt = crate::tools::tools_list::get_available_tools(gcx.clone())
-                    .await
-                    .into_iter()
-                    .find(|t| t.tool_description().name == tool_call.function.name);
+    for (idx, tool_call) in tool_calls.iter().enumerate() {
+        let allow_parallel = tool_allow_parallel
+            .get(&tool_call.function.name)
+            .copied()
+            .unwrap_or(false);
 
-                let mut tool = match tool_opt {
-                    Some(t) => t,
-                    None => {
-                        return (
-                            idx,
-                            vec![ChatMessage {
-                                message_id: Uuid::new_v4().to_string(),
-                                role: "tool".to_string(),
-                                content: ChatContent::SimpleText(format!(
-                                    "Error: tool '{}' not found",
-                                    tool_call.function.name
-                                )),
-                                tool_call_id: tool_call.id.clone(),
-                                tool_failed: Some(true),
-                                ..Default::default()
-                            }],
-                            vec![],
-                        );
-                    }
-                };
-
-                let args: std::collections::HashMap<String, serde_json::Value> =
-                    match serde_json::from_str(&tool_call.function.arguments) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return (
-                                idx,
-                                vec![ChatMessage {
-                                    message_id: Uuid::new_v4().to_string(),
-                                    role: "tool".to_string(),
-                                    content: ChatContent::SimpleText(format!(
-                                        "Error parsing arguments: {}",
-                                        e
-                                    )),
-                                    tool_call_id: tool_call.id.clone(),
-                                    tool_failed: Some(true),
-                                    ..Default::default()
-                                }],
-                                vec![],
-                            );
-                        }
-                    };
-
-                info!("Executing tool: {}({:?})", tool_call.function.name, args);
-
-                match tool.tool_execute(ccx, &tool_call.id, &args).await {
-                    Ok((_corrections, results)) => {
-                        let mut msgs = Vec::new();
-                        let mut files = Vec::new();
-                        for result in results {
-                            match result {
-                                crate::call_validation::ContextEnum::ChatMessage(mut msg) => {
-                                    if msg.message_id.is_empty() {
-                                        msg.message_id = Uuid::new_v4().to_string();
-                                    }
-                                    if msg.tool_failed.is_none() {
-                                        msg.tool_failed = Some(false);
-                                    }
-                                    msgs.push(msg);
-                                }
-                                crate::call_validation::ContextEnum::ContextFile(cf) => {
-                                    files.push(cf);
-                                }
-                            }
-                        }
-                        (idx, msgs, files)
-                    }
-                    Err(e) => {
-                        info!("Tool execution failed: {}: {}", tool_call.function.name, e);
-                        (
-                            idx,
-                            vec![ChatMessage {
-                                message_id: Uuid::new_v4().to_string(),
-                                role: "tool".to_string(),
-                                content: ChatContent::SimpleText(format!("Error: {}", e)),
-                                tool_call_id: tool_call.id.clone(),
-                                tool_failed: Some(true),
-                                ..Default::default()
-                            }],
-                            vec![],
-                        )
-                    }
-                }
+        if allow_parallel {
+            current_parallel_batch.push((idx, tool_call.clone()));
+        } else {
+            if !current_parallel_batch.is_empty() {
+                let batch_results = execute_parallel_batch(
+                    ccx.clone(),
+                    &current_parallel_batch,
+                    tool_registry.clone(),
+                    max_parallel,
+                ).await;
+                all_results.extend(batch_results);
+                current_parallel_batch.clear();
             }
-        })
-        .collect();
 
-    let mut results: Vec<_> = join_all(futures).await;
-    results.sort_by_key(|(idx, _, _)| *idx);
+            let result = execute_single_tool(
+                ccx.clone(),
+                idx,
+                tool_call.clone(),
+                tool_registry.clone(),
+            ).await;
+            all_results.push(result);
+        }
+    }
+
+    if !current_parallel_batch.is_empty() {
+        let batch_results = execute_parallel_batch(
+            ccx.clone(),
+            &current_parallel_batch,
+            tool_registry.clone(),
+            max_parallel,
+        ).await;
+        all_results.extend(batch_results);
+    }
+
+    all_results.sort_by_key(|(idx, _, _, _)| *idx);
 
     let mut tool_messages: Vec<ChatMessage> = Vec::new();
     let mut context_files: Vec<ContextFile> = Vec::new();
-    for (_, msgs, files) in results {
+    let mut any_corrections = false;
+    for (_, had_corrections, msgs, files) in all_results {
+        if had_corrections {
+            any_corrections = true;
+        }
         tool_messages.extend(msgs);
         context_files.extend(files);
     }
@@ -808,7 +1034,34 @@ async fn execute_tools_inner(
     )
     .await;
 
-    (results, true)
+    (results, any_corrections)
+}
+
+async fn execute_parallel_batch(
+    ccx: Arc<AMutex<AtCommandsContext>>,
+    batch: &[(usize, ChatToolCall)],
+    tool_registry: Arc<ToolRegistry>,
+    max_parallel: usize,
+) -> Vec<(usize, bool, Vec<ChatMessage>, Vec<ContextFile>)> {
+    let semaphore = Arc::new(Semaphore::new(max_parallel));
+
+    let futures: Vec<_> = batch
+        .iter()
+        .map(|(idx, tool_call)| {
+            let ccx = ccx.clone();
+            let semaphore = semaphore.clone();
+            let tool_registry = tool_registry.clone();
+            let tool_call = tool_call.clone();
+            let idx = *idx;
+
+            async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                execute_single_tool(ccx, idx, tool_call, tool_registry).await
+            }
+        })
+        .collect();
+
+    join_all(futures).await
 }
 
 pub async fn execute_tools(

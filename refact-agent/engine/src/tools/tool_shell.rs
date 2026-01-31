@@ -217,6 +217,7 @@ impl Tool for ToolShell {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: false,
             description: "Execute a single command, using the \"sh\" on unix-like systems and \"powershell.exe\" on windows. Use it for one-time tasks like dependencies installation. Don't call this unless you have to. Not suitable for regular work because it requires a confirmation at each step. Output is compressed by default - use output_filter and output_limit parameters to see specific parts if needed. Note: sudo commands cannot be run - if you need elevated privileges, ask the user to run them directly.".to_string(),
             parameters: vec![
                 ToolParam {

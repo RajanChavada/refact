@@ -69,6 +69,7 @@ impl Tool for ToolWeb {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: true,
             description: "Fetch a web page and convert to readable plain text. Supports regular web pages, PDFs, and JavaScript-rendered pages. Uses Jina Reader API with automatic fallback.".to_string(),
             parameters: vec![
                 ToolParam {

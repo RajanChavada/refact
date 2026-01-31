@@ -33,6 +33,7 @@ impl Tool for ToolGetKnowledge {
             },
             agentic: true,
             experimental: false,
+            allow_parallel: true,
             description: "Searches project knowledge base for relevant information. Uses semantic search and knowledge graph expansion.".to_string(),
             parameters: vec![
                 ToolParam {

@@ -46,6 +46,7 @@ impl Tool for ToolSearch {
             },
             agentic: false,
             experimental: false,
+            allow_parallel: true,
             description: "Find semantically similar pieces of code or text using vector database (semantic search)".to_string(),
             parameters: vec![
                 ToolParam {
