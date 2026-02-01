@@ -456,7 +456,7 @@ function parseTasksFromArgs(argsStr: string): TodoItem[] | null {
   }
 }
 
-function deriveTasksFromMessages(
+export function deriveTasksFromMessages(
   messages: ChatMessages,
   toolMessages: ToolMessage[],
 ): TodoItem[] {
@@ -533,3 +533,28 @@ export const selectTaskProgress = createSelector(
     };
   },
 );
+
+export type TaskProgressInfo = {
+  done: number;
+  total: number;
+  failed: number;
+};
+
+/**
+ * Compute task progress from messages array.
+ * Useful for history items that have messages but aren't in Redux state.
+ */
+export function getTaskProgressFromMessages(
+  messages: ChatMessages,
+): TaskProgressInfo | null {
+  const toolMessages = messages.filter(isToolMessage);
+  const tasks = deriveTasksFromMessages(messages, toolMessages);
+
+  if (tasks.length === 0) return null;
+
+  return {
+    done: tasks.filter((t) => t.status === "completed").length,
+    total: tasks.length,
+    failed: tasks.filter((t) => t.status === "failed").length,
+  };
+}

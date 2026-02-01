@@ -193,6 +193,23 @@ export const chatReducer = createReducer(initialState, (builder) => {
     const rt = getRuntime(state, action.payload.chatId);
     if (rt && rt.thread.messages.length === 0) {
       rt.thread.mode = action.payload.mode;
+      const defaults = action.payload.threadDefaults;
+      if (defaults) {
+        if (defaults.include_project_info !== undefined) {
+          rt.thread.include_project_info = defaults.include_project_info;
+        }
+        if (defaults.checkpoints_enabled !== undefined) {
+          rt.thread.checkpoints_enabled = defaults.checkpoints_enabled;
+        }
+        if (defaults.auto_approve_editing_tools !== undefined) {
+          rt.thread.auto_approve_editing_tools =
+            defaults.auto_approve_editing_tools;
+        }
+        if (defaults.auto_approve_dangerous_commands !== undefined) {
+          rt.thread.auto_approve_dangerous_commands =
+            defaults.auto_approve_dangerous_commands;
+        }
+      }
     }
   });
 

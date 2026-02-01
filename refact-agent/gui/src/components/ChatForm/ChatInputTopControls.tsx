@@ -1,17 +1,13 @@
 import React, { useCallback, useState } from "react";
-import {
-  Flex,
-  Switch,
-  Text,
-  Button,
-  Tooltip,
-  HoverCard,
-} from "@radix-ui/themes";
+import { Flex, IconButton, Text, HoverCard } from "@radix-ui/themes";
 import {
   InfoCircledIcon,
   LockClosedIcon,
   LockOpen1Icon,
   QuestionMarkCircledIcon,
+  Pencil2Icon,
+  ExclamationTriangleIcon,
+  PlusIcon,
 } from "@radix-ui/react-icons";
 import { useAppDispatch, useAppSelector } from "../../hooks";
 import {
@@ -27,7 +23,6 @@ import {
 import { ProjectInformationDialog } from "./ProjectInformationDialog";
 import { selectHost } from "../../features/Config/configSlice";
 import { Checkbox } from "../Checkbox";
-import { TruncateLeft } from "../Text";
 import type { Checkbox as CheckboxType } from "./useCheckBoxes";
 import type { useAttachedFiles } from "./useCheckBoxes";
 
@@ -76,42 +71,73 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
 
   return (
     <>
-      <Flex gap="3" align="center" wrap="wrap">
-        <Tooltip content="Configure what project information is included in chat context">
-          <Button
-            variant="ghost"
-            size="1"
-            onClick={() => setDialogOpen(true)}
-            color={includeProjectInfo ? undefined : "gray"}
-          >
-            <InfoCircledIcon />
-            <Text size="1">Project Info</Text>
-          </Button>
-        </Tooltip>
-
-        <Flex align="center" gap="1">
-          <Switch
-            size="1"
-            checked={autoApproveEditing}
-            onCheckedChange={handleEditingChange}
-          />
-          <Tooltip content="Automatically approve file editing tools (patch, create, update, mv)">
-            <Text size="1">Auto-approve edits</Text>
-          </Tooltip>
-        </Flex>
-
-        <Flex align="center" gap="1">
-          <Switch
-            size="1"
-            checked={autoApproveDangerous}
-            onCheckedChange={handleDangerousChange}
-          />
-          <Tooltip content="Automatically approve dangerous commands (shell, rm). Use with caution!">
-            <Text size="1" color={autoApproveDangerous ? "red" : undefined}>
-              Auto-approve dangerous
+      <Flex gap="1" align="center" wrap="wrap">
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton
+              type="button"
+              size="1"
+              variant={includeProjectInfo ? "soft" : "ghost"}
+              color={includeProjectInfo ? undefined : "gray"}
+              onClick={() => setDialogOpen(true)}
+              aria-label="Configure project information"
+              style={{ width: 24, height: 24 }}
+            >
+              <InfoCircledIcon />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="top">
+            <Text as="p" size="2">
+              Project info: {includeProjectInfo ? "ON" : "OFF"}
             </Text>
-          </Tooltip>
-        </Flex>
+          </HoverCard.Content>
+        </HoverCard.Root>
+
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton
+              type="button"
+              size="1"
+              variant={autoApproveEditing ? "soft" : "ghost"}
+              color={autoApproveEditing ? undefined : "gray"}
+              onClick={() => handleEditingChange(!autoApproveEditing)}
+              disabled={!chatId}
+              aria-label="Auto-approve file editing tools"
+              aria-pressed={autoApproveEditing}
+              style={{ width: 24, height: 24 }}
+            >
+              <Pencil2Icon />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="top">
+            <Text as="p" size="2">
+              Auto-approve edits: {autoApproveEditing ? "ON" : "OFF"}
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
+
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <IconButton
+              type="button"
+              size="1"
+              variant={autoApproveDangerous ? "soft" : "ghost"}
+              color={autoApproveDangerous ? "red" : "gray"}
+              onClick={() => handleDangerousChange(!autoApproveDangerous)}
+              disabled={!chatId}
+              aria-label="Auto-approve dangerous commands"
+              aria-pressed={autoApproveDangerous}
+              style={{ width: 24, height: 24 }}
+            >
+              <ExclamationTriangleIcon />
+            </IconButton>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="top">
+            <Text as="p" size="2">
+              Auto-approve dangerous: {autoApproveDangerous ? "ON" : "OFF"}
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
 
         {showSelectedLines && (
           <Flex align="center" gap="1">
@@ -148,17 +174,27 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
         )}
 
         {showAttachButton && (
-          <Button
-            variant="ghost"
-            size="1"
-            onClick={attachedFiles.addFile}
-            disabled={attachedFiles.attached}
-          >
-            <Text size="1">
-              Attach:{" "}
-              <TruncateLeft>{attachedFiles.activeFile.name}</TruncateLeft>
-            </Text>
-          </Button>
+          <HoverCard.Root>
+            <HoverCard.Trigger>
+              <IconButton
+                type="button"
+                size="1"
+                variant={attachedFiles.attached ? "soft" : "ghost"}
+                color={attachedFiles.attached ? undefined : "gray"}
+                onClick={attachedFiles.addFile}
+                disabled={attachedFiles.attached}
+                aria-label={`Attach ${attachedFiles.activeFile.name}`}
+                style={{ width: 24, height: 24 }}
+              >
+                <PlusIcon />
+              </IconButton>
+            </HoverCard.Trigger>
+            <HoverCard.Content size="1" side="top">
+              <Text as="p" size="2">
+                Attach: {attachedFiles.activeFile.name}
+              </Text>
+            </HoverCard.Content>
+          </HoverCard.Root>
         )}
       </Flex>
 

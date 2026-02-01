@@ -21,6 +21,7 @@ import {
   getStatusFromSessionState,
   getStatusTooltip,
 } from "../../utils/sessionStatus";
+import { CircularProgress } from "./CircularProgress";
 import styles from "./HistoryItemCompact.module.css";
 
 export interface HistoryItemCompactProps {
@@ -123,6 +124,14 @@ export const HistoryItemCompact: React.FC<HistoryItemCompactProps> = ({
   const linesRemoved = historyItem.total_lines_removed ?? 0;
   const hasLineChanges = linesAdded > 0 || linesRemoved > 0;
   const hasChildren = childCount !== undefined && childCount > 0;
+  const taskProgress =
+    historyItem.tasks_total && historyItem.tasks_total > 0
+      ? {
+          done: historyItem.tasks_done ?? 0,
+          total: historyItem.tasks_total,
+          failed: historyItem.tasks_failed ?? 0,
+        }
+      : null;
 
   const handleStartEdit = useCallback(
     (e: React.MouseEvent) => {
@@ -330,6 +339,16 @@ export const HistoryItemCompact: React.FC<HistoryItemCompactProps> = ({
               <Text size="1" className={styles.linesRemoved}>
                 -{linesRemoved}
               </Text>
+            </span>
+          )}
+          {taskProgress && (
+            <span className={styles.taskProgress}>
+              <span className={styles.statsSeparator} />
+              <CircularProgress
+                done={taskProgress.done}
+                total={taskProgress.total}
+                failed={taskProgress.failed}
+              />
             </span>
           )}
         </div>

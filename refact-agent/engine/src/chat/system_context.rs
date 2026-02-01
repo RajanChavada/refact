@@ -11,6 +11,9 @@ use crate::call_validation::{ChatMessage, ChatContent, ContextFile};
 use crate::files_correction::{get_project_dirs, paths_from_anywhere};
 use crate::memories::{load_memories_by_tags, MemoRecord};
 use crate::chat::config::limits;
+use crate::yaml_configs::project_information::{
+    load_project_information_config, to_relative_path,
+};
 
 pub const PROJECT_CONTEXT_MARKER: &str = "project_context";
 use crate::files_in_workspace::detect_vcs_for_a_file_path;
@@ -248,6 +251,8 @@ pub struct InstructionFile {
     pub processed_content: Option<String>,
     #[serde(skip)]
     pub importance: u8,
+    #[serde(skip)]
+    pub max_chars: Option<usize>,
 }
 
 const PARENT_DIR_SEARCH_MAX_DEPTH: usize = 10;
@@ -772,6 +777,7 @@ fn find_instruction_files_recursive(
                             source_tool: determine_tool_source(pattern),
                             processed_content: None,
                             importance: determine_importance(&entry_name),
+                            max_chars: None,
                         });
                     }
                     break;
@@ -827,6 +833,7 @@ pub async fn find_instruction_files(project_dirs: &[PathBuf]) -> Vec<Instruction
                                         source_tool: determine_tool_source(dir_pattern),
                                         processed_content,
                                         importance: determine_importance(&entry_name),
+                                        max_chars: None,
                                     });
                                 }
                             }
@@ -852,6 +859,7 @@ pub async fn find_instruction_files(project_dirs: &[PathBuf]) -> Vec<Instruction
                                 source_tool: determine_tool_source(pattern),
                                 processed_content: None,
                                 importance: determine_importance(pattern),
+                                max_chars: None,
                             });
                         }
                     }
@@ -1427,36 +1435,190 @@ fn print_compact_tree(
 const MEMORY_TAGS_FOR_CONTEXT: &[&str] = &["preference", "lesson", "insight", "pattern"];
 const MAX_MEMORIES_IN_CONTEXT: usize = 30;
 
+fn truncate_to_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars).collect();
+        format!("{}\n[TRUNCATED]", truncated)
+    }
+}
+
 pub async fn gather_system_context(
     gcx: Arc<ARwLock<GlobalContext>>,
     include_tree: bool,
     tree_max_depth: usize,
 ) -> Result<SystemContext, String> {
+    // Load project information config to respect user settings
+    let config = load_project_information_config(gcx.clone()).await;
+
+    // If project info is globally disabled, return empty context
+    if !config.enabled {
+        return Ok(SystemContext {
+            system_info: SystemInfo::gather(),
+            detected_environments: vec![],
+            instruction_files: vec![],
+            project_configs: vec![],
+            project_tree: None,
+            environment_instructions: String::new(),
+            git_info: vec![],
+            memories: vec![],
+        });
+    }
+
     let system_info = SystemInfo::gather();
     let project_dirs = get_project_dirs(gcx.clone()).await;
 
-    let detected_environments = detect_environments(&project_dirs).await;
-    let instruction_files = find_instruction_files(&project_dirs).await;
-    let project_configs = find_project_configs(&project_dirs).await;
-    let git_info = gather_git_info(&project_dirs).await;
+    // Always detect environments if either section needs them
+    let need_environments = config.sections.detected_environments.enabled
+        || config.sections.environment_instructions.enabled;
+    let all_environments = if need_environments {
+        detect_environments(&project_dirs).await
+    } else {
+        vec![]
+    };
 
-    let project_tree = if include_tree {
-        generate_compact_project_tree(gcx.clone(), tree_max_depth)
-            .await
-            .ok()
+    // Detected environments - respect config (may be subset of all_environments)
+    let detected_environments = if config.sections.detected_environments.enabled {
+        let max_items = config.sections.detected_environments.max_items.unwrap_or(50);
+        all_environments.iter().take(max_items).cloned().collect()
+    } else {
+        vec![]
+    };
+
+    // Helper to get relative path for override lookup
+    let get_override_key = |abs_path: &str| -> Option<String> {
+        to_relative_path(abs_path, &project_dirs)
+    };
+
+    // Instruction files - respect config and per-file overrides
+    let instruction_files = if config.sections.instruction_files.enabled {
+        let max_items = config.sections.instruction_files.max_items.unwrap_or(20);
+        let default_max_chars = config.sections.instruction_files.max_chars_per_item.unwrap_or(8000);
+        let overrides = &config.sections.instruction_files.overrides;
+
+        let mut files = find_instruction_files(&project_dirs).await;
+
+        // Filter out disabled files and apply per-file max_chars
+        files = files.into_iter()
+            .filter(|f| {
+                get_override_key(&f.file_path)
+                    .and_then(|key| overrides.get(&key))
+                    .and_then(|o| o.enabled)
+                    .unwrap_or(true)
+            })
+            .map(|mut f| {
+                let max_chars = get_override_key(&f.file_path)
+                    .and_then(|key| overrides.get(&key))
+                    .and_then(|o| o.max_chars)
+                    .unwrap_or(default_max_chars);
+
+                // Apply truncation to processed_content if present
+                if let Some(ref content) = f.processed_content {
+                    if content.chars().count() > max_chars {
+                        f.processed_content = Some(truncate_to_chars(content, max_chars));
+                    }
+                }
+                // Store max_chars for later use when reading file content
+                // (truncation will be applied in create_instruction_files_message)
+                f.max_chars = Some(max_chars);
+                f
+            })
+            .take(max_items)
+            .collect();
+
+        files
+    } else {
+        vec![]
+    };
+
+    // Project configs - respect config
+    let project_configs = if config.sections.project_configs.enabled {
+        let max_items = config.sections.project_configs.max_items.unwrap_or(30);
+        let configs = find_project_configs(&project_dirs).await;
+        configs.into_iter().take(max_items).collect()
+    } else {
+        vec![]
+    };
+
+    // Git info - respect config
+    let git_info = if config.sections.git_info.enabled {
+        gather_git_info(&project_dirs).await
+    } else {
+        vec![]
+    };
+
+    // Project tree - respect config
+    let effective_max_depth = config.sections.project_tree.max_depth.unwrap_or(tree_max_depth);
+    let project_tree = if include_tree && config.sections.project_tree.enabled {
+        let max_chars = config.sections.project_tree.max_chars.unwrap_or(16000);
+        match generate_compact_project_tree(gcx.clone(), effective_max_depth).await {
+            Ok(tree) => {
+                if tree.chars().count() > max_chars {
+                    Some(truncate_to_chars(&tree, max_chars))
+                } else {
+                    Some(tree)
+                }
+            }
+            Err(_) => None,
+        }
     } else {
         None
     };
 
-    let environment_instructions = generate_environment_instructions(&detected_environments);
+    // Environment instructions - use all_environments (not the potentially limited detected_environments)
+    let environment_instructions = if config.sections.environment_instructions.enabled {
+        let max_chars = config.sections.environment_instructions.max_chars.unwrap_or(6000);
+        let instructions = generate_environment_instructions(&all_environments);
+        if instructions.chars().count() > max_chars {
+            truncate_to_chars(&instructions, max_chars)
+        } else {
+            instructions
+        }
+    } else {
+        String::new()
+    };
 
-    let memories = load_memories_by_tags(
-        gcx.clone(),
-        MEMORY_TAGS_FOR_CONTEXT,
-        MAX_MEMORIES_IN_CONTEXT,
-    )
-    .await
-    .unwrap_or_default();
+    // Memories - respect config and per-file overrides
+    let memories = if config.sections.memories.enabled {
+        let max_items = config.sections.memories.max_items.unwrap_or(MAX_MEMORIES_IN_CONTEXT);
+        let default_max_chars = config.sections.memories.max_chars_per_item.unwrap_or(2000);
+        let overrides = &config.sections.memories.overrides;
+
+        let mut memos = load_memories_by_tags(
+            gcx.clone(),
+            MEMORY_TAGS_FOR_CONTEXT,
+            max_items,
+        )
+        .await
+        .unwrap_or_default();
+
+        // Filter out disabled memories and apply per-file max_chars
+        memos = memos.into_iter()
+            .filter(|m| {
+                m.file_path.as_ref()
+                    .and_then(|p| to_relative_path(&p.display().to_string(), &project_dirs))
+                    .and_then(|key| overrides.get(&key))
+                    .and_then(|o| o.enabled)
+                    .unwrap_or(true)
+            })
+            .map(|mut m| {
+                let max_chars = m.file_path.as_ref()
+                    .and_then(|p| to_relative_path(&p.display().to_string(), &project_dirs))
+                    .and_then(|key| overrides.get(&key))
+                    .and_then(|o| o.max_chars)
+                    .unwrap_or(default_max_chars);
+                if m.content.chars().count() > max_chars {
+                    m.content = truncate_to_chars(&m.content, max_chars);
+                }
+                m
+            })
+            .collect();
+
+        memos
+    } else {
+        vec![]
+    };
 
     Ok(SystemContext {
         system_info,
@@ -1471,7 +1633,6 @@ pub async fn gather_system_context(
 }
 
 pub const MEMORIES_CONTEXT_MARKER: &str = "memories_context";
-const MAX_MEMORY_CONTENT_SIZE: usize = 2000;
 
 pub fn create_memories_message(memories: &[MemoRecord]) -> Option<ChatMessage> {
     if memories.is_empty() {
@@ -1482,17 +1643,8 @@ pub fn create_memories_message(memories: &[MemoRecord]) -> Option<ChatMessage> {
         .iter()
         .filter_map(|memo| {
             let file_path = memo.file_path.as_ref()?;
-            let content = if memo.content.len() > MAX_MEMORY_CONTENT_SIZE {
-                format!(
-                    "{}\n\n[TRUNCATED]",
-                    memo.content
-                        .chars()
-                        .take(MAX_MEMORY_CONTENT_SIZE)
-                        .collect::<String>()
-                )
-            } else {
-                memo.content.clone()
-            };
+            // Content is already truncated by gather_system_context() based on config
+            let content = memo.content.clone();
             let line_count = content.lines().count().max(1);
 
             Some(ContextFile {
@@ -1561,9 +1713,10 @@ pub async fn create_instruction_files_message(
             }
         };
 
-        let content_len = content.len();
-        let max_size = max_file_size();
-        let (mut final_content, was_truncated) = if content_len > max_size {
+        // Use per-file max_chars from config if available, otherwise fall back to global limit
+        let max_size = instr_file.max_chars.unwrap_or_else(max_file_size);
+        let content_char_count = content.chars().count();
+        let (mut final_content, was_truncated) = if content_char_count > max_size {
             let truncated = content.chars().take(max_size).collect::<String>();
             (truncated, true)
         } else {
@@ -1578,7 +1731,7 @@ pub async fn create_instruction_files_message(
             tracing::info!(
                 "Truncated instruction file {} from {} to {} chars",
                 instr_file.file_path,
-                content_len,
+                content_char_count,
                 max_size
             );
         }

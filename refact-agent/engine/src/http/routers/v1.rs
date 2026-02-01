@@ -124,7 +124,7 @@ mod workspace;
 mod project_configs;
 mod chat_modes;
 mod customization_editor;
-mod project_information;
+pub mod project_information;
 
 use crate::http::routers::v1::chat_modes::handle_v1_chat_modes;
 use crate::http::routers::v1::customization_editor::{

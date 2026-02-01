@@ -1,7 +1,7 @@
 import React, { useCallback } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { Flex, Text, Box, Separator } from "@radix-ui/themes";
-import { Spinner } from "@radix-ui/themes";
+import { CheckboxIcon } from "@radix-ui/react-icons";
 import classNames from "classnames";
 
 import { useAppSelector, useAppDispatch } from "../../hooks";
@@ -18,32 +18,58 @@ import {
 import type { TodoItem, TodoStatus } from "../../features/Chat/Thread/types";
 import { Chevron } from "../Collapsible";
 import { AnimatedText } from "../Text";
+import { StatusDot, type StatusDotState } from "../StatusDot";
 import styles from "./TaskProgressWidget.module.css";
 
-const STATUS_ICONS: Record<TodoStatus, string> = {
-  completed: "✅",
-  in_progress: "🔄",
-  pending: "⏳",
-  failed: "❌",
+function getStatusDotState(
+  status: TodoStatus,
+  _isStreaming: boolean,
+): StatusDotState {
+  switch (status) {
+    case "in_progress":
+      return "paused"; // Blue pulsing for in-progress tasks
+    case "completed":
+      return "completed"; // Green solid for completed
+    case "failed":
+      return "error"; // Red for failed
+    case "pending":
+    default:
+      return "idle"; // Gray for pending
+  }
+}
+
+const STATUS_TOOLTIPS: Record<TodoStatus, string> = {
+  completed: "Completed",
+  in_progress: "In progress",
+  pending: "Pending",
+  failed: "Failed",
 };
 
 type StatusIconProps = {
   status: TodoStatus;
-  showSpinner?: boolean;
+  isStreaming?: boolean;
 };
 
-const StatusIcon: React.FC<StatusIconProps> = ({ status, showSpinner }) => {
-  if (status === "in_progress" && showSpinner) {
-    return <Spinner size="1" />;
-  }
-  return <span>{STATUS_ICONS[status]}</span>;
+const StatusIcon: React.FC<StatusIconProps> = ({
+  status,
+  isStreaming = false,
+}) => {
+  const dotState = getStatusDotState(status, isStreaming);
+  return (
+    <StatusDot
+      state={dotState}
+      size="small"
+      tooltipText={STATUS_TOOLTIPS[status]}
+    />
+  );
 };
 
 type TaskRowProps = {
   task: TodoItem;
+  isStreaming: boolean;
 };
 
-const TaskRow: React.FC<TaskRowProps> = ({ task }) => {
+const TaskRow: React.FC<TaskRowProps> = ({ task, isStreaming }) => {
   const isActive = task.status === "in_progress";
 
   return (
@@ -52,15 +78,10 @@ const TaskRow: React.FC<TaskRowProps> = ({ task }) => {
       gap="2"
       className={classNames(styles.taskRow, { [styles.active]: isActive })}
     >
-      <StatusIcon status={task.status} showSpinner={false} />
+      <StatusIcon status={task.status} isStreaming={isStreaming && isActive} />
       <Text size="2" style={{ flex: 1 }}>
         {task.content}
       </Text>
-      {isActive && (
-        <Text size="1" color="blue">
-          ● active
-        </Text>
-      )}
     </Flex>
   );
 };
@@ -68,14 +89,24 @@ const TaskRow: React.FC<TaskRowProps> = ({ task }) => {
 type ProgressBarProps = {
   done: number;
   total: number;
+  animating?: boolean;
 };
 
-const ProgressBar: React.FC<ProgressBarProps> = ({ done, total }) => {
+const ProgressBar: React.FC<ProgressBarProps> = ({
+  done,
+  total,
+  animating = false,
+}) => {
   const percent = total > 0 ? (done / total) * 100 : 0;
 
   return (
     <Box className={styles.progressBar}>
-      <Box className={styles.progressFill} style={{ width: `${percent}%` }} />
+      <Box
+        className={classNames(styles.progressFill, {
+          [styles.animating]: animating,
+        })}
+        style={{ width: `${percent}%` }}
+      />
     </Box>
   );
 };
@@ -111,16 +142,20 @@ export const TaskProgressWidget: React.FC = () => {
           <Flex className={styles.header} align="center" gap="3" px="3" py="2">
             <AnimatedText as="div" size="1" animating={isAnimating}>
               <Flex align="center" gap="2" style={{ flex: 1 }}>
-                <Text>📋</Text>
+                <CheckboxIcon
+                  width={14}
+                  height={14}
+                  className={styles.headerIcon}
+                />
 
                 {!isExpanded && hasTasks && (
                   <>
-                    <Flex gap="1">
+                    <Flex gap="1" align="center">
                       {tasks.map((task) => (
                         <StatusIcon
                           key={task.id}
                           status={task.status}
-                          showSpinner={
+                          isStreaming={
                             task.status === "in_progress" && isStreaming
                           }
                         />
@@ -131,7 +166,11 @@ export const TaskProgressWidget: React.FC = () => {
                       {done}/{total}
                     </Text>
 
-                    <ProgressBar done={done} total={total} />
+                    <ProgressBar
+                      done={done}
+                      total={total}
+                      animating={isAnimating}
+                    />
 
                     {activeTitle && (
                       <Text size="1" color="gray" className={styles.activeHint}>
@@ -160,12 +199,26 @@ export const TaskProgressWidget: React.FC = () => {
         </Collapsible.Trigger>
 
         <Collapsible.Content>
-          <Flex direction="column" gap="2" px="3" pb="3">
+          <Flex
+            direction="column"
+            gap="2"
+            px="3"
+            pb="3"
+            className={styles.content}
+          >
             {hasTasks ? (
               <>
-                {tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
-                ))}
+                <div className={styles.taskList}>
+                  {tasks.map((task, index) => (
+                    <div
+                      key={task.id}
+                      className={styles.taskRowEnter}
+                      style={{ animationDelay: `${index * 50}ms` }}
+                    >
+                      <TaskRow task={task} isStreaming={isStreaming} />
+                    </div>
+                  ))}
+                </div>
                 <Separator size="4" />
                 <Text size="1" color="gray">
                   {done}/{total} completed

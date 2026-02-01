@@ -349,6 +349,24 @@ export const ModeForm: React.FC<ModeFormProps> = ({
                 />
                 <Text size="1">Auto Approve Editing</Text>
               </Flex>
+              <Flex align="center" gap="1">
+                <Switch
+                  size="1"
+                  checked={
+                    typeof threadDefaults.auto_approve_dangerous_commands ===
+                    "boolean"
+                      ? threadDefaults.auto_approve_dangerous_commands
+                      : false
+                  }
+                  onCheckedChange={(checked) =>
+                    patch(
+                      ["thread_defaults", "auto_approve_dangerous_commands"],
+                      checked || undefined,
+                    )
+                  }
+                />
+                <Text size="1">Auto Approve Dangerous</Text>
+              </Flex>
             </Flex>
           </Flex>
 

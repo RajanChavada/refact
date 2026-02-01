@@ -618,9 +618,9 @@ export const Customization: React.FC<CustomizationProps> = ({
   if (isLoading) return <Spinner spinning />;
 
   return (
-    <PageWrapper host={host} style={{ padding: 0, marginTop: 0 }}>
+    <PageWrapper host={host} noPadding>
       {host === "vscode" && !tabbed ? (
-        <Flex gap="2" pb="3">
+        <Flex gap="2" pb="2">
           <Button variant="surface" onClick={backFromCustomization}>
             <ArrowLeftIcon width="16" height="16" />
             Back
@@ -631,7 +631,7 @@ export const Customization: React.FC<CustomizationProps> = ({
           mr="auto"
           variant="outline"
           onClick={backFromCustomization}
-          mb="4"
+          mb="2"
         >
           Back
         </Button>

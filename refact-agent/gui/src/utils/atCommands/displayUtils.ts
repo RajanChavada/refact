@@ -12,6 +12,32 @@ const ICONS: Record<AtCommandType, string> = {
   help: "❓",
 };
 
+type CommandMeta = {
+  argRequired: boolean;
+  clickable: boolean;
+};
+
+const COMMAND_META: Record<AtCommandType, CommandMeta> = {
+  file: { argRequired: true, clickable: true },
+  web: { argRequired: true, clickable: true },
+  tree: { argRequired: false, clickable: false },
+  search: { argRequired: true, clickable: false },
+  definition: { argRequired: true, clickable: false },
+  "knowledge-load": { argRequired: true, clickable: false },
+  references: { argRequired: true, clickable: false },
+  help: { argRequired: false, clickable: false },
+};
+
+export function isCommandDisabled(
+  token: AtCommandToken,
+  hostDisabled: boolean,
+): boolean {
+  const meta = COMMAND_META[token.type];
+  if (hostDisabled) return true;
+  if (meta.argRequired && !token.arg) return true;
+  return false;
+}
+
 export function getFilename(path: string): string {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] || path;
@@ -66,7 +92,7 @@ export function getDisplayLabel(
 
 export function tokenToChipInfo(
   token: AtCommandToken,
-  disabled: boolean,
+  hostDisabled: boolean,
   allTokens?: AtCommandToken[],
 ): ChipDisplayInfo {
   return {
@@ -76,6 +102,6 @@ export function tokenToChipInfo(
     fullPath: token.arg,
     lineRange: token.lineRange ? formatLineRange(token.lineRange) : undefined,
     url: token.type === "web" ? token.arg : undefined,
-    disabled,
+    disabled: isCommandDisabled(token, hostDisabled),
   };
 }

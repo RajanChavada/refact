@@ -49,6 +49,9 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
   total_coins?: number;
   total_lines_added?: number;
   total_lines_removed?: number;
+  tasks_total?: number;
+  tasks_done?: number;
+  tasks_failed?: number;
 };
 
 export function isTaskChatLike(
@@ -251,6 +254,9 @@ function trajectoryMetaToHistoryItem(meta: TrajectoryMeta): ChatHistoryItem {
     total_coins: meta.total_coins,
     total_lines_added: meta.total_lines_added,
     total_lines_removed: meta.total_lines_removed,
+    tasks_total: meta.tasks_total,
+    tasks_done: meta.tasks_done,
+    tasks_failed: meta.tasks_failed,
   };
 }
 
@@ -333,6 +339,9 @@ export const historySlice = createSlice({
           existing.total_coins = meta.total_coins;
           existing.total_lines_added = meta.total_lines_added;
           existing.total_lines_removed = meta.total_lines_removed;
+          existing.tasks_total = meta.tasks_total;
+          existing.tasks_done = meta.tasks_done;
+          existing.tasks_failed = meta.tasks_failed;
         }
       }
     },

@@ -15,6 +15,7 @@ use super::system_context::{
     self, create_instruction_files_message, create_memories_message, gather_system_context,
     generate_git_info_prompt, gather_git_info, PROJECT_CONTEXT_MARKER,
 };
+use crate::yaml_configs::project_information::load_project_information_config;
 use crate::call_validation::{ChatMessage, ChatContent, ChatMode, ContextFile};
 use crate::tasks::storage::infer_task_id_from_chat_id;
 use crate::tools::tool_task_memory::load_task_memories;
@@ -136,6 +137,12 @@ pub async fn system_prompt_add_extra_instructions(
     task_meta: &Option<crate::chat::types::TaskMeta>,
 ) -> String {
     let include_project_info = chat_meta.include_project_info;
+
+    // Load project information config to respect user settings
+    let config = load_project_information_config(gcx.clone()).await;
+    // If config is globally disabled, treat as if include_project_info is false
+    let include_project_info = include_project_info && config.enabled;
+
     async fn workspace_files_info(
         gcx: &Arc<ARwLock<GlobalContext>>,
     ) -> (Vec<String>, Option<PathBuf>) {
@@ -151,33 +158,59 @@ pub async fn system_prompt_add_extra_instructions(
         (workspace_dirs, active_file_path)
     }
 
-    let mut system_prompt = system_prompt.clone();
-
-    // New: %SYSTEM_INFO% - OS, datetime, username, architecture
-    if system_prompt.contains("%SYSTEM_INFO%") {
-        let system_info = system_context::SystemInfo::gather();
-        system_prompt = system_prompt.replace("%SYSTEM_INFO%", &system_info.to_prompt_string());
+    // Helper to truncate content to max chars
+    fn truncate_to_chars(s: &str, max_chars: usize) -> String {
+        if s.chars().count() <= max_chars {
+            s.to_string()
+        } else {
+            let truncated: String = s.chars().take(max_chars).collect();
+            format!("{}\n[TRUNCATED]", truncated)
+        }
     }
 
-    // New: %ENVIRONMENT_INFO% - Detected environments and usage instructions
+    let mut system_prompt = system_prompt.clone();
+
+    // %SYSTEM_INFO% - OS, datetime, username, architecture
+    // Respects config.sections.system_info.enabled and max_chars
+    if system_prompt.contains("%SYSTEM_INFO%") {
+        if include_project_info && config.sections.system_info.enabled {
+            let system_info = system_context::SystemInfo::gather();
+            let mut content = system_info.to_prompt_string();
+            if let Some(max_chars) = config.sections.system_info.max_chars {
+                content = truncate_to_chars(&content, max_chars);
+            }
+            system_prompt = system_prompt.replace("%SYSTEM_INFO%", &content);
+        } else {
+            system_prompt = system_prompt.replace("%SYSTEM_INFO%", "");
+        }
+    }
+
+    // %ENVIRONMENT_INFO% - Detected environments and usage instructions
+    // Respects config.sections.environment_instructions.enabled and max_chars
     if system_prompt.contains("%ENVIRONMENT_INFO%") {
-        if include_project_info {
+        if include_project_info && config.sections.environment_instructions.enabled {
             let project_dirs = get_project_dirs(gcx.clone()).await;
             let environments = system_context::detect_environments(&project_dirs).await;
-            let env_instructions = system_context::generate_environment_instructions(&environments);
+            let mut env_instructions = system_context::generate_environment_instructions(&environments);
+            if let Some(max_chars) = config.sections.environment_instructions.max_chars {
+                env_instructions = truncate_to_chars(&env_instructions, max_chars);
+            }
             system_prompt = system_prompt.replace("%ENVIRONMENT_INFO%", &env_instructions);
         } else {
             system_prompt = system_prompt.replace("%ENVIRONMENT_INFO%", "");
         }
     }
 
-    // New: %PROJECT_CONFIGS% - Detected project configuration files
+    // %PROJECT_CONFIGS% - Detected project configuration files
+    // Respects config.sections.project_configs.enabled and max_items
     if system_prompt.contains("%PROJECT_CONFIGS%") {
-        if include_project_info {
+        if include_project_info && config.sections.project_configs.enabled {
             let project_dirs = get_project_dirs(gcx.clone()).await;
             let configs = system_context::find_project_configs(&project_dirs).await;
-            if !configs.is_empty() {
-                let config_list = configs
+            let max_items = config.sections.project_configs.max_items.unwrap_or(30);
+            let configs_to_show: Vec<_> = configs.into_iter().take(max_items).collect();
+            if !configs_to_show.is_empty() {
+                let config_list = configs_to_show
                     .iter()
                     .map(|c| format!("- {} ({})", c.file_name, c.category))
                     .collect::<Vec<_>>()
@@ -192,11 +225,16 @@ pub async fn system_prompt_add_extra_instructions(
         }
     }
 
+    // %PROJECT_TREE% - Project file tree
+    // Respects config.sections.project_tree.enabled, max_depth, and max_chars
     if system_prompt.contains("%PROJECT_TREE%") {
-        if include_project_info {
-            match system_context::generate_compact_project_tree(gcx.clone(), 4).await {
+        if include_project_info && config.sections.project_tree.enabled {
+            let max_depth = config.sections.project_tree.max_depth.unwrap_or(4);
+            let max_chars = config.sections.project_tree.max_chars.unwrap_or(16000);
+            match system_context::generate_compact_project_tree(gcx.clone(), max_depth).await {
                 Ok(tree) if !tree.is_empty() => {
-                    let tree_section = format!("## Project Structure\n```\n{}```", tree);
+                    let tree_content = truncate_to_chars(&tree, max_chars);
+                    let tree_section = format!("## Project Structure\n```\n{}```", tree_content);
                     system_prompt = system_prompt.replace("%PROJECT_TREE%", &tree_section);
                 }
                 _ => {
@@ -208,11 +246,16 @@ pub async fn system_prompt_add_extra_instructions(
         }
     }
 
+    // %GIT_INFO% - Git repository information
+    // Respects config.sections.git_info.enabled and max_chars
     if system_prompt.contains("%GIT_INFO%") {
-        if include_project_info {
+        if include_project_info && config.sections.git_info.enabled {
             let project_dirs = get_project_dirs(gcx.clone()).await;
             let git_infos = gather_git_info(&project_dirs).await;
-            let git_section = generate_git_info_prompt(&git_infos);
+            let mut git_section = generate_git_info_prompt(&git_infos);
+            if let Some(max_chars) = config.sections.git_info.max_chars {
+                git_section = truncate_to_chars(&git_section, max_chars);
+            }
             system_prompt = system_prompt.replace("%GIT_INFO%", &git_section);
         } else {
             system_prompt = system_prompt.replace("%GIT_INFO%", "");

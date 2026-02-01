@@ -9,6 +9,7 @@ type PageWrapperProps = {
   host: Config["host"];
   className?: string;
   style?: React.CSSProperties;
+  noPadding?: boolean;
 };
 
 export const PageWrapper: React.FC<PageWrapperProps> = ({
@@ -16,6 +17,7 @@ export const PageWrapper: React.FC<PageWrapperProps> = ({
   className,
   host,
   style,
+  noPadding,
 }) => {
   const xPadding = useMemo(() => {
     if (host === "web") return { initial: "4", xl: "6" };
@@ -38,8 +40,8 @@ export const PageWrapper: React.FC<PageWrapperProps> = ({
       direction="column"
       justify="between"
       flexGrow="1"
-      py={yPadding}
-      px={xPadding}
+      py={noPadding ? "0" : yPadding}
+      px={noPadding ? "2" : xPadding}
       className={classNames(styles.PageWrapper, className)}
       style={style}
     >

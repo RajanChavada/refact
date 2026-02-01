@@ -7,7 +7,8 @@ export type StatusDotState =
   | "paused"
   | "error"
   | "idle"
-  | "unread";
+  | "unread"
+  | "completed";
 
 export interface StatusDotProps {
   state: StatusDotState;
@@ -21,6 +22,7 @@ const STATE_TOOLTIPS: Record<StatusDotState, string> = {
   error: "An error occurred",
   idle: "Idle",
   unread: "Unread messages",
+  completed: "Completed",
 };
 
 const STATE_CLASS_MAP: Record<StatusDotState, string> = {
@@ -29,6 +31,7 @@ const STATE_CLASS_MAP: Record<StatusDotState, string> = {
   error: styles.error,
   idle: styles.idle,
   unread: styles.unread,
+  completed: styles.completed,
 };
 
 export const StatusDot: React.FC<StatusDotProps> = ({

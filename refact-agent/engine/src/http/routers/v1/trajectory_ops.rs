@@ -267,6 +267,8 @@ pub async fn handle_handoff_apply(
         context_tokens_cap: thread.context_tokens_cap,
         include_project_info: thread.include_project_info,
         is_title_generated: false,
+        auto_approve_editing_tools: thread.auto_approve_editing_tools,
+        auto_approve_dangerous_commands: thread.auto_approve_dangerous_commands,
         version: 1,
         task_meta,
         parent_id: Some(chat_id.clone()),
@@ -316,6 +318,8 @@ async fn save_trajectory_snapshot_with_parent(
         "context_tokens_cap": snapshot.context_tokens_cap,
         "include_project_info": snapshot.include_project_info,
         "isTitleGenerated": snapshot.is_title_generated,
+        "auto_approve_editing_tools": snapshot.auto_approve_editing_tools,
+        "auto_approve_dangerous_commands": snapshot.auto_approve_dangerous_commands,
         "parent_id": parent_id,
         "link_type": link_type,
     });

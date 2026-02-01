@@ -82,7 +82,9 @@ export const Chat: React.FC<ChatProps> = ({
         </Flex>
 
         <Flex direction="column" style={{ flex: "0 0 auto" }}>
-          <TaskProgressWidget />
+          <Container>
+            <TaskProgressWidget />
+          </Container>
 
           {shouldCheckpointsPopupBeShown && <Checkpoints />}
 

@@ -17,7 +17,6 @@ import type { LspChatMessage } from "../../services/refact";
 import {
   getSelectedChatModel,
   selectChatId,
-  selectIsStreaming,
   selectMessages,
   selectThreadMode,
   selectThreadImages,
@@ -86,7 +85,6 @@ function useGetCommandPreviewQuery(
 
   const messages = useAppSelector(selectMessages);
   const chatId = useAppSelector(selectChatId);
-  const isStreaming = useAppSelector(selectIsStreaming);
   const currentThreadMode = useAppSelector(selectThreadMode);
   const currentModel = useAppSelector(getSelectedChatModel);
 
@@ -126,7 +124,7 @@ function useGetCommandPreviewQuery(
   const { data } = commandsApi.useGetCommandPreviewQuery(
     { messages: messagesToSend, meta: metaToSend, model: currentModel },
     {
-      skip: !hasCaps || isStreaming,
+      skip: !hasCaps,
     },
   );
 

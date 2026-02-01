@@ -372,6 +372,9 @@ describe("session_state handling", () => {
           session_state: "generating",
           total_lines_added: 0,
           total_lines_removed: 0,
+          tasks_total: 0,
+          tasks_done: 0,
+          tasks_failed: 0,
         },
       ]),
     );
@@ -406,6 +409,9 @@ describe("session_state handling", () => {
           session_state: "executing_tools",
           total_lines_added: 0,
           total_lines_removed: 0,
+          tasks_total: 0,
+          tasks_done: 0,
+          tasks_failed: 0,
         },
       ]),
     );

@@ -117,6 +117,12 @@ pub struct TrajectoryMeta {
     pub total_lines_added: i64,
     #[serde(default)]
     pub total_lines_removed: i64,
+    #[serde(default)]
+    pub tasks_total: i32,
+    #[serde(default)]
+    pub tasks_done: i32,
+    #[serde(default)]
+    pub tasks_failed: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,6 +144,8 @@ pub struct LoadedTrajectory {
     pub thread: ThreadParams,
     pub created_at: String,
     pub updated_at: String,
+    pub auto_approve_editing_tools_present: bool,
+    pub auto_approve_dangerous_commands_present: bool,
 }
 
 #[derive(Clone)]
@@ -154,6 +162,8 @@ pub struct TrajectorySnapshot {
     pub context_tokens_cap: Option<usize>,
     pub include_project_info: bool,
     pub is_title_generated: bool,
+    pub auto_approve_editing_tools: bool,
+    pub auto_approve_dangerous_commands: bool,
     pub version: u64,
     pub task_meta: Option<super::types::TaskMeta>,
     pub parent_id: Option<String>,
@@ -176,11 +186,41 @@ impl TrajectorySnapshot {
             context_tokens_cap: session.thread.context_tokens_cap,
             include_project_info: session.thread.include_project_info,
             is_title_generated: session.thread.is_title_generated,
+            auto_approve_editing_tools: session.thread.auto_approve_editing_tools,
+            auto_approve_dangerous_commands: session.thread.auto_approve_dangerous_commands,
             version: session.trajectory_version,
             task_meta: session.thread.task_meta.clone(),
             parent_id: session.thread.parent_id.clone(),
             link_type: session.thread.link_type.clone(),
             root_chat_id: session.thread.root_chat_id.clone(),
+        }
+    }
+}
+
+pub async fn apply_mode_defaults_to_thread(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    thread: &mut ThreadParams,
+    auto_approve_editing_present: bool,
+    auto_approve_dangerous_present: bool,
+) {
+    if auto_approve_editing_present && auto_approve_dangerous_present {
+        return;
+    }
+    if let Some(mode_config) = crate::yaml_configs::customization_registry::get_mode_config(
+        gcx.clone(),
+        &thread.mode,
+        None,
+    ).await {
+        let defaults = &mode_config.thread_defaults;
+        if !auto_approve_editing_present {
+            if let Some(v) = defaults.auto_approve_editing_tools {
+                thread.auto_approve_editing_tools = v;
+            }
+        }
+        if !auto_approve_dangerous_present {
+            if let Some(v) = defaults.auto_approve_dangerous_commands {
+                thread.auto_approve_dangerous_commands = v;
+            }
         }
     }
 }
@@ -314,11 +354,9 @@ pub async fn load_trajectory_for_chat(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        mode: t
-            .get("mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("AGENT")
-            .to_string(),
+        mode: crate::yaml_configs::customization_registry::map_legacy_mode_to_id(
+            t.get("mode").and_then(|v| v.as_str()).unwrap_or("agent")
+        ).to_string(),
         tool_use: t
             .get("tool_use")
             .and_then(|v| v.as_str())
@@ -367,6 +405,9 @@ pub async fn load_trajectory_for_chat(
             .map(|s| s.to_string()),
     };
 
+    let auto_approve_editing_tools_present = t.get("auto_approve_editing_tools").and_then(|v| v.as_bool()).is_some();
+    let auto_approve_dangerous_commands_present = t.get("auto_approve_dangerous_commands").and_then(|v| v.as_bool()).is_some();
+
     let created_at = t
         .get("created_at")
         .and_then(|v| v.as_str())
@@ -384,6 +425,8 @@ pub async fn load_trajectory_for_chat(
         thread,
         created_at,
         updated_at,
+        auto_approve_editing_tools_present,
+        auto_approve_dangerous_commands_present,
     })
 }
 
@@ -447,7 +490,7 @@ I'm your **Task Planner**. I handle the complete task lifecycle - from investiga
         "id": chat_id,
         "title": "",
         "model": "",
-        "mode": "TASK_PLANNER",
+        "mode": "task_planner",
         "tool_use": "agent",
         "messages": messages_json,
         "created_at": now.clone(),
@@ -457,6 +500,8 @@ I'm your **Task Planner**. I handle the complete task lifecycle - from investiga
         "context_tokens_cap": null,
         "include_project_info": true,
         "isTitleGenerated": false,
+        "auto_approve_editing_tools": true,
+        "auto_approve_dangerous_commands": true,
         "task_meta": serde_json::to_value(&task_meta).unwrap_or_default(),
     });
 
@@ -504,6 +549,8 @@ pub async fn save_trajectory_as(
         context_tokens_cap: thread.context_tokens_cap,
         include_project_info: thread.include_project_info,
         is_title_generated: thread.is_title_generated,
+        auto_approve_editing_tools: thread.auto_approve_editing_tools,
+        auto_approve_dangerous_commands: thread.auto_approve_dangerous_commands,
         version: 1,
         task_meta: thread.task_meta.clone(),
         parent_id: thread.parent_id.clone(),
@@ -544,6 +591,8 @@ pub async fn save_trajectory_snapshot(
         "context_tokens_cap": snapshot.context_tokens_cap,
         "include_project_info": snapshot.include_project_info,
         "isTitleGenerated": snapshot.is_title_generated,
+        "auto_approve_editing_tools": snapshot.auto_approve_editing_tools,
+        "auto_approve_dangerous_commands": snapshot.auto_approve_dangerous_commands,
     });
 
     if let Some(ref parent_id) = snapshot.parent_id {
@@ -702,7 +751,13 @@ pub async fn check_external_reload_pending(
     if !should_reload {
         return;
     }
-    if let Some(loaded) = load_trajectory_for_chat(gcx.clone(), &chat_id).await {
+    if let Some(mut loaded) = load_trajectory_for_chat(gcx.clone(), &chat_id).await {
+        apply_mode_defaults_to_thread(
+            gcx.clone(),
+            &mut loaded.thread,
+            loaded.auto_approve_editing_tools_present,
+            loaded.auto_approve_dangerous_commands_present,
+        ).await;
         let mut session = session_arc.lock().await;
         if session.runtime.state == SessionState::Idle && !session.trajectory_dirty {
             info!("Applying pending external reload for {}", chat_id);
@@ -822,7 +877,13 @@ async fn process_trajectory_change(
         return;
     }
 
-    if let Some(loaded) = load_trajectory_for_chat(gcx.clone(), chat_id).await {
+    if let Some(mut loaded) = load_trajectory_for_chat(gcx.clone(), chat_id).await {
+        apply_mode_defaults_to_thread(
+            gcx.clone(),
+            &mut loaded.thread,
+            loaded.auto_approve_editing_tools_present,
+            loaded.auto_approve_dangerous_commands_present,
+        ).await;
         let mut session = session_arc.lock().await;
         if session.runtime.state != SessionState::Idle || session.trajectory_dirty {
             session.external_reload_pending = true;
@@ -1338,6 +1399,78 @@ fn calculate_total_coins_from_messages(messages: &[serde_json::Value]) -> Option
     if found_any { Some(total) } else { None }
 }
 
+fn calculate_task_progress_from_messages(messages: &[serde_json::Value]) -> (i32, i32, i32) {
+    // Build a set of successful tool call IDs (tool messages without tool_failed=true)
+    let mut successful_tool_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for msg in messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role != "tool" {
+            continue;
+        }
+        let tool_failed = msg.get("tool_failed").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !tool_failed {
+            if let Some(tool_call_id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
+                successful_tool_ids.insert(tool_call_id.to_string());
+            }
+        }
+    }
+
+    // Find the last successful tasks_set tool call (iterate in reverse)
+    for msg in messages.iter().rev() {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        if role != "assistant" {
+            continue;
+        }
+
+        let tool_calls = match msg.get("tool_calls").and_then(|v| v.as_array()) {
+            Some(tc) => tc,
+            None => continue,
+        };
+
+        // Iterate tool_calls in reverse to find the last tasks_set
+        for tc in tool_calls.iter().rev() {
+            let function = match tc.get("function") {
+                Some(f) => f,
+                None => continue,
+            };
+
+            let name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if name != "tasks_set" {
+                continue;
+            }
+
+            let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if tc_id.is_empty() || !successful_tool_ids.contains(tc_id) {
+                continue;
+            }
+
+            // Parse the arguments
+            let args_str = function.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
+                if let Some(tasks) = args.get("tasks").and_then(|t| t.as_array()) {
+                    let mut total = 0i32;
+                    let mut done = 0i32;
+                    let mut failed = 0i32;
+
+                    for task in tasks {
+                        total += 1;
+                        let status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        match status.to_lowercase().as_str() {
+                            "completed" | "done" | "complete" => done += 1,
+                            "failed" | "error" => failed += 1,
+                            _ => {}
+                        }
+                    }
+
+                    return (total, done, failed);
+                }
+            }
+        }
+    }
+
+    (0, 0, 0)
+}
+
 fn calculate_line_changes_from_chat_messages(messages: &[ChatMessage]) -> (i64, i64) {
     let mut total_added: i64 = 0;
     let mut total_removed: i64 = 0;
@@ -1426,6 +1559,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
 
     let total_coins = calculate_total_coins_from_messages(&data.messages);
     let (total_lines_added, total_lines_removed) = calculate_line_changes_from_messages(&data.messages);
+    let (tasks_total, tasks_done, tasks_failed) = calculate_task_progress_from_messages(&data.messages);
 
     TrajectoryMeta {
         id: data.id.clone(),
@@ -1446,6 +1580,9 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         total_coins,
         total_lines_added,
         total_lines_removed,
+        tasks_total,
+        tasks_done,
+        tasks_failed,
     }
 }
 

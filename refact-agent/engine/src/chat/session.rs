@@ -564,7 +564,7 @@ pub async fn get_or_create_session_with_trajectory(
 
     let trajectory_events_tx = gcx.read().await.trajectory_events_tx.clone();
 
-    let (mut session, is_new) = if let Some(loaded) =
+    let (mut session, is_new) = if let Some(mut loaded) =
         super::trajectories::load_trajectory_for_chat(gcx.clone(), chat_id).await
     {
         info!(
@@ -572,6 +572,12 @@ pub async fn get_or_create_session_with_trajectory(
             chat_id,
             loaded.messages.len()
         );
+        super::trajectories::apply_mode_defaults_to_thread(
+            gcx.clone(),
+            &mut loaded.thread,
+            loaded.auto_approve_editing_tools_present,
+            loaded.auto_approve_dangerous_commands_present,
+        ).await;
         (
             ChatSession::new_with_trajectory(
                 chat_id.to_string(),

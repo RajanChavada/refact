@@ -16,43 +16,24 @@
 
 .textareaWrapper {
   position: relative;
+  --chat-input-padding: var(--space-3);
 }
 
-.contextIndicator {
-  position: absolute;
-  top: var(--space-3);
-  right: var(--space-3);
-  z-index: 1;
-  pointer-events: none;
+.inputHeader {
+  padding: var(--space-2) var(--chat-input-padding);
+  padding-bottom: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
-.contextIndicator > * {
-  pointer-events: auto;
+.inputHeader > *:empty {
+  display: none;
 }
 
 .textareaWrapper :global(.rt-TextAreaInput) {
   min-height: 100px;
-  padding: var(--space-3);
-  padding-top: calc(var(--space-3) + 24px);
-  padding-right: 160px;
-}
-
-.file {
-  display: block;
-  margin: 0;
-  /* overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap; */
-  word-wrap: break-word;
-  overflow-wrap: break-word;
-  word-break: break-word;
-  white-space: normal;
-  max-height: 16px;
-}
-
-.file_name {
-  display: flex;
-  line-height: 0;
+  padding: var(--chat-input-padding);
 }
 
 .file_name_ellipsis_rtl {

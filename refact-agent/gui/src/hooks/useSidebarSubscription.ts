@@ -199,6 +199,9 @@ export function useSidebarSubscription() {
               total_coins: event.total_coins,
               total_lines_added: event.total_lines_added ?? 0,
               total_lines_removed: event.total_lines_removed ?? 0,
+              tasks_total: 0,
+              tasks_done: 0,
+              tasks_failed: 0,
             },
           ]),
         );
@@ -326,6 +329,9 @@ export function useSidebarSubscription() {
         total_coins: t.total_coins,
         total_lines_added: t.total_lines_added,
         total_lines_removed: t.total_lines_removed,
+        tasks_total: t.tasks_total,
+        tasks_done: t.tasks_done,
+        tasks_failed: t.tasks_failed,
       }));
 
       dispatch(hydrateHistoryFromMeta(trajectoryItems));

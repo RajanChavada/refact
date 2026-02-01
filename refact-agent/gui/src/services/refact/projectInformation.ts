@@ -43,6 +43,7 @@ export type ProjectInfoBlock = {
   truncated: boolean;
   enabled: boolean;
   char_count: number;
+  original_char_count?: number;
 };
 
 export type ProjectInformationPreviewResponse = {

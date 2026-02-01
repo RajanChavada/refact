@@ -3,6 +3,52 @@ import React, { useCallback, useEffect, useMemo } from "react";
 import { Flex, Box, Text } from "@radix-ui/themes";
 import styles from "./ChatForm.module.css";
 
+const TEXT_FILE_EXTENSIONS = new Set([
+  ".txt",
+  ".md",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".xml",
+  ".csv",
+  ".js",
+  ".ts",
+  ".tsx",
+  ".jsx",
+  ".py",
+  ".rs",
+  ".go",
+  ".java",
+  ".kt",
+  ".c",
+  ".cpp",
+  ".h",
+  ".hpp",
+  ".cs",
+  ".rb",
+  ".php",
+  ".swift",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".html",
+  ".css",
+  ".scss",
+  ".sass",
+  ".less",
+  ".sql",
+  ".graphql",
+  ".env",
+  ".gitignore",
+  ".dockerignore",
+]);
+
+function isTextFile(filename: string): boolean {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  return TEXT_FILE_EXTENSIONS.has(ext);
+}
+
 import {
   BackToSideBarButton,
   AgentIntegrationsButton,
@@ -24,7 +70,7 @@ import {
 } from "../../hooks";
 import { ErrorCallout, Callout } from "../Callout";
 import { ComboBox } from "../ComboBox";
-import { FilesPreview } from "./FilesPreview";
+import { UnifiedAttachmentsTray } from "./UnifiedAttachmentsTray";
 import { ChatControls } from "./ChatControls";
 import { ChatSettingsDropdown } from "./ChatSettingsDropdown";
 import { ModeSelect } from "./ModeSelect";
@@ -68,7 +114,7 @@ import {
 } from "../../features/Chat";
 import { telemetryApi } from "../../services/refact";
 import { push } from "../../features/Pages/pagesSlice";
-import { AttachmentsPreview } from "./AttachmentsPreview";
+
 import { useUsageCounter } from "../UsageCounter/useUsageCounter";
 import { ChatInputTopControls } from "./ChatInputTopControls";
 
@@ -114,9 +160,12 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const { abort, regenerate } = useChatActions();
 
   const onSetMode = useCallback(
-    (modeId: string) => {
+    (
+      modeId: string,
+      threadDefaults?: Parameters<typeof setThreadMode>[0]["threadDefaults"],
+    ) => {
       if (chatId) {
-        dispatch(setThreadMode({ chatId, mode: modeId }));
+        dispatch(setThreadMode({ chatId, mode: modeId, threadDefaults }));
       }
     },
     [dispatch, chatId],
@@ -165,25 +214,48 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     return false;
   }, [allDisabled, isContextFull, isOnline]);
 
-  const { processAndInsertImages, textFiles, resetAllTextFiles } =
-    useAttachedImages();
+  const {
+    processAndInsertImages,
+    processAndInsertTextFiles,
+    textFiles,
+    resetAllTextFiles,
+  } = useAttachedImages();
   const handlePastingFile = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      if (!isMultimodalitySupportedForCurrentModel) return;
-      const files: File[] = [];
+      const imageFiles: File[] = [];
+      const textFilesList: File[] = [];
       const items = event.clipboardData.items;
+
       for (const item of items) {
         if (item.kind === "file") {
           const file = item.getAsFile();
-          file && files.push(file);
+          if (file) {
+            if (file.type === "image/jpeg" || file.type === "image/png") {
+              if (isMultimodalitySupportedForCurrentModel) {
+                imageFiles.push(file);
+              }
+            } else if (file.type.startsWith("text/") || isTextFile(file.name)) {
+              textFilesList.push(file);
+            }
+          }
         }
       }
-      if (files.length > 0) {
+
+      if (imageFiles.length > 0 || textFilesList.length > 0) {
         event.preventDefault();
-        processAndInsertImages(files);
+        if (imageFiles.length > 0) {
+          processAndInsertImages(imageFiles);
+        }
+        if (textFilesList.length > 0) {
+          processAndInsertTextFiles(textFilesList);
+        }
       }
     },
-    [processAndInsertImages, isMultimodalitySupportedForCurrentModel],
+    [
+      processAndInsertImages,
+      processAndInsertTextFiles,
+      isMultimodalitySupportedForCurrentModel,
+    ],
   );
 
   const {
@@ -439,7 +511,12 @@ export const ChatForm: React.FC<ChatFormProps> = ({
           onSubmit={() => handleSubmit("after_flow")}
         >
           <Box className={styles.textareaWrapper}>
-            <Box className={styles.contextIndicator}>
+            <Box className={styles.inputHeader}>
+              <UnifiedAttachmentsTray
+                attachedFiles={attachedFiles}
+                previewFiles={previewFiles}
+                onOpenFile={queryPathThenOpenFile}
+              />
               <Flex align="center" gap="2" justify="between" wrap="wrap">
                 <ChatInputTopControls
                   checkboxes={checkboxes}
@@ -453,9 +530,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 </Flex>
               </Flex>
             </Box>
-
-            <AttachmentsPreview attachedFiles={attachedFiles} />
-            <FilesPreview files={previewFiles} />
 
             <ComboBox
               key={inputResetKey}

@@ -2,162 +2,27 @@ use axum::Extension;
 use axum::response::Result;
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
+use crate::chat::system_context::{
+    SystemInfo, find_instruction_files, find_project_configs, gather_git_info,
+    detect_environments, generate_compact_project_tree, generate_git_info_prompt,
+    generate_environment_instructions,
+};
+use crate::memories::load_memories_by_tags;
+
+pub use crate::yaml_configs::project_information::{
+    ProjectInformationConfig,
+    load_project_information_config, save_project_information_config,
+    to_relative_path, sanitize_overrides,
+};
 
 async fn get_project_dirs(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<PathBuf> {
     crate::files_correction::get_project_dirs(gcx).await
-}
-
-fn is_safe_path(path: &str, project_roots: &[PathBuf]) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    if Path::new(path).is_absolute() {
-        return false;
-    }
-    if path.contains("..") {
-        return false;
-    }
-    for root in project_roots {
-        let full_path = root.join(path);
-        if let Ok(canonical) = full_path.canonicalize() {
-            if let Ok(root_canonical) = root.canonicalize() {
-                if canonical.starts_with(&root_canonical) {
-                    return true;
-                }
-            }
-        }
-        if full_path.starts_with(root) {
-            return true;
-        }
-    }
-    !project_roots.is_empty()
-}
-
-fn sanitize_overrides(overrides: &HashMap<String, FileOverride>, project_roots: &[PathBuf]) -> HashMap<String, FileOverride> {
-    overrides
-        .iter()
-        .filter(|(path, _)| is_safe_path(path, project_roots))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SectionConfig {
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_chars: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_items: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_chars_per_item: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_depth: Option<usize>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub overrides: HashMap<String, FileOverride>,
-}
-
-impl Default for SectionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_chars: None,
-            max_items: None,
-            max_chars_per_item: None,
-            max_depth: None,
-            overrides: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileOverride {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_chars: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectInformationDefaults {
-    pub max_chars_per_item: usize,
-    pub max_items_per_section: usize,
-}
-
-impl Default for ProjectInformationDefaults {
-    fn default() -> Self {
-        Self {
-            max_chars_per_item: 8000,
-            max_items_per_section: 50,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectInformationSections {
-    #[serde(default)]
-    pub system_info: SectionConfig,
-    #[serde(default)]
-    pub environment_instructions: SectionConfig,
-    #[serde(default)]
-    pub detected_environments: SectionConfig,
-    #[serde(default)]
-    pub git_info: SectionConfig,
-    #[serde(default)]
-    pub project_tree: SectionConfig,
-    #[serde(default)]
-    pub instruction_files: SectionConfig,
-    #[serde(default)]
-    pub project_configs: SectionConfig,
-    #[serde(default)]
-    pub memories: SectionConfig,
-}
-
-impl Default for ProjectInformationSections {
-    fn default() -> Self {
-        Self {
-            system_info: SectionConfig { enabled: true, ..Default::default() },
-            environment_instructions: SectionConfig { enabled: true, max_chars: Some(6000), ..Default::default() },
-            detected_environments: SectionConfig { enabled: true, max_items: Some(50), ..Default::default() },
-            git_info: SectionConfig { enabled: true, max_chars: Some(6000), ..Default::default() },
-            project_tree: SectionConfig { enabled: true, max_depth: Some(4), max_chars: Some(16000), ..Default::default() },
-            instruction_files: SectionConfig { enabled: true, max_items: Some(20), max_chars_per_item: Some(8000), ..Default::default() },
-            project_configs: SectionConfig { enabled: true, max_items: Some(30), max_chars_per_item: Some(4000), ..Default::default() },
-            memories: SectionConfig { enabled: true, max_items: Some(30), max_chars_per_item: Some(2000), ..Default::default() },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectInformationConfig {
-    #[serde(default = "default_schema_version")]
-    pub schema_version: u32,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub defaults: ProjectInformationDefaults,
-    #[serde(default)]
-    pub sections: ProjectInformationSections,
-}
-
-fn default_schema_version() -> u32 { 1 }
-fn default_enabled() -> bool { true }
-
-impl Default for ProjectInformationConfig {
-    fn default() -> Self {
-        Self {
-            schema_version: 1,
-            enabled: true,
-            defaults: ProjectInformationDefaults::default(),
-            sections: ProjectInformationSections::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +35,8 @@ pub struct ProjectInfoBlock {
     pub truncated: bool,
     pub enabled: bool,
     pub char_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_char_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,42 +45,10 @@ pub struct ProjectInformationPreviewResponse {
     pub warnings: Vec<String>,
 }
 
-async fn get_config_path(gcx: Arc<ARwLock<GlobalContext>>) -> Option<PathBuf> {
-    let dirs = get_project_dirs(gcx).await;
-    dirs.first().map(|d| d.join(".refact").join("project_information.yaml"))
-}
-
-async fn load_config(gcx: Arc<ARwLock<GlobalContext>>) -> ProjectInformationConfig {
-    let Some(path) = get_config_path(gcx).await else {
-        return ProjectInformationConfig::default();
-    };
-    if !path.exists() {
-        return ProjectInformationConfig::default();
-    }
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_yaml::from_str(&content).unwrap_or_default(),
-        Err(_) => ProjectInformationConfig::default(),
-    }
-}
-
-async fn save_config(gcx: Arc<ARwLock<GlobalContext>>, config: &ProjectInformationConfig) -> std::io::Result<()> {
-    let Some(path) = get_config_path(gcx).await else {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No project directory"));
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_path = path.with_extension("yaml.tmp");
-    let yaml = serde_yaml::to_string(config).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&tmp_path, yaml)?;
-    std::fs::rename(&tmp_path, &path)?;
-    Ok(())
-}
-
 pub async fn handle_v1_project_information_get(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
 ) -> Result<axum::Json<ProjectInformationConfig>, ScratchError> {
-    let config = load_config(gcx).await;
+    let config = load_project_information_config(gcx).await;
     Ok(axum::Json(config))
 }
 
@@ -225,8 +60,40 @@ pub async fn handle_v1_project_information_save(
     config.sections.instruction_files.overrides = sanitize_overrides(&config.sections.instruction_files.overrides, &project_roots);
     config.sections.project_configs.overrides = sanitize_overrides(&config.sections.project_configs.overrides, &project_roots);
     config.sections.memories.overrides = sanitize_overrides(&config.sections.memories.overrides, &project_roots);
-    save_config(gcx, &config).await.map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    save_project_information_config(gcx, &config).await.map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(StatusCode::OK)
+}
+
+fn count_chars(s: &str) -> usize {
+    s.chars().count()
+}
+
+struct TruncateResult {
+    content: String,
+    truncated: bool,
+    char_count: usize,
+    original_char_count: usize,
+}
+
+fn truncate_to_chars(s: &str, max_chars: usize) -> TruncateResult {
+    let original_char_count = s.chars().count();
+    if original_char_count > max_chars {
+        let content: String = s.chars().take(max_chars).collect();
+        let char_count = max_chars;
+        TruncateResult {
+            content,
+            truncated: true,
+            char_count,
+            original_char_count,
+        }
+    } else {
+        TruncateResult {
+            content: s.to_string(),
+            truncated: false,
+            char_count: original_char_count,
+            original_char_count,
+        }
+    }
 }
 
 pub async fn handle_v1_project_information_preview(
@@ -236,87 +103,253 @@ pub async fn handle_v1_project_information_preview(
     let mut blocks = Vec::new();
     let mut warnings = Vec::new();
 
+    if !config.enabled {
+        warnings.push("Project information is disabled".into());
+        return Ok(axum::Json(ProjectInformationPreviewResponse { blocks, warnings }));
+    }
+
+    let project_dirs = get_project_dirs(gcx.clone()).await;
+    let environments = detect_environments(&project_dirs).await;
+
     if config.sections.system_info.enabled {
-        let content = format!(
-            "OS: {}\nDateTime: {}",
-            std::env::consts::OS,
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
+        let sys_info = SystemInfo::gather();
+        let raw_content = sys_info.to_prompt_string();
+        let max_chars = config.sections.system_info.max_chars.unwrap_or(4000);
+        let tr = truncate_to_chars(&raw_content, max_chars);
         blocks.push(ProjectInfoBlock {
             id: "system_info".into(),
             section: "system_info".into(),
             title: "System Information".into(),
             path: None,
-            char_count: content.len(),
+            char_count: tr.char_count,
+            original_char_count: if tr.truncated { Some(tr.original_char_count) } else { None },
+            content: tr.content,
+            truncated: tr.truncated,
+            enabled: true,
+        });
+    }
+
+    if config.sections.environment_instructions.enabled {
+        let raw_content = generate_environment_instructions(&environments);
+        let max_chars = config.sections.environment_instructions.max_chars.unwrap_or(6000);
+        let tr = truncate_to_chars(&raw_content, max_chars);
+        blocks.push(ProjectInfoBlock {
+            id: "environment_instructions".into(),
+            section: "environment_instructions".into(),
+            title: "Environment Instructions".into(),
+            path: None,
+            char_count: tr.char_count,
+            original_char_count: if tr.truncated { Some(tr.original_char_count) } else { None },
+            content: tr.content,
+            truncated: tr.truncated,
+            enabled: true,
+        });
+    }
+
+    if config.sections.detected_environments.enabled {
+        let max_items = config.sections.detected_environments.max_items.unwrap_or(50);
+        let truncated = environments.len() > max_items;
+        let envs_to_show: Vec<_> = environments.iter().take(max_items).collect();
+        let content = if envs_to_show.is_empty() {
+            "No environments detected".to_string()
+        } else {
+            envs_to_show
+                .iter()
+                .map(|e| format!("- {} ({}): {}", e.env_type, e.path, e.description))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        blocks.push(ProjectInfoBlock {
+            id: "detected_environments".into(),
+            section: "detected_environments".into(),
+            title: format!("Detected Environments ({} items)", envs_to_show.len()),
+            path: None,
+            char_count: count_chars(&content),
+            original_char_count: None,
             content,
-            truncated: false,
+            truncated,
             enabled: true,
         });
     }
 
     if config.sections.git_info.enabled {
-        let dirs = get_project_dirs(gcx.clone()).await;
-        if let Some(project_dir) = dirs.first() {
-            let commits = crate::git::commit_info::get_commit_information_from_current_changes(gcx.clone()).await;
-            let content = if commits.is_empty() {
-                "No git info available".to_string()
-            } else {
-                commits.iter().map(|c| c.commit_message.clone()).collect::<Vec<_>>().join("\n---\n")
-            };
-            let max_chars = config.sections.git_info.max_chars.unwrap_or(6000);
-            let truncated = content.len() > max_chars;
-            let content = if truncated { content.chars().take(max_chars).collect() } else { content };
-            blocks.push(ProjectInfoBlock {
-                id: "git_info".into(),
-                section: "git_info".into(),
-                title: "Git Information".into(),
-                path: Some(project_dir.display().to_string()),
-                char_count: content.len(),
-                content,
-                truncated,
-                enabled: true,
-            });
-        }
+        let git_infos = gather_git_info(&project_dirs).await;
+        let raw_content = generate_git_info_prompt(&git_infos);
+        let raw_content = if raw_content.is_empty() {
+            "No git repositories found".to_string()
+        } else {
+            raw_content
+        };
+        let max_chars = config.sections.git_info.max_chars.unwrap_or(6000);
+        let tr = truncate_to_chars(&raw_content, max_chars);
+        blocks.push(ProjectInfoBlock {
+            id: "git_info".into(),
+            section: "git_info".into(),
+            title: "Git Information".into(),
+            path: project_dirs.first().map(|p| p.display().to_string()),
+            char_count: tr.char_count,
+            original_char_count: if tr.truncated { Some(tr.original_char_count) } else { None },
+            content: tr.content,
+            truncated: tr.truncated,
+            enabled: true,
+        });
     }
 
     if config.sections.project_tree.enabled {
-        let dirs = get_project_dirs(gcx.clone()).await;
-        if let Some(project_dir) = dirs.first() {
-            let max_chars = config.sections.project_tree.max_chars.unwrap_or(16000);
-            let content = format!("[Project tree for: {}]", project_dir.display());
-            let truncated = content.len() > max_chars;
+        let max_depth = config.sections.project_tree.max_depth.unwrap_or(4);
+        let max_chars = config.sections.project_tree.max_chars.unwrap_or(16000);
+        let tr = match generate_compact_project_tree(gcx.clone(), max_depth).await {
+            Ok(tree) => truncate_to_chars(&tree, max_chars),
+            Err(e) => TruncateResult {
+                content: format!("Failed to generate project tree: {}", e),
+                truncated: false,
+                char_count: 0,
+                original_char_count: 0,
+            },
+        };
+        blocks.push(ProjectInfoBlock {
+            id: "project_tree".into(),
+            section: "project_tree".into(),
+            title: "Project Tree".into(),
+            path: project_dirs.first().map(|p| p.display().to_string()),
+            char_count: tr.char_count,
+            original_char_count: if tr.truncated { Some(tr.original_char_count) } else { None },
+            content: tr.content,
+            truncated: tr.truncated,
+            enabled: true,
+        });
+    }
+
+    if config.sections.instruction_files.enabled {
+        let instruction_files = find_instruction_files(&project_dirs).await;
+        let max_items = config.sections.instruction_files.max_items.unwrap_or(20);
+        let default_max_chars = config.sections.instruction_files.max_chars_per_item.unwrap_or(8000);
+        let overrides = &config.sections.instruction_files.overrides;
+        let list_truncated = instruction_files.len() > max_items;
+        let files_to_show: Vec<_> = instruction_files.into_iter().take(max_items).collect();
+
+        for (idx, file) in files_to_show.iter().enumerate() {
+            // Use relative path as the override key (consistent with UI and sanitization)
+            let override_key = to_relative_path(&file.file_path, &project_dirs);
+            let file_override = override_key.as_ref().and_then(|k| overrides.get(k));
+            let file_enabled = file_override.and_then(|o| o.enabled).unwrap_or(true);
+            let max_chars_per_item = file_override.and_then(|o| o.max_chars).unwrap_or(default_max_chars);
+
+            let raw_content = if let Some(ref processed) = file.processed_content {
+                processed.clone()
+            } else {
+                match tokio::fs::read_to_string(&file.file_path).await {
+                    Ok(c) => c,
+                    Err(_) => "[Could not read file]".to_string(),
+                }
+            };
+            let tr = truncate_to_chars(&raw_content, max_chars_per_item);
             blocks.push(ProjectInfoBlock {
-                id: "project_tree".into(),
-                section: "project_tree".into(),
-                title: "Project Tree".into(),
-                path: Some(project_dir.display().to_string()),
-                char_count: content.len(),
+                id: format!("instruction_file_{}", idx),
+                section: "instruction_files".into(),
+                title: file.file_name.clone(),
+                // Return relative path as the key for UI to use when saving overrides
+                path: override_key.or_else(|| Some(file.file_path.clone())),
+                char_count: if file_enabled { tr.char_count } else { 0 },
+                original_char_count: if tr.truncated { Some(tr.original_char_count) } else { None },
+                content: tr.content,
+                truncated: tr.truncated,
+                enabled: file_enabled,
+            });
+        }
+
+        if files_to_show.is_empty() {
+            let content = "No instruction files found (AGENTS.md, .cursorrules, etc.)".to_string();
+            blocks.push(ProjectInfoBlock {
+                id: "instruction_files_empty".into(),
+                section: "instruction_files".into(),
+                title: "Instruction Files".into(),
+                path: None,
+                char_count: count_chars(&content),
+                original_char_count: None,
                 content,
-                truncated,
+                truncated: false,
                 enabled: true,
             });
+        } else if list_truncated {
+            warnings.push(format!("Instruction files truncated to {} items", max_items));
         }
     }
 
-    for section in &["environment_instructions", "detected_environments", "instruction_files", "project_configs", "memories"] {
-        let section_config = match *section {
-            "environment_instructions" => &config.sections.environment_instructions,
-            "detected_environments" => &config.sections.detected_environments,
-            "instruction_files" => &config.sections.instruction_files,
-            "project_configs" => &config.sections.project_configs,
-            "memories" => &config.sections.memories,
-            _ => continue,
+    if config.sections.project_configs.enabled {
+        let project_configs = find_project_configs(&project_dirs).await;
+        let max_items = config.sections.project_configs.max_items.unwrap_or(30);
+        let truncated = project_configs.len() > max_items;
+        let configs_to_show: Vec<_> = project_configs.into_iter().take(max_items).collect();
+
+        let content = if configs_to_show.is_empty() {
+            "No project config files found".to_string()
+        } else {
+            configs_to_show
+                .iter()
+                .map(|c| format!("- {} [{}]", c.file_name, c.category))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
-        if section_config.enabled {
+        blocks.push(ProjectInfoBlock {
+            id: "project_configs".into(),
+            section: "project_configs".into(),
+            title: format!("Project Configs ({} files)", configs_to_show.len()),
+            path: None,
+            char_count: count_chars(&content),
+            original_char_count: None,
+            content,
+            truncated,
+            enabled: true,
+        });
+    }
+
+    if config.sections.memories.enabled {
+        let memory_tags = &["preference", "lesson", "insight", "pattern"];
+        let max_items = config.sections.memories.max_items.unwrap_or(30);
+        let memories = load_memories_by_tags(gcx.clone(), memory_tags, max_items).await.unwrap_or_default();
+        let default_max_chars = config.sections.memories.max_chars_per_item.unwrap_or(2000);
+        let overrides = &config.sections.memories.overrides;
+
+        for (idx, memo) in memories.iter().enumerate() {
+            let abs_path_str = memo.file_path.as_ref().map(|p| p.display().to_string());
+            // Use relative path as the override key (consistent with UI and sanitization)
+            let override_key = abs_path_str.as_ref().and_then(|p| to_relative_path(p, &project_dirs));
+            let file_override = override_key.as_ref().and_then(|k| overrides.get(k));
+            let file_enabled = file_override.and_then(|o| o.enabled).unwrap_or(true);
+            let max_chars_per_item = file_override.and_then(|o| o.max_chars).unwrap_or(default_max_chars);
+
+            let tr = truncate_to_chars(&memo.content, max_chars_per_item);
+            let title = memo.file_path.as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("Memory {}", idx + 1));
             blocks.push(ProjectInfoBlock {
-                id: format!("{}_placeholder", section),
-                section: section.to_string(),
-                title: format!("{} (preview)", section.replace('_', " ")),
+                id: format!("memory_{}", idx),
+                section: "memories".into(),
+                title,
+                // Return relative path as the key for UI to use when saving overrides
+                path: override_key.or(abs_path_str),
+                char_count: if file_enabled { tr.char_count } else { 0 },
+                original_char_count: if tr.truncated { Some(tr.original_char_count) } else { None },
+                content: tr.content,
+                truncated: tr.truncated,
+                enabled: file_enabled,
+            });
+        }
+
+        if memories.is_empty() {
+            let content = "No memories found".to_string();
+            blocks.push(ProjectInfoBlock {
+                id: "memories_empty".into(),
+                section: "memories".into(),
+                title: "Memories".into(),
                 path: None,
-                content: format!("[{} content will be loaded at runtime]", section.replace('_', " ")),
+                char_count: count_chars(&content),
+                original_char_count: None,
+                content,
                 truncated: false,
                 enabled: true,
-                char_count: 50,
             });
         }
     }

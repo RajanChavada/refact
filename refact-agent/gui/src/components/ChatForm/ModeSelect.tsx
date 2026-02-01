@@ -10,6 +10,7 @@ import {
 import {
   useGetChatModesQuery,
   ChatModeInfo,
+  ChatModeThreadDefaults,
 } from "../../services/refact/chatModes";
 import { DEFAULT_MODE } from "../../features/Chat/Thread/types";
 import { useAppSelector, useAppDispatch } from "../../hooks";
@@ -19,7 +20,10 @@ import styles from "./ModeSelect.module.css";
 
 type ModeSelectProps = {
   selectedMode: string;
-  onModeChange: (modeId: string) => void;
+  onModeChange: (
+    modeId: string,
+    threadDefaults?: ChatModeThreadDefaults,
+  ) => void;
   disabled?: boolean;
 };
 
@@ -151,7 +155,7 @@ export const ModeSelect: React.FC<ModeSelectProps> = ({
                   mode={mode}
                   isSelected={isSelected}
                   onSelect={() => {
-                    onModeChange(mode.id);
+                    onModeChange(mode.id, mode.thread_defaults);
                     setIsOpen(false);
                   }}
                   disabled={isModeLocked}

@@ -28,6 +28,9 @@ export type TrajectoryMeta = {
   total_coins?: number;
   total_lines_added: number;
   total_lines_removed: number;
+  tasks_total: number;
+  tasks_done: number;
+  tasks_failed: number;
 };
 
 export type TrajectoryData = {
