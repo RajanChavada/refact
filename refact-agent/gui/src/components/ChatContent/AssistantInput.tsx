@@ -33,6 +33,7 @@ type ChatInputProps = {
   metering_coins_generated?: number;
   metering_coins_cache_creation?: number;
   metering_coins_cache_read?: number;
+  isStreaming?: boolean;
 };
 
 export const AssistantInput: React.FC<ChatInputProps> = ({
@@ -52,6 +53,7 @@ export const AssistantInput: React.FC<ChatInputProps> = ({
   metering_coins_generated,
   metering_coins_cache_creation,
   metering_coins_cache_read,
+  isStreaming = false,
 }) => {
   const [sendTelemetryEvent] =
     telemetryApi.useLazySendTelemetryChatEventQuery();
@@ -125,10 +127,14 @@ export const AssistantInput: React.FC<ChatInputProps> = ({
   return (
     <MessageWrapper>
       {combinedReasoning && (
-        <ReasoningContent
-          reasoningContent={combinedReasoning}
-          onCopyClick={handleCopy}
-        />
+        <Box mb={!message ? "3" : undefined}>
+          <ReasoningContent
+            reasoningContent={combinedReasoning}
+            onCopyClick={handleCopy}
+            isStreaming={isStreaming}
+            hasMessageContent={!!message}
+          />
+        </Box>
       )}
       {message && (
         <Box py="4">

@@ -1,16 +1,8 @@
 import React, { useCallback, useMemo } from "react";
 import { Text, Flex, Skeleton, Box } from "@radix-ui/themes";
 import { Select, type SelectProps } from "../Select";
-import styles from "./ChatForm.module.css";
-import classNames from "classnames";
-import { PromptSelect } from "./PromptSelect";
 import { useTourRefs } from "../../features/Tour";
-import {
-  selectIsStreaming,
-  selectIsWaiting,
-  selectMessages,
-} from "../../features/Chat/Thread";
-import { useAppSelector, useCapsForToolUse } from "../../hooks";
+import { useCapsForToolUse } from "../../hooks";
 import { useAppDispatch } from "../../hooks";
 import { push } from "../../features/Pages/pagesSlice";
 import { RichModelSelectItem } from "../Select/RichModelSelectItem";
@@ -112,37 +104,6 @@ export const CapsSelect: React.FC<{ disabled?: boolean }> = ({ disabled }) => {
           )}
         </Box>
       </Skeleton>
-    </Flex>
-  );
-};
-
-export const ChatControls: React.FC = () => {
-  const refs = useTourRefs();
-  const isStreaming = useAppSelector(selectIsStreaming);
-  const isWaiting = useAppSelector(selectIsWaiting);
-  const messages = useAppSelector(selectMessages);
-
-  const showControls = useMemo(
-    () => messages.length === 0 && !isStreaming && !isWaiting,
-    [isStreaming, isWaiting, messages],
-  );
-
-  // Only show PromptSelect when there are no messages
-  if (!showControls) {
-    return null;
-  }
-
-  return (
-    <Flex
-      pt="1"
-      gap="2"
-      direction="column"
-      align="start"
-      className={classNames(styles.controls)}
-    >
-      <Flex gap="2" direction="column" ref={(x) => refs.setUseTools(x)}>
-        <PromptSelect />
-      </Flex>
     </Flex>
   );
 };

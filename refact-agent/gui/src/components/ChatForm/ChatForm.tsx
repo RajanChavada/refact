@@ -71,7 +71,6 @@ import {
 import { ErrorCallout, Callout } from "../Callout";
 import { ComboBox } from "../ComboBox";
 import { UnifiedAttachmentsTray } from "./UnifiedAttachmentsTray";
-import { ChatControls } from "./ChatControls";
 import { ChatSettingsDropdown } from "./ChatSettingsDropdown";
 import { ModeSelect } from "./ModeSelect";
 import { addCheckboxValuesToInput } from "./utils";
@@ -624,8 +623,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
           </Flex>
         </Form>
       </Flex>
-
-      <ChatControls />
     </Box>
   );
 };

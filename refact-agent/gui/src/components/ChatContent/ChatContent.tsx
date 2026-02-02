@@ -197,14 +197,17 @@ export const ChatContent: React.FC<ChatContentProps> = ({
             <PlaceHolderText />
           </Container>
         )}
-        {!showLoading &&
-          messages.length > 0 &&
-          renderMessagesFast(
-            messages,
-            onRetryWrapper,
-            handleBranch,
-            handleDelete,
-          )}
+        {!showLoading && messages.length > 0 && (
+          <Container>
+            {renderMessagesFast(
+              messages,
+              onRetryWrapper,
+              handleBranch,
+              handleDelete,
+              isStreaming,
+            )}
+          </Container>
+        )}
         <Container>
           <UncommittedChangesWarning />
         </Container>
@@ -275,6 +278,7 @@ function renderMessagesFast(
   onRetry: (index: number, question: UserMessage["content"]) => void,
   onBranch: (messageId: string) => void,
   onDelete: (messageId: string) => void,
+  isStreaming: boolean,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   if (messages.length === 0) return nodes;
@@ -430,6 +434,12 @@ function renderMessagesFast(
         }
       }
 
+      // Only the last assistant message can be actively streaming
+      const isLastAssistantMessage =
+        i === messages.length - 1 ||
+        !messages.slice(i + 1).some((m) => m.role === "assistant");
+      const messageIsStreaming = isStreaming && isLastAssistantMessage;
+
       nodes.push(
         <AssistantInput
           key={key}
@@ -449,6 +459,7 @@ function renderMessagesFast(
           metering_coins_generated={head.metering_coins_generated}
           metering_coins_cache_creation={head.metering_coins_cache_creation}
           metering_coins_cache_read={head.metering_coins_cache_read}
+          isStreaming={messageIsStreaming}
         />,
       );
       for (const ctxNode of contextFilesAfter) {
