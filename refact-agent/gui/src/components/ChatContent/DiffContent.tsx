@@ -169,18 +169,34 @@ export const DiffTitle: React.FC<{
 
 export const DiffContent: React.FC<{
   diffs: Record<string, DiffChunk[]>;
-}> = ({ diffs }) => {
-  const [open, setOpen] = React.useState(false);
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}> = ({ diffs, open: controlledOpen, onOpenChange }) => {
+  const [internalOpen, setInternalOpen] = React.useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const handleScroll = useHideScroll(ref);
+
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : internalOpen;
+
+  const setOpen = useCallback(
+    (value: boolean) => {
+      if (isControlled && onOpenChange) {
+        onOpenChange(value);
+      } else {
+        setInternalOpen(value);
+      }
+    },
+    [isControlled, onOpenChange],
+  );
 
   const handleHide = useCallback(() => {
     setOpen(false);
     handleScroll();
-  }, [handleScroll]);
+  }, [handleScroll, setOpen]);
 
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen}>
+    <Collapsible.Root open={open} onOpenChange={(v) => setOpen(v)}>
       <Collapsible.Trigger asChild>
         <Flex gap="2" align="center" ref={ref}>
           <Text weight="light" size="1">
@@ -276,9 +292,11 @@ export const DiffForm: React.FC<{
 
 type GroupedDiffsProps = {
   diffs: DiffMessage[];
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
-export const GroupedDiffs: React.FC<GroupedDiffsProps> = ({ diffs }) => {
+const _GroupedDiffs: React.FC<GroupedDiffsProps> = ({ diffs, open, onOpenChange }) => {
   const chunks: DiffMessage["content"] = [];
   for (const diff of diffs) {
     chunks.push(...diff.content);
@@ -289,8 +307,10 @@ export const GroupedDiffs: React.FC<GroupedDiffsProps> = ({ diffs }) => {
   return (
     <Container>
       <Flex direction="column" gap="4" py="4">
-        <DiffContent diffs={groupedByFileName} />
+        <DiffContent diffs={groupedByFileName} open={open} onOpenChange={onOpenChange} />
       </Flex>
     </Container>
   );
 };
+
+export const GroupedDiffs = React.memo(_GroupedDiffs);

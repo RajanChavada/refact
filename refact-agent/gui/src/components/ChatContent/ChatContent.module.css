@@ -238,3 +238,29 @@
 .plainTextTrigger:hover {
   color: var(--gray-11);
 }
+
+.virtuosoScroller {
+  height: 100%;
+}
+
+.virtuosoScroller::-webkit-scrollbar {
+  width: 5px;
+}
+
+.virtuosoScroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.virtuosoScroller::-webkit-scrollbar-thumb {
+  background-color: var(--gray-a3);
+  border-radius: 2px;
+  transition: background-color 150ms ease-out;
+}
+
+.virtuosoScroller:hover::-webkit-scrollbar-thumb {
+  background-color: var(--gray-a5);
+}
+
+.virtuosoScroller::-webkit-scrollbar-thumb:active {
+  background-color: var(--gray-a7);
+}

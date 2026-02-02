@@ -353,16 +353,25 @@ const FilesContent: React.FC<{
   );
 };
 
-export const ContextFiles: React.FC<{
+const _ContextFiles: React.FC<{
   files: ChatContextFile[];
   toolCallId?: string;
-}> = ({ files, toolCallId }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}> = ({ files, toolCallId, open: controlledOpen, onOpenChange }) => {
+  const [internalOpen, setInternalOpen] = useState(false);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
 
+  const isControlled = controlledOpen !== undefined;
+  const isOpen = isControlled ? controlledOpen : internalOpen;
+
   const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
+    if (isControlled && onOpenChange) {
+      onOpenChange(!controlledOpen);
+    } else {
+      setInternalOpen((prev) => !prev);
+    }
+  }, [isControlled, onOpenChange, controlledOpen]);
 
   if (!Array.isArray(files) || files.length === 0) return null;
 
@@ -433,3 +442,5 @@ export const ContextFiles: React.FC<{
     </div>
   );
 };
+
+export const ContextFiles = React.memo(_ContextFiles);

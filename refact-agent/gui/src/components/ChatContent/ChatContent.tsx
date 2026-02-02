@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useEffect, useState } from "react";
+import React, { useCallback, useMemo, useEffect, useState, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
 import {
+  AssistantMessage,
   ChatContextFile,
   ChatMessages,
   DiffChunk,
@@ -12,7 +13,7 @@ import {
   UserMessage,
 } from "../../services/refact";
 import { UserInput } from "./UserInput";
-import { ScrollArea, ScrollAreaWithAnchor } from "../ScrollArea";
+import { ScrollArea } from "../ScrollArea";
 import { Flex, Container, Button, Box } from "@radix-ui/themes";
 import styles from "./ChatContent.module.css";
 import { ContextFiles } from "./ContextFiles";
@@ -48,6 +49,8 @@ import {
   branchFromChat,
 } from "../../services/refact/chatCommands";
 import { selectLspPort, selectApiKey } from "../../features/Config/configSlice";
+import { VirtualizedChatList } from "./VirtualizedChatList";
+import { useCollapsibleState } from "./useCollapsibleState";
 
 export type ChatContentProps = {
   onRetry: (index: number, question: UserMessage["content"]) => void;
@@ -96,6 +99,16 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   );
   const lspPort = useAppSelector(selectLspPort);
   const apiKey = useAppSelector(selectApiKey);
+
+  const collapsibleState = useCollapsibleState(false);
+  const prevChatIdRef = useRef(renderChatId);
+
+  useEffect(() => {
+    if (prevChatIdRef.current !== renderChatId) {
+      collapsibleState.reset();
+      prevChatIdRef.current = renderChatId;
+    }
+  }, [renderChatId, collapsibleState]);
 
   const handleBranch = useCallback(
     (messageId: string) => {
@@ -177,37 +190,18 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     (!snapshotReceived && messages.length === 0) ||
     (sseStatus === "connecting" && messages.length === 0);
 
-  return (
-    <ScrollAreaWithAnchor.ScrollArea
-      style={{ flexGrow: 1, height: "auto", position: "relative" }}
-      scrollbars="vertical"
-      type={isWaiting || isStreaming ? "auto" : "hover"}
-      fullHeight
-    >
-      <Flex
-        direction="column"
-        className={styles.content}
-        data-element="ChatContent"
-        p="2"
-        gap="1"
-      >
-        {showLoading && <ChatLoading />}
-        {!showLoading && messages.length === 0 && (
-          <Container>
-            <PlaceHolderText />
-          </Container>
-        )}
-        {!showLoading && messages.length > 0 && (
-          <Container>
-            {renderMessagesFast(
-              messages,
-              onRetryWrapper,
-              handleBranch,
-              handleDelete,
-              isStreaming,
-            )}
-          </Container>
-        )}
+  const displayItems = useMemo(
+    () => buildDisplayItems(messages, isStreaming),
+    [messages, isStreaming],
+  );
+
+  const initialScrollIndex = useMemo(() => {
+    return displayItems.length > 0 ? displayItems.length - 1 : undefined;
+  }, [displayItems]);
+
+  const virtuosoFooter = useMemo(
+    () => (
+      <>
         <Container>
           <UncommittedChangesWarning />
         </Container>
@@ -220,7 +214,131 @@ export const ChatContent: React.FC<ChatContentProps> = ({
             />
           )}
         </Container>
+      </>
+    ),
+    [isStreaming, isWaiting, isWaitingForConfirmation],
+  );
+
+  const renderDisplayItem = useCallback(
+    (item: DisplayItem): React.ReactNode => {
+      switch (item.type) {
+        case "plain_text":
+          return <PlainText>{item.content}</PlainText>;
+
+        case "assistant":
+          return (
+            <AssistantInput
+              message={item.message.content}
+              reasoningContent={item.message.reasoning_content}
+              thinkingBlocks={item.message.thinking_blocks}
+              toolCalls={item.message.tool_calls}
+              serverExecutedTools={item.message.server_executed_tools}
+              citations={item.message.citations}
+              messageId={item.message.message_id}
+              onBranch={handleBranch}
+              onDelete={handleDelete}
+              contextFilesByToolId={item.contextFilesByToolId}
+              diffsByToolId={item.diffsByToolId}
+              usage={item.message.usage}
+              metering_coins_prompt={item.message.metering_coins_prompt}
+              metering_coins_generated={item.message.metering_coins_generated}
+              metering_coins_cache_creation={item.message.metering_coins_cache_creation}
+              metering_coins_cache_read={item.message.metering_coins_cache_read}
+              isStreaming={item.isStreaming}
+            />
+          );
+
+        case "user":
+          return (
+            <UserInput
+              onRetry={onRetryWrapper}
+              messageIndex={item.index}
+              messageId={item.message.message_id}
+              checkpoints={item.message.checkpoints}
+              onBranch={handleBranch}
+              onDelete={handleDelete}
+            >
+              {item.message.content}
+            </UserInput>
+          );
+
+        case "context_files": {
+          const stateKey = `context_files:${item.toolCallId ?? item.key}`;
+          return (
+            <ContextFiles
+              files={item.files}
+              toolCallId={item.toolCallId}
+              open={collapsibleState.isOpen(stateKey)}
+              onOpenChange={(open) => collapsibleState.setOpen(stateKey, open)}
+            />
+          );
+        }
+
+        case "diff_group": {
+          const stateKey = `diff_group:${item.key}`;
+          return (
+            <GroupedDiffs
+              diffs={item.diffs}
+              open={collapsibleState.isOpen(stateKey)}
+              onOpenChange={(open) => collapsibleState.setOpen(stateKey, open)}
+            />
+          );
+        }
+
+        case "system":
+          return <SystemPrompt content={item.content} />;
+
+        default:
+          return null;
+      }
+    },
+    [handleBranch, handleDelete, onRetryWrapper, collapsibleState],
+  );
+
+  if (showLoading) {
+    return (
+      <Flex
+        direction="column"
+        className={styles.content}
+        data-element="ChatContent"
+        p="2"
+        gap="1"
+        style={{ flexGrow: 1, height: "100%" }}
+      >
+        <ChatLoading />
       </Flex>
+    );
+  }
+
+  if (messages.length === 0) {
+    return (
+      <Flex
+        direction="column"
+        className={styles.content}
+        data-element="ChatContent"
+        p="2"
+        gap="1"
+        style={{ flexGrow: 1, height: "100%" }}
+      >
+        <Container>
+          <PlaceHolderText />
+        </Container>
+      </Flex>
+    );
+  }
+
+  return (
+    <Box
+      style={{ flexGrow: 1, height: "100%", position: "relative" }}
+      data-element="ChatContent"
+    >
+      <VirtualizedChatList
+        key={renderChatId}
+        items={displayItems}
+        renderItem={renderDisplayItem}
+        initialScrollIndex={initialScrollIndex}
+        footer={virtuosoFooter}
+      />
 
       <Box
         style={{
@@ -240,7 +358,6 @@ export const ChatContent: React.FC<ChatContentProps> = ({
                 Return
               </Button>
             )}
-
             <ChatLinks />
           </Flex>
         </ScrollArea>
@@ -259,7 +376,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
           </Flex>
         </Box>
       )}
-    </ScrollAreaWithAnchor.ScrollArea>
+    </Box>
   );
 };
 
@@ -273,75 +390,102 @@ function getMessageKey(message: ChatMessages[number], index: number): string {
   return `${message.role}-${index}`;
 }
 
-function extractUserMessageText(content: UserMessage["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  for (const item of content) {
-    if ("type" in item && item.type === "text" && "text" in item) {
-      return item.text;
-    }
-    if ("m_type" in item && item.m_type === "text" && "m_content" in item) {
-      return String(item.m_content);
-    }
-  }
-  return "";
-}
+const READ_TOOLS = new Set([
+  "cat",
+  "tree",
+  "search_pattern",
+  "search_semantic",
+  "search_symbol_definition",
+  "web",
+  "web_search",
+  "knowledge",
+  "search_trajectories",
+  "get_trajectory_context",
+]);
 
-function computeHiddenQaMessageIndices(messages: ChatMessages): Set<number> {
-  const hiddenIndices = new Set<number>();
-  const askQuestionsToolIds = new Map<string, number>();
+const EDIT_TOOLS = new Set([
+  "create_textdoc",
+  "update_textdoc",
+  "replace_textdoc",
+  "update_textdoc_regex",
+  "update_textdoc_by_lines",
+  "update_textdoc_anchored",
+  "apply_patch",
+  "undo_textdoc",
+  "rm",
+]);
 
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
-      for (const tc of msg.tool_calls) {
-        if (tc.function.name === "ask_questions" && tc.id) {
-          askQuestionsToolIds.set(tc.id, i);
-        }
-      }
-    }
-  }
+type DisplayItemAssistant = {
+  type: "assistant";
+  key: string;
+  index: number;
+  message: AssistantMessage;
+  contextFilesByToolId: Record<string, ChatContextFile[]>;
+  diffsByToolId: Record<string, DiffChunk[]>;
+  isStreaming: boolean;
+};
 
-  for (const [toolCallId, assistantIdx] of askQuestionsToolIds) {
-    let foundToolResult = false;
-    for (let j = assistantIdx + 1; j < messages.length; j++) {
-      const msg = messages[j];
-      if (isToolMessage(msg) && msg.tool_call_id === toolCallId) {
-        foundToolResult = true;
-        continue;
-      }
-      if (foundToolResult && msg.role === "user") {
-        const contentStr = extractUserMessageText(msg.content);
-        if (contentStr.startsWith(`[QA:${toolCallId}]`)) {
-          hiddenIndices.add(j);
-        }
-        break;
-      }
-    }
-  }
+type DisplayItemUser = {
+  type: "user";
+  key: string;
+  index: number;
+  message: UserMessage;
+  isLastUser: boolean;
+};
 
-  return hiddenIndices;
-}
+type DisplayItemContextFiles = {
+  type: "context_files";
+  key: string;
+  files: ChatContextFile[];
+  toolCallId?: string;
+};
 
-function renderMessagesFast(
+type DisplayItemDiffGroup = {
+  type: "diff_group";
+  key: string;
+  diffs: DiffMessage[];
+};
+
+type DisplayItemSystem = {
+  type: "system";
+  key: string;
+  content: string;
+};
+
+type DisplayItemPlainText = {
+  type: "plain_text";
+  key: string;
+  content: string;
+};
+
+type DisplayItem =
+  | DisplayItemAssistant
+  | DisplayItemUser
+  | DisplayItemContextFiles
+  | DisplayItemDiffGroup
+  | DisplayItemSystem
+  | DisplayItemPlainText;
+
+function buildDisplayItems(
   messages: ChatMessages,
-  onRetry: (index: number, question: UserMessage["content"]) => void,
-  onBranch: (messageId: string) => void,
-  onDelete: (messageId: string) => void,
   isStreaming: boolean,
-): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  if (messages.length === 0) return nodes;
+): DisplayItem[] {
+  const items: DisplayItem[] = [];
+  if (messages.length === 0) return items;
 
   const hiddenQaIndices = computeHiddenQaMessageIndices(messages);
 
   let lastUserIdx = -1;
+  let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg.role === "user" && !hiddenQaIndices.has(i)) {
+    if (msg.role === "user" && !hiddenQaIndices.has(i) && lastUserIdx === -1) {
       lastUserIdx = i;
-      break;
     }
+    if (msg.role === "assistant" && lastAssistantIdx === -1) {
+      lastAssistantIdx = i;
+    }
+    if (lastUserIdx !== -1 && lastAssistantIdx !== -1) break;
   }
 
   for (let i = 0; i < messages.length; i++) {
@@ -350,45 +494,20 @@ function renderMessagesFast(
     if (isToolMessage(head)) continue;
 
     if (head.role === "plain_text") {
-      const key = getMessageKey(head, i);
-      nodes.push(<PlainText key={key}>{head.content}</PlainText>);
+      items.push({
+        type: "plain_text",
+        key: getMessageKey(head, i),
+        content: head.content,
+      });
       continue;
     }
 
     if (head.role === "assistant") {
       const key = getMessageKey(head, i);
-      const contextFilesAfter: React.ReactNode[] = [];
+      const contextFilesAfter: DisplayItemContextFiles[] = [];
       const diffMessagesAfter: DiffMessage[] = [];
-      const contextFilesByToolId: Record<
-        string,
-        ChatContextFile[] | undefined
-      > = {};
-      const diffsByToolId: Record<string, DiffChunk[] | undefined> = {};
-
-      const READ_TOOLS = new Set([
-        "cat",
-        "tree",
-        "search_pattern",
-        "search_semantic",
-        "search_symbol_definition",
-        "web",
-        "web_search",
-        "knowledge",
-        "search_trajectories",
-        "get_trajectory_context",
-      ]);
-
-      const EDIT_TOOLS = new Set([
-        "create_textdoc",
-        "update_textdoc",
-        "replace_textdoc",
-        "update_textdoc_regex",
-        "update_textdoc_by_lines",
-        "update_textdoc_anchored",
-        "apply_patch",
-        "undo_textdoc",
-        "rm",
-      ]);
+      const contextFilesByToolId: Record<string, ChatContextFile[]> = {};
+      const diffsByToolId: Record<string, DiffChunk[]> = {};
 
       const toolCalls = head.tool_calls ?? [];
       const eligibleToolCalls = toolCalls.filter(
@@ -442,18 +561,16 @@ function renderMessagesFast(
           }
 
           if (targetToolId) {
-            contextFilesByToolId[targetToolId] = (
-              contextFilesByToolId[targetToolId] ?? []
-            ).concat(nextMsg.content);
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+            const prev = contextFilesByToolId[targetToolId] || [];
+            contextFilesByToolId[targetToolId] = [...prev, ...nextMsg.content];
           } else {
-            const ctxKey = getMessageKey(nextMsg, j);
-            contextFilesAfter.push(
-              <ContextFiles
-                key={ctxKey}
-                files={nextMsg.content}
-                toolCallId={nextMsg.tool_call_id}
-              />,
-            );
+            contextFilesAfter.push({
+              type: "context_files",
+              key: getMessageKey(nextMsg, j),
+              files: nextMsg.content,
+              toolCallId: nextMsg.tool_call_id,
+            });
           }
           j++;
           continue;
@@ -461,9 +578,9 @@ function renderMessagesFast(
 
         if (isDiffMessage(nextMsg)) {
           if (nextMsg.tool_call_id && editToolIds.has(nextMsg.tool_call_id)) {
-            diffsByToolId[nextMsg.tool_call_id] = (
-              diffsByToolId[nextMsg.tool_call_id] ?? []
-            ).concat(nextMsg.content);
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+            const prevDiffs = diffsByToolId[nextMsg.tool_call_id] || [];
+            diffsByToolId[nextMsg.tool_call_id] = [...prevDiffs, ...nextMsg.content];
           } else {
             diffMessagesAfter.push(nextMsg);
           }
@@ -474,55 +591,26 @@ function renderMessagesFast(
         break;
       }
 
-      const cleanContextFilesByToolId: Record<string, ChatContextFile[]> = {};
-      const cleanDiffsByToolId: Record<string, DiffChunk[]> = {};
-      for (const [toolId, files] of Object.entries(contextFilesByToolId)) {
-        if (files !== undefined) {
-          cleanContextFilesByToolId[toolId] = files;
-        }
-      }
-      for (const [toolId, diffs] of Object.entries(diffsByToolId)) {
-        if (diffs !== undefined) {
-          cleanDiffsByToolId[toolId] = diffs;
-        }
-      }
+      items.push({
+        type: "assistant",
+        key,
+        index: i,
+        message: head,
+        contextFilesByToolId,
+        diffsByToolId,
+        isStreaming: isStreaming && i === lastAssistantIdx,
+      });
 
-      // Only the last assistant message can be actively streaming
-      const isLastAssistantMessage =
-        i === messages.length - 1 ||
-        !messages.slice(i + 1).some((m) => m.role === "assistant");
-      const messageIsStreaming = isStreaming && isLastAssistantMessage;
-
-      nodes.push(
-        <AssistantInput
-          key={key}
-          message={head.content}
-          reasoningContent={head.reasoning_content}
-          thinkingBlocks={head.thinking_blocks}
-          toolCalls={head.tool_calls}
-          serverExecutedTools={head.server_executed_tools}
-          citations={head.citations}
-          messageId={head.message_id}
-          onBranch={onBranch}
-          onDelete={onDelete}
-          contextFilesByToolId={cleanContextFilesByToolId}
-          diffsByToolId={cleanDiffsByToolId}
-          usage={head.usage}
-          metering_coins_prompt={head.metering_coins_prompt}
-          metering_coins_generated={head.metering_coins_generated}
-          metering_coins_cache_creation={head.metering_coins_cache_creation}
-          metering_coins_cache_read={head.metering_coins_cache_read}
-          isStreaming={messageIsStreaming}
-        />,
-      );
-      for (const ctxNode of contextFilesAfter) {
-        nodes.push(ctxNode);
+      for (const ctxItem of contextFilesAfter) {
+        items.push(ctxItem);
       }
 
       if (diffMessagesAfter.length > 0) {
-        nodes.push(
-          <GroupedDiffs key={`diffs-${key}`} diffs={diffMessagesAfter} />,
-        );
+        items.push({
+          type: "diff_group",
+          key: `diffs-${key}`,
+          diffs: diffMessagesAfter,
+        });
       }
 
       i = j - 1;
@@ -534,48 +622,32 @@ function renderMessagesFast(
         continue;
       }
 
-      const key = getMessageKey(head, i);
-
-      if (i === lastUserIdx) {
-        nodes.push(
-          <ScrollAreaWithAnchor.ScrollAnchor
-            key={`${key}-anchor`}
-            behavior="smooth"
-            block="start"
-          />,
-        );
-      }
-
-      nodes.push(
-        <UserInput
-          onRetry={onRetry}
-          key={key}
-          messageIndex={i}
-          messageId={head.message_id}
-          onBranch={onBranch}
-          onDelete={onDelete}
-        >
-          {head.content}
-        </UserInput>,
-      );
+      items.push({
+        type: "user",
+        key: getMessageKey(head, i),
+        index: i,
+        message: head,
+        isLastUser: i === lastUserIdx,
+      });
       continue;
     }
 
     if (isChatContextFileMessage(head)) {
-      const key = getMessageKey(head, i);
-      nodes.push(
-        <ContextFiles
-          key={key}
-          files={head.content}
-          toolCallId={head.tool_call_id}
-        />,
-      );
+      items.push({
+        type: "context_files",
+        key: getMessageKey(head, i),
+        files: head.content,
+        toolCallId: head.tool_call_id,
+      });
       continue;
     }
 
     if (isSystemMessage(head)) {
-      const key = getMessageKey(head, i);
-      nodes.push(<SystemPrompt key={key} content={head.content} />);
+      items.push({
+        type: "system",
+        key: getMessageKey(head, i),
+        content: head.content,
+      });
       continue;
     }
 
@@ -597,11 +669,67 @@ function renderMessagesFast(
         break;
       }
 
-      nodes.push(<GroupedDiffs key={`diffs-${key}`} diffs={diffs} />);
+      items.push({
+        type: "diff_group",
+        key: `diffs-${key}`,
+        diffs,
+      });
       i = j - 1;
       continue;
     }
   }
 
-  return nodes;
+  return items;
 }
+
+function extractUserMessageText(content: UserMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  for (const item of content) {
+    if ("type" in item && item.type === "text" && "text" in item) {
+      return item.text;
+    }
+    if ("m_type" in item && item.m_type === "text" && "m_content" in item) {
+      return String(item.m_content);
+    }
+  }
+  return "";
+}
+
+function computeHiddenQaMessageIndices(messages: ChatMessages): Set<number> {
+  const hiddenIndices = new Set<number>();
+  const askQuestionsToolIds = new Map<string, number>();
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        if (tc.function.name === "ask_questions" && tc.id) {
+          askQuestionsToolIds.set(tc.id, i);
+        }
+      }
+    }
+  }
+
+  for (const [toolCallId, assistantIdx] of askQuestionsToolIds) {
+    let foundToolResult = false;
+    for (let j = assistantIdx + 1; j < messages.length; j++) {
+      const msg = messages[j];
+      if (isToolMessage(msg) && msg.tool_call_id === toolCallId) {
+        foundToolResult = true;
+        continue;
+      }
+      if (foundToolResult && msg.role === "user") {
+        const contentStr = extractUserMessageText(msg.content);
+        if (contentStr.startsWith(`[QA:${toolCallId}]`)) {
+          hiddenIndices.add(j);
+        }
+        break;
+      }
+    }
+  }
+
+  return hiddenIndices;
+}
+
+

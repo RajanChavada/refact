@@ -1,11 +1,8 @@
 import { Box, Container, Flex } from "@radix-ui/themes";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import React, { useCallback, useMemo, useState } from "react";
-import { selectMessages } from "../../features/Chat";
-
-import { useAppSelector } from "../../hooks";
-import { isUserMessage, type UserMessage } from "../../services/refact";
-
+import type { UserMessage } from "../../services/refact";
+import type { Checkpoint } from "../../features/Checkpoints/types";
 import { RetryForm } from "../ChatForm";
 import { DialogImage } from "../DialogImage";
 import { Markdown } from "../Markdown";
@@ -17,20 +14,21 @@ export type UserInputProps = {
   children: UserMessage["content"];
   messageIndex: number;
   messageId?: string;
+  checkpoints?: Checkpoint[];
   onRetry: (index: number, question: UserMessage["content"]) => void;
   onBranch?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
 };
 
-export const UserInput: React.FC<UserInputProps> = ({
+const _UserInput: React.FC<UserInputProps> = ({
   messageIndex,
   messageId,
+  checkpoints,
   children,
   onRetry,
   onBranch,
   onDelete,
 }) => {
-  const messages = useAppSelector(selectMessages);
   const copyToClipboard = useCopyToClipboard();
 
   const [showTextArea, setShowTextArea] = useState(false);
@@ -119,11 +117,7 @@ export const UserInput: React.FC<UserInputProps> = ({
     });
   }, [children]);
 
-  const checkpointsFromMessage = useMemo(() => {
-    const maybeUserMessage = messages[messageIndex];
-    if (!isUserMessage(maybeUserMessage)) return null;
-    return maybeUserMessage.checkpoints;
-  }, [messageIndex, messages]);
+  const checkpointsFromMessage = checkpoints ?? null;
 
   const isCompressed = useMemo(() => {
     if (typeof children !== "string") return false;
@@ -147,7 +141,6 @@ export const UserInput: React.FC<UserInputProps> = ({
       <Container pt="1">
         <Flex justify="end">
           <Box className={styles.userInput} onClick={handleEditClick}>
-            {/* Message content */}
             {isCompressed ? (
               <Reveal defaultOpen={false}>
                 <Markdown canHaveInteractiveElements={false}>
@@ -156,14 +149,11 @@ export const UserInput: React.FC<UserInputProps> = ({
               </Reveal>
             ) : (
               <>
-                {/* Render markdown for text content */}
                 {textContent && (
                   <Markdown canHaveInteractiveElements={true}>
                     {textContent}
                   </Markdown>
                 )}
-
-                {/* Render images - stop propagation to prevent edit mode */}
                 {images.length > 0 && (
                   <Flex
                     gap="2"
@@ -211,3 +201,5 @@ export const UserInput: React.FC<UserInputProps> = ({
     </MessageWrapper>
   );
 };
+
+export const UserInput = React.memo(_UserInput);

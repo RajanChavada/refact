@@ -36,7 +36,7 @@ type ChatInputProps = {
   isStreaming?: boolean;
 };
 
-export const AssistantInput: React.FC<ChatInputProps> = ({
+const _AssistantInput: React.FC<ChatInputProps> = ({
   message,
   reasoningContent,
   thinkingBlocks,
@@ -216,3 +216,5 @@ export const AssistantInput: React.FC<ChatInputProps> = ({
     </MessageWrapper>
   );
 };
+
+export const AssistantInput = React.memo(_AssistantInput);

@@ -187,16 +187,25 @@ export const SingleModelToolContent: React.FC<{
   const isWaiting = useAppSelector(selectIsWaiting);
 
   const toolCallsId = useMemo(() => {
-    const ids = toolCalls.reduce<string[]>((acc, toolCall) => {
+    return toolCalls.reduce<string[]>((acc, toolCall) => {
       if (typeof toolCall.id === "string") return [...acc, toolCall.id];
       return acc;
     }, []);
-
-    return ids;
   }, [toolCalls]);
 
-  const results = useAppSelector(selectManyToolResultsByIds(toolCallsId));
-  const diffs = useAppSelector(selectManyDiffMessageByIds(toolCallsId));
+  const toolCallsIdKey = toolCallsId.join("|");
+  const selectResults = useMemo(
+    () => selectManyToolResultsByIds(toolCallsId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [toolCallsIdKey],
+  );
+  const selectDiffs = useMemo(
+    () => selectManyDiffMessageByIds(toolCallsId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [toolCallsIdKey],
+  );
+  const results = useAppSelector(selectResults);
+  const diffs = useAppSelector(selectDiffs);
   const allResolved = useMemo(() => {
     return results.length + diffs.length === toolCallsId.length;
   }, [diffs.length, results.length, toolCallsId.length]);
@@ -817,7 +826,13 @@ const MultiModalToolContent: React.FC<{
       .filter((id): id is string => typeof id === "string");
   }, [toolCalls]);
 
-  const diffs = useAppSelector(selectManyDiffMessageByIds(ids));
+  const idsKey = ids.join("|");
+  const selectDiffs = useMemo(
+    () => selectManyDiffMessageByIds(ids),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [idsKey],
+  );
+  const diffs = useAppSelector(selectDiffs);
 
   const handleClose = useCallback(() => {
     handleHide();
