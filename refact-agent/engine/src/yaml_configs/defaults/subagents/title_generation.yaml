@@ -15,6 +15,6 @@ subchat:
 
 messages:
   user_template: |
-    Summarize this chat in 2-4 words. Prefer filenames, classes, entities, and avoid generic terms. Write only the title, nothing else.
+    Summarize this chat in 2-5 words. Avoid generic terms. Write only the title, nothing else.
 
 tools: []
