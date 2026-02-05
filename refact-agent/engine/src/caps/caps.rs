@@ -471,9 +471,7 @@ pub async fn load_caps(
 
 fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
     if !caps.defaults.chat_default_model.is_empty() {
-        let model_name = caps.defaults.chat_default_model.split('/').last()
-            .unwrap_or(&caps.defaults.chat_default_model);
-        if resolve_model_caps(&caps.model_caps, model_name).is_none() {
+        if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_default_model).is_none() {
             return Err(format!(
                 "Default chat model '{}' is not supported (not found in model capabilities registry)",
                 caps.defaults.chat_default_model
@@ -481,9 +479,7 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
         }
     }
     if !caps.defaults.chat_thinking_model.is_empty() {
-        let model_name = caps.defaults.chat_thinking_model.split('/').last()
-            .unwrap_or(&caps.defaults.chat_thinking_model);
-        if resolve_model_caps(&caps.model_caps, model_name).is_none() {
+        if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_thinking_model).is_none() {
             return Err(format!(
                 "Default thinking model '{}' is not supported (not found in model capabilities registry)",
                 caps.defaults.chat_thinking_model
@@ -491,9 +487,7 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
         }
     }
     if !caps.defaults.chat_light_model.is_empty() {
-        let model_name = caps.defaults.chat_light_model.split('/').last()
-            .unwrap_or(&caps.defaults.chat_light_model);
-        if resolve_model_caps(&caps.model_caps, model_name).is_none() {
+        if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_light_model).is_none() {
             return Err(format!(
                 "Default light model '{}' is not supported (not found in model capabilities registry)",
                 caps.defaults.chat_light_model
@@ -556,11 +550,14 @@ pub fn resolve_chat_model(
 
     let base_record = resolve_model(&caps.chat_models, model_id)?;
 
-    let model_name = model_id.split('/').last().unwrap_or(model_id);
-    let resolved = resolve_model_caps(&caps.model_caps, model_name);
+    let resolved = resolve_model_caps(&caps.model_caps, model_id);
 
     match resolved {
         Some(resolved_caps) => {
+            tracing::debug!(
+                "Model '{}' resolved via {:?}, matched key: '{}'",
+                model_id, resolved_caps.source, resolved_caps.matched_key
+            );
             let mut effective = (*base_record).clone();
             apply_registry_caps_to_chat_model(&mut effective, &resolved_caps.caps);
             Ok(Arc::new(effective))
@@ -576,7 +573,10 @@ pub fn resolve_chat_model(
 
 fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelCapabilities) {
     record.base.n_ctx = caps.n_ctx;
+    record.base.supports_max_completion_tokens = caps.supports_max_completion_tokens;
+
     record.supports_tools = caps.supports_tools;
+    record.supports_strict_tools = caps.supports_strict_tools;
     record.supports_multimodality = caps.supports_vision;
     record.supports_clicks = caps.supports_clicks;
     record.default_temperature = caps.default_temperature;
@@ -596,7 +596,6 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     };
 
     record.supports_boost_reasoning = caps.supports_reasoning_effort;
-
     record.supports_agent = caps.supports_tools;
 }
 

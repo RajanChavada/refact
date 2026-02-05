@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
+use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::{info, warn};
 
 use crate::global_context::GlobalContext;
+
+static REFRESH_LOCK: OnceLock<AMutex<()>> = OnceLock::new();
+
+fn get_refresh_lock() -> &'static AMutex<()> {
+    REFRESH_LOCK.get_or_init(|| AMutex::new(()))
+}
 
 const MODEL_CAPS_URL: &str = "https://www.smallcloud.ai/v1/model-capabilities";
 const CACHE_FILENAME: &str = "model-capabilities.json";
@@ -33,6 +39,8 @@ pub struct CanonicalNameParts {
     pub provider_stripped: String,
     pub base_model: String,
     pub is_finetune: bool,
+    pub last_segment: String,
+    pub last_segment_base: String,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +88,8 @@ pub struct ModelCapabilities {
     #[serde(default)]
     pub supports_tools: bool,
     #[serde(default)]
+    pub supports_strict_tools: bool,
+    #[serde(default)]
     pub supports_vision: bool,
     #[serde(default)]
     pub supports_video: bool,
@@ -93,6 +103,8 @@ pub struct ModelCapabilities {
     pub supports_temperature: bool,
     #[serde(default = "default_true")]
     pub supports_streaming: bool,
+    #[serde(default)]
+    pub supports_max_completion_tokens: bool,
     #[serde(default)]
     pub reasoning: ReasoningType,
     #[serde(default)]
@@ -131,27 +143,41 @@ fn get_cache_path() -> PathBuf {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("refact");
-    std::fs::create_dir_all(&cache_dir).ok();
     cache_dir.join(CACHE_FILENAME)
 }
 
-pub fn load_cached_model_caps() -> Option<CachedModelCaps> {
-    let cache_path = get_cache_path();
-    if !cache_path.exists() {
-        return None;
-    }
+const MAX_REASONABLE_N_CTX: usize = 10_000_000;
+const MAX_REASONABLE_OUTPUT_TOKENS: usize = 1_000_000;
 
-    match std::fs::read_to_string(&cache_path) {
+fn validate_model_caps(caps: &mut HashMap<String, ModelCapabilities>) {
+    for (name, cap) in caps.iter_mut() {
+        if cap.n_ctx > MAX_REASONABLE_N_CTX {
+            warn!("Model {} has unreasonable n_ctx {}, clamping to {}", name, cap.n_ctx, MAX_REASONABLE_N_CTX);
+            cap.n_ctx = MAX_REASONABLE_N_CTX;
+        }
+        if cap.max_output_tokens > MAX_REASONABLE_OUTPUT_TOKENS {
+            warn!("Model {} has unreasonable max_output_tokens {}, clamping to {}", name, cap.max_output_tokens, MAX_REASONABLE_OUTPUT_TOKENS);
+            cap.max_output_tokens = MAX_REASONABLE_OUTPUT_TOKENS;
+        }
+    }
+}
+
+pub async fn load_cached_model_caps() -> Option<CachedModelCaps> {
+    let cache_path = get_cache_path();
+
+    match tokio::fs::read_to_string(&cache_path).await {
         Ok(content) => match serde_json::from_str::<CachedModelCaps>(&content) {
-            Ok(cached) => {
+            Ok(mut cached) => {
+                validate_model_caps(&mut cached.models);
                 info!("Loaded model capabilities from cache: {} models", cached.models.len());
                 Some(cached)
             }
             Err(e) => {
-                warn!("Failed to parse cached model capabilities: {}", e);
+                warn!("Failed to parse cached model capabilities (treating as cache miss): {}", e);
                 None
             }
         },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             warn!("Failed to read cached model capabilities: {}", e);
             None
@@ -159,11 +185,17 @@ pub fn load_cached_model_caps() -> Option<CachedModelCaps> {
     }
 }
 
-pub fn save_cached_model_caps(caps: &CachedModelCaps) -> Result<(), String> {
+pub async fn save_cached_model_caps(caps: &CachedModelCaps) -> Result<(), String> {
     let cache_path = get_cache_path();
+
+    if let Some(parent) = cache_path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| format!("Failed to create cache directory: {}", e))?;
+    }
+
     let content = serde_json::to_string_pretty(caps)
         .map_err(|e| format!("Failed to serialize model capabilities: {}", e))?;
-    std::fs::write(&cache_path, content)
+    tokio::fs::write(&cache_path, content).await
         .map_err(|e| format!("Failed to write model capabilities cache: {}", e))?;
     info!("Saved model capabilities to cache: {}", cache_path.display());
     Ok(())
@@ -201,8 +233,10 @@ pub async fn get_model_caps(
     gcx: Arc<ARwLock<GlobalContext>>,
     force_refresh: bool,
 ) -> Result<HashMap<String, ModelCapabilities>, String> {
+    let _refresh_guard = get_refresh_lock().lock().await;
+
     if !force_refresh {
-        if let Some(cached) = load_cached_model_caps() {
+        if let Some(cached) = load_cached_model_caps().await {
             if !cached.is_expired() {
                 return Ok(cached.models);
             }
@@ -211,7 +245,8 @@ pub async fn get_model_caps(
     }
 
     match fetch_model_caps_from_server(gcx).await {
-        Ok(models) => {
+        Ok(mut models) => {
+            validate_model_caps(&mut models);
             let cached = CachedModelCaps {
                 fetched_at: SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -219,14 +254,14 @@ pub async fn get_model_caps(
                     .as_secs(),
                 models: models.clone(),
             };
-            if let Err(e) = save_cached_model_caps(&cached) {
+            if let Err(e) = save_cached_model_caps(&cached).await {
                 warn!("Failed to save model capabilities cache: {}", e);
             }
             Ok(models)
         }
         Err(e) => {
             warn!("Failed to fetch model capabilities from server: {}", e);
-            if let Some(cached) = load_cached_model_caps() {
+            if let Some(cached) = load_cached_model_caps().await {
                 warn!("Using expired cached model capabilities as fallback");
                 return Ok(cached.models);
             }
@@ -240,11 +275,11 @@ pub fn is_model_supported(caps: &HashMap<String, ModelCapabilities>, model_name:
 }
 
 pub fn canonicalize_model_name(model_id: &str) -> CanonicalNameParts {
-    let provider_stripped = model_id
-        .split('/')
-        .last()
-        .unwrap_or(model_id)
-        .to_string();
+    let provider_stripped = if let Some(pos) = model_id.find('/') {
+        model_id[pos + 1..].to_string()
+    } else {
+        model_id.to_string()
+    };
 
     let (base_model, is_finetune) = if let Some(colon_pos) = provider_stripped.find(':') {
         let base = provider_stripped[..colon_pos].to_string();
@@ -255,11 +290,20 @@ pub fn canonicalize_model_name(model_id: &str) -> CanonicalNameParts {
         (provider_stripped.clone(), false)
     };
 
+    let last_segment = model_id.split('/').last().unwrap_or(model_id).to_string();
+    let last_segment_base = if let Some(colon_pos) = last_segment.find(':') {
+        last_segment[..colon_pos].to_string()
+    } else {
+        last_segment.clone()
+    };
+
     CanonicalNameParts {
         original: model_id.to_string(),
         provider_stripped,
         base_model,
         is_finetune,
+        last_segment,
+        last_segment_base,
     }
 }
 
@@ -301,11 +345,13 @@ pub fn resolve_model_caps(
         &canonical.original,
         &canonical.provider_stripped,
         &canonical.base_model,
+        &canonical.last_segment,
+        &canonical.last_segment_base,
     ];
 
     for name in &names_to_try {
         if let Some(model_caps) = caps.get(*name) {
-            let source = if canonical.is_finetune && *name == &canonical.base_model {
+            let source = if canonical.is_finetune && (*name == &canonical.base_model || *name == &canonical.last_segment_base) {
                 ModelCapsSource::Finetune
             } else {
                 ModelCapsSource::Registry
@@ -386,6 +432,7 @@ mod tests {
         let parts = canonicalize_model_name("openai/gpt-4o");
         assert_eq!(parts.provider_stripped, "gpt-4o");
         assert_eq!(parts.base_model, "gpt-4o");
+        assert_eq!(parts.last_segment, "gpt-4o");
         assert!(!parts.is_finetune);
 
         let parts = canonicalize_model_name("gpt-4o:ft-abc123");
@@ -397,6 +444,17 @@ mod tests {
         assert_eq!(parts.provider_stripped, "claude-3-5-sonnet:ft-xyz");
         assert_eq!(parts.base_model, "claude-3-5-sonnet");
         assert!(parts.is_finetune);
+
+        let parts = canonicalize_model_name("openrouter/anthropic/claude-3.7-sonnet");
+        assert_eq!(parts.provider_stripped, "anthropic/claude-3.7-sonnet");
+        assert_eq!(parts.base_model, "anthropic/claude-3.7-sonnet");
+        assert_eq!(parts.last_segment, "claude-3.7-sonnet");
+        assert_eq!(parts.last_segment_base, "claude-3.7-sonnet");
+        assert!(!parts.is_finetune);
+
+        let parts = canonicalize_model_name("models/gemini-2.0-flash");
+        assert_eq!(parts.provider_stripped, "gemini-2.0-flash");
+        assert_eq!(parts.last_segment, "gemini-2.0-flash");
     }
 
     #[test]
@@ -453,5 +511,113 @@ mod tests {
 
         let parsed: CachingType = serde_json::from_str("\"auto\"").unwrap();
         assert_eq!(parsed, CachingType::Auto);
+    }
+
+    #[test]
+    fn test_multi_slash_openrouter_models() {
+        let mut caps = HashMap::new();
+        caps.insert("claude-3.7-sonnet".to_string(), ModelCapabilities {
+            n_ctx: 200000,
+            max_output_tokens: 16384,
+            supports_tools: true,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "openrouter/anthropic/claude-3.7-sonnet");
+        assert!(resolved.is_some());
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.matched_key, "claude-3.7-sonnet");
+        assert_eq!(resolved.caps.n_ctx, 200000);
+    }
+
+    #[test]
+    fn test_gemini_models_prefix() {
+        let mut caps = HashMap::new();
+        caps.insert("gemini-2.0-flash".to_string(), ModelCapabilities {
+            n_ctx: 1000000,
+            max_output_tokens: 8192,
+            supports_tools: true,
+            supports_vision: true,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "models/gemini-2.0-flash");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().matched_key, "gemini-2.0-flash");
+    }
+
+    #[test]
+    fn test_capability_fields_completeness() {
+        let caps = ModelCapabilities {
+            n_ctx: 128000,
+            max_output_tokens: 16384,
+            supports_tools: true,
+            supports_strict_tools: true,
+            supports_vision: true,
+            supports_max_completion_tokens: true,
+            reasoning: ReasoningType::Openai,
+            supports_reasoning_effort: true,
+            supports_temperature: false,
+            ..Default::default()
+        };
+
+        assert!(caps.supports_strict_tools);
+        assert!(caps.supports_max_completion_tokens);
+        assert!(!caps.supports_temperature);
+        assert_eq!(caps.reasoning, ReasoningType::Openai);
+    }
+
+    #[test]
+    fn test_validation_clamps_values() {
+        let mut caps = HashMap::new();
+        caps.insert("test-model".to_string(), ModelCapabilities {
+            n_ctx: 999_999_999,
+            max_output_tokens: 999_999_999,
+            ..Default::default()
+        });
+
+        validate_model_caps(&mut caps);
+
+        let model = caps.get("test-model").unwrap();
+        assert_eq!(model.n_ctx, MAX_REASONABLE_N_CTX);
+        assert_eq!(model.max_output_tokens, MAX_REASONABLE_OUTPUT_TOKENS);
+    }
+
+    #[test]
+    fn test_pattern_specificity_tiebreaking() {
+        let mut caps = HashMap::new();
+        caps.insert("gpt-*".to_string(), ModelCapabilities {
+            n_ctx: 100000,
+            ..Default::default()
+        });
+        caps.insert("gpt-4*".to_string(), ModelCapabilities {
+            n_ctx: 128000,
+            ..Default::default()
+        });
+        caps.insert("gpt-4o*".to_string(), ModelCapabilities {
+            n_ctx: 200000,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "gpt-4o-mini").unwrap();
+        assert_eq!(resolved.matched_key, "gpt-4o*");
+        assert_eq!(resolved.caps.n_ctx, 200000);
+    }
+
+    #[test]
+    fn test_exact_match_over_pattern() {
+        let mut caps = HashMap::new();
+        caps.insert("gpt-4o".to_string(), ModelCapabilities {
+            n_ctx: 128000,
+            ..Default::default()
+        });
+        caps.insert("gpt-4*".to_string(), ModelCapabilities {
+            n_ctx: 100000,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "gpt-4o").unwrap();
+        assert_eq!(resolved.matched_key, "gpt-4o");
+        assert_eq!(resolved.caps.n_ctx, 128000);
     }
 }

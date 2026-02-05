@@ -628,6 +628,7 @@ fn apply_models_dict_patch(provider: &mut CapsProvider) {
 #[derive(Deserialize)]
 pub struct KnownModels {
     pub completion_models: IndexMap<String, CompletionModelRecord>,
+    #[allow(dead_code)]
     pub chat_models: IndexMap<String, ChatModelRecord>,
     pub embedding_models: IndexMap<String, EmbeddingModelRecord>,
 }
