@@ -4,7 +4,7 @@ import { Card, Flex, Heading } from "@radix-ui/themes";
 import { OnOffSwitch } from "../../../components/OnOffSwitch/OnOffSwitch";
 import { iconsMap } from "../icons/iconsMap";
 
-import type { ConfiguredProvidersResponse } from "../../../services/refact";
+import type { ProviderListItem } from "../../../services/refact";
 
 import { getProviderName } from "../getProviderName";
 import { useProviderCard } from "./useProviderCard";
@@ -14,10 +14,8 @@ import { useUpdateProvider } from "../useUpdateProvider";
 import classNames from "classnames";
 
 export type ProviderCardProps = {
-  provider: ConfiguredProvidersResponse["providers"][number];
-  setCurrentProvider: (
-    provider: ConfiguredProvidersResponse["providers"][number],
-  ) => void;
+  provider: ProviderListItem;
+  setCurrentProvider: (provider: ProviderListItem) => void;
 };
 
 export const ProviderCard: React.FC<ProviderCardProps> = ({

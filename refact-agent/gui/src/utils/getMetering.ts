@@ -1,4 +1,5 @@
-import { ChatMessage, ChatMessages } from "../services/refact/types";
+import { ChatMessage, ChatMessages, MeteringUsd } from "../services/refact/types";
+import type { Usage } from "../services/refact/chat";
 
 type MessageWithExtra = ChatMessage & {
   extra?: Record<string, unknown>;
@@ -115,4 +116,39 @@ export function getTotalTokenMeteringForMessages(messages: ChatMessages) {
       metering_cache_read_tokens_n: 0,
     },
   );
+}
+
+type MessageWithUsage = ChatMessage & { usage?: Usage };
+
+function hasUsdMetering(message: ChatMessage): boolean {
+  const m = message as MessageWithUsage;
+  return m.usage?.metering_usd !== undefined;
+}
+
+export function getTotalUsdMeteringForMessages(messages: ChatMessages): MeteringUsd | null {
+  const meteringMessages = messages.filter(hasUsdMetering);
+  if (meteringMessages.length === 0) return null;
+
+  return meteringMessages.reduce<MeteringUsd>(
+    (acc, message) => {
+      const usd = (message as MessageWithUsage).usage?.metering_usd;
+      if (!usd) return acc;
+      return {
+        prompt_usd: acc.prompt_usd + usd.prompt_usd,
+        generated_usd: acc.generated_usd + usd.generated_usd,
+        cache_read_usd: (acc.cache_read_usd ?? 0) + (usd.cache_read_usd ?? 0) || undefined,
+        cache_creation_usd: (acc.cache_creation_usd ?? 0) + (usd.cache_creation_usd ?? 0) || undefined,
+        total_usd: acc.total_usd + usd.total_usd,
+      };
+    },
+    { prompt_usd: 0, generated_usd: 0, total_usd: 0 },
+  );
+}
+
+export function formatUsd(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "–";
+  if (value >= 0.01) return `$${value.toFixed(2)}`;
+  if (value >= 0.001) return `$${value.toFixed(3)}`;
+  if (value > 0) return `$${value.toFixed(4)}`;
+  return "$0.00";
 }

@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: task_planner
 title: Task Planner
 description: Task board management mode
@@ -241,10 +241,6 @@ tools:
   - task_memory_save
   - task_memories_get
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 8192
-  temperature: 0.0
 
 tool_confirm:
   rules:

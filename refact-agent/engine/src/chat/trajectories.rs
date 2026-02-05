@@ -414,6 +414,10 @@ pub async fn load_trajectory_for_chat(
             .get("reasoning_effort")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        thinking_budget: t
+            .get("thinking_budget")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize),
         temperature: t
             .get("temperature")
             .and_then(|v| v.as_f64())
@@ -2553,6 +2557,7 @@ mod tests {
                 tool_use: "agent".to_string(),
                 boost_reasoning: true,
                 reasoning_effort: None,
+                thinking_budget: None,
                 temperature: None,
                 frequency_penalty: None,
                 max_tokens: None,

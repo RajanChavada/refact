@@ -211,3 +211,34 @@
   opacity: 0.5;
   cursor: default;
 }
+
+.effortButton {
+  padding: var(--space-1) var(--space-2);
+  background: var(--gray-a3);
+  border: 1px solid var(--gray-a6);
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  color: var(--gray-11);
+  transition: all 0.15s ease;
+}
+
+.effortButton:hover:not(:disabled) {
+  background: var(--gray-a4);
+  border-color: var(--gray-a8);
+}
+
+.effortButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.effortButtonActive {
+  background: var(--accent-a4);
+  border-color: var(--accent-a8);
+  color: var(--accent-11);
+}
+
+.effortButtonActive:hover:not(:disabled) {
+  background: var(--accent-a5);
+  border-color: var(--accent-a9);
+}

@@ -17,6 +17,7 @@ use tracing::{error, info};
 use crate::ast::ast_indexer_thread::AstIndexService;
 use crate::caps::CodeAssistantCaps;
 use crate::caps::providers::get_latest_provider_mtime;
+use crate::providers::{ProviderRegistry, load_providers_from_config};
 use crate::completion_cache::CompletionCache;
 use crate::custom_error::ScratchError;
 use crate::files_in_workspace::DocumentsState;
@@ -298,6 +299,7 @@ pub struct GlobalContext {
     pub chat_sessions: crate::chat::SessionsMap,
     pub voice_service: SharedVoiceService,
     pub project_registry_cache: Arc<StdRwLock<RegistryCacheManager>>,
+    pub providers: Arc<ARwLock<ProviderRegistry>>,
 }
 
 pub type SharedGlobalContext = Arc<ARwLock<GlobalContext>>; // TODO: remove this type alias, confusing
@@ -589,6 +591,11 @@ pub async fn create_global_context(
         chat_sessions: crate::chat::create_sessions_map(),
         voice_service: crate::voice::VoiceService::new(),
         project_registry_cache: Arc::new(StdRwLock::new(RegistryCacheManager::new())),
+        providers: Arc::new(ARwLock::new(
+            load_providers_from_config(&config_dir, &cmdline.address_url, &cmdline.api_key)
+                .await
+                .unwrap_or_default()
+        )),
     };
     let gcx = Arc::new(ARwLock::new(cx));
     crate::files_in_workspace::watcher_init(gcx.clone()).await;
@@ -689,6 +696,7 @@ pub mod tests {
             chat_sessions: crate::chat::create_sessions_map(),
             voice_service: crate::voice::VoiceService::new(),
             project_registry_cache: Arc::new(StdRwLock::new(RegistryCacheManager::new())),
+            providers: Arc::new(ARwLock::new(ProviderRegistry::default())),
         };
 
         Arc::new(ARwLock::new(cx))

@@ -19,9 +19,9 @@ import { formatNumberToFixed } from "../../utils/formatNumberToFixed";
 
 import styles from "./StreamingTokenCounter.module.css";
 
-function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / 4);
+function estimateTokensFromLength(length: number): number {
+  if (length <= 0) return 0;
+  return Math.ceil(length / 4);
 }
 
 function findLastIndex<T>(arr: T[], pred: (x: T) => boolean): number {
@@ -31,31 +31,29 @@ function findLastIndex<T>(arr: T[], pred: (x: T) => boolean): number {
   return -1;
 }
 
-function extractAllText(message: AssistantMessage | null): string {
-  if (!message) return "";
+function getTextLength(message: AssistantMessage | null): number {
+  if (!message) return 0;
 
-  let text = message.content ?? "";
+  let len = message.content?.length ?? 0;
 
   if (message.reasoning_content) {
-    text += message.reasoning_content;
+    len += message.reasoning_content.length;
   }
 
   if (message.thinking_blocks) {
     for (const block of message.thinking_blocks) {
-      if (block.thinking) text += block.thinking;
-      if (block.signature) text += block.signature;
+      if (block.thinking) len += block.thinking.length;
+      if (block.signature) len += block.signature.length;
     }
   }
 
-  return text;
+  return len;
 }
 
 export const StreamingTokenCounter: React.FC = () => {
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
   const messages = useAppSelector(selectMessages);
-  // Subscribe to stream_version to force re-renders on every delta
-  // The value itself is not used, but subscribing triggers re-renders
   void useAppSelector(selectStreamVersion);
 
   const [visible, setVisible] = useState(() => isStreaming || isWaiting);
@@ -85,20 +83,20 @@ export const StreamingTokenCounter: React.FC = () => {
 
   const usage = activeAssistantMessage?.usage;
 
-  const allText = useMemo(
-    (): string => extractAllText(activeAssistantMessage),
+  const textLength = useMemo(
+    (): number => getTextLength(activeAssistantMessage),
     [activeAssistantMessage],
   );
 
   const actualOutputTokens = usage?.completion_tokens ?? 0;
   const estimatedOutputTokens = useMemo((): number => {
-    return estimateTokens(allText);
-  }, [allText]);
+    return estimateTokensFromLength(textLength);
+  }, [textLength]);
 
   const outputTokens: number =
     actualOutputTokens > 0 ? actualOutputTokens : estimatedOutputTokens;
 
-  const hasAnyOutput = allText.length > 0 || outputTokens > 0;
+  const hasAnyOutput = textLength > 0 || outputTokens > 0;
   const hasFinalUsage =
     (usage?.prompt_tokens ?? 0) > 0 || (usage?.completion_tokens ?? 0) > 0;
 
@@ -146,7 +144,7 @@ export const StreamingTokenCounter: React.FC = () => {
 
   if (!visible) return null;
 
-  const hasNoOutput = allText.length === 0 && outputTokens === 0;
+  const hasNoOutput = textLength === 0 && outputTokens === 0;
   if (hasNoOutput) return null;
 
   const isOutputEstimate = actualOutputTokens === 0;

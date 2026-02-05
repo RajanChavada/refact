@@ -52,6 +52,7 @@ mod vecdb;
 mod fetch_embedding;
 mod forward_to_openai_endpoint;
 mod llm;
+mod providers;
 mod restream;
 
 mod call_validation;

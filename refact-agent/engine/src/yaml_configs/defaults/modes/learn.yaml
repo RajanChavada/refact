@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: learn
 title: Learn
 description: Understand code with clear explanations
@@ -89,10 +89,6 @@ tools:
   - shell
   - subagent
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 4096
-  temperature: 0.3
 
 tool_confirm:
   rules:

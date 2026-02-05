@@ -55,7 +55,8 @@ pub async fn handle_v1_model_capabilities(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Query(query): Query<ModelCapsQuery>,
 ) -> Result<Response<Body>, ScratchError> {
-    let caps = model_caps::get_model_caps(gcx.clone(), query.refresh)
+    let address_url = gcx.read().await.cmdline.address_url.clone();
+    let caps = model_caps::get_model_caps(gcx.clone(), &address_url, query.refresh)
         .await
         .map_err(|e| ScratchError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 
@@ -94,7 +95,8 @@ pub async fn handle_v1_model_supported(
         ScratchError::new(StatusCode::BAD_REQUEST, "Missing 'model' query parameter".to_string())
     })?;
 
-    let caps = model_caps::get_model_caps(gcx, false)
+    let address_url = gcx.read().await.cmdline.address_url.clone();
+    let caps = model_caps::get_model_caps(gcx, &address_url, false)
         .await
         .map_err(|e| ScratchError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
 

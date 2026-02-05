@@ -7,7 +7,6 @@ use crate::llm::canonical::{
     CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat,
 };
 
-/// Fields that cannot be overridden via extra_body for security
 const PROTECTED_FIELDS: &[&str] = &["model", "messages", "stream", "tools", "tool_choice", "stream_options"];
 
 pub struct OpenAiChatAdapter;
@@ -108,12 +107,23 @@ impl LlmWireAdapter for OpenAiChatAdapter {
             }
         }
 
-        // Add meta field for Refact cloud (when support_metadata is enabled)
-        if let Some(meta) = &req.meta {
-            if let Ok(meta_value) = serde_json::to_value(meta) {
-                body["meta"] = meta_value;
-            }
-        }
+        tracing::info!(
+            model = %settings.model_name,
+            endpoint = %settings.endpoint,
+            stream = %req.stream,
+            max_tokens = %req.params.max_tokens,
+            temperature = ?req.params.temperature,
+            frequency_penalty = ?req.params.frequency_penalty,
+            n = ?req.params.n,
+            stop_sequences = ?req.params.stop.len(),
+            tools_count = ?req.tools.as_ref().map(|t| t.len()),
+            tool_choice = ?req.tool_choice,
+            reasoning = ?req.reasoning,
+            response_format = ?req.response_format.is_some(),
+            has_meta = %req.meta.is_some(),
+            messages_count = %req.messages.len(),
+            "openai chat adapter request"
+        );
 
         Ok(HttpParts {
             url: settings.endpoint.clone(),
@@ -352,17 +362,16 @@ fn parse_openai_usage(usage: &Value) -> Option<ChatUsage> {
         .and_then(|t| t.as_u64())
         .map(|v| v as usize)
         .unwrap_or_else(|| prompt_tokens + completion_tokens);
-    let cache_read = usage
-        .get("prompt_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|t| t.as_u64())
-        .map(|v| v as usize);
+    // Note: OpenAI's cached_tokens is a SUBSET of prompt_tokens (already included),
+    // not separate like Anthropic. We don't set cache_read_tokens here to avoid
+    // double-counting in context calculations that sum prompt_tokens + cache_read.
     Some(ChatUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
         cache_creation_tokens: None,
-        cache_read_tokens: cache_read,
+        cache_read_tokens: None,
+        metering_usd: None,
     })
 }
 
@@ -380,6 +389,7 @@ mod tests {
             supports_tools: true,
             supports_reasoning: false,
             supports_max_completion_tokens: false,
+            support_metadata: false,
             eof_is_done: false,
         }
     }
@@ -572,33 +582,10 @@ mod tests {
 
         let http = adapter.build_http(&req, &default_settings()).unwrap();
 
-        // Protected fields should NOT be overridden
         assert_eq!(http.body["model"], "gpt-4");
         assert_ne!(http.body["messages"], json!([{"role": "user", "content": "hacked"}]));
-        assert_eq!(http.body["stream"], true); // Default is true
-        // Custom fields should be allowed
+        assert_eq!(http.body["stream"], true);
         assert_eq!(http.body["custom_field"], "allowed");
-    }
-
-    #[test]
-    fn test_meta_field_included_for_refact_cloud() {
-        use crate::call_validation::ChatMeta;
-
-        let adapter = OpenAiChatAdapter;
-        let meta = ChatMeta {
-            chat_id: "test-chat-123".to_string(),
-            chat_mode: "agent".to_string(),
-            ..Default::default()
-        };
-        let req = LlmRequest::new("gpt-4".to_string(), vec![
-            ChatMessage::new("user".to_string(), "Hi".to_string()),
-        ]).with_meta(meta);
-
-        let http = adapter.build_http(&req, &default_settings()).unwrap();
-
-        // Meta field should be included
-        assert!(http.body.get("meta").is_some());
-        assert_eq!(http.body["meta"]["chat_id"], "test-chat-123");
     }
 
     #[test]

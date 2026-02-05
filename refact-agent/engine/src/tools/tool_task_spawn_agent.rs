@@ -373,6 +373,7 @@ impl Tool for ToolTaskSpawnAgent {
                 link_type: None,
                 root_chat_id: None,
                 reasoning_effort: None,
+                thinking_budget: None,
                 temperature: None,
                 frequency_penalty: None,
                 max_tokens: None,

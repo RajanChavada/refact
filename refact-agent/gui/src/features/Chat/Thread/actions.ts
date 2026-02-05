@@ -367,6 +367,11 @@ export const setReasoningEffort = createAction<{
   value: "low" | "medium" | "high" | null;
 }>("chatThread/setReasoningEffort");
 
+export const setThinkingBudget = createAction<{
+  chatId: string;
+  value: number | null;
+}>("chatThread/setThinkingBudget");
+
 export const setTemperature = createAction<{
   chatId: string;
   value: number | null;

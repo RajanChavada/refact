@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   saveLastThreadParams,
   getLastThreadParams,
-  clearLastThreadParams,
+  saveModeParams,
+  getModeParams,
   saveDraftMessage,
   getDraftMessage,
   clearDraftMessage,
@@ -16,35 +17,40 @@ describe("threadStorage", () => {
   });
 
   describe("thread parameters", () => {
-    it("should save and retrieve thread params", () => {
+    it("should save and retrieve thread params per mode", () => {
       const params = {
         model: "gpt-4",
         boost_reasoning: true,
+        mode: "agent" as const,
       };
 
       saveLastThreadParams(params);
-      const retrieved = getLastThreadParams();
+      const retrieved = getLastThreadParams("agent");
 
-      expect(retrieved).toEqual(params);
+      expect(retrieved.model).toBe("gpt-4");
+      expect(retrieved.boost_reasoning).toBe(true);
+      expect(retrieved.mode).toBe("agent");
     });
 
-    it("should merge with existing params", () => {
-      saveLastThreadParams({ model: "gpt-4" });
-      saveLastThreadParams({ boost_reasoning: true });
+    it("should keep params separate per mode", () => {
+      saveModeParams("agent", { model: "gpt-4", temperature: 0.7 });
+      saveModeParams("explore", { model: "claude-3", temperature: 0.5 });
 
-      const retrieved = getLastThreadParams();
+      expect(getModeParams("agent").model).toBe("gpt-4");
+      expect(getModeParams("agent").temperature).toBe(0.7);
+      expect(getModeParams("explore").model).toBe("claude-3");
+      expect(getModeParams("explore").temperature).toBe(0.5);
+    });
+
+    it("should merge with existing params for same mode", () => {
+      saveModeParams("agent", { model: "gpt-4" });
+      saveModeParams("agent", { boost_reasoning: true });
+
+      const retrieved = getModeParams("agent");
       expect(retrieved).toEqual({
         model: "gpt-4",
         boost_reasoning: true,
       });
-    });
-
-    it("should clear thread params", () => {
-      saveLastThreadParams({ model: "gpt-4" });
-      clearLastThreadParams();
-
-      const retrieved = getLastThreadParams();
-      expect(retrieved).toEqual({});
     });
   });
 

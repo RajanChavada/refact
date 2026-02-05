@@ -43,6 +43,7 @@ import { LoginPage } from "./Login";
 import { TaskList, TaskWorkspace } from "./Tasks";
 import { KnowledgeWorkspace } from "./Knowledge";
 import { Customization } from "./Customization";
+import { DefaultModels } from "./DefaultModels";
 import { ChatLoading } from "../components/ChatContent/ChatLoading";
 
 import styles from "./App.module.css";
@@ -291,6 +292,13 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
             host={config.host}
             initialKind={renderedPage.kind}
             initialConfigId={renderedPage.configId}
+          />
+        )}
+        {!pageSwitching && renderedPage.name === "default models" && (
+          <DefaultModels
+            backFromDefaultModels={goBack}
+            tabbed={config.tabbed}
+            host={config.host}
           />
         )}
       </PageWrapper>

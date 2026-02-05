@@ -68,6 +68,10 @@ export interface CustomizationPage {
   configId?: string;
 }
 
+export interface DefaultModelsPage {
+  name: "default models";
+}
+
 export interface IntegrationsSetupPage {
   name: "integrations page";
   projectPath?: string;
@@ -93,7 +97,8 @@ export type Page =
   | TaskWorkspacePage
   | TaskAgentPage
   | KnowledgeGraphPage
-  | CustomizationPage;
+  | CustomizationPage
+  | DefaultModelsPage;
 
 export function isIntegrationSetupPage(
   page: Page,

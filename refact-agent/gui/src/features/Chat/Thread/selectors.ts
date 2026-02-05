@@ -149,6 +149,9 @@ export const selectContextTokensCap = (state: RootState) =>
 export const selectReasoningEffort = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread.reasoning_effort;
 
+export const selectThinkingBudget = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.thread.thinking_budget;
+
 export const selectTemperature = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread.temperature;
 

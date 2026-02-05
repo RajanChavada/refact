@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: past_work
 title: Past Work
 description: Search conversation history and project knowledge
@@ -66,10 +66,6 @@ tools:
   - knowledge
   - subagent
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 2048
-  temperature: 0.2
 
 tool_confirm:
   rules:

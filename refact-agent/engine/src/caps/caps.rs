@@ -15,9 +15,11 @@ use crate::caps::providers::{
     add_models_to_caps, read_providers_d, resolve_provider_api_key, post_process_provider,
     CapsProvider,
 };
+use crate::providers::config::ProviderDefaults;
 use crate::caps::self_hosted::SelfHostedCaps;
-use crate::caps::model_caps::{ModelCapabilities, get_model_caps, resolve_model_caps};
+use crate::caps::model_caps::{ModelCapabilities, ReasoningType, get_model_caps, resolve_model_caps};
 use crate::llm::WireFormat;
+use crate::providers::traits::AvailableModel;
 
 pub const CAPS_FILENAME: &str = "refact-caps";
 pub const CAPS_FILENAME_FALLBACK: &str = "coding_assistant_caps.json";
@@ -108,11 +110,15 @@ pub struct ChatModelRecord {
     #[serde(default)]
     pub supports_boost_reasoning: bool,
     #[serde(default)]
+    pub max_thinking_tokens: Option<usize>,
+    #[serde(default)]
     pub default_temperature: Option<f32>,
     #[serde(default)]
     pub default_frequency_penalty: Option<f32>,
     #[serde(default)]
     pub default_max_tokens: Option<usize>,
+    #[serde(default)]
+    pub max_output_tokens: Option<usize>,
     #[serde(default)]
     pub supports_strict_tools: bool,
 }
@@ -151,23 +157,6 @@ pub enum CompletionModelFamily {
     Starcoder,
     #[serde(rename = "deepseek-coder")]
     DeepseekCoder,
-}
-
-impl CompletionModelFamily {
-    pub fn to_string(self) -> String {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_default()
-    }
-
-    pub fn all_variants() -> Vec<CompletionModelFamily> {
-        vec![
-            CompletionModelFamily::Qwen2_5CoderBase,
-            CompletionModelFamily::Starcoder,
-            CompletionModelFamily::DeepseekCoder,
-        ]
-    }
 }
 
 pub fn default_completion_scratchpad() -> String {
@@ -224,10 +213,25 @@ impl EmbeddingModelRecord {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CapsMetadata {
+    #[serde(default = "default_pricing")]
     pub pricing: serde_json::Value,
+    #[serde(default)]
     pub features: Vec<String>,
+}
+
+fn default_pricing() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+impl Default for CapsMetadata {
+    fn default() -> Self {
+        Self {
+            pricing: default_pricing(),
+            features: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -413,6 +417,206 @@ pub async fn load_caps_value_from_url(
     Err(format!("cannot fetch caps, status={}", last_status))
 }
 
+/// Build ChatModelRecord from an AvailableModel and provider runtime info
+fn build_chat_model_record(
+    provider_name: &str,
+    model: &AvailableModel,
+    model_caps: &HashMap<String, ModelCapabilities>,
+    runtime_wire_format: WireFormat,
+    runtime_endpoint: &str,
+    runtime_api_key: &str,
+    runtime_tokenizer_api_key: &str,
+    runtime_support_metadata: bool,
+    runtime_extra_headers: &HashMap<String, String>,
+) -> ChatModelRecord {
+    let prefix = format!("{}/", provider_name);
+    let model_id = if model.id.starts_with(&prefix) {
+        model.id.clone()
+    } else {
+        format!("{}/{}", provider_name, model.id)
+    };
+
+    let resolved_caps = resolve_model_caps(model_caps, &model_id)
+        .or_else(|| resolve_model_caps(model_caps, &model.id));
+
+    // Get capabilities from model_caps or use the model's own values (for custom models)
+    let (n_ctx, supports_tools, supports_multimodality, supports_reasoning, tokenizer, supports_clicks) =
+        if let Some(ref resolved) = resolved_caps {
+            let caps = &resolved.caps;
+            let reasoning = match caps.reasoning {
+                ReasoningType::None => None,
+                ReasoningType::Openai => Some("openai".to_string()),
+                ReasoningType::Anthropic => Some("anthropic".to_string()),
+                ReasoningType::Deepseek => Some("deepseek".to_string()),
+                ReasoningType::Xai => Some("xai".to_string()),
+                ReasoningType::Qwen => Some("qwen".to_string()),
+                ReasoningType::Gemini => Some("gemini".to_string()),
+                ReasoningType::Kimi => Some("kimi".to_string()),
+                ReasoningType::Zhipu => Some("zhipu".to_string()),
+                ReasoningType::Mistral => Some("mistral".to_string()),
+            };
+            (
+                caps.n_ctx,
+                caps.supports_tools,
+                caps.supports_vision,
+                reasoning,
+                caps.tokenizer.clone(),
+                caps.supports_clicks,
+            )
+        } else {
+            // Use model's own values (typically from CustomModelConfig)
+            (
+                model.n_ctx,
+                model.supports_tools,
+                model.supports_multimodality,
+                model.supports_reasoning.clone(),
+                model.tokenizer.clone().unwrap_or_default(),
+                false,
+            )
+        };
+
+    let supports_agent = supports_tools;
+    let endpoint = runtime_endpoint.replace("$MODEL", &model.id);
+
+    let endpoint_style = match runtime_wire_format {
+        WireFormat::AnthropicMessages => "anthropic",
+        _ => "openai",
+    }.to_string();
+
+    ChatModelRecord {
+        base: BaseModelRecord {
+            n_ctx,
+            name: model.id.clone(),
+            id: model_id,
+            endpoint,
+            endpoint_style,
+            wire_format: runtime_wire_format,
+            api_key: runtime_api_key.to_string(),
+            tokenizer_api_key: runtime_tokenizer_api_key.to_string(),
+            support_metadata: runtime_support_metadata,
+            extra_headers: runtime_extra_headers.clone(),
+            similar_models: Vec::new(),
+            tokenizer,
+            enabled: model.enabled,
+            experimental: false,
+            supports_max_completion_tokens: resolved_caps
+                .as_ref()
+                .map(|r| r.caps.supports_max_completion_tokens)
+                .unwrap_or(false),
+            eof_is_done: false,
+            removable: model.is_custom,
+            user_configured: model.is_custom,
+        },
+        scratchpad: String::new(),
+        scratchpad_patch: serde_json::Value::Null,
+        supports_tools,
+        supports_multimodality,
+        supports_clicks,
+        supports_agent,
+        supports_reasoning,
+        supports_boost_reasoning: resolved_caps
+            .as_ref()
+            .map(|r| r.caps.supports_reasoning_effort)
+            .unwrap_or(false),
+        max_thinking_tokens: resolved_caps
+            .as_ref()
+            .and_then(|r| r.caps.max_thinking_tokens),
+        default_temperature: resolved_caps
+            .as_ref()
+            .and_then(|r| r.caps.default_temperature),
+        default_frequency_penalty: None,
+        default_max_tokens: resolved_caps
+            .as_ref()
+            .and_then(|r| r.caps.default_max_tokens),
+        max_output_tokens: resolved_caps
+            .as_ref()
+            .map(|r| r.caps.max_output_tokens)
+            .filter(|&t| t > 0),
+        supports_strict_tools: resolved_caps
+            .as_ref()
+            .map(|r| r.caps.supports_strict_tools)
+            .unwrap_or(false),
+    }
+}
+
+pub async fn populate_chat_models_from_providers(
+    caps: &mut CodeAssistantCaps,
+    gcx: Arc<ARwLock<GlobalContext>>,
+) {
+    use crate::providers::traits::ModelSource;
+
+    let model_caps = &*caps.model_caps;
+
+    let gcx_locked = gcx.read().await;
+    let registry = gcx_locked.providers.read().await;
+
+    let mut pricing_map = caps.metadata.pricing.as_object_mut();
+
+    for (_name, provider) in registry.iter() {
+        let runtime = match provider.build_runtime() {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Failed to build runtime for provider '{}': {}", provider.name(), e);
+                continue;
+            }
+        };
+
+        if !runtime.enabled {
+            continue;
+        }
+
+        let available_models = match provider.model_source() {
+            ModelSource::ModelCaps => provider.get_available_models_from_caps(model_caps),
+            _ => provider.get_custom_models_only(),
+        };
+
+        for model in available_models {
+            if !model.enabled {
+                continue;
+            }
+
+            let chat_record = build_chat_model_record(
+                &runtime.name,
+                &model,
+                model_caps,
+                runtime.wire_format,
+                &runtime.chat_endpoint,
+                &runtime.api_key,
+                &runtime.tokenizer_api_key,
+                runtime.support_metadata,
+                &runtime.extra_headers,
+            );
+
+            let model_id = chat_record.base.id.clone();
+
+            if let Some(ref pricing) = model.pricing {
+                if let Some(map) = pricing_map.as_mut() {
+                    if let Ok(pricing_value) = serde_json::to_value(pricing) {
+                        map.insert(model_id.clone(), pricing_value.clone());
+                        if !map.contains_key(&model.id) {
+                            map.insert(model.id.clone(), pricing_value);
+                        }
+                    }
+                }
+            }
+
+            caps.chat_models.insert(model_id, Arc::new(chat_record));
+        }
+    }
+
+    if !caps.chat_models.is_empty() {
+        let need_new_default = caps.defaults.chat_default_model.is_empty()
+            || !caps.chat_models.contains_key(&caps.defaults.chat_default_model);
+
+        if need_new_default {
+            if let Some((first_model_id, _)) = caps.chat_models.first() {
+                info!("Auto-selecting default chat model: {}", first_model_id);
+                caps.defaults.chat_default_model = first_model_id.clone();
+            }
+        }
+    }
+}
+
 pub async fn load_caps(
     cmdline: crate::global_context::CommandLine,
     gcx: Arc<ARwLock<GlobalContext>>,
@@ -440,6 +644,10 @@ pub async fn load_caps(
                 let mut server_provider = serde_json::from_value::<CapsProvider>(caps_value)
                     .map_err_with_prefix("Failed to parse caps provider:")?;
                 resolve_relative_urls(&mut server_provider, &caps_url)?;
+                if caps.cloud_name == "refact" {
+                    server_provider.wire_format = WireFormat::Refact;
+                    server_provider.support_metadata = true;
+                }
                 (caps, vec![server_provider])
             }
         };
@@ -459,10 +667,44 @@ pub async fn load_caps(
         provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
     }
 
-    let model_caps_map = get_model_caps(gcx.clone(), false).await?;
+    let address_url = gcx.read().await.cmdline.address_url.clone();
+    let model_caps_map = get_model_caps(gcx.clone(), &address_url, false).await?;
     caps.model_caps = Arc::new(model_caps_map);
 
     add_models_to_caps(&mut caps, providers);
+
+    // Also populate models from the new provider registry (user-configured providers)
+    populate_chat_models_from_providers(&mut caps, gcx.clone()).await;
+
+    // Apply user's global defaults from providers.d/defaults.yaml
+    match ProviderDefaults::load(&config_dir).await {
+        Ok(user_defaults) => {
+            if let Some(model) = &user_defaults.chat.model {
+                if !model.is_empty() && caps.chat_models.contains_key(model) {
+                    caps.defaults.chat_default_model = model.clone();
+                } else if !model.is_empty() {
+                    warn!("User default chat model '{}' not found in available models, ignoring", model);
+                }
+            }
+            if let Some(model) = &user_defaults.chat_light.model {
+                if !model.is_empty() && caps.chat_models.contains_key(model) {
+                    caps.defaults.chat_light_model = model.clone();
+                } else if !model.is_empty() {
+                    warn!("User default light model '{}' not found in available models, ignoring", model);
+                }
+            }
+            if let Some(model) = &user_defaults.chat_thinking.model {
+                if !model.is_empty() && caps.chat_models.contains_key(model) {
+                    caps.defaults.chat_thinking_model = model.clone();
+                } else if !model.is_empty() {
+                    warn!("User default thinking model '{}' not found in available models, ignoring", model);
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to load user defaults from providers.d/defaults.yaml: {}", e);
+        }
+    }
 
     validate_default_models(&caps)?;
 
@@ -470,28 +712,36 @@ pub async fn load_caps(
 }
 
 fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
+    // Validate default models exist in chat_models (either from model_caps or custom models)
     if !caps.defaults.chat_default_model.is_empty() {
-        if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_default_model).is_none() {
-            return Err(format!(
-                "Default chat model '{}' is not supported (not found in model capabilities registry)",
-                caps.defaults.chat_default_model
-            ));
+        if !caps.chat_models.contains_key(&caps.defaults.chat_default_model) {
+            // Also check model_caps for backward compatibility (model might not be enabled yet)
+            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_default_model).is_none() {
+                warn!(
+                    "Default chat model '{}' is not in chat_models and not found in model capabilities registry",
+                    caps.defaults.chat_default_model
+                );
+            }
         }
     }
     if !caps.defaults.chat_thinking_model.is_empty() {
-        if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_thinking_model).is_none() {
-            return Err(format!(
-                "Default thinking model '{}' is not supported (not found in model capabilities registry)",
-                caps.defaults.chat_thinking_model
-            ));
+        if !caps.chat_models.contains_key(&caps.defaults.chat_thinking_model) {
+            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_thinking_model).is_none() {
+                warn!(
+                    "Default thinking model '{}' is not in chat_models and not found in model capabilities registry",
+                    caps.defaults.chat_thinking_model
+                );
+            }
         }
     }
     if !caps.defaults.chat_light_model.is_empty() {
-        if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_light_model).is_none() {
-            return Err(format!(
-                "Default light model '{}' is not supported (not found in model capabilities registry)",
-                caps.defaults.chat_light_model
-            ));
+        if !caps.chat_models.contains_key(&caps.defaults.chat_light_model) {
+            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_light_model).is_none() {
+                warn!(
+                    "Default light model '{}' is not in chat_models and not found in model capabilities registry",
+                    caps.defaults.chat_light_model
+                );
+            }
         }
     }
     Ok(())
@@ -563,10 +813,13 @@ pub fn resolve_chat_model(
             Ok(Arc::new(effective))
         }
         None => {
-            Err(format!(
-                "Model '{}' is not supported (not found in model capabilities registry)",
+            // Model not in registry (e.g., custom model) - use base_record as-is
+            // The base_record already has capabilities from build_chat_model_record
+            tracing::debug!(
+                "Model '{}' not in model_caps registry, using configured capabilities",
                 model_id
-            ))
+            );
+            Ok(base_record)
         }
     }
 }
@@ -581,6 +834,7 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     record.supports_clicks = caps.supports_clicks;
     record.default_temperature = caps.default_temperature;
     record.default_max_tokens = caps.default_max_tokens;
+    record.max_output_tokens = if caps.max_output_tokens > 0 { Some(caps.max_output_tokens) } else { None };
 
     if !caps.tokenizer.is_empty() {
         record.base.tokenizer = caps.tokenizer.clone();
@@ -593,6 +847,10 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
         crate::caps::model_caps::ReasoningType::Deepseek => Some("deepseek".to_string()),
         crate::caps::model_caps::ReasoningType::Xai => Some("xai".to_string()),
         crate::caps::model_caps::ReasoningType::Qwen => Some("qwen".to_string()),
+        crate::caps::model_caps::ReasoningType::Gemini => Some("gemini".to_string()),
+        crate::caps::model_caps::ReasoningType::Kimi => Some("kimi".to_string()),
+        crate::caps::model_caps::ReasoningType::Zhipu => Some("zhipu".to_string()),
+        crate::caps::model_caps::ReasoningType::Mistral => Some("mistral".to_string()),
     };
 
     record.supports_boost_reasoning = caps.supports_reasoning_effort;

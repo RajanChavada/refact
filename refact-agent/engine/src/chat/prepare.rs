@@ -254,10 +254,17 @@ fn adapt_sampling_for_reasoning_models(
     sampling_parameters: &mut SamplingParameters,
     model_record: &ChatModelRecord,
 ) {
-    // Apply model's default max_tokens if user hasn't specified one (max_new_tokens == 0 means use default)
-    if sampling_parameters.max_new_tokens == 0 {
-        if let Some(default_max) = model_record.default_max_tokens {
-            sampling_parameters.max_new_tokens = default_max;
+    let user_set_max_tokens = sampling_parameters.max_new_tokens > 0;
+
+    if !user_set_max_tokens {
+        sampling_parameters.max_new_tokens = model_record.default_max_tokens
+            .or(model_record.max_output_tokens)
+            .unwrap_or(4096);
+    }
+
+    if let Some(max_output) = model_record.max_output_tokens {
+        if sampling_parameters.max_new_tokens > max_output {
+            sampling_parameters.max_new_tokens = max_output;
         }
     }
 
@@ -276,18 +283,11 @@ fn adapt_sampling_for_reasoning_models(
             {
                 sampling_parameters.reasoning_effort = Some(ReasoningEffort::Medium);
             }
-            if sampling_parameters.max_new_tokens <= 8192 {
+            if !user_set_max_tokens && sampling_parameters.max_new_tokens <= 8192 {
                 sampling_parameters.max_new_tokens *= 2;
             }
-            // Clear incompatible reasoning fields
             sampling_parameters.thinking = None;
             sampling_parameters.enable_thinking = None;
-            // Only apply model default temperature if user hasn't specified one
-            if sampling_parameters.temperature.is_none() {
-                if let Some(temp) = model_record.default_temperature {
-                    sampling_parameters.temperature = Some(temp);
-                }
-            }
         }
         "anthropic" => {
             let min_budget = tokens().min_budget_tokens;
@@ -312,44 +312,21 @@ fn adapt_sampling_for_reasoning_models(
         "qwen" => {
             sampling_parameters.enable_thinking =
                 Some(model_record.supports_boost_reasoning && sampling_parameters.boost_reasoning);
-            // Clear incompatible reasoning fields
             sampling_parameters.reasoning_effort = None;
             sampling_parameters.thinking = None;
-            // Only apply model default temperature if user hasn't specified one
-            if sampling_parameters.temperature.is_none() {
-                if let Some(temp) = model_record.default_temperature {
-                    sampling_parameters.temperature = Some(temp);
-                }
-            }
         }
         "deepseek" => {
-            // DeepSeek reasoner models automatically include reasoning in responses
-            // No special request parameters needed, just ensure adequate tokens
-            if sampling_parameters.max_new_tokens <= 8192 {
+            if !user_set_max_tokens && sampling_parameters.max_new_tokens <= 8192 {
                 sampling_parameters.max_new_tokens *= 2;
             }
-            // Clear all reasoning fields - DeepSeek handles this automatically
             sampling_parameters.reasoning_effort = None;
             sampling_parameters.thinking = None;
             sampling_parameters.enable_thinking = None;
-            // Only apply model default temperature if user hasn't specified one
-            if sampling_parameters.temperature.is_none() {
-                if let Some(temp) = model_record.default_temperature {
-                    sampling_parameters.temperature = Some(temp);
-                }
-            }
         }
         _ => {
-            // Clear all reasoning fields for unknown types
             sampling_parameters.reasoning_effort = None;
             sampling_parameters.thinking = None;
             sampling_parameters.enable_thinking = None;
-            // Only apply model default temperature if user hasn't specified one
-            if sampling_parameters.temperature.is_none() {
-                if let Some(temp) = model_record.default_temperature {
-                    sampling_parameters.temperature = Some(temp);
-                }
-            }
         }
     };
 }
@@ -378,7 +355,12 @@ fn sampling_params_to_reasoning_intent(
         };
     }
 
-    // Check Anthropic-style thinking with budget_tokens
+    // Check thinking_budget (from frontend UI)
+    if let Some(budget) = sampling_parameters.thinking_budget {
+        return ReasoningIntent::BudgetTokens(budget);
+    }
+
+    // Check Anthropic-style thinking with budget_tokens (legacy API)
     if let Some(ref thinking) = sampling_parameters.thinking {
         if thinking.get("type").and_then(|t| t.as_str()) == Some("enabled") {
             if let Some(budget) = thinking.get("budget_tokens").and_then(|b| b.as_u64()) {
@@ -563,11 +545,11 @@ mod tests {
     fn test_adapt_sampling_openai_boost_reasoning() {
         let mut params = make_sampling_params();
         params.boost_reasoning = true;
-        params.temperature = None; // User didn't set temperature
+        params.temperature = None;
         let model = make_model_record(Some("openai"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
         assert_eq!(params.reasoning_effort, Some(ReasoningEffort::Medium));
-        assert_eq!(params.temperature, Some(0.7)); // Model default applied
+        assert_eq!(params.temperature, None);
     }
 
     #[test]
@@ -592,12 +574,22 @@ mod tests {
     }
 
     #[test]
-    fn test_adapt_sampling_openai_doubles_tokens() {
+    fn test_adapt_sampling_openai_doubles_tokens_when_default() {
+        let mut params = make_sampling_params();
+        params.max_new_tokens = 0;
+        let mut model = make_model_record(Some("openai"));
+        model.default_max_tokens = Some(4096);
+        adapt_sampling_for_reasoning_models(&mut params, &model);
+        assert_eq!(params.max_new_tokens, 8192);
+    }
+
+    #[test]
+    fn test_adapt_sampling_openai_no_double_when_user_set() {
         let mut params = make_sampling_params();
         params.max_new_tokens = 4096;
         let model = make_model_record(Some("openai"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
-        assert_eq!(params.max_new_tokens, 8192);
+        assert_eq!(params.max_new_tokens, 4096);
     }
 
     #[test]
@@ -648,11 +640,11 @@ mod tests {
     fn test_adapt_sampling_qwen_enable_thinking() {
         let mut params = make_sampling_params();
         params.boost_reasoning = true;
-        params.temperature = None; // User didn't set temperature
+        params.temperature = None;
         let model = make_model_record(Some("qwen"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
         assert_eq!(params.enable_thinking, Some(true));
-        assert_eq!(params.temperature, Some(0.7)); // Model default applied
+        assert_eq!(params.temperature, None);
     }
 
     #[test]
@@ -692,37 +684,44 @@ mod tests {
     fn test_adapt_sampling_unknown_provider() {
         let mut params = make_sampling_params();
         params.boost_reasoning = true;
-        params.temperature = None; // User didn't set temperature
+        params.temperature = None;
         let model = make_model_record(Some("unknown_provider"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
-        assert_eq!(params.temperature, Some(0.7)); // Model default applied
+        assert_eq!(params.temperature, None);
         assert!(params.reasoning_effort.is_none());
     }
 
     #[test]
-    fn test_adapt_sampling_deepseek_doubles_tokens() {
+    fn test_adapt_sampling_deepseek_doubles_tokens_when_default() {
         let mut params = make_sampling_params();
-        params.max_new_tokens = 4096;
+        params.max_new_tokens = 0;
         params.temperature = None;
-        let model = make_model_record(Some("deepseek"));
+        let mut model = make_model_record(Some("deepseek"));
+        model.default_max_tokens = Some(4096);
         adapt_sampling_for_reasoning_models(&mut params, &model);
-        // DeepSeek doubles tokens like OpenAI
         assert_eq!(params.max_new_tokens, 8192);
-        // All reasoning fields should be cleared - DeepSeek handles automatically
         assert!(params.reasoning_effort.is_none());
         assert!(params.thinking.is_none());
         assert!(params.enable_thinking.is_none());
-        // Temperature should be set from model default
-        assert_eq!(params.temperature, Some(0.7));
+        assert_eq!(params.temperature, None);
+    }
+
+    #[test]
+    fn test_adapt_sampling_deepseek_no_double_when_user_set() {
+        let mut params = make_sampling_params();
+        params.max_new_tokens = 4096;
+        let model = make_model_record(Some("deepseek"));
+        adapt_sampling_for_reasoning_models(&mut params, &model);
+        assert_eq!(params.max_new_tokens, 4096);
     }
 
     #[test]
     fn test_adapt_sampling_deepseek_no_double_above_8192() {
         let mut params = make_sampling_params();
-        params.max_new_tokens = 16384;
-        let model = make_model_record(Some("deepseek"));
+        params.max_new_tokens = 0;
+        let mut model = make_model_record(Some("deepseek"));
+        model.default_max_tokens = Some(16384);
         adapt_sampling_for_reasoning_models(&mut params, &model);
-        // Should not double if already above 8192
         assert_eq!(params.max_new_tokens, 16384);
     }
 

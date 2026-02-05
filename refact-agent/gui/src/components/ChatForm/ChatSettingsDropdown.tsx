@@ -10,11 +10,10 @@ import {
   Text,
   Popover,
   Separator,
-  Switch,
   Skeleton,
   Slider,
   Badge,
-  TextField,
+  Switch,
 } from "@radix-ui/themes";
 import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import * as Collapsible from "@radix-ui/react-collapsible";
@@ -27,15 +26,15 @@ import {
   selectIsStreaming,
   selectIsWaiting,
   selectThreadBoostReasoning,
+  selectReasoningEffort,
+  selectThinkingBudget,
   selectTemperature,
-  selectFrequencyPenalty,
   selectMaxTokens,
-  selectParallelToolCalls,
   setContextTokensCap,
+  setReasoningEffort,
+  setThinkingBudget,
   setTemperature,
-  setFrequencyPenalty,
   setMaxTokens,
-  setParallelToolCalls,
 } from "../../features/Chat/Thread";
 import { push } from "../../features/Pages/pagesSlice";
 import { enrichAndGroupModels } from "../../utils/enrichModels";
@@ -53,24 +52,24 @@ function formatTokens(tokens: number): string {
   return `${Math.round(tokens / 1000)}K`;
 }
 
-function formatCoins(coins: number | null): string {
-  if (coins === null) return "–";
-  if (coins >= 1000) {
-    return `${(coins / 1000).toFixed(coins % 1000 === 0 ? 0 : 1)}k`;
+function formatUsdPrice(price: number | undefined): string {
+  if (typeof price !== "number" || !Number.isFinite(price)) return "–";
+  if (price >= 100) {
+    return `$${price.toFixed(0)}`;
   }
-  return coins.toString();
+  if (price >= 10) {
+    return `$${price.toFixed(1)}`;
+  }
+  return `$${price.toFixed(2)}`;
 }
 
 function formatPricingDetailed(cost: CapCost): {
   prompt: string;
   output: string;
 } {
-  const toCoins = (n?: number) =>
-    typeof n === "number" && Number.isFinite(n) ? Math.round(n * 1000) : null;
-
   return {
-    prompt: formatCoins(toCoins(cost.prompt)),
-    output: formatCoins(toCoins(cost.generated)),
+    prompt: formatUsdPrice(cost.prompt),
+    output: formatUsdPrice(cost.generated),
   };
 }
 
@@ -110,9 +109,9 @@ export const ChatSettingsDropdown: React.FC = () => {
   const threadModel = useAppSelector(selectModel);
   const isBoostReasoningEnabled = useAppSelector(selectThreadBoostReasoning);
   const threadTemperature = useAppSelector(selectTemperature);
-  const threadFrequencyPenalty = useAppSelector(selectFrequencyPenalty);
   const threadMaxTokens = useAppSelector(selectMaxTokens);
-  const threadParallelToolCalls = useAppSelector(selectParallelToolCalls);
+  const threadReasoningEffort = useAppSelector(selectReasoningEffort);
+  const threadThinkingBudget = useAppSelector(selectThinkingBudget);
 
   const caps = useCapsForToolUse();
   const capsQuery = useGetCapsQuery(undefined);
@@ -170,13 +169,23 @@ export const ChatSettingsDropdown: React.FC = () => {
     const data = capsQuery.data;
     if (!data?.chat_models) return null;
     const modelData = data.chat_models[caps.currentModel] as
-      | { n_ctx: number }
+      | {
+          n_ctx: number;
+          default_temperature?: number;
+          default_max_tokens?: number;
+          max_output_tokens?: number;
+          supports_reasoning?: string;
+        }
       | undefined;
     if (!modelData) return null;
     const pricing =
       data.metadata?.pricing?.[caps.currentModel.replace(/^refact\//, "")];
     return {
       nCtx: modelData.n_ctx,
+      defaultTemperature: modelData.default_temperature,
+      defaultMaxTokens: modelData.default_max_tokens,
+      maxOutputTokens: modelData.max_output_tokens,
+      supportsReasoning: modelData.supports_reasoning,
       pricing: pricing ? formatPricingDetailed(pricing) : null,
     };
   }, [caps.currentModel, capsQuery.data]);
@@ -201,20 +210,18 @@ export const ChatSettingsDropdown: React.FC = () => {
   const displayCap = localSliderValue ?? effectiveCap;
 
   const [localTemperature, setLocalTemperature] = useState<number | null>(null);
-  const [localFrequencyPenalty, setLocalFrequencyPenalty] = useState<
-    number | null
-  >(null);
-  const [localMaxTokens, setLocalMaxTokens] = useState<string | null>(null);
+  const [localThinkingBudget, setLocalThinkingBudget] = useState<number | null>(
+    null,
+  );
+  const [localMaxTokens, setLocalMaxTokens] = useState<number | null>(null);
   const displayTemperature = localTemperature ?? threadTemperature;
-  const displayFrequencyPenalty =
-    localFrequencyPenalty ?? threadFrequencyPenalty;
-  const displayMaxTokens = localMaxTokens ?? threadMaxTokens?.toString() ?? "";
+  const displayThinkingBudget = localThinkingBudget ?? threadThinkingBudget;
+  const displayMaxTokens = localMaxTokens ?? threadMaxTokens;
 
-  // Reset local state when chatId changes or popover closes
   useEffect(() => {
     setLocalSliderValue(null);
     setLocalTemperature(null);
-    setLocalFrequencyPenalty(null);
+    setLocalThinkingBudget(null);
     setLocalMaxTokens(null);
   }, [chatId]);
 
@@ -222,7 +229,7 @@ export const ChatSettingsDropdown: React.FC = () => {
     if (!isOpen) {
       setLocalSliderValue(null);
       setLocalTemperature(null);
-      setLocalFrequencyPenalty(null);
+      setLocalThinkingBudget(null);
       setLocalMaxTokens(null);
     }
   }, [isOpen]);
@@ -289,62 +296,9 @@ export const ChatSettingsDropdown: React.FC = () => {
     setLocalTemperature(null);
   }, [dispatch, chatId]);
 
-  const handleFrequencyPenaltyChange = useCallback((values: number[]) => {
-    setLocalFrequencyPenalty(values[0]);
-  }, []);
-
-  const handleFrequencyPenaltyCommit = useCallback(
-    (values: number[]) => {
-      dispatch(setFrequencyPenalty({ chatId, value: values[0] }));
-      setLocalFrequencyPenalty(null);
-    },
-    [dispatch, chatId],
-  );
-
-  const handleFrequencyPenaltyReset = useCallback(() => {
-    dispatch(setFrequencyPenalty({ chatId, value: null }));
-    setLocalFrequencyPenalty(null);
-  }, [dispatch, chatId]);
-
-  const handleMaxTokensChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setLocalMaxTokens(e.target.value);
-    },
-    [],
-  );
-
-  const handleMaxTokensBlur = useCallback(() => {
-    if (localMaxTokens === null) return;
-    const value = localMaxTokens ? parseInt(localMaxTokens, 10) : null;
-    if (value === null || (!isNaN(value) && value >= 0)) {
-      dispatch(setMaxTokens({ chatId, value }));
-    }
-    setLocalMaxTokens(null);
-  }, [dispatch, chatId, localMaxTokens]);
-
-  const handleMaxTokensKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter") {
-        handleMaxTokensBlur();
-      }
-    },
-    [handleMaxTokensBlur],
-  );
-
   const handleMaxTokensReset = useCallback(() => {
     dispatch(setMaxTokens({ chatId, value: null }));
     setLocalMaxTokens(null);
-  }, [dispatch, chatId]);
-
-  const handleParallelToolCallsChange = useCallback(
-    (checked: boolean) => {
-      dispatch(setParallelToolCalls({ chatId, value: checked }));
-    },
-    [dispatch, chatId],
-  );
-
-  const handleParallelToolCallsReset = useCallback(() => {
-    dispatch(setParallelToolCalls({ chatId, value: null }));
   }, [dispatch, chatId]);
 
   // Loading state
@@ -494,7 +448,7 @@ export const ChatSettingsDropdown: React.FC = () => {
                     </Text>
                     <Text size="1" color="gray">
                       {selectedModelDetail.pricing.prompt}/
-                      {selectedModelDetail.pricing.output} ⓒ/1K tokens
+                      {selectedModelDetail.pricing.output} per 1M tokens
                     </Text>
                   </>
                 )}
@@ -563,6 +517,103 @@ export const ChatSettingsDropdown: React.FC = () => {
                 disabled={thinkingDisabled}
               />
             </Flex>
+            {isBoostReasoningEnabled && selectedModelDetail?.supportsReasoning && (
+              <>
+                {/* OpenAI/Mistral: low/medium/high */}
+                {(selectedModelDetail.supportsReasoning === "openai" ||
+                  selectedModelDetail.supportsReasoning === "mistral") && (
+                  <Flex align="center" justify="between" gap="2" mt="2">
+                    <Text size="1" color="gray">
+                      Effort
+                    </Text>
+                    <Flex gap="1">
+                      {(["low", "medium", "high"] as const).map((level) => (
+                        <button
+                          key={level}
+                          type="button"
+                          className={`${styles.effortButton} ${
+                            (threadReasoningEffort ?? "medium") === level
+                              ? styles.effortButtonActive
+                              : ""
+                          }`}
+                          onClick={() =>
+                            dispatch(setReasoningEffort({ chatId, value: level }))
+                          }
+                          disabled={isInteractionDisabled}
+                        >
+                          <Text size="1">{level}</Text>
+                        </button>
+                      ))}
+                    </Flex>
+                  </Flex>
+                )}
+                {/* xAI/Gemini 3: low/high only */}
+                {(selectedModelDetail.supportsReasoning === "xai" ||
+                  selectedModelDetail.supportsReasoning === "gemini") && (
+                  <Flex align="center" justify="between" gap="2" mt="2">
+                    <Text size="1" color="gray">
+                      Level
+                    </Text>
+                    <Flex gap="1">
+                      {(["low", "high"] as const).map((level) => (
+                        <button
+                          key={level}
+                          type="button"
+                          className={`${styles.effortButton} ${
+                            (threadReasoningEffort ?? "high") === level
+                              ? styles.effortButtonActive
+                              : ""
+                          }`}
+                          onClick={() =>
+                            dispatch(setReasoningEffort({ chatId, value: level }))
+                          }
+                          disabled={isInteractionDisabled}
+                        >
+                          <Text size="1">{level}</Text>
+                        </button>
+                      ))}
+                    </Flex>
+                  </Flex>
+                )}
+                {/* Anthropic/Qwen/Zhipu: thinking budget slider */}
+                {(selectedModelDetail.supportsReasoning === "anthropic" ||
+                  selectedModelDetail.supportsReasoning === "qwen" ||
+                  selectedModelDetail.supportsReasoning === "zhipu") && (
+                  <Flex direction="column" gap="1" mt="2">
+                    <Flex align="center" justify="between">
+                      <Text size="1" color="gray">
+                        Thinking tokens
+                      </Text>
+                      <Text size="1" weight="medium">
+                        {displayThinkingBudget ?? 16384}
+                      </Text>
+                    </Flex>
+                    <Flex align="center" gap="2">
+                      <Text size="1" color="gray">
+                        1K
+                      </Text>
+                      <Slider
+                        size="1"
+                        min={1024}
+                        max={32768}
+                        step={1024}
+                        value={[displayThinkingBudget ?? 16384]}
+                        onValueChange={(values) => setLocalThinkingBudget(values[0])}
+                        onValueCommit={(values) => {
+                          dispatch(setThinkingBudget({ chatId, value: values[0] }));
+                          setLocalThinkingBudget(null);
+                        }}
+                        disabled={isInteractionDisabled}
+                      />
+                      <Text size="1" color="gray">
+                        32K
+                      </Text>
+                    </Flex>
+                  </Flex>
+                )}
+                {/* DeepSeek/Kimi: no additional config needed */}
+              </>
+            )}
           </div>
         )}
 
@@ -598,18 +649,20 @@ export const ChatSettingsDropdown: React.FC = () => {
                   </Text>
                   <Flex align="center" gap="2">
                     <Text size="1" weight="medium">
-                      {displayTemperature?.toFixed(1) ?? "default"}
+                      {displayTemperature?.toFixed(1) ??
+                        (selectedModelDetail?.defaultTemperature?.toFixed(1) ??
+                          "0.7") + " (default)"}
                     </Text>
-                    {threadTemperature !== undefined && (
-                      <button
-                        type="button"
-                        className={styles.resetButton}
-                        onClick={handleTemperatureReset}
-                        disabled={isInteractionDisabled}
-                      >
-                        ✕
-                      </button>
-                    )}
+                    {threadTemperature != null && (
+                        <button
+                          type="button"
+                          className={styles.resetButton}
+                          onClick={handleTemperatureReset}
+                          disabled={isInteractionDisabled}
+                        >
+                          ✕
+                        </button>
+                      )}
                   </Flex>
                 </Flex>
                 <Slider
@@ -617,43 +670,13 @@ export const ChatSettingsDropdown: React.FC = () => {
                   min={0}
                   max={2}
                   step={0.1}
-                  value={[displayTemperature ?? 0.7]}
+                  value={[
+                    displayTemperature ??
+                      selectedModelDetail?.defaultTemperature ??
+                      0.7,
+                  ]}
                   onValueChange={handleTemperatureChange}
                   onValueCommit={handleTemperatureCommit}
-                  disabled={isInteractionDisabled}
-                />
-              </div>
-
-              {/* Frequency Penalty */}
-              <div className={styles.advancedRow}>
-                <Flex justify="between" align="center" mb="1">
-                  <Text size="1" color="gray">
-                    Frequency penalty
-                  </Text>
-                  <Flex align="center" gap="2">
-                    <Text size="1" weight="medium">
-                      {displayFrequencyPenalty?.toFixed(1) ?? "default"}
-                    </Text>
-                    {threadFrequencyPenalty !== undefined && (
-                      <button
-                        type="button"
-                        className={styles.resetButton}
-                        onClick={handleFrequencyPenaltyReset}
-                        disabled={isInteractionDisabled}
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </Flex>
-                </Flex>
-                <Slider
-                  size="1"
-                  min={-2}
-                  max={2}
-                  step={0.1}
-                  value={[displayFrequencyPenalty ?? 0]}
-                  onValueChange={handleFrequencyPenaltyChange}
-                  onValueCommit={handleFrequencyPenaltyCommit}
                   disabled={isInteractionDisabled}
                 />
               </div>
@@ -664,47 +687,18 @@ export const ChatSettingsDropdown: React.FC = () => {
                   <Text size="1" color="gray">
                     Max tokens
                   </Text>
-                  {threadMaxTokens !== undefined && (
-                    <button
-                      type="button"
-                      className={styles.resetButton}
-                      onClick={handleMaxTokensReset}
-                      disabled={isInteractionDisabled}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </Flex>
-                <TextField.Root
-                  size="1"
-                  type="number"
-                  placeholder="default"
-                  value={displayMaxTokens}
-                  onChange={handleMaxTokensChange}
-                  onBlur={handleMaxTokensBlur}
-                  onKeyDown={handleMaxTokensKeyDown}
-                  disabled={isInteractionDisabled}
-                />
-              </div>
-
-              {/* Parallel Tool Calls */}
-              <div className={styles.advancedRow}>
-                <Flex align="center" justify="between">
-                  <Text size="1" color="gray">
-                    Parallel tool calls
-                  </Text>
                   <Flex align="center" gap="2">
-                    <Switch
-                      size="1"
-                      checked={threadParallelToolCalls ?? false}
-                      onCheckedChange={handleParallelToolCallsChange}
-                      disabled={isInteractionDisabled}
-                    />
-                    {threadParallelToolCalls !== undefined && (
+                    <Text size="1" weight="medium">
+                      {displayMaxTokens ??
+                        (selectedModelDetail?.defaultMaxTokens
+                          ? `${selectedModelDetail.defaultMaxTokens} (default)`
+                          : "4096 (default)")}
+                    </Text>
+                    {threadMaxTokens != null && (
                       <button
                         type="button"
                         className={styles.resetButton}
-                        onClick={handleParallelToolCallsReset}
+                        onClick={handleMaxTokensReset}
                         disabled={isInteractionDisabled}
                       >
                         ✕
@@ -712,7 +706,33 @@ export const ChatSettingsDropdown: React.FC = () => {
                     )}
                   </Flex>
                 </Flex>
+                <Flex align="center" gap="2">
+                  <Text size="1" color="gray">
+                    1K
+                  </Text>
+                  <Slider
+                    size="1"
+                    min={1024}
+                    max={selectedModelDetail?.maxOutputTokens ?? 16384}
+                    step={1024}
+                    value={[
+                      displayMaxTokens ??
+                        selectedModelDetail?.defaultMaxTokens ??
+                        4096,
+                    ]}
+                    onValueChange={(values) => setLocalMaxTokens(values[0])}
+                    onValueCommit={(values) => {
+                      dispatch(setMaxTokens({ chatId, value: values[0] }));
+                      setLocalMaxTokens(null);
+                    }}
+                    disabled={isInteractionDisabled}
+                  />
+                  <Text size="1" color="gray">
+                    {formatTokens(selectedModelDetail?.maxOutputTokens ?? 16384)}
+                  </Text>
+                </Flex>
               </div>
+
             </div>
           </Collapsible.Content>
         </Collapsible.Root>

@@ -71,6 +71,14 @@ export type PromptTokenDetails = {
   cached_tokens: number;
 };
 
+export type MeteringUsd = {
+  prompt_usd: number;
+  generated_usd: number;
+  cache_read_usd?: number;
+  cache_creation_usd?: number;
+  total_usd: number;
+};
+
 export type Usage = {
   completion_tokens: number;
   prompt_tokens: number;
@@ -79,6 +87,7 @@ export type Usage = {
   prompt_tokens_details?: PromptTokenDetails | null;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  metering_usd?: MeteringUsd;
 };
 
 export type TokenMapSegment = {

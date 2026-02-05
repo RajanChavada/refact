@@ -45,6 +45,7 @@ import {
   setIncludeProjectInfo,
   setContextTokensCap,
   setReasoningEffort,
+  setThinkingBudget,
   setTemperature,
   setFrequencyPenalty,
   setMaxTokens,
@@ -248,14 +249,17 @@ export const chatReducer = createReducer(initialState, (builder) => {
 
   builder.addCase(newChatAction, (state, action) => {
     const currentRt = getCurrentRuntime(state);
-    const lastParams = getLastThreadParams();
-
     const mode = getThreadMode({});
+    const lastParams = getLastThreadParams(mode);
     const newRuntime = createThreadRuntime(state.tool_use, null, mode);
 
     newRuntime.thread.model = lastParams.model ?? currentRt?.thread.model ?? "";
     newRuntime.thread.boost_reasoning =
       lastParams.boost_reasoning ?? currentRt?.thread.boost_reasoning ?? false;
+    newRuntime.thread.reasoning_effort = lastParams.reasoning_effort;
+    newRuntime.thread.thinking_budget = lastParams.thinking_budget;
+    newRuntime.thread.temperature = lastParams.temperature;
+    newRuntime.thread.max_tokens = lastParams.max_tokens;
     newRuntime.thread.increase_max_tokens =
       lastParams.increase_max_tokens ??
       currentRt?.thread.increase_max_tokens ??
@@ -305,9 +309,8 @@ export const chatReducer = createReducer(initialState, (builder) => {
     }
 
     const currentRt = getCurrentRuntime(state);
-    const lastParams = getLastThreadParams();
-
     const effectiveMode = mode ?? getThreadMode({});
+    const lastParams = getLastThreadParams(effectiveMode);
     const newRuntime = createThreadRuntime("agent", null, effectiveMode);
 
     newRuntime.thread.id = id;
@@ -315,6 +318,10 @@ export const chatReducer = createReducer(initialState, (builder) => {
       model ?? lastParams.model ?? currentRt?.thread.model ?? "";
     newRuntime.thread.boost_reasoning =
       lastParams.boost_reasoning ?? currentRt?.thread.boost_reasoning ?? false;
+    newRuntime.thread.reasoning_effort = lastParams.reasoning_effort;
+    newRuntime.thread.thinking_budget = lastParams.thinking_budget;
+    newRuntime.thread.temperature = lastParams.temperature;
+    newRuntime.thread.max_tokens = lastParams.max_tokens;
     newRuntime.thread.increase_max_tokens =
       lastParams.increase_max_tokens ??
       currentRt?.thread.increase_max_tokens ??
@@ -390,6 +397,11 @@ export const chatReducer = createReducer(initialState, (builder) => {
   builder.addCase(setReasoningEffort, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
     if (rt) rt.thread.reasoning_effort = action.payload.value ?? undefined;
+  });
+
+  builder.addCase(setThinkingBudget, (state, action) => {
+    const rt = getRuntime(state, action.payload.chatId);
+    if (rt) rt.thread.thinking_budget = action.payload.value ?? undefined;
   });
 
   builder.addCase(setTemperature, (state, action) => {
@@ -833,14 +845,29 @@ export const chatReducer = createReducer(initialState, (builder) => {
           is_task_chat: isTaskChat,
           task_meta: snapshotTaskMeta,
           reasoning_effort:
-            (event.thread.reasoning_effort as ChatThread["reasoning_effort"]) ??
-            existing?.reasoning_effort,
-          temperature: event.thread.temperature ?? existing?.temperature,
+            "reasoning_effort" in event.thread
+              ? (event.thread.reasoning_effort as ChatThread["reasoning_effort"])
+              : existing?.reasoning_effort,
+          thinking_budget:
+            "thinking_budget" in event.thread
+              ? (event.thread.thinking_budget as number | undefined)
+              : existing?.thinking_budget,
+          temperature:
+            "temperature" in event.thread
+              ? (event.thread.temperature as number | undefined)
+              : existing?.temperature,
           frequency_penalty:
-            event.thread.frequency_penalty ?? existing?.frequency_penalty,
-          max_tokens: event.thread.max_tokens ?? existing?.max_tokens,
+            "frequency_penalty" in event.thread
+              ? (event.thread.frequency_penalty as number | undefined)
+              : existing?.frequency_penalty,
+          max_tokens:
+            "max_tokens" in event.thread
+              ? (event.thread.max_tokens as number | undefined)
+              : existing?.max_tokens,
           parallel_tool_calls:
-            event.thread.parallel_tool_calls ?? existing?.parallel_tool_calls,
+            "parallel_tool_calls" in event.thread
+              ? (event.thread.parallel_tool_calls as boolean | undefined)
+              : existing?.parallel_tool_calls,
         };
 
         const snapshotState = event.runtime.state as string;
@@ -937,6 +964,12 @@ export const chatReducer = createReducer(initialState, (builder) => {
             params.reasoning_effort == null
               ? undefined
               : (params.reasoning_effort as ChatThread["reasoning_effort"]);
+        }
+        if ("thinking_budget" in params) {
+          rt.thread.thinking_budget =
+            params.thinking_budget == null
+              ? undefined
+              : (params.thinking_budget as number);
         }
         if ("temperature" in params) {
           rt.thread.temperature =

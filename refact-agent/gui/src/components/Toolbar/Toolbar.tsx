@@ -172,6 +172,13 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
           success: true,
           error_message: "",
         });
+      } else if (to === "default models") {
+        dispatch(push({ name: "default models" }));
+        void sendTelemetryEvent({
+          scope: `openDefaultModels`,
+          success: true,
+          error_message: "",
+        });
       } else if (to === "chat") {
         dispatch(popBackTo({ name: "history" }));
         dispatch(push({ name: "chat" }));

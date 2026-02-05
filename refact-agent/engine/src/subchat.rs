@@ -16,6 +16,7 @@ use crate::call_validation::{
 use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present};
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::chat::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
+use crate::llm::params::CacheControl;
 use crate::chat::stream_core::{
     run_llm_stream, StreamRunParams, NoopCollector, ChoiceFinal, normalize_tool_call,
 };
@@ -860,6 +861,7 @@ async fn subchat_stream(
         allow_at_commands: false,
         allow_tool_prerun: false,
         supports_tools: model_rec.supports_tools,
+        cache_control: CacheControl::Ephemeral,
         ..Default::default()
     };
 
@@ -964,6 +966,12 @@ fn update_usage_from_messages(usage: &mut ChatUsage, messages: &[Vec<ChatMessage
                 usage.total_tokens += u.total_tokens;
                 usage.completion_tokens += u.completion_tokens;
                 usage.prompt_tokens += u.prompt_tokens;
+                if let Some(cache_creation) = u.cache_creation_tokens {
+                    *usage.cache_creation_tokens.get_or_insert(0) += cache_creation;
+                }
+                if let Some(cache_read) = u.cache_read_tokens {
+                    *usage.cache_read_tokens.get_or_insert(0) += cache_read;
+                }
             }
         }
     }

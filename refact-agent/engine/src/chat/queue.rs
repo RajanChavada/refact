@@ -176,6 +176,20 @@ pub fn apply_setparams_patch(
             changed = true;
         }
     }
+    if let Some(budget_val) = patch.get("thinking_budget") {
+        if budget_val.is_null() {
+            if thread.thinking_budget.is_some() {
+                thread.thinking_budget = None;
+                changed = true;
+            }
+        } else if let Some(b) = budget_val.as_u64() {
+            let new_val = Some(b as usize);
+            if thread.thinking_budget != new_val {
+                thread.thinking_budget = new_val;
+                changed = true;
+            }
+        }
+    }
     if let Some(temp_val) = patch.get("temperature") {
         if temp_val.is_null() {
             if thread.temperature.is_some() {

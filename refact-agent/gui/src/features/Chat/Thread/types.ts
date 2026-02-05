@@ -56,6 +56,8 @@ export type ChatThread = {
   boost_reasoning?: boolean;
   /** Reasoning effort level: "low", "medium", or "high" */
   reasoning_effort?: ReasoningEffort;
+  /** Thinking budget in tokens (for Anthropic, Qwen, Gemini 2.5) */
+  thinking_budget?: number;
   /** Temperature for sampling (0-2) */
   temperature?: number;
   /** Frequency penalty for sampling (-2 to 2) */

@@ -8,9 +8,8 @@ use crate::caps::{
     BaseModelRecord, ChatModelRecord, CodeAssistantCaps, CompletionModelRecord, DefaultModels,
     EmbeddingModelRecord, CapsMetadata, default_chat_scratchpad, default_completion_scratchpad,
     default_completion_scratchpad_patch, default_embedding_batch, default_hf_tokenizer_template,
-    default_rejection_threshold, relative_to_full_url, normalize_string, resolve_relative_urls,
+    default_rejection_threshold, relative_to_full_url, normalize_string,
 };
-use crate::caps::providers;
 use crate::llm::WireFormat;
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -250,9 +249,11 @@ impl SelfHostedCapsModelRecord {
             supports_agent: self.supports_agent,
             supports_reasoning: self.supports_reasoning.clone(),
             supports_boost_reasoning: self.supports_boost_reasoning,
+            max_thinking_tokens: None,
             default_temperature: self.default_temperature,
             default_frequency_penalty: None,
             default_max_tokens: None,
+            max_output_tokens: None,
         })
     }
 }
@@ -369,76 +370,5 @@ impl SelfHostedCaps {
         }
 
         Ok(caps)
-    }
-
-    pub fn into_provider(
-        self,
-        caps_url: &String,
-        cmdline_api_key: &str,
-    ) -> Result<providers::CapsProvider, String> {
-        let mut provider = providers::CapsProvider {
-            name: self.cloud_name.clone(),
-            enabled: true,
-            supports_completion: true,
-            wire_format: Default::default(),
-            endpoint_style: "openai".to_string(),
-            completion_endpoint: self.completion.endpoint.clone(),
-            chat_endpoint: self.chat.endpoint.clone(),
-            embedding_endpoint: self.embedding.endpoint.clone(),
-            api_key: cmdline_api_key.to_string(),
-            tokenizer_api_key: cmdline_api_key.to_string(),
-            extra_headers: std::collections::HashMap::new(),
-            code_completion_n_ctx: 0,
-            support_metadata: self.support_metadata,
-            completion_models: IndexMap::new(),
-            chat_models: IndexMap::new(),
-            embedding_model: EmbeddingModelRecord::default(),
-            models_dict_patch: IndexMap::new(),
-            defaults: DefaultModels {
-                completion_default_model: self.completion.default_model.clone(),
-                chat_default_model: self.chat.default_model.clone(),
-                chat_thinking_model: if self.chat.default_thinking_model.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}/{}", self.cloud_name, self.chat.default_thinking_model)
-                },
-                chat_light_model: if self.chat.default_light_model.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}/{}", self.cloud_name, self.chat.default_light_model)
-                },
-            },
-            running_models: Vec::new(),
-        };
-
-        for (model_name, model_rec) in &self.completion.models {
-            let completion_model =
-                model_rec.into_completion_model(model_name, &self, caps_url, cmdline_api_key)?;
-
-            provider
-                .completion_models
-                .insert(model_name.clone(), completion_model);
-        }
-
-        for (model_name, model_rec) in &self.chat.models {
-            let chat_model =
-                model_rec.into_chat_model(model_name, &self, caps_url, cmdline_api_key)?;
-
-            provider.chat_models.insert(model_name.clone(), chat_model);
-        }
-
-        if let Some((model_name, model_rec)) = self
-            .embedding
-            .models
-            .get_key_value(&self.embedding.default_model)
-        {
-            let embedding_model =
-                model_rec.into_embedding_model(model_name, &self, caps_url, cmdline_api_key)?;
-            provider.embedding_model = embedding_model;
-        }
-
-        resolve_relative_urls(&mut provider, caps_url)?;
-
-        Ok(provider)
     }
 }

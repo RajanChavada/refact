@@ -45,10 +45,13 @@ use crate::http::routers::v1::customization::handle_v1_config_path;
 use crate::http::routers::v1::gui_help_handlers::handle_v1_fullpath;
 use crate::http::routers::v1::sync_files::handle_v1_sync_files_extract_tar;
 use crate::http::routers::v1::system_prompt::handle_v1_prepend_system_prompt_and_maybe_more_initial_messages;
-use crate::http::routers::v1::providers::{
-    handle_v1_providers, handle_v1_provider_templates, handle_v1_get_model, handle_v1_get_provider,
-    handle_v1_models, handle_v1_post_model, handle_v1_post_provider, handle_v1_delete_model,
-    handle_v1_delete_provider, handle_v1_model_default, handle_v1_completion_model_families,
+use crate::providers::http::{
+    handle_v1_providers_list, handle_v1_provider_get, handle_v1_provider_schema,
+    handle_v1_provider_update, handle_v1_provider_delete, handle_v1_provider_models,
+    handle_v1_provider_available_models, handle_v1_provider_model_toggle,
+    handle_v1_provider_add_custom_model, handle_v1_provider_remove_custom_model,
+    handle_v1_provider_remove_custom_model_post,
+    handle_v1_defaults_get, handle_v1_defaults_update, handle_v1_models,
 };
 
 use crate::http::routers::v1::vecdb::{handle_v1_vecdb_search, handle_v1_vecdb_status};
@@ -109,7 +112,6 @@ mod knowledge_graph;
 mod knowledge_ops;
 pub mod links;
 pub mod lsp_like_handlers;
-pub mod providers;
 pub mod sidebar;
 pub mod snippet_accepted;
 pub mod status;
@@ -226,20 +228,20 @@ pub fn make_v1_router() -> Router {
             post(handle_v1_file_edit_tool_dry_run),
         )
         .route("/code-edit", post(handle_v1_code_edit))
-        .route("/providers", get(handle_v1_providers))
-        .route("/provider-templates", get(handle_v1_provider_templates))
-        .route("/provider", get(handle_v1_get_provider))
-        .route("/provider", post(handle_v1_post_provider))
-        .route("/provider", delete(handle_v1_delete_provider))
         .route("/models", get(handle_v1_models))
-        .route("/model", get(handle_v1_get_model))
-        .route("/model", post(handle_v1_post_model))
-        .route("/model", delete(handle_v1_delete_model))
-        .route("/model-defaults", get(handle_v1_model_default))
-        .route(
-            "/completion-model-families",
-            get(handle_v1_completion_model_families),
-        )
+        .route("/providers", get(handle_v1_providers_list))
+        .route("/providers/:name", get(handle_v1_provider_get))
+        .route("/providers/:name", post(handle_v1_provider_update))
+        .route("/providers/:name", delete(handle_v1_provider_delete))
+        .route("/providers/:name/schema", get(handle_v1_provider_schema))
+        .route("/providers/:name/models", get(handle_v1_provider_models))
+        .route("/providers/:name/available-models", get(handle_v1_provider_available_models))
+        .route("/providers/:name/models/toggle", post(handle_v1_provider_model_toggle))
+        .route("/providers/:name/custom-models", post(handle_v1_provider_add_custom_model))
+        .route("/providers/:name/custom-models", delete(handle_v1_provider_remove_custom_model))
+        .route("/providers/:name/custom-models/remove", post(handle_v1_provider_remove_custom_model_post))
+        .route("/defaults", get(handle_v1_defaults_get))
+        .route("/defaults", post(handle_v1_defaults_update))
         // cloud related
         .route("/set-active-group-id", post(handle_v1_set_active_group_id))
         .route(

@@ -69,7 +69,16 @@ export const MessageUsageInfo: React.FC<MessageUsageInfoProps> = ({
     metering_coins_cache_read,
   ]);
 
-  const contextTokens = usage?.prompt_tokens ?? 0;
+  // Context tokens includes prompt + cache tokens for accurate context size
+  const contextTokens = useMemo(() => {
+    return calculateUsageInputTokens({
+      usage,
+      keys: ["prompt_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"],
+    });
+  }, [usage]);
+
+  const cacheReadTokens = usage?.cache_read_input_tokens ?? 0;
+  const cacheCreationTokens = usage?.cache_creation_input_tokens ?? 0;
 
   if (!usage && totalCoins === 0) return null;
 
@@ -109,6 +118,12 @@ export const MessageUsageInfo: React.FC<MessageUsageInfoProps> = ({
             {usage && (
               <>
                 <TokenDisplay label="Context size" value={contextTokens} />
+                {cacheReadTokens > 0 && (
+                  <TokenDisplay label="Cache read" value={cacheReadTokens} />
+                )}
+                {cacheCreationTokens > 0 && (
+                  <TokenDisplay label="Cache creation" value={cacheCreationTokens} />
+                )}
                 <TokenDisplay label="Output tokens" value={outputTokens} />
                 {usage.completion_tokens_details?.reasoning_tokens !== null &&
                   usage.completion_tokens_details?.reasoning_tokens !==

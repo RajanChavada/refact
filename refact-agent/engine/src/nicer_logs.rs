@@ -41,27 +41,37 @@ where
 {
     fn on_event(&self, event: &tracing::Event, _: Context<S>) {
         if event.metadata().level() > &self.writer_max_level
-            && event.metadata().level() <= &self.stderr_max_level
+            && event.metadata().level() > &self.stderr_max_level
         {
             return;
         }
 
         struct FieldVisitor {
             pub message: String,
+            pub fields: Vec<(String, String)>,
         }
 
         impl tracing::field::Visit for FieldVisitor {
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 if field.name() == "message" {
                     self.message = format!("{:?}", value);
+                } else {
+                    self.fields.push((field.name().to_string(), format!("{:?}", value)));
                 }
             }
         }
 
         let mut visitor = FieldVisitor {
             message: String::new(),
+            fields: Vec::new(),
         };
         event.record(&mut visitor);
+
+        let fields_str = if visitor.fields.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", visitor.fields.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(" "))
+        };
 
         let ev_level = event.metadata().level();
         let ev_file = event.metadata().file();
@@ -73,20 +83,19 @@ where
         };
         let now = chrono::Local::now();
         let timestamp = now.format("%H%M%S%.3f").to_string();
-        // let my_msg = format!("{} {}{} {}", timestamp, ev_level, location, visitor.message);
 
         let mut already_have_in_stderr = false;
 
         if event.metadata().level() <= &self.stderr_max_level {
             let log_message = if self.ansi {
                 format!(
-                    "{} \x1b[31m{}\x1b[0m{} {}\n",
-                    timestamp, ev_level, location, visitor.message
+                    "{} \x1b[31m{}\x1b[0m{} {}{}\n",
+                    timestamp, ev_level, location, fields_str, visitor.message
                 )
             } else {
                 format!(
-                    "{} {}{} {}\n",
-                    timestamp, ev_level, location, visitor.message
+                    "{} {}{} {}{}\n",
+                    timestamp, ev_level, location, fields_str, visitor.message
                 )
             };
             let _ = std::io::stderr().write_all(log_message.as_bytes());
@@ -98,8 +107,8 @@ where
         {
             let mut writer = self.writer.make_writer();
             let log_message = format!(
-                "{} {}{} {}\n",
-                timestamp, ev_level, location, visitor.message
+                "{} {}{} {}{}\n",
+                timestamp, ev_level, location, fields_str, visitor.message
             );
             let _ = writer.write_all(log_message.as_bytes());
         }

@@ -41,22 +41,23 @@ impl ReasoningEffort {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SamplingParameters {
     #[serde(default)]
-    pub max_new_tokens: usize, // TODO: rename it to `max_completion_tokens` everywhere, including chat-js
+    pub max_new_tokens: usize,
     pub temperature: Option<f32>,
     pub frequency_penalty: Option<f32>,
-    pub top_p: Option<f32>, // NOTE: deprecated
+    pub top_p: Option<f32>,
     #[serde(default)]
     pub stop: Vec<String>,
     pub n: Option<usize>,
     #[serde(default)]
     pub boost_reasoning: bool,
-    // NOTE: use the following arguments for direct API calls
     #[serde(default)]
-    pub reasoning_effort: Option<ReasoningEffort>, // OpenAI style reasoning
+    pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
-    pub thinking: Option<serde_json::Value>, // Anthropic style reasoning
+    pub thinking_budget: Option<usize>,
     #[serde(default)]
-    pub enable_thinking: Option<bool>, // Qwen style reasoning
+    pub thinking: Option<serde_json::Value>,
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -187,14 +188,27 @@ impl Default for ChatContent {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct MeteringUsd {
+    pub prompt_usd: f64,
+    pub generated_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_usd: Option<f64>,
+    pub total_usd: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ChatUsage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
     pub total_tokens: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cache_creation_input_tokens", alias = "cache_creation_tokens")]
     pub cache_creation_tokens: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cache_read_input_tokens", alias = "cache_read_tokens")]
     pub cache_read_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metering_usd: Option<MeteringUsd>,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -227,14 +241,6 @@ pub struct ChatMessage {
     pub extra: serde_json::Map<String, serde_json::Value>,
     #[serde(skip)]
     pub output_filter: Option<crate::postprocessing::pp_command_output::OutputFilter>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-pub enum ModelType {
-    Chat,
-    Completion,
-    Embedding,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]

@@ -5,8 +5,8 @@ import { Button, Flex, Separator, Switch } from "@radix-ui/themes";
 import { FormFields } from "./FormFields";
 import { Spinner } from "../../../components/Spinner";
 
-import { useProviderForm } from "./useProviderForm";
-import type { Provider, SimplifiedProvider } from "../../../services/refact";
+import { useProviderForm, ProviderFormValues } from "./useProviderForm";
+import type { ProviderListItem } from "../../../services/refact";
 
 import { toPascalCase } from "../../../utils/toPascalCase";
 import { aggregateProviderFields } from "./utils";
@@ -15,14 +15,14 @@ import styles from "./ProviderForm.module.css";
 import { ProviderModelsList } from "./ProviderModelsList/ProviderModelsList";
 
 export type ProviderFormProps = {
-  currentProvider: SimplifiedProvider<
-    "name" | "enabled" | "readonly" | "supports_completion"
-  >;
+  currentProvider: ProviderListItem;
   isProviderConfigured: boolean;
   isSaving: boolean;
   handleDiscardChanges: () => void;
-  handleSaveChanges: (updatedProviderData: Provider) => void;
+  handleSaveChanges: (updatedProviderData: ProviderFormValues) => void;
 };
+
+export type { ProviderListItem };
 
 export const ProviderForm: React.FC<ProviderFormProps> = ({
   currentProvider,
@@ -77,7 +77,7 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
           />
         </Flex>
 
-        {areShowingExtraFields && (
+        {areShowingExtraFields && Object.keys(extraFields).length > 0 && (
           <Flex direction="column" gap="2" mt="4">
             <FormFields
               providerData={formValues}
@@ -86,16 +86,18 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
             />
           </Flex>
         )}
-        <Flex my="2" align="center" justify="center">
-          <Button
-            className={classNames(styles.button, styles.extraButton)}
-            variant="ghost"
-            color="gray"
-            onClick={() => setAreShowingExtraFields((prev) => !prev)}
-          >
-            {areShowingExtraFields ? "Hide" : "Show"} advanced fields
-          </Button>
-        </Flex>
+        {Object.keys(extraFields).length > 0 && (
+          <Flex my="2" align="center" justify="center">
+            <Button
+              className={classNames(styles.button, styles.extraButton)}
+              variant="ghost"
+              color="gray"
+              onClick={() => setAreShowingExtraFields((prev) => !prev)}
+            >
+              {areShowingExtraFields ? "Hide" : "Show"} advanced fields
+            </Button>
+          </Flex>
+        )}
         {isProviderConfigured && (
           <ProviderModelsList provider={currentProvider} />
         )}

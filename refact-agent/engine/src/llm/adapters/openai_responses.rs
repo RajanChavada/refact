@@ -99,12 +99,30 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
             }
         }
 
-        // Add meta field for Refact cloud (when support_metadata is enabled)
-        if let Some(meta) = &req.meta {
-            if let Ok(meta_value) = serde_json::to_value(meta) {
-                body["meta"] = meta_value;
+        if settings.support_metadata {
+            if let Some(meta) = &req.meta {
+                if let Ok(meta_value) = serde_json::to_value(meta) {
+                    body["meta"] = meta_value;
+                }
             }
         }
+
+        tracing::info!(
+            model = %settings.model_name,
+            endpoint = %settings.endpoint,
+            stream = %req.stream,
+            max_tokens = %req.params.max_tokens,
+            temperature = ?req.params.temperature,
+            frequency_penalty = ?req.params.frequency_penalty,
+            stop_sequences = ?req.params.stop.len(),
+            tools_count = ?req.tools.as_ref().map(|t| t.len()),
+            tool_choice = ?req.tool_choice,
+            reasoning = ?req.reasoning,
+            response_format = ?req.response_format.is_some(),
+            has_meta = %req.meta.is_some(),
+            messages_count = %req.messages.len(),
+            "openai responses adapter request"
+        );
 
         Ok(HttpParts {
             url: settings.endpoint.clone(),
@@ -496,17 +514,16 @@ fn extract_usage(json: &Value) -> Option<ChatUsage> {
         .and_then(|t| t.as_u64())
         .map(|t| t as usize)
         .unwrap_or_else(|| prompt_tokens + completion_tokens);
-    let cache_read = usage
-        .get("input_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|t| t.as_u64())
-        .map(|v| v as usize);
+    // Note: OpenAI's cached_tokens is a SUBSET of input_tokens (already included),
+    // not separate like Anthropic. We don't set cache_read_tokens here to avoid
+    // double-counting in context calculations that sum prompt_tokens + cache_read.
     Some(ChatUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
         cache_creation_tokens: None,
-        cache_read_tokens: cache_read,
+        cache_read_tokens: None,
+        metering_usd: None,
     })
 }
 
@@ -524,6 +541,7 @@ mod tests {
             supports_tools: true,
             supports_reasoning: true,
             supports_max_completion_tokens: false,
+            support_metadata: false,
             eof_is_done: false,
         }
     }

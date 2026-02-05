@@ -245,7 +245,7 @@ export type SimplifiedModel = {
 export type ModelsResponse = {
   completion_models: SimplifiedModel[];
   chat_models: SimplifiedModel[];
-  embedding_model: SimplifiedModel;
+  embedding_model: SimplifiedModel | null;
 };
 
 export type ModelType = "embedding" | "completion" | "chat";
@@ -289,6 +289,7 @@ export type CodeChatModel = {
   default_temperature: number | null;
   default_frequency_penalty?: number | null;
   default_max_tokens?: number | null;
+  max_output_tokens?: number | null;
 
   enabled: boolean;
 

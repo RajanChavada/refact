@@ -90,6 +90,23 @@ impl LlmWireAdapter for RefactAdapter {
             body["stream_options"] = json!({"include_usage": true});
         }
 
+        tracing::info!(
+            model = %settings.model_name,
+            endpoint = %settings.endpoint,
+            stream = %req.stream,
+            max_tokens = %req.params.max_tokens,
+            temperature = ?req.params.temperature,
+            frequency_penalty = ?req.params.frequency_penalty,
+            n = ?req.params.n,
+            stop_sequences = ?req.params.stop.len(),
+            tools_count = ?req.tools.as_ref().map(|t| t.len()),
+            tool_choice = ?req.tool_choice,
+            reasoning = ?req.reasoning,
+            has_meta = %req.meta.is_some(),
+            messages_count = %req.messages.len(),
+            "refact adapter request"
+        );
+
         Ok(HttpParts {
             url: settings.endpoint.clone(),
             headers,
@@ -285,25 +302,87 @@ fn tool_choice_to_refact(choice: &CanonicalToolChoice) -> Value {
 }
 
 fn parse_refact_usage(usage: &Value) -> Option<ChatUsage> {
-    let prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-    let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-    let total_tokens = usage
-        .get("total_tokens")
-        .and_then(|t| t.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or_else(|| prompt_tokens + completion_tokens);
-    let cache_read = usage
-        .get("prompt_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|t| t.as_u64())
-        .map(|v| v as usize);
+    // Refact cloud via LiteLLM proxies various providers with different semantics.
+    //
+    // CRITICAL: LiteLLM streaming sends RAW provider usage without full normalization.
+    //
+    // LiteLLM's prompt_tokens semantics (from their docs):
+    //   "prompt_tokens: These are all prompt tokens including cache-miss and cache-hit input tokens"
+    //   BUT: cache_creation_input_tokens is NOT included in prompt_tokens!
+    //
+    // So for Anthropic via LiteLLM:
+    //   prompt_tokens = input_tokens + cache_read_input_tokens (but NOT cache_creation)
+    //   Total context = prompt_tokens + cache_creation_input_tokens
+    //
+    // Native Anthropic API (direct adapter):
+    //   input_tokens: NON-cached input only
+    //   Total context = input_tokens + cache_read + cache_creation
+    //
+    // OpenAI:
+    //   prompt_tokens: TOTAL input (includes all cached)
+    //   prompt_tokens_details.cached_tokens: informational (subset)
+    //   Total context = prompt_tokens
+    //
+    // Detection strategy:
+    // - If ONLY input_tokens (no prompt_tokens): Native Anthropic style
+    // - If prompt_tokens exists: LiteLLM/OpenAI style
+    //
+    // NORMALIZATION: We always output prompt_tokens as NON-cached portion
+    // and expose cache fields so UI can sum: prompt_tokens + cache_read + cache_creation
+
+    let has_prompt_tokens = usage.get("prompt_tokens").is_some();
+    let has_input_tokens = usage.get("input_tokens").is_some();
+
+    let cache_creation = parse_token_value(usage.get("cache_creation_input_tokens"));
+    let cache_read = parse_token_value(usage.get("cache_read_input_tokens"));
+    let openai_cached = usage.get("prompt_tokens_details")
+        .and_then(|d| parse_token_value(d.get("cached_tokens")));
+
+    let effective_cache_read = cache_read.or(openai_cached);
+
+    let completion_tokens = parse_token_value(usage.get("output_tokens"))
+        .or_else(|| parse_token_value(usage.get("completion_tokens")))
+        .unwrap_or(0);
+
+    let provider_total = parse_token_value(usage.get("total_tokens"));
+
+    let prompt_tokens = if let Some(total) = provider_total {
+        let cache_sum = cache_creation.unwrap_or(0) + effective_cache_read.unwrap_or(0);
+        total.saturating_sub(completion_tokens).saturating_sub(cache_sum)
+    } else if has_prompt_tokens {
+        let raw_prompt = parse_token_value(usage.get("prompt_tokens")).unwrap_or(0);
+        raw_prompt.saturating_sub(effective_cache_read.unwrap_or(0))
+    } else if has_input_tokens {
+        parse_token_value(usage.get("input_tokens")).unwrap_or(0)
+    } else {
+        0
+    };
+
+    let total_tokens = provider_total.unwrap_or_else(|| {
+        prompt_tokens
+            + completion_tokens
+            + cache_creation.unwrap_or(0)
+            + effective_cache_read.unwrap_or(0)
+    });
+
+    let cache_creation_out = cache_creation.filter(|&v| v > 0);
+    let cache_read_out = effective_cache_read.filter(|&v| v > 0);
 
     Some(ChatUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
-        cache_creation_tokens: None,
-        cache_read_tokens: cache_read,
+        cache_creation_tokens: cache_creation_out,
+        cache_read_tokens: cache_read_out,
+        metering_usd: None,
+    })
+}
+
+fn parse_token_value(value: Option<&Value>) -> Option<usize> {
+    value.and_then(|v| {
+        v.as_u64()
+            .map(|n| n as usize)
+            .or_else(|| v.as_str().and_then(|s| s.parse::<usize>().ok()))
     })
 }
 
@@ -322,6 +401,7 @@ mod tests {
             supports_tools: true,
             supports_reasoning: false,
             supports_max_completion_tokens: false,
+            support_metadata: true,
             eof_is_done: false,
         }
     }
@@ -547,5 +627,130 @@ mod tests {
             assert_eq!(citation.get("url").and_then(|v| v.as_str()), Some("https://example.com"));
             assert_eq!(citation.get("title").and_then(|v| v.as_str()), Some("Example"));
         }
+    }
+
+    #[test]
+    fn test_parse_usage_litellm_anthropic_style_with_total() {
+        let usage = serde_json::json!({
+            "prompt_tokens": 1500,
+            "completion_tokens": 200,
+            "cache_read_input_tokens": 1000,
+            "cache_creation_input_tokens": 300,
+            "total_tokens": 2000
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        assert_eq!(parsed.prompt_tokens, 500);
+        assert_eq!(parsed.completion_tokens, 200);
+        assert_eq!(parsed.cache_creation_tokens, Some(300));
+        assert_eq!(parsed.cache_read_tokens, Some(1000));
+        assert_eq!(parsed.total_tokens, 2000);
+    }
+
+    #[test]
+    fn test_parse_usage_litellm_anthropic_style_no_total() {
+        let usage = serde_json::json!({
+            "prompt_tokens": 1500,
+            "completion_tokens": 200,
+            "cache_read_input_tokens": 1000,
+            "cache_creation_input_tokens": 300
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        assert_eq!(parsed.prompt_tokens, 500);
+        assert_eq!(parsed.completion_tokens, 200);
+        assert_eq!(parsed.cache_creation_tokens, Some(300));
+        assert_eq!(parsed.cache_read_tokens, Some(1000));
+        assert_eq!(parsed.total_tokens, 2000);
+    }
+
+    #[test]
+    fn test_parse_usage_native_anthropic_style() {
+        // Native Anthropic API: input_tokens is NON-cached, cache must be ADDED
+        let usage = serde_json::json!({
+            "input_tokens": 500,  // NON-cached only
+            "output_tokens": 200,
+            "cache_read_input_tokens": 1000,  // Must ADD to input_tokens
+            "cache_creation_input_tokens": 300  // Must ADD to input_tokens
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        // input_tokens used as prompt_tokens (non-cached)
+        assert_eq!(parsed.prompt_tokens, 500);
+        assert_eq!(parsed.completion_tokens, 200);
+        // Cache fields SHOULD be exposed (they're additive)
+        assert_eq!(parsed.cache_creation_tokens, Some(300));
+        assert_eq!(parsed.cache_read_tokens, Some(1000));
+        // Total = input + completion + cache_creation + cache_read
+        assert_eq!(parsed.total_tokens, 2000);
+    }
+
+    #[test]
+    fn test_parse_usage_openai_style_no_cache() {
+        // Standard OpenAI without cache info
+        let usage = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1200
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        assert_eq!(parsed.prompt_tokens, 1000);
+        assert_eq!(parsed.completion_tokens, 200);
+        assert_eq!(parsed.cache_creation_tokens, None);
+        assert_eq!(parsed.cache_read_tokens, None);
+        assert_eq!(parsed.total_tokens, 1200);
+    }
+
+    #[test]
+    fn test_parse_usage_preserves_explicit_total() {
+        // If provider sends explicit total_tokens, use it
+        let usage = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1500  // Might include reasoning tokens etc
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+        assert_eq!(parsed.total_tokens, 1500);
+    }
+
+    #[test]
+    fn test_parse_usage_openai_with_cached_tokens_details() {
+        let usage = serde_json::json!({
+            "prompt_tokens": 1500,
+            "completion_tokens": 200,
+            "prompt_tokens_details": {
+                "cached_tokens": 1000
+            },
+            "total_tokens": 1700
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        assert_eq!(parsed.prompt_tokens, 500);
+        assert_eq!(parsed.completion_tokens, 200);
+        assert_eq!(parsed.cache_read_tokens, Some(1000));
+        assert_eq!(parsed.cache_creation_tokens, None);
+        assert_eq!(parsed.total_tokens, 1700);
+    }
+
+    #[test]
+    fn test_parse_usage_string_numbers() {
+        let usage = serde_json::json!({
+            "prompt_tokens": "1000",
+            "completion_tokens": "200",
+            "total_tokens": "1200"
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        assert_eq!(parsed.prompt_tokens, 1000);
+        assert_eq!(parsed.completion_tokens, 200);
+        assert_eq!(parsed.total_tokens, 1200);
     }
 }

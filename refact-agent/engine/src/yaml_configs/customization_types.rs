@@ -16,7 +16,7 @@ pub struct ModeConfig {
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
-    pub llm_defaults: LlmDefaults,
+    pub model_defaults: ModeModelDefaults,
     #[serde(default)]
     pub tool_confirm: ToolConfirmConfig,
     #[serde(default)]
@@ -52,21 +52,63 @@ pub struct ModeUi {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LlmDefaults {
-    #[serde(default)]
+pub struct ModelTypeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_new_tokens: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boost_reasoning: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+}
+
+impl ModelTypeConfig {
+    pub fn merge_from(&mut self, other: &ModelTypeConfig) {
+        if other.model.is_some() { self.model = other.model.clone(); }
+        if other.max_new_tokens.is_some() { self.max_new_tokens = other.max_new_tokens; }
+        if other.temperature.is_some() { self.temperature = other.temperature; }
+        if other.top_p.is_some() { self.top_p = other.top_p; }
+        if other.boost_reasoning.is_some() { self.boost_reasoning = other.boost_reasoning; }
+        if other.reasoning_effort.is_some() { self.reasoning_effort = other.reasoning_effort.clone(); }
+        if other.thinking_budget.is_some() { self.thinking_budget = other.thinking_budget; }
+        if other.tool_choice.is_some() { self.tool_choice = other.tool_choice.clone(); }
+        if other.parallel_tool_calls.is_some() { self.parallel_tool_calls = other.parallel_tool_calls; }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModeModelDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<ModelTypeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light: Option<ModelTypeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ModelTypeConfig>,
+}
+
+impl ModeModelDefaults {
+    pub fn merge_from(&mut self, other: &ModeModelDefaults) {
+        if let Some(ref ovr) = other.default {
+            self.default.get_or_insert_with(ModelTypeConfig::default).merge_from(ovr);
+        }
+        if let Some(ref ovr) = other.light {
+            self.light.get_or_insert_with(ModelTypeConfig::default).merge_from(ovr);
+        }
+        if let Some(ref ovr) = other.thinking {
+            self.thinking.get_or_insert_with(ModelTypeConfig::default).merge_from(ovr);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -93,7 +135,7 @@ pub struct ModeOverride {
     #[serde(default)]
     pub tools_remove: Option<Vec<String>>,
     #[serde(default)]
-    pub llm_defaults: Option<LlmDefaults>,
+    pub model_defaults: Option<ModeModelDefaults>,
     #[serde(default)]
     pub tool_confirm: Option<ToolConfirmConfig>,
     #[serde(default)]
@@ -120,14 +162,8 @@ impl ModeConfig {
                 result.tools.retain(|t| !remove.contains(t));
             }
         }
-        if let Some(llm) = &override_config.llm_defaults {
-            if let Some(v) = llm.max_new_tokens { result.llm_defaults.max_new_tokens = Some(v); }
-            if let Some(v) = llm.temperature { result.llm_defaults.temperature = Some(v); }
-            if let Some(v) = llm.top_p { result.llm_defaults.top_p = Some(v); }
-            if let Some(v) = llm.boost_reasoning { result.llm_defaults.boost_reasoning = Some(v); }
-            if let Some(v) = &llm.reasoning_effort { result.llm_defaults.reasoning_effort = Some(v.clone()); }
-            if let Some(v) = &llm.tool_choice { result.llm_defaults.tool_choice = Some(v.clone()); }
-            if let Some(v) = llm.parallel_tool_calls { result.llm_defaults.parallel_tool_calls = Some(v); }
+        if let Some(model_defaults) = &override_config.model_defaults {
+            result.model_defaults.merge_from(model_defaults);
         }
         if let Some(confirm) = &override_config.tool_confirm {
             result.tool_confirm = confirm.clone();
@@ -436,9 +472,12 @@ tool_confirm:
             specific: false,
             prompt: "Base prompt".to_string(),
             tools: vec!["tree".to_string(), "cat".to_string()],
-            llm_defaults: LlmDefaults {
-                max_new_tokens: Some(1000),
-                temperature: Some(0.5),
+            model_defaults: ModeModelDefaults {
+                default: Some(ModelTypeConfig {
+                    max_new_tokens: Some(1000),
+                    temperature: Some(0.5),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             tool_confirm: ToolConfirmConfig::default(),
@@ -452,8 +491,11 @@ tool_confirm:
         let override_cfg = ModeOverride {
             prompt: Some("Override prompt".to_string()),
             tools_add: Some(vec!["shell".to_string()]),
-            llm_defaults: Some(LlmDefaults {
-                temperature: Some(0.8),
+            model_defaults: Some(ModeModelDefaults {
+                default: Some(ModelTypeConfig {
+                    temperature: Some(0.8),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -462,8 +504,8 @@ tool_confirm:
         let result = base.apply_override(&override_cfg);
         assert_eq!(result.prompt, "Override prompt");
         assert_eq!(result.tools, vec!["tree", "cat", "shell"]);
-        assert_eq!(result.llm_defaults.max_new_tokens, Some(1000));
-        assert_eq!(result.llm_defaults.temperature, Some(0.8));
+        assert_eq!(result.model_defaults.default.as_ref().unwrap().max_new_tokens, Some(1000));
+        assert_eq!(result.model_defaults.default.as_ref().unwrap().temperature, Some(0.8));
     }
 
     #[test]
@@ -476,7 +518,7 @@ tool_confirm:
             specific: false,
             prompt: "".to_string(),
             tools: vec!["tree".to_string(), "cat".to_string()],
-            llm_defaults: LlmDefaults::default(),
+            model_defaults: ModeModelDefaults::default(),
             tool_confirm: ToolConfirmConfig::default(),
             thread_defaults: ModeThreadDefaults::default(),
             ui: ModeUi::default(),
@@ -504,7 +546,7 @@ tool_confirm:
             specific: false,
             prompt: "".to_string(),
             tools: vec!["tree".to_string(), "cat".to_string(), "shell".to_string()],
-            llm_defaults: LlmDefaults::default(),
+            model_defaults: ModeModelDefaults::default(),
             tool_confirm: ToolConfirmConfig::default(),
             thread_defaults: ModeThreadDefaults::default(),
             ui: ModeUi::default(),

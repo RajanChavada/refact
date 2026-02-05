@@ -95,6 +95,21 @@ impl LlmWireAdapter for AnthropicAdapter {
             }
         }
 
+        tracing::info!(
+            model = %settings.model_name,
+            endpoint = %settings.endpoint,
+            stream = %req.stream,
+            max_tokens = %req.params.max_tokens,
+            temperature = ?req.params.temperature,
+            stop_sequences = ?req.params.stop.len(),
+            tools_count = ?req.tools.as_ref().map(|t| t.len()),
+            tool_choice = ?req.tool_choice,
+            reasoning = ?req.reasoning,
+            cache_control = ?req.cache_control,
+            messages_count = %req.messages.len(),
+            "anthropic adapter request"
+        );
+
         Ok(HttpParts {
             url: settings.endpoint.clone(),
             headers,
@@ -186,6 +201,15 @@ impl LlmWireAdapter for AnthropicAdapter {
                     }
                 }
             }
+            "message_start" => {
+                if let Some(message) = json.get("message") {
+                    if let Some(usage) = message.get("usage") {
+                        if let Some(u) = parse_anthropic_usage(usage) {
+                            deltas.push(LlmStreamDelta::SetUsage { usage: u });
+                        }
+                    }
+                }
+            }
             "message_delta" => {
                 if let Some(delta) = json.get("delta") {
                     if let Some(reason) = delta.get("stop_reason").and_then(|r| r.as_str()) {
@@ -257,19 +281,11 @@ fn convert_to_anthropic(
 ) -> (Option<Value>, Vec<Value>) {
     let mut system_text = None;
     let mut result: Vec<Value> = Vec::new();
-    let mut system_count = 0;
     let mut pending_tool_results: Vec<Value> = Vec::new();
 
     for msg in messages {
         match msg.role.as_str() {
             "system" => {
-                system_count += 1;
-                if system_count > 1 {
-                    tracing::warn!(
-                        "Multiple system messages detected ({}), only the last one will be used",
-                        system_count
-                    );
-                }
                 system_text = Some(msg.content.content_text_only());
             }
             "user" | "assistant" => {
@@ -316,9 +332,10 @@ fn convert_to_anthropic(
                     }));
                 }
             }
-            "plain_text" | "cd_instruction" => {
+            "plain_text" | "cd_instruction" | "context_file" => {
                 flush_tool_results(&mut result, &mut pending_tool_results);
-                result.push(json!({"role": "user", "content": [{"type": "text", "text": msg.content.content_text_only()}]}));
+                let content = msg_content_to_anthropic(&msg.content);
+                result.push(json!({"role": "user", "content": content}));
             }
             _ => {}
         }
@@ -403,12 +420,17 @@ fn parse_anthropic_usage(usage: &Value) -> Option<ChatUsage> {
         .get("cache_read_input_tokens")
         .and_then(|t| t.as_u64())
         .map(|v| v as usize);
+    let total_tokens = prompt_tokens
+        + completion_tokens
+        + cache_creation.unwrap_or(0)
+        + cache_read.unwrap_or(0);
     Some(ChatUsage {
         prompt_tokens,
         completion_tokens,
-        total_tokens: prompt_tokens + completion_tokens,
+        total_tokens,
         cache_creation_tokens: cache_creation,
         cache_read_tokens: cache_read,
+        metering_usd: None,
     })
 }
 
@@ -426,6 +448,7 @@ mod tests {
             supports_tools: true,
             supports_reasoning: true,
             supports_max_completion_tokens: false,
+            support_metadata: false,
             eof_is_done: false,
         }
     }
@@ -760,5 +783,60 @@ mod tests {
         let http3 = adapter.build_http(&req_no_thinking, &settings()).unwrap();
         assert_eq!(http3.body["max_tokens"], 4096);
         assert!(http3.body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn test_context_file_role_converted_to_user() {
+        use crate::call_validation::{ChatContent, ContextFile};
+
+        let messages = vec![
+            ChatMessage::new("system".to_string(), "Be helpful".to_string()),
+            ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(vec![
+                    ContextFile {
+                        file_name: "src/main.rs".to_string(),
+                        file_content: "fn main() {}".to_string(),
+                        line1: 1,
+                        line2: 1,
+                        ..Default::default()
+                    }
+                ]),
+                ..Default::default()
+            },
+            ChatMessage::new("user".to_string(), "Explain this code".to_string()),
+        ];
+
+        let (system, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+
+        assert_eq!(system, Some(json!("Be helpful")));
+        // Should have 2 messages: context_file converted to user + actual user message
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        // The context file content should be converted to text
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert!(content[0]["text"].as_str().unwrap().contains("src/main.rs"));
+        assert!(content[0]["text"].as_str().unwrap().contains("fn main() {}"));
+    }
+
+    #[test]
+    fn test_context_file_simple_text_converted() {
+        let messages = vec![
+            ChatMessage {
+                role: "context_file".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("file content here".to_string()),
+                ..Default::default()
+            },
+            ChatMessage::new("user".to_string(), "What is this?".to_string()),
+        ];
+
+        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "file content here");
     }
 }

@@ -197,11 +197,15 @@ const TokensHoverContent: React.FC<{
   maxContextTokens: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }> = ({
   currentSessionTokens,
   maxContextTokens,
   inputTokens,
   outputTokens,
+  cacheReadTokens,
+  cacheCreationTokens,
 }) => {
   const percentage =
     maxContextTokens > 0
@@ -227,6 +231,12 @@ const TokensHoverContent: React.FC<{
           {inputTokens > 0 && (
             <TokenDisplay label="Input" value={inputTokens} />
           )}
+          {(cacheReadTokens ?? 0) > 0 && (
+            <TokenDisplay label="Cache read" value={cacheReadTokens ?? 0} />
+          )}
+          {(cacheCreationTokens ?? 0) > 0 && (
+            <TokenDisplay label="Cache creation" value={cacheCreationTokens ?? 0} />
+          )}
           {outputTokens > 0 && (
             <TokenDisplay label="Output" value={outputTokens} />
           )}
@@ -242,6 +252,8 @@ const DefaultHoverTriggerContent: React.FC<{
   totalCoins?: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   coinsPrompt?: number;
   coinsGenerated?: number;
   coinsCacheRead?: number;
@@ -253,6 +265,8 @@ const DefaultHoverTriggerContent: React.FC<{
   totalCoins,
   inputTokens,
   outputTokens,
+  cacheReadTokens,
+  cacheCreationTokens,
   coinsPrompt,
   coinsGenerated,
   coinsCacheRead,
@@ -312,6 +326,8 @@ const DefaultHoverTriggerContent: React.FC<{
                   maxContextTokens={maxContextTokens}
                   inputTokens={inputTokens}
                   outputTokens={outputTokens}
+                  cacheReadTokens={cacheReadTokens}
+                  cacheCreationTokens={cacheCreationTokens}
                 />
               </Tabs.Content>
               <Tabs.Content value="map">
@@ -387,6 +403,22 @@ export const UsageCounter: React.FC<UsageCounterProps> = ({
     return outputMeteringTokens ?? outputUsageTokens;
   }, [outputMeteringTokens, outputUsageTokens]);
 
+  const cacheReadTokens = useMemo(() => {
+    const meteringValue = meteringTokens?.metering_cache_read_tokens_n;
+    if (typeof meteringValue === "number") {
+      return meteringValue;
+    }
+    return currentThreadUsage?.cache_read_input_tokens ?? 0;
+  }, [meteringTokens, currentThreadUsage]);
+
+  const cacheCreationTokens = useMemo(() => {
+    const meteringValue = meteringTokens?.metering_cache_creation_tokens_n;
+    if (typeof meteringValue === "number") {
+      return meteringValue;
+    }
+    return currentThreadUsage?.cache_creation_input_tokens ?? 0;
+  }, [meteringTokens, currentThreadUsage]);
+
   const maxContextTokens = useAppSelector(selectThreadMaximumTokens) ?? 0;
 
   const shouldUsageBeHidden = useMemo(() => {
@@ -432,6 +464,8 @@ export const UsageCounter: React.FC<UsageCounterProps> = ({
           totalCoins={totalCoins}
           inputTokens={inputTokens}
           outputTokens={outputTokens}
+          cacheReadTokens={cacheReadTokens}
+          cacheCreationTokens={cacheCreationTokens}
           coinsPrompt={cost?.metering_coins_prompt}
           coinsGenerated={cost?.metering_coins_generated}
           coinsCacheRead={cost?.metering_coins_cache_read}

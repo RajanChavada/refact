@@ -10,6 +10,7 @@ use crate::call_validation::{
 };
 use crate::global_context::GlobalContext;
 use crate::llm::LlmRequest;
+use crate::llm::params::CacheControl;
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::constants::CHAT_TOP_N;
 use crate::http::routers::v1::knowledge_enrichment::enrich_messages_with_knowledge;
@@ -352,7 +353,7 @@ pub async fn run_llm_generation(
     let mut parameters = SamplingParameters {
         temperature: thread.temperature,
         frequency_penalty: thread.frequency_penalty,
-        max_new_tokens: thread.max_tokens.unwrap_or_else(|| 4096.min(effective_n_ctx / 4)),
+        max_new_tokens: thread.max_tokens.unwrap_or(0),
         boost_reasoning: thread.boost_reasoning,
         reasoning_effort: thread.reasoning_effort.as_ref().and_then(|s| {
             match s.as_str() {
@@ -362,6 +363,7 @@ pub async fn run_llm_generation(
                 _ => None,
             }
         }),
+        thinking_budget: thread.thinking_budget,
         ..Default::default()
     };
 
@@ -385,6 +387,7 @@ pub async fn run_llm_generation(
         allow_tool_prerun: true,
         supports_tools: model_rec.supports_tools,
         parallel_tool_calls: thread.parallel_tool_calls,
+        cache_control: CacheControl::Ephemeral,
         ..Default::default()
     };
 
@@ -556,6 +559,23 @@ async fn run_streaming_generation(
         break result;
     };
 
+    // Extract model_id and usage before computing pricing to avoid holding lock during await
+    let (model_id, usage_for_pricing) = {
+        let session = session_arc.lock().await;
+        (session.thread.model.clone(), session.draft_usage.clone())
+    };
+
+    // Compute pricing outside the lock to avoid deadlocks
+    let metering_usd = if let Some(ref usage) = usage_for_pricing {
+        if let Some(pricing) = get_model_pricing(&gcx, &model_id).await {
+            crate::providers::pricing::compute_cost(usage, &pricing)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     {
         let mut session = session_arc.lock().await;
 
@@ -592,10 +612,35 @@ async fn run_streaming_generation(
             }
         }
 
+        if let Some(ref mut usage) = session.draft_usage {
+            usage.metering_usd = metering_usd;
+        }
+
         session.finish_stream(result.finish_reason);
     }
 
     Ok(())
+}
+
+async fn get_model_pricing(
+    gcx: &Arc<ARwLock<GlobalContext>>,
+    model_id: &str,
+) -> Option<crate::providers::traits::ModelPricing> {
+    let parts: Vec<&str> = model_id.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let provider_name = parts[0];
+    let model_name = parts[1];
+
+    let gcx_locked = gcx.read().await;
+    let registry = gcx_locked.providers.read().await;
+
+    if let Some(provider) = registry.get(provider_name) {
+        return provider.model_pricing(model_name);
+    }
+
+    None
 }
 
 fn is_result_empty(result: &ChoiceFinal) -> bool {

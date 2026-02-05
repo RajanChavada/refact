@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: explore
 title: Explore
 description: Read-only exploration for context gathering without editing
@@ -73,10 +73,6 @@ tools:
   - web_search
   - subagent
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 4096
-  temperature: 0.0
 
 tool_confirm:
   rules:

@@ -30,10 +30,9 @@ import {
   setAreFollowUpsEnabled,
   setSystemPrompt,
   setReasoningEffort,
+  setThinkingBudget,
   setTemperature,
-  setFrequencyPenalty,
   setMaxTokens,
-  setParallelToolCalls,
 } from "../features/Chat/Thread";
 import { saveLastThreadParams } from "../utils/threadStorage";
 import { statisticsApi } from "../services/refact/statistics";
@@ -334,16 +333,18 @@ startListening({
     if (
       (providersApi.endpoints.updateProvider.matchRejected(action) ||
         providersApi.endpoints.getProvider.matchRejected(action) ||
-        providersApi.endpoints.getProviderTemplates.matchRejected(action) ||
         providersApi.endpoints.getConfiguredProviders.matchRejected(action)) &&
+      typeof action.meta === "object" &&
+      "condition" in action.meta &&
       !action.meta.condition
     ) {
-      const errorStatus = action.payload?.status;
+      const payload = action.payload as { status?: number; data?: unknown } | undefined;
+      const errorStatus = payload?.status;
       const isAuthError = errorStatus === 401;
       const message = isAuthError
         ? AUTH_ERROR_MESSAGE
-        : isDetailMessage(action.payload?.data)
-          ? action.payload.data.detail
+        : isDetailMessage(payload?.data)
+          ? (payload.data as { detail: string }).detail
           : `provider update error.`;
 
       listenerApi.dispatch(setError(message));
@@ -735,6 +736,30 @@ startListening({
 });
 
 startListening({
+  actionCreator: setThinkingBudget,
+  effect: async (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+    const chatId = action.payload.chatId;
+
+    if (!port || !chatId) return;
+
+    try {
+      const { sendChatCommand } = await import(
+        "../services/refact/chatCommands"
+      );
+      await sendChatCommand(chatId, port, apiKey ?? undefined, {
+        type: "set_params",
+        patch: { thinking_budget: action.payload.value },
+      });
+    } catch {
+      // Silently ignore errors - user will see them via SSE events
+    }
+  },
+});
+
+startListening({
   actionCreator: setTemperature,
   effect: async (action, listenerApi) => {
     const state = listenerApi.getState();
@@ -753,31 +778,7 @@ startListening({
         patch: { temperature: action.payload.value },
       });
     } catch {
-      // Silently ignore
-    }
-  },
-});
-
-startListening({
-  actionCreator: setFrequencyPenalty,
-  effect: async (action, listenerApi) => {
-    const state = listenerApi.getState();
-    const port = state.config.lspPort;
-    const apiKey = state.config.apiKey;
-    const chatId = action.payload.chatId;
-
-    if (!port || !chatId) return;
-
-    try {
-      const { sendChatCommand } = await import(
-        "../services/refact/chatCommands"
-      );
-      await sendChatCommand(chatId, port, apiKey ?? undefined, {
-        type: "set_params",
-        patch: { frequency_penalty: action.payload.value },
-      });
-    } catch {
-      // Silently ignore
+      // Silently ignore errors - user will see them via SSE events
     }
   },
 });
@@ -799,30 +800,6 @@ startListening({
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "set_params",
         patch: { max_tokens: action.payload.value },
-      });
-    } catch {
-      // Silently ignore
-    }
-  },
-});
-
-startListening({
-  actionCreator: setParallelToolCalls,
-  effect: async (action, listenerApi) => {
-    const state = listenerApi.getState();
-    const port = state.config.lspPort;
-    const apiKey = state.config.apiKey;
-    const chatId = action.payload.chatId;
-
-    if (!port || !chatId) return;
-
-    try {
-      const { sendChatCommand } = await import(
-        "../services/refact/chatCommands"
-      );
-      await sendChatCommand(chatId, port, apiKey ?? undefined, {
-        type: "set_params",
-        patch: { parallel_tool_calls: action.payload.value },
       });
     } catch {
       // Silently ignore
@@ -1031,6 +1008,10 @@ startListening({
   matcher: isAnyOf(
     setChatModel,
     setBoostReasoning,
+    setReasoningEffort,
+    setThinkingBudget,
+    setTemperature,
+    setMaxTokens,
     setIncreaseMaxTokens,
     setIncludeProjectInfo,
     setContextTokensCap,
@@ -1044,10 +1025,17 @@ startListening({
     const runtime = state.chat.threads[state.chat.current_thread_id];
     if (!runtime) return;
 
+    const isUnstartedChat = runtime.thread.messages.length === 0;
+    if (!isUnstartedChat) return;
+
     saveLastThreadParams({
       model: runtime.thread.model,
       mode: runtime.thread.mode,
       boost_reasoning: runtime.thread.boost_reasoning,
+      reasoning_effort: runtime.thread.reasoning_effort,
+      thinking_budget: runtime.thread.thinking_budget,
+      temperature: runtime.thread.temperature,
+      max_tokens: runtime.thread.max_tokens,
       increase_max_tokens: runtime.thread.increase_max_tokens,
       include_project_info: runtime.thread.include_project_info,
       context_tokens_cap: runtime.thread.context_tokens_cap,

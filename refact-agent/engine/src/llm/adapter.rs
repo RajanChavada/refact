@@ -46,6 +46,7 @@ pub struct AdapterSettings {
     pub supports_tools: bool,
     pub supports_reasoning: bool,
     pub supports_max_completion_tokens: bool,
+    pub support_metadata: bool,
     pub eof_is_done: bool,
 }
 
@@ -86,7 +87,6 @@ pub fn get_adapter(format: WireFormat) -> &'static dyn LlmWireAdapter {
     }
 }
 
-/// Headers that should not be overridden by extra_headers for security
 const PROTECTED_HEADERS: &[&str] = &[
     "authorization",
     "x-api-key",
@@ -94,7 +94,10 @@ const PROTECTED_HEADERS: &[&str] = &[
     "api-key",
     "x-goog-api-key",
     "content-type",
+    "content-length",
     "host",
+    "connection",
+    "transfer-encoding",
 ];
 
 /// Insert extra headers while protecting security-sensitive headers from override

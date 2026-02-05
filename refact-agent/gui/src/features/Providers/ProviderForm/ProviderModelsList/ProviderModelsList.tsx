@@ -1,26 +1,24 @@
-import { useCallback, useMemo, type FC } from "react";
-import { Flex, Heading, Separator, Text } from "@radix-ui/themes";
+import { useMemo, useState, type FC } from "react";
+import {
+  Badge,
+  Button,
+  Callout,
+  Flex,
+  Heading,
+  Separator,
+  Text,
+} from "@radix-ui/themes";
+import { PlusIcon, InfoCircledIcon } from "@radix-ui/react-icons";
 
-import type { ProviderFormProps } from "../ProviderForm";
+import type { ProviderListItem } from "../../../../services/refact";
+import { useGetAvailableModelsQuery } from "../../../../services/refact";
 
 import { Spinner } from "../../../../components/Spinner";
-import { ModelCard } from "./ModelCard";
-import { AddModelButton } from "./components";
-
-import { useGetModelsByProviderNameQuery } from "../../../../hooks/useModelsQuery";
-import { ModelsResponse, useGetCapsQuery } from "../../../../services/refact";
-import { groupModelsWithPricing } from "./utils/groupModelsWithPricing";
+import { AvailableModelCard } from "./AvailableModelCard";
+import { AddCustomModelModal } from "./AddCustomModelModal";
 
 export type ProviderModelsListProps = {
-  provider: ProviderFormProps["currentProvider"];
-};
-
-const NoModelsText: FC = () => {
-  return (
-    <Text as="span" size="2" color="gray">
-      No models available, but you can add one by clicking &apos;Add model&apos;
-    </Text>
-  );
+  provider: ProviderListItem;
 };
 
 export const ProviderModelsList: FC<ProviderModelsListProps> = ({
@@ -30,144 +28,144 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
     data: modelsData,
     isSuccess,
     isLoading,
-  } = useGetModelsByProviderNameQuery({
-    providerName: provider.name,
-  });
+    isError,
+    error,
+  } = useGetAvailableModelsQuery({ providerName: provider.name });
 
-  // Fetch capabilities & pricing; UI will gracefully degrade if this fails.
-  const { data: capsData, isError: capsError } = useGetCapsQuery(undefined);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
-  const getModelNames = useCallback((modelsData: ModelsResponse) => {
-    const currentChatModelNames = modelsData.chat_models.map((m) => m.name);
-    const currentCompletionModelNames = modelsData.completion_models.map(
-      (m) => m.name,
-    );
+  // Separate enabled and disabled models
+  const { enabledModels, disabledModels } = useMemo(() => {
+    if (!modelsData?.models) return { enabledModels: [], disabledModels: [] };
 
-    return {
-      currentChatModelNames,
-      currentCompletionModelNames,
-    };
-  }, []);
+    const enabled = modelsData.models.filter((m) => m.enabled);
+    const disabled = modelsData.models.filter((m) => !m.enabled);
 
-  // Compute groups early so hooks are always called in the same order
-  const chatGroups = useMemo(
-    () =>
-      modelsData?.chat_models
-        ? groupModelsWithPricing(modelsData.chat_models, {
-            caps: capsError ? undefined : capsData,
-            modelType: "chat",
-          })
-        : [],
-    [modelsData?.chat_models, capsData, capsError],
-  );
-
-  const completionGroups = useMemo(
-    () =>
-      modelsData?.completion_models
-        ? groupModelsWithPricing(modelsData.completion_models, {
-            caps: capsError ? undefined : capsData,
-            modelType: "completion",
-          })
-        : [],
-    [modelsData?.completion_models, capsData, capsError],
-  );
+    return { enabledModels: enabled, disabledModels: disabled };
+  }, [modelsData?.models]);
 
   if (isLoading) return <Spinner spinning />;
 
-  if (!isSuccess) return <div>Something went wrong :/</div>;
+  if (isError) {
+    const err = error as { status?: unknown; data?: { detail?: unknown } } | undefined;
+    const errorMessage = err?.status
+      ? `${String(err.status)}: ${err.data?.detail ? String(err.data.detail) : "Unknown error"}`
+      : "Failed to load models";
 
-  const { chat_models, completion_models } = modelsData;
+    return (
+      <Callout.Root color="red">
+        <Callout.Icon>
+          <InfoCircledIcon />
+        </Callout.Icon>
+        <Callout.Text>Failed to load models: {errorMessage}</Callout.Text>
+      </Callout.Root>
+    );
+  }
 
-  const { currentChatModelNames, currentCompletionModelNames } =
-    getModelNames(modelsData);
+  if (!isSuccess) {
+    return (
+      <Callout.Root color="orange">
+        <Callout.Icon>
+          <InfoCircledIcon />
+        </Callout.Icon>
+        <Callout.Text>
+          No model data available. Make sure the provider is properly configured.
+        </Callout.Text>
+      </Callout.Root>
+    );
+  }
+
+  const totalModels = modelsData.models.length;
+  const enabledCount = enabledModels.length;
 
   return (
-    <Flex direction="column" gap="2">
-      <Heading as="h3" size="3">
-        Models list
-      </Heading>
+    <Flex direction="column" gap="3" mt="4">
       <Separator size="4" />
 
-      {/* Chat models section */}
-      <Heading as="h6" size="2" my="2">
-        Chat Models
-      </Heading>
-
-      {chat_models.length > 0 ? (
-        chatGroups.map((group) => (
-          <Flex key={group.id} direction="column" gap="1" my="1">
-            {chatGroups.length > 1 && (
-              <Text as="span" size="1" color="gray" weight="medium">
-                {group.title}
-                {group.description ? ` — ${group.description}` : ""}
-              </Text>
-            )}
-            {group.models.map((m) => (
-              <ModelCard
-                key={`${m.name}_chat`}
-                model={m}
-                providerName={provider.name}
-                modelType="chat"
-                isReadonlyProvider={provider.readonly}
-                currentModelNames={currentChatModelNames}
-              />
-            ))}
-          </Flex>
-        ))
-      ) : (
-        <NoModelsText />
-      )}
-
-      {!provider.readonly && (
-        <AddModelButton
-          modelType="chat"
-          providerName={provider.name}
-          currentModelNames={currentChatModelNames}
-        />
-      )}
-
-      {/* Completion models section */}
-      {provider.supports_completion && (
-        <>
-          <Heading as="h6" size="2" my="2">
-            Completion Models
+      <Flex align="center" justify="between">
+        <Flex align="center" gap="2">
+          <Heading as="h3" size="3">
+            Available Models
           </Heading>
-          {completion_models.length > 0 ? (
-            completionGroups.map((group) => (
-              <Flex key={group.id} direction="column" gap="1" my="1">
-                {completionGroups.length > 1 && (
-                  <Text as="span" size="1" color="gray" weight="medium">
-                    {group.title}
-                    {group.description ? ` — ${group.description}` : ""}
-                  </Text>
-                )}
-                {group.models.map((m) => (
-                  <ModelCard
-                    key={`${m.name}_completion`}
-                    model={m}
-                    providerName={provider.name}
-                    modelType="completion"
-                    isReadonlyProvider={provider.readonly}
-                    currentModelNames={currentCompletionModelNames}
-                  />
-                ))}
-              </Flex>
-            ))
-          ) : (
-            <NoModelsText />
-          )}
+          <Badge size="1" color="gray">
+            {enabledCount}/{totalModels} enabled
+          </Badge>
+        </Flex>
 
-          {!provider.readonly && (
-            <AddModelButton
-              modelType="completion"
-              providerName={provider.name}
-              currentModelNames={currentCompletionModelNames}
-            />
-          )}
-        </>
+        {!provider.readonly && (
+          <Button
+            size="1"
+            variant="soft"
+            onClick={() => setIsAddModalOpen(true)}
+          >
+            <PlusIcon /> Add Custom Model
+          </Button>
+        )}
+      </Flex>
+
+      {modelsData.error && (
+        <Callout.Root color="orange" size="1">
+          <Callout.Icon>
+            <InfoCircledIcon />
+          </Callout.Icon>
+          <Callout.Text size="1">{modelsData.error}</Callout.Text>
+        </Callout.Root>
       )}
 
-      {/* Embedding model could be handled in a similar way in the future */}
+      {totalModels === 0 ? (
+        <Flex direction="column" align="center" gap="2" py="4">
+          <Text as="span" size="2" color="gray">
+            No models available for this provider.
+          </Text>
+          {!provider.readonly && (
+            <Text as="span" size="1" color="gray">
+              Click &quot;Add Custom Model&quot; to define your own.
+            </Text>
+          )}
+        </Flex>
+      ) : (
+        <Flex direction="column" gap="2">
+          {/* Enabled models first */}
+          {enabledModels.length > 0 && (
+            <>
+              <Text as="span" size="1" color="gray" weight="medium">
+                Enabled ({enabledModels.length})
+              </Text>
+              {enabledModels.map((model) => (
+                <AvailableModelCard
+                  key={model.id}
+                  model={model}
+                  providerName={provider.name}
+                  isReadonlyProvider={provider.readonly}
+                />
+              ))}
+            </>
+          )}
+
+          {/* Disabled models */}
+          {disabledModels.length > 0 && (
+            <>
+              <Text as="span" size="1" color="gray" weight="medium" mt="2">
+                Available ({disabledModels.length})
+              </Text>
+              {disabledModels.map((model) => (
+                <AvailableModelCard
+                  key={model.id}
+                  model={model}
+                  providerName={provider.name}
+                  isReadonlyProvider={provider.readonly}
+                />
+              ))}
+            </>
+          )}
+        </Flex>
+      )}
+
+      <AddCustomModelModal
+        providerName={provider.name}
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+      />
     </Flex>
   );
 };

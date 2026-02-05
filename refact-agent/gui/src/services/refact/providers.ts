@@ -1,205 +1,128 @@
 import { RootState } from "../../app/store";
 import { hasProperty } from "../../utils";
 import { isDetailMessage } from "./commands";
-import {
-  CONFIGURED_PROVIDERS_URL,
-  PROVIDER_TEMPLATES_URL,
-  PROVIDER_URL,
-} from "./consts";
+import { PROVIDERS_URL, PROVIDER_DEFAULTS_URL } from "./consts";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 
-export const providersApi = createApi({
-  reducerPath: "providers",
-  tagTypes: [
-    "PROVIDERS",
-    "TEMPLATE_PROVIDERS",
-    "CONFIGURED_PROVIDERS",
-    "PROVIDER",
-  ],
-  baseQuery: fetchBaseQuery({
-    prepareHeaders: (headers, { getState }) => {
-      const token = (getState() as RootState).config.apiKey;
-      if (token) {
-        headers.set("Authorization", `Bearer ${token}`);
-      }
-      return headers;
-    },
-  }),
-  endpoints: (builder) => ({
-    getConfiguredProviders: builder.query<
-      ConfiguredProvidersResponse,
-      undefined
-    >({
-      queryFn: async (_args, api, extraOptions, baseQuery) => {
-        const state = api.getState() as RootState;
-        const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}${CONFIGURED_PROVIDERS_URL}`;
+export type WireFormat =
+  | "openai_chat_completions"
+  | "openai_responses"
+  | "anthropic_messages"
+  | "refact";
 
-        const result = await baseQuery({
-          ...extraOptions,
-          method: "GET",
-          url,
-          credentials: "same-origin",
-          redirect: "follow",
-        });
-        if (result.error) {
-          return { error: result.error };
-        }
-        if (!isConfiguredProvidersResponse(result.data)) {
-          return {
-            meta: result.meta,
-            error: {
-              error: "Invalid response from /v1/providers",
-              data: result.data,
-              status: "CUSTOM_ERROR",
-            },
-          };
-        }
+export type ProviderModel = {
+  id: string;
+  base_name: string;
+  enabled: boolean;
+  n_ctx: number;
+  supports_tools: boolean;
+  supports_multimodality: boolean;
+  supports_reasoning: string | null;
+  supports_agent: boolean;
+  wire_format_override: WireFormat | null;
+  endpoint_override: string | null;
+  user_configured: boolean;
+  removable: boolean;
+};
 
-        return { data: result.data };
-      },
-      providesTags: [{ type: "CONFIGURED_PROVIDERS", id: "LIST" }],
-    }),
-    getProviderTemplates: builder.query<ProviderTemplatesResponse, undefined>({
-      providesTags: ["TEMPLATE_PROVIDERS"],
-      queryFn: async (_args, api, extraOptions, baseQuery) => {
-        const state = api.getState() as RootState;
-        const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}${PROVIDER_TEMPLATES_URL}`;
+export type ProviderRuntime = {
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  readonly: boolean;
+  wire_format: WireFormat;
+  chat_endpoint: string;
+  completion_endpoint: string;
+  embedding_endpoint: string;
+  support_metadata: boolean;
+  chat_models: ProviderModel[];
+  completion_models: ProviderModel[];
+  embedding_model: ProviderModel | null;
+};
 
-        const result = await baseQuery({
-          ...extraOptions,
-          method: "GET",
-          url,
-          credentials: "same-origin",
-          redirect: "follow",
-        });
-        if (result.error) {
-          return { error: result.error };
-        }
-        if (!isProviderTemplatesResponse(result.data)) {
-          return {
-            meta: result.meta,
-            error: {
-              error: "Invalid response from /v1/provider-templates",
-              data: result.data,
-              status: "CUSTOM_ERROR",
-            },
-          };
-        }
+export type ProviderListItem = {
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  readonly: boolean;
+  model_count: number;
+};
 
-        return { data: result.data };
-      },
-    }),
-    getProvider: builder.query<Provider, { providerName: string }>({
-      providesTags: ["PROVIDER"],
-      queryFn: async (args, api, extraOptions, baseQuery) => {
-        const state = api.getState() as RootState;
-        const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}${PROVIDER_URL}`;
+export type ProviderListResponse = {
+  providers: ProviderListItem[];
+};
 
-        const result = await baseQuery({
-          ...extraOptions,
-          method: "GET",
-          url,
-          params: {
-            "provider-name": args.providerName,
-          },
-          credentials: "same-origin",
-          redirect: "follow",
-        });
+export type ProviderDetailResponse = {
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  readonly: boolean;
+  settings: Record<string, unknown>;
+  runtime: ProviderRuntime | null;
+};
 
-        if (result.error) {
-          return { error: result.error };
-        }
+export type ProviderSchemaResponse = {
+  name: string;
+  schema: string;
+};
 
-        if (!isProvider(result.data)) {
-          return {
-            meta: result.meta,
-            error: {
-              error: "Invalid response from /v1/provider",
-              data: result.data,
-              status: "CUSTOM_ERROR",
-            },
-          };
-        }
+export type ProviderModelsResponse = {
+  models: ProviderModel[];
+};
 
-        return { data: result.data };
-      },
-    }),
-    updateProvider: builder.mutation<unknown, Provider>({
-      invalidatesTags: (_result, _error, args) => [
-        { type: "PROVIDER", id: args.name },
-      ],
-      queryFn: async (args, api, extraOptions, baseQuery) => {
-        const state = api.getState() as RootState;
-        const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}${PROVIDER_URL}`;
+// Available models from model discovery (lazy loaded)
+export type AvailableModel = {
+  id: string;
+  display_name: string | null;
+  n_ctx: number;
+  supports_tools: boolean;
+  supports_multimodality: boolean;
+  supports_reasoning: string | null;
+  tokenizer: string | null;
+  enabled: boolean;
+  is_custom: boolean;
+};
 
-        const result = await baseQuery({
-          ...extraOptions,
-          method: "POST",
-          url,
-          body: { ...args },
-          credentials: "same-origin",
-          redirect: "follow",
-        });
-        if (result.error) {
-          return { error: result.error };
-        }
-        if (isDetailMessage(result.data)) {
-          return {
-            meta: result.meta,
-            error: {
-              error: "Invalid response from /v1/provider",
-              data: result.data,
-              status: "CUSTOM_ERROR",
-            },
-          };
-        }
+export type AvailableModelsResponse = {
+  models: AvailableModel[];
+  source: "model_caps" | "api" | "local" | "manual";
+  error?: string | null;
+};
 
-        return { data: result.data };
-      },
-    }),
-    deleteProvider: builder.mutation<unknown, string>({
-      invalidatesTags: (_result, _error, args) => [
-        { type: "PROVIDER", id: args },
-      ],
-      queryFn: async (args, api, extraOptions, baseQuery) => {
-        const state = api.getState() as RootState;
-        const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}${PROVIDER_URL}`;
+export type ModelToggleRequest = {
+  model_id: string;
+  enabled: boolean;
+};
 
-        const result = await baseQuery({
-          ...extraOptions,
-          method: "DELETE",
-          url,
-          params: {
-            "provider-name": args,
-          },
-          credentials: "same-origin",
-          redirect: "follow",
-        });
-        if (result.error) {
-          return { error: result.error };
-        }
-        if (isDetailMessage(result.data)) {
-          return {
-            meta: result.meta,
-            error: {
-              error: "Invalid response from /v1/provider",
-              data: result.data,
-              status: "CUSTOM_ERROR",
-            },
-          };
-        }
+export type CustomModelConfig = {
+  n_ctx: number;
+  supports_tools?: boolean;
+  supports_multimodality?: boolean;
+  supports_reasoning?: string | null;
+  tokenizer?: string | null;
+};
 
-        return { data: result.data };
-      },
-    }),
-  }),
-  refetchOnMountOrArgChange: true,
-});
+export type AddCustomModelRequest = {
+  id: string;
+} & CustomModelConfig;
+
+export type ModelTypeDefaults = {
+  model?: string;
+  max_new_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  boost_reasoning?: boolean;
+  reasoning_effort?: string;
+  thinking_budget?: number;
+};
+
+export type ProviderDefaults = {
+  chat: ModelTypeDefaults;
+  chat_light: ModelTypeDefaults;
+  chat_thinking: ModelTypeDefaults;
+  completion_model?: string;
+  embedding_model?: string;
+};
 
 export type Provider = {
   name: string;
@@ -231,17 +154,575 @@ export type ErrorLogInstance = {
 };
 
 export type ConfiguredProvidersResponse = {
-  providers: SimplifiedProvider<
-    "name" | "enabled" | "readonly" | "supports_completion"
-  >[];
-  error_log: ErrorLogInstance[];
+  providers: ProviderListItem[];
+  error_log?: ErrorLogInstance[];
 };
 
-export type ProviderTemplatesResponse = {
-  provider_templates: SimplifiedProvider<"name">[];
-};
+export const providersApi = createApi({
+  reducerPath: "providers",
+  tagTypes: [
+    "PROVIDERS",
+    "PROVIDER",
+    "PROVIDER_SCHEMA",
+    "PROVIDER_MODELS",
+    "AVAILABLE_MODELS",
+    "DEFAULTS",
+  ],
+  baseQuery: fetchBaseQuery({
+    prepareHeaders: (headers, { getState }) => {
+      const token = (getState() as RootState).config.apiKey;
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+      return headers;
+    },
+  }),
+  endpoints: (builder) => ({
+    getConfiguredProviders: builder.query<ConfiguredProvidersResponse, undefined>({
+      queryFn: async (_args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}`;
 
-export const providersEndpoints = providersApi.endpoints;
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "GET",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+        if (result.error) {
+          return { error: result.error };
+        }
+        if (!isProviderListResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: "Invalid response from /v1/providers",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: { providers: result.data.providers, error_log: [] } };
+      },
+      providesTags: [{ type: "PROVIDERS", id: "LIST" }],
+    }),
+
+    getProvider: builder.query<ProviderDetailResponse, { providerName: string }>(
+      {
+        providesTags: (_result, _error, { providerName }) => [
+          { type: "PROVIDER", id: providerName },
+        ],
+        queryFn: async (args, api, extraOptions, baseQuery) => {
+          const state = api.getState() as RootState;
+          const port = state.config.lspPort as unknown as number;
+          const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}`;
+
+          const result = await baseQuery({
+            ...extraOptions,
+            method: "GET",
+            url,
+            credentials: "same-origin",
+            redirect: "follow",
+          });
+
+          if (result.error) {
+            return { error: result.error };
+          }
+
+          if (!isProviderDetailResponse(result.data)) {
+            return {
+              meta: result.meta,
+              error: {
+                error: `Invalid response from /v1/providers/${args.providerName}`,
+                data: result.data,
+                status: "CUSTOM_ERROR",
+              },
+            };
+          }
+
+          return { data: result.data };
+        },
+      },
+    ),
+
+    getProviderSchema: builder.query<
+      ProviderSchemaResponse,
+      { providerName: string }
+    >({
+      providesTags: (_result, _error, { providerName }) => [
+        { type: "PROVIDER_SCHEMA", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}/schema`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "GET",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        if (!isProviderSchemaResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/schema`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: result.data };
+      },
+    }),
+
+    getProviderModels: builder.query<
+      ProviderModelsResponse,
+      { providerName: string }
+    >({
+      providesTags: (_result, _error, { providerName }) => [
+        { type: "PROVIDER_MODELS", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}/models`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "GET",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        if (!isProviderModelsResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/models`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: result.data };
+      },
+    }),
+
+    // Get all available models for a provider (discovered + custom)
+    getAvailableModels: builder.query<
+      AvailableModelsResponse,
+      { providerName: string }
+    >({
+      providesTags: (_result, _error, { providerName }) => [
+        { type: "AVAILABLE_MODELS", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}/available-models`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "GET",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        if (!isAvailableModelsResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/available-models`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: result.data };
+      },
+    }),
+
+    // Toggle model enabled/disabled
+    toggleModel: builder.mutation<
+      { success: boolean; model_id: string; enabled: boolean },
+      { providerName: string; modelId: string; enabled: boolean }
+    >({
+      invalidatesTags: (_result, _error, { providerName }) => [
+        { type: "AVAILABLE_MODELS", id: providerName },
+        { type: "PROVIDER", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}/models/toggle`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "POST",
+          url,
+          body: { model_id: args.modelId, enabled: args.enabled },
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        const data = result.data as { success?: boolean; detail?: string } | undefined;
+        if (data?.success === false) {
+          return {
+            meta: result.meta,
+            error: {
+              error: data.detail ?? "Failed to toggle model",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return {
+          data: {
+            success: true,
+            model_id: args.modelId,
+            enabled: args.enabled,
+          },
+        };
+      },
+    }),
+
+    // Add custom model
+    addCustomModel: builder.mutation<
+      { success: boolean; model_id: string },
+      { providerName: string; model: AddCustomModelRequest }
+    >({
+      invalidatesTags: (_result, _error, { providerName }) => [
+        { type: "AVAILABLE_MODELS", id: providerName },
+        { type: "PROVIDER", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}/custom-models`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "POST",
+          url,
+          body: args.model,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        const data = result.data as { success?: boolean; detail?: string } | undefined;
+        if (data?.success === false) {
+          return {
+            meta: result.meta,
+            error: {
+              error: data.detail ?? "Failed to add custom model",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: { success: true, model_id: args.model.id } };
+      },
+    }),
+
+    // Remove custom model
+    removeCustomModel: builder.mutation<
+      { success: boolean; model_id: string },
+      { providerName: string; modelId: string }
+    >({
+      invalidatesTags: (_result, _error, { providerName }) => [
+        { type: "AVAILABLE_MODELS", id: providerName },
+        { type: "PROVIDER", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}/custom-models/remove`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "POST",
+          url,
+          body: { model_id: args.modelId },
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        const data = result.data as { success?: boolean; detail?: string } | undefined;
+        if (data?.success === false) {
+          return {
+            meta: result.meta,
+            error: {
+              error: data.detail ?? "Failed to remove custom model",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: { success: true, model_id: args.modelId } };
+      },
+    }),
+
+    updateProvider: builder.mutation<
+      { success: boolean },
+      { providerName: string; settings: Record<string, unknown> }
+    >({
+      invalidatesTags: (_result, _error, { providerName }) => [
+        { type: "PROVIDER", id: providerName },
+        { type: "PROVIDER_MODELS", id: providerName },
+        { type: "PROVIDERS", id: "LIST" },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "POST",
+          url,
+          body: args.settings,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+        if (result.error) {
+          return { error: result.error };
+        }
+        if (isDetailMessage(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Failed to update provider ${args.providerName}`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: { success: true } };
+      },
+    }),
+
+    deleteProvider: builder.mutation<{ success: boolean }, string>({
+      invalidatesTags: (_result, _error, providerName) => [
+        { type: "PROVIDER", id: providerName },
+        { type: "PROVIDER_MODELS", id: providerName },
+        { type: "PROVIDERS", id: "LIST" },
+      ],
+      queryFn: async (providerName, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${providerName}`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "DELETE",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+        if (result.error) {
+          return { error: result.error };
+        }
+        if (isDetailMessage(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Failed to delete provider ${providerName}`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: { success: true } };
+      },
+    }),
+
+    getDefaults: builder.query<ProviderDefaults, undefined>({
+      providesTags: ["DEFAULTS"],
+      queryFn: async (_args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDER_DEFAULTS_URL}`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "GET",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        if (!isProviderDefaults(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: "Invalid response from /v1/defaults",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: result.data };
+      },
+    }),
+
+    updateDefaults: builder.mutation<{ success: boolean }, ProviderDefaults>({
+      invalidatesTags: ["DEFAULTS"],
+      queryFn: async (defaults, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDER_DEFAULTS_URL}`;
+
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "POST",
+          url,
+          body: defaults,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        return { data: { success: true } };
+      },
+    }),
+  }),
+  refetchOnMountOrArgChange: true,
+});
+
+function isProviderListResponse(data: unknown): data is ProviderListResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "providers")) return false;
+  if (!Array.isArray(data.providers)) return false;
+
+  for (const provider of data.providers) {
+    if (!isProviderListItem(provider)) return false;
+  }
+
+  return true;
+}
+
+function isProviderListItem(data: unknown): data is ProviderListItem {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
+  if (!hasProperty(data, "display_name") || typeof data.display_name !== "string")
+    return false;
+  if (!hasProperty(data, "enabled") || typeof data.enabled !== "boolean")
+    return false;
+  if (!hasProperty(data, "readonly") || typeof data.readonly !== "boolean")
+    return false;
+  if (!hasProperty(data, "model_count") || typeof data.model_count !== "number")
+    return false;
+  return true;
+}
+
+function isProviderDetailResponse(
+  data: unknown,
+): data is ProviderDetailResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
+  if (!hasProperty(data, "display_name") || typeof data.display_name !== "string")
+    return false;
+  if (!hasProperty(data, "enabled") || typeof data.enabled !== "boolean")
+    return false;
+  if (!hasProperty(data, "readonly") || typeof data.readonly !== "boolean")
+    return false;
+  if (!hasProperty(data, "settings")) return false;
+  // runtime can be null
+  return true;
+}
+
+function isProviderSchemaResponse(
+  data: unknown,
+): data is ProviderSchemaResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
+  if (!hasProperty(data, "schema") || typeof data.schema !== "string")
+    return false;
+  return true;
+}
+
+function isProviderModelsResponse(
+  data: unknown,
+): data is ProviderModelsResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "models")) return false;
+  if (!Array.isArray(data.models)) return false;
+  return true;
+}
+
+function isAvailableModelsResponse(
+  data: unknown,
+): data is AvailableModelsResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "models")) return false;
+  if (!Array.isArray(data.models)) return false;
+  if (!hasProperty(data, "source")) return false;
+  return true;
+}
+
+function isModelTypeDefaults(data: unknown): data is ModelTypeDefaults {
+  if (typeof data !== "object" || data === null) return false;
+  return true;
+}
+
+function isProviderDefaults(data: unknown): data is ProviderDefaults {
+  if (typeof data !== "object" || data === null) return false;
+  const obj = data as Record<string, unknown>;
+  if (hasProperty(obj, "chat") && !isModelTypeDefaults(obj.chat)) return false;
+  if (hasProperty(obj, "chat_light") && !isModelTypeDefaults(obj.chat_light)) return false;
+  if (hasProperty(obj, "chat_thinking") && !isModelTypeDefaults(obj.chat_thinking)) return false;
+  if (hasProperty(obj, "detail")) return false;
+  return true;
+}
 
 export function isProvider(data: unknown): data is Provider {
   if (typeof data !== "object" || data === null) return false;
@@ -278,85 +759,31 @@ export function isProvider(data: unknown): data is Provider {
 export function isConfiguredProvidersResponse(
   data: unknown,
 ): data is ConfiguredProvidersResponse {
-  // Check if data is an object
-  if (typeof data !== "object" || data === null) return false;
-
-  if (!hasProperty(data, "providers") || !hasProperty(data, "error_log"))
-    return false;
-
-  if (!Array.isArray(data.providers)) return false;
-
-  if (!Array.isArray(data.error_log)) return false;
-
-  for (const provider of data.providers) {
-    if (!isSimplifiedProvider(provider)) return false;
-  }
-
-  for (const errorLog of data.error_log) {
-    if (!isErrorLogInstance(errorLog)) return false;
-  }
-
-  return true;
+  return isProviderListResponse(data);
 }
 
 export function isProviderTemplatesResponse(
   data: unknown,
-): data is ProviderTemplatesResponse {
+): data is { provider_templates: { name: string }[] } {
   if (typeof data !== "object" || data === null) return false;
-
   if (!hasProperty(data, "provider_templates")) return false;
-
   if (!Array.isArray(data.provider_templates)) return false;
-
-  for (const template of data.provider_templates) {
-    if (!isSimplifiedProviderWithName(template)) return false;
-  }
-
   return true;
 }
 
-function isSimplifiedProviderWithName(
-  template: unknown,
-): template is SimplifiedProvider<"name"> {
-  if (typeof template !== "object" || template === null) return false;
+export const providersEndpoints = providersApi.endpoints;
 
-  if (!hasProperty(template, "name")) return false;
-
-  return typeof template.name === "string";
-}
-
-function isSimplifiedProvider(
-  provider: unknown,
-): provider is SimplifiedProvider<"name" | "enabled"> {
-  if (typeof provider !== "object" || provider === null) return false;
-
-  if (!hasProperty(provider, "name") || !hasProperty(provider, "enabled"))
-    return false;
-
-  if (
-    hasProperty(provider, "readonly") &&
-    typeof provider.readonly !== "boolean"
-  )
-    return false;
-
-  return (
-    typeof provider.name === "string" && typeof provider.enabled === "boolean"
-  );
-}
-
-function isErrorLogInstance(errorLog: unknown): errorLog is ErrorLogInstance {
-  if (typeof errorLog !== "object" || errorLog === null) return false;
-
-  if (
-    !hasProperty(errorLog, "path") ||
-    !hasProperty(errorLog, "error_line") ||
-    !hasProperty(errorLog, "error_msg")
-  )
-    return false;
-
-  return (
-    typeof errorLog.path === "string" &&
-    typeof errorLog.error_line === "number" &&
-    typeof errorLog.error_msg === "string"
-  );
-}
+export const {
+  useGetConfiguredProvidersQuery,
+  useGetProviderQuery,
+  useGetProviderSchemaQuery,
+  useGetProviderModelsQuery,
+  useGetAvailableModelsQuery,
+  useToggleModelMutation,
+  useAddCustomModelMutation,
+  useRemoveCustomModelMutation,
+  useUpdateProviderMutation,
+  useDeleteProviderMutation,
+  useGetDefaultsQuery,
+  useUpdateDefaultsMutation,
+} = providersApi;

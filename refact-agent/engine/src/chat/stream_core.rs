@@ -15,6 +15,60 @@ use crate::llm::adapter::{AdapterSettings, StreamParseError};
 use super::types::{DeltaOp, stream_heartbeat, stream_idle_timeout, stream_total_timeout};
 use super::openai_merge::ToolCallAccumulator;
 
+fn merge_usage(existing: Option<ChatUsage>, incoming: ChatUsage) -> ChatUsage {
+    match existing {
+        None => incoming,
+        Some(prev) => {
+            let prev_cache_read = prev.cache_read_tokens.unwrap_or(0);
+            let incoming_cache_read = incoming.cache_read_tokens.unwrap_or(0);
+            let cache_read_increased = incoming_cache_read > prev_cache_read;
+
+            let merged_cache_creation = match (prev.cache_creation_tokens, incoming.cache_creation_tokens) {
+                (Some(a), Some(b)) => Some(std::cmp::max(a, b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            let merged_cache_read = match (prev.cache_read_tokens, incoming.cache_read_tokens) {
+                (Some(a), Some(b)) => Some(std::cmp::max(a, b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+
+            let merged_prompt_tokens = if cache_read_increased {
+                incoming.prompt_tokens
+            } else if prev.prompt_tokens == 0 && incoming.prompt_tokens > 0 {
+                incoming.prompt_tokens
+            } else {
+                std::cmp::max(prev.prompt_tokens, incoming.prompt_tokens)
+            };
+
+            let merged_completion = std::cmp::max(prev.completion_tokens, incoming.completion_tokens);
+
+            let merged_metering = match (prev.metering_usd, incoming.metering_usd) {
+                (_, Some(b)) => Some(b),
+                (Some(a), None) => Some(a),
+                (None, None) => None,
+            };
+
+            let merged_total = merged_prompt_tokens
+                + merged_completion
+                + merged_cache_creation.unwrap_or(0)
+                + merged_cache_read.unwrap_or(0);
+
+            ChatUsage {
+                prompt_tokens: merged_prompt_tokens,
+                completion_tokens: merged_completion,
+                total_tokens: merged_total,
+                cache_creation_tokens: merged_cache_creation,
+                cache_read_tokens: merged_cache_read,
+                metering_usd: merged_metering,
+            }
+        }
+    }
+}
+
 pub struct StreamRunParams {
     pub llm_request: LlmRequest,
     pub model_rec: BaseModelRecord,
@@ -80,6 +134,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
         supports_tools: params.supports_tools,
         supports_reasoning: params.supports_reasoning,
         supports_max_completion_tokens: params.model_rec.supports_max_completion_tokens,
+        support_metadata: params.model_rec.support_metadata,
         eof_is_done: params.model_rec.eof_is_done,
     };
 
@@ -194,9 +249,11 @@ pub async fn run_llm_stream<C: StreamCollector>(
                             ops.push(DeltaOp::AddCitation { citation });
                         }
                         LlmStreamDelta::SetUsage { usage } => {
-                            acc.usage = Some(usage.clone());
-                            collector.on_usage(&usage);
-                            ops.push(DeltaOp::SetUsage { usage: json!(usage) });
+                            acc.usage = Some(merge_usage(acc.usage.take(), usage.clone()));
+                            if let Some(ref merged) = acc.usage {
+                                collector.on_usage(merged);
+                                ops.push(DeltaOp::SetUsage { usage: json!(merged) });
+                            }
                         }
                         LlmStreamDelta::SetFinishReason { reason } => {
                             acc.finish_reason = Some(reason);
@@ -337,5 +394,123 @@ async fn format_stream_error(err: EventSourceError) -> String {
             format!("LLM error ({}): {}", status, preview)
         }
         other => format!("Stream error: {}", other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_usage_cache_read_appears_later() {
+        let prev = ChatUsage {
+            prompt_tokens: 1500,
+            completion_tokens: 100,
+            total_tokens: 1600,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+            metering_usd: None,
+        };
+
+        let incoming = ChatUsage {
+            prompt_tokens: 500,
+            completion_tokens: 200,
+            total_tokens: 1700,
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(1000),
+            metering_usd: None,
+        };
+
+        let merged = merge_usage(Some(prev), incoming);
+
+        assert_eq!(merged.prompt_tokens, 500);
+        assert_eq!(merged.completion_tokens, 200);
+        assert_eq!(merged.cache_read_tokens, Some(1000));
+        assert_eq!(merged.total_tokens, 1700);
+    }
+
+    #[test]
+    fn test_merge_usage_prompt_increases_normally() {
+        let prev = ChatUsage {
+            prompt_tokens: 500,
+            completion_tokens: 100,
+            total_tokens: 600,
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(1000),
+            metering_usd: None,
+        };
+
+        let incoming = ChatUsage {
+            prompt_tokens: 600,
+            completion_tokens: 150,
+            total_tokens: 750,
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(1000),
+            metering_usd: None,
+        };
+
+        let merged = merge_usage(Some(prev), incoming);
+
+        assert_eq!(merged.prompt_tokens, 600);
+        assert_eq!(merged.completion_tokens, 150);
+    }
+
+    #[test]
+    fn test_merge_usage_from_none() {
+        let incoming = ChatUsage {
+            prompt_tokens: 500,
+            completion_tokens: 200,
+            total_tokens: 700,
+            cache_creation_tokens: Some(100),
+            cache_read_tokens: Some(200),
+            metering_usd: None,
+        };
+
+        let merged = merge_usage(None, incoming.clone());
+
+        assert_eq!(merged.prompt_tokens, 500);
+        assert_eq!(merged.completion_tokens, 200);
+        assert_eq!(merged.cache_creation_tokens, Some(100));
+        assert_eq!(merged.cache_read_tokens, Some(200));
+    }
+
+    #[test]
+    fn test_merge_usage_metering_incoming_wins() {
+        use crate::call_validation::MeteringUsd;
+
+        let prev = ChatUsage {
+            prompt_tokens: 500,
+            completion_tokens: 200,
+            total_tokens: 700,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+            metering_usd: Some(MeteringUsd {
+                prompt_usd: 0.001,
+                generated_usd: 0.002,
+                cache_read_usd: None,
+                cache_creation_usd: None,
+                total_usd: 0.003,
+            }),
+        };
+
+        let incoming = ChatUsage {
+            prompt_tokens: 500,
+            completion_tokens: 300,
+            total_tokens: 800,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+            metering_usd: Some(MeteringUsd {
+                prompt_usd: 0.002,
+                generated_usd: 0.004,
+                cache_read_usd: None,
+                cache_creation_usd: None,
+                total_usd: 0.006,
+            }),
+        };
+
+        let merged = merge_usage(Some(prev), incoming);
+
+        assert!(merged.metering_usd.is_some());
+        assert_eq!(merged.metering_usd.unwrap().total_usd, 0.006);
     }
 }

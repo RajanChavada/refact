@@ -3,17 +3,14 @@ use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
-use structopt::StructOpt;
 
 use crate::caps::{
     BaseModelRecord, ChatModelRecord, CodeAssistantCaps, CompletionModelRecord, DefaultModels,
     EmbeddingModelRecord, HasBaseModelRecord, default_embedding_batch, default_rejection_threshold,
-    load_caps_value_from_url, resolve_relative_urls, strip_model_from_finetune, normalize_string,
+    strip_model_from_finetune, normalize_string,
 };
 use crate::custom_error::{MapErrToString, YamlError};
-use crate::global_context::{CommandLine, GlobalContext};
-use crate::caps::self_hosted::SelfHostedCaps;
+
 use crate::llm::adapter::WireFormat;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -223,15 +220,7 @@ impl<'de> serde::Deserialize<'de> for EmbeddingModelRecord {
     }
 }
 
-#[derive(Deserialize, Default, Debug)]
-pub struct ModelDefaultSettingsUI {
-    #[serde(default)]
-    pub chat: ChatModelRecord,
-    #[serde(default)]
-    pub completion: CompletionModelRecord,
-    #[serde(default)]
-    pub embedding: EmbeddingModelRecord,
-}
+
 
 const PROVIDER_TEMPLATES: &[(&str, &str)] = &[
     (
@@ -288,7 +277,6 @@ const PROVIDER_TEMPLATES: &[(&str, &str)] = &[
     ),
 ];
 static PARSED_PROVIDERS: OnceLock<IndexMap<String, CapsProvider>> = OnceLock::new();
-static PARSED_MODEL_DEFAULTS: OnceLock<IndexMap<String, ModelDefaultSettingsUI>> = OnceLock::new();
 
 pub fn get_provider_templates() -> &'static IndexMap<String, CapsProvider> {
     PARSED_PROVIDERS.get_or_init(|| {
@@ -300,25 +288,6 @@ pub fn get_provider_templates() -> &'static IndexMap<String, CapsProvider> {
             } else {
                 panic!("Failed to parse template for provider {}", name);
             }
-        }
-        map
-    })
-}
-
-pub fn get_provider_model_default_settings_ui() -> &'static IndexMap<String, ModelDefaultSettingsUI>
-{
-    PARSED_MODEL_DEFAULTS.get_or_init(|| {
-        let mut map = IndexMap::new();
-        for (name, yaml) in PROVIDER_TEMPLATES {
-            let yaml_value = serde_yaml::from_str::<serde_yaml::Value>(yaml)
-                .unwrap_or_else(|_| panic!("Failed to parse YAML for provider {}", name));
-
-            let model_default_settings_ui = yaml_value
-                .get("model_default_settings_ui")
-                .and_then(|v| serde_yaml::from_value::<ModelDefaultSettingsUI>(v.clone()).ok())
-                .unwrap_or_default();
-
-            map.insert(name.to_string(), model_default_settings_ui);
         }
         map
     })
@@ -779,15 +748,6 @@ pub fn resolve_provider_api_key(provider: &CapsProvider, cmdline_api_key: &str) 
     resolve_api_key(provider, &provider.api_key, &cmdline_api_key, "API key")
 }
 
-pub fn resolve_tokenizer_api_key(provider: &CapsProvider) -> String {
-    resolve_api_key(
-        provider,
-        &provider.tokenizer_api_key,
-        "",
-        "tokenizer API key",
-    )
-}
-
 pub async fn get_provider_from_template_and_config_file(
     config_dir: &Path,
     name: &str,
@@ -823,32 +783,6 @@ pub async fn get_provider_from_template_and_config_file(
     }
 
     Ok(provider)
-}
-
-pub async fn get_provider_from_server(
-    gcx: Arc<ARwLock<GlobalContext>>,
-) -> Result<CapsProvider, String> {
-    let command_line = CommandLine::from_args();
-    let cmdline_api_key = command_line.api_key.clone();
-    let cmdline_experimental = command_line.experimental;
-    let (caps_value, caps_url) = load_caps_value_from_url(command_line, gcx.clone()).await?;
-
-    if let Ok(self_hosted_caps) = serde_json::from_value::<SelfHostedCaps>(caps_value.clone()) {
-        let mut provider = self_hosted_caps.into_provider(&caps_url, &cmdline_api_key)?;
-        post_process_provider(&mut provider, true, cmdline_experimental);
-        provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
-        provider.tokenizer_api_key = resolve_tokenizer_api_key(&provider);
-        Ok(provider)
-    } else {
-        let mut provider =
-            serde_json::from_value::<CapsProvider>(caps_value).map_err_to_string()?;
-
-        resolve_relative_urls(&mut provider, &caps_url)?;
-        post_process_provider(&mut provider, true, cmdline_experimental);
-        provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
-        provider.tokenizer_api_key = resolve_tokenizer_api_key(&provider);
-        Ok(provider)
-    }
 }
 
 #[cfg(test)]

@@ -3,10 +3,7 @@ import { Flex } from "@radix-ui/themes";
 
 import { ConfiguredProvidersView } from "./ConfiguredProvidersView";
 
-import type {
-  ConfiguredProvidersResponse,
-  SimplifiedProvider,
-} from "../../../services/refact";
+import type { ProviderListItem } from "../../../services/refact";
 import { ProviderPreview } from "../ProviderPreview";
 import {
   ErrorCallout,
@@ -24,7 +21,7 @@ import styles from "./ProvidersView.module.css";
 import { selectConfig } from "../../Config/configSlice";
 
 export type ProvidersViewProps = {
-  configuredProviders: ConfiguredProvidersResponse["providers"];
+  configuredProviders: ProviderListItem[];
 };
 
 export const ProvidersView: React.FC<ProvidersViewProps> = ({
@@ -36,15 +33,10 @@ export const ProvidersView: React.FC<ProvidersViewProps> = ({
   const globalError = useAppSelector(getErrorMessage);
   const information = useAppSelector(getInformationMessage);
 
-  const [currentProvider, setCurrentProvider] = useState<SimplifiedProvider<
-    "name" | "enabled" | "readonly" | "supports_completion"
-  > | null>(null);
+  const [currentProvider, setCurrentProvider] =
+    useState<ProviderListItem | null>(null);
   const handleSetCurrentProvider = useCallback(
-    (
-      provider: SimplifiedProvider<
-        "name" | "enabled" | "readonly" | "supports_completion"
-      > | null,
-    ) => {
+    (provider: ProviderListItem | null) => {
       setCurrentProvider(provider);
     },
     [],

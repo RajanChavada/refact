@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 id: project_summary
 title: Project Summary
 description: Generate project summary and integrations
@@ -82,10 +82,6 @@ tools:
   - tree
   - cat
   - create_textdoc
-
-llm_defaults:
-  max_new_tokens: 4096
-  temperature: 0.0
 
 tool_confirm:
   rules:

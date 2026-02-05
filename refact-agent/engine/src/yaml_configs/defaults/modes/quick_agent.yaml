@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: quick_agent
 title: Quick Agent
 description: Fast autonomous coding with minimal overhead
@@ -76,10 +76,6 @@ tools:
   - tasks_set
   - task_done
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 4096
-  temperature: 0.0
 
 tool_confirm:
   rules:

@@ -43,6 +43,7 @@ export type DropdownNavigationOptions =
   | "providers"
   | "knowledge graph"
   | "customization"
+  | "default models"
   | "";
 
 type DropdownProps = {
@@ -251,6 +252,10 @@ export const Dropdown: React.FC<DropdownProps> = ({
 
         <DropdownMenu.Item onSelect={() => handleNavigation("providers")}>
           <GearIcon /> Configure Providers
+        </DropdownMenu.Item>
+
+        <DropdownMenu.Item onSelect={() => handleNavigation("default models")}>
+          <GearIcon /> Default Models
         </DropdownMenu.Item>
 
         {isKnowledgeFeatureAvailable && (

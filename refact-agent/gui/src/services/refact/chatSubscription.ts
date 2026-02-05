@@ -25,6 +25,7 @@ export type ThreadParams = {
   auto_approve_editing_tools?: boolean;
   auto_approve_dangerous_commands?: boolean;
   reasoning_effort?: string | null;
+  thinking_budget?: number | null;
   temperature?: number | null;
   frequency_penalty?: number | null;
   max_tokens?: number | null;

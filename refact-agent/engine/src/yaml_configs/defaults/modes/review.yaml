@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: review
 title: Review
 description: Autonomous code review with correctness validation
@@ -95,10 +95,6 @@ tools:
   - subagent
   - task_done
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 4096
-  temperature: 0.1
 
 tool_confirm:
   rules:

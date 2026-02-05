@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 id: shell
 title: Shell
 description: Execute shell commands for system tasks
@@ -39,10 +39,6 @@ prompt: |
 
 tools:
   - shell
-
-llm_defaults:
-  max_new_tokens: 2048
-  temperature: 0.0
 
 tool_confirm:
   rules:

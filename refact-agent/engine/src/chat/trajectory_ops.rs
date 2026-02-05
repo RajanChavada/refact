@@ -1488,6 +1488,7 @@ mod tests {
                 total_tokens: 150,
                 cache_creation_tokens: None,
                 cache_read_tokens: None,
+                metering_usd: None,
             }),
             finish_reason: Some("stop".to_string()),
             reasoning_content: Some("thinking...".to_string()),

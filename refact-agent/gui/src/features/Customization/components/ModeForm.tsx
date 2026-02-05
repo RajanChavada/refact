@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import {
   Flex,
   TextField,
@@ -6,6 +6,7 @@ import {
   Switch,
   TextArea,
   Tabs,
+  Select,
 } from "@radix-ui/themes";
 import { StringListEditor } from "./StringListEditor";
 import { RulesTableEditor } from "./RulesTableEditor";
@@ -18,12 +19,128 @@ import {
   isString,
   safeToolConfirmRules,
 } from "./configUtils";
+import { useGetCapsQuery } from "../../../services/refact/caps";
+import { useCapsForToolUse } from "../../../hooks";
+import { enrichAndGroupModels } from "../../../utils/enrichModels";
+import { RichModelSelectItem } from "../../../components/Select/RichModelSelectItem";
 import styles from "./editors.module.css";
+import selectStyles from "../../../components/Select/select.module.css";
 
 type ModeFormProps = {
   config: Record<string, unknown>;
   onPatch: (patch: ConfigPatch) => void;
   availableTools?: string[];
+};
+
+type ModelTypeSectionProps = {
+  title: string;
+  typeKey: "default" | "light" | "thinking";
+  config: Record<string, unknown>;
+  groupedModels: ReturnType<typeof enrichAndGroupModels>;
+  onPatch: (path: (string | number)[], value: unknown) => void;
+};
+
+const ModelTypeSection: React.FC<ModelTypeSectionProps> = ({
+  title,
+  typeKey,
+  config,
+  groupedModels,
+  onPatch,
+}) => {
+  const model = safeString(config.model);
+  const maxNewTokens = typeof config.max_new_tokens === "number" ? config.max_new_tokens : undefined;
+  const temperature = typeof config.temperature === "number" ? config.temperature : undefined;
+  const topP = typeof config.top_p === "number" ? config.top_p : undefined;
+  const boostReasoning = typeof config.boost_reasoning === "boolean" ? config.boost_reasoning : false;
+  const reasoningEffort = typeof config.reasoning_effort === "string" ? config.reasoning_effort : "";
+  const thinkingBudget = typeof config.thinking_budget === "number" ? config.thinking_budget : undefined;
+  const toolChoice = typeof config.tool_choice === "string" ? config.tool_choice : "";
+  const parallelToolCalls = typeof config.parallel_tool_calls === "boolean" ? config.parallel_tool_calls : false;
+
+  const basePath = ["model_defaults", typeKey];
+
+  return (
+    <Flex direction="column" gap="2" p="2" style={{ border: "1px solid var(--gray-6)", borderRadius: "var(--radius-2)" }}>
+      <Text size="1" weight="medium">{title}</Text>
+      <Flex direction="column" gap="1">
+        <Text size="1" color="gray">Model</Text>
+        <Select.Root
+          value={model || "__inherit__"}
+          onValueChange={(v) => onPatch([...basePath, "model"], v === "__inherit__" ? undefined : v)}
+          size="1"
+        >
+          <Select.Trigger placeholder="Inherit from global" style={{ width: "100%" }} />
+          <Select.Content position="popper">
+            <Select.Item value="__inherit__"><Text color="gray">Inherit from global</Text></Select.Item>
+            <Select.Separator />
+            {groupedModels.map((group) => (
+              <Select.Group key={group.provider}>
+                <Select.Label>{group.displayName}</Select.Label>
+                {group.models.map((m) => (
+                  <Select.Item key={m.value} value={m.value} textValue={m.value}>
+                    <span className={selectStyles.trigger_only}>{m.value}</span>
+                    <span className={selectStyles.dropdown_only}>
+                      <RichModelSelectItem
+                        displayName={m.value}
+                        pricing={m.pricing}
+                        nCtx={m.nCtx}
+                        capabilities={m.capabilities}
+                        isDefault={m.isDefault}
+                        isThinking={m.isThinking}
+                        isLight={m.isLight}
+                      />
+                    </span>
+                  </Select.Item>
+                ))}
+              </Select.Group>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      </Flex>
+      <Flex gap="2" wrap="wrap">
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
+          <Text size="1" color="gray">Max Tokens</Text>
+          <TextField.Root size="1" type="number" value={maxNewTokens?.toString() ?? ""} placeholder="Default"
+            onChange={(e) => onPatch([...basePath, "max_new_tokens"], e.target.value ? parseInt(e.target.value, 10) : undefined)} />
+        </Flex>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
+          <Text size="1" color="gray">Temp</Text>
+          <TextField.Root size="1" type="number" step="0.1" value={temperature?.toString() ?? ""} placeholder="Default"
+            onChange={(e) => onPatch([...basePath, "temperature"], e.target.value ? parseFloat(e.target.value) : undefined)} />
+        </Flex>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
+          <Text size="1" color="gray">Top P</Text>
+          <TextField.Root size="1" type="number" step="0.1" value={topP?.toString() ?? ""} placeholder="Default"
+            onChange={(e) => onPatch([...basePath, "top_p"], e.target.value ? parseFloat(e.target.value) : undefined)} />
+        </Flex>
+      </Flex>
+      <Flex gap="2" wrap="wrap" align="center">
+        <Flex align="center" gap="1">
+          <Switch size="1" checked={boostReasoning} onCheckedChange={(c) => onPatch([...basePath, "boost_reasoning"], c || undefined)} />
+          <Text size="1">Boost</Text>
+        </Flex>
+        <Flex align="center" gap="1">
+          <Switch size="1" checked={parallelToolCalls} onCheckedChange={(c) => onPatch([...basePath, "parallel_tool_calls"], c || undefined)} />
+          <Text size="1">Parallel</Text>
+        </Flex>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
+          <Text size="1" color="gray">Effort</Text>
+          <TextField.Root size="1" value={reasoningEffort} placeholder="low/med/high"
+            onChange={(e) => onPatch([...basePath, "reasoning_effort"], e.target.value || undefined)} />
+        </Flex>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
+          <Text size="1" color="gray">Tool Choice</Text>
+          <TextField.Root size="1" value={toolChoice} placeholder="auto/none"
+            onChange={(e) => onPatch([...basePath, "tool_choice"], e.target.value || undefined)} />
+        </Flex>
+        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
+          <Text size="1" color="gray">Think Budget</Text>
+          <TextField.Root size="1" type="number" value={thinkingBudget?.toString() ?? ""} placeholder="Default"
+            onChange={(e) => onPatch([...basePath, "thinking_budget"], e.target.value ? parseInt(e.target.value, 10) : undefined)} />
+        </Flex>
+      </Flex>
+    </Flex>
+  );
 };
 
 export const ModeForm: React.FC<ModeFormProps> = ({
@@ -38,7 +155,10 @@ export const ModeForm: React.FC<ModeFormProps> = ({
   const specific = safeBoolean(config.specific);
   const prompt = safeString(config.prompt);
   const tools = safeArray(config.tools, isString);
-  const llmDefaults = safeObject(config.llm_defaults);
+  const modelDefaults = safeObject(config.model_defaults);
+  const modelDefaultsDefault = safeObject(modelDefaults.default);
+  const modelDefaultsLight = safeObject(modelDefaults.light);
+  const modelDefaultsThinking = safeObject(modelDefaults.thinking);
   const toolConfirmObj = safeObject(config.tool_confirm);
   const toolConfirmRules = safeToolConfirmRules(toolConfirmObj.rules);
   const threadDefaults = safeObject(config.thread_defaults);
@@ -54,6 +174,14 @@ export const ModeForm: React.FC<ModeFormProps> = ({
     },
     [onPatch],
   );
+
+  const { data: capsData } = useGetCapsQuery(undefined);
+  const capsForToolUse = useCapsForToolUse();
+
+  // Use the same filtered model list as the main chat selector
+  const groupedModels = useMemo(() => {
+    return enrichAndGroupModels(capsForToolUse.usableModelsForPlan, capsData);
+  }, [capsForToolUse.usableModelsForPlan, capsData]);
 
   return (
     <Tabs.Root
@@ -150,142 +278,28 @@ export const ModeForm: React.FC<ModeFormProps> = ({
 
       {activeTab === "llm" && (
         <div className={styles.formTabContent}>
-          <Flex gap="2" wrap="wrap">
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
-              <Text size="1">Max Tokens</Text>
-              <TextField.Root
-                size="1"
-                type="number"
-                value={
-                  typeof llmDefaults.max_new_tokens === "number"
-                    ? llmDefaults.max_new_tokens.toString()
-                    : ""
-                }
-                onChange={(e) =>
-                  patch(
-                    ["llm_defaults", "max_new_tokens"],
-                    e.target.value ? parseInt(e.target.value, 10) : undefined,
-                  )
-                }
-                placeholder="Default"
-              />
-            </Flex>
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
-              <Text size="1">Temp</Text>
-              <TextField.Root
-                size="1"
-                type="number"
-                step="0.1"
-                value={
-                  typeof llmDefaults.temperature === "number"
-                    ? llmDefaults.temperature.toString()
-                    : ""
-                }
-                onChange={(e) =>
-                  patch(
-                    ["llm_defaults", "temperature"],
-                    e.target.value ? parseFloat(e.target.value) : undefined,
-                  )
-                }
-                placeholder="Default"
-              />
-            </Flex>
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
-              <Text size="1">Top P</Text>
-              <TextField.Root
-                size="1"
-                type="number"
-                step="0.1"
-                value={
-                  typeof llmDefaults.top_p === "number"
-                    ? llmDefaults.top_p.toString()
-                    : ""
-                }
-                onChange={(e) =>
-                  patch(
-                    ["llm_defaults", "top_p"],
-                    e.target.value ? parseFloat(e.target.value) : undefined,
-                  )
-                }
-                placeholder="Default"
-              />
-            </Flex>
-          </Flex>
-
-          <Flex gap="3" wrap="wrap">
-            <Flex align="center" gap="1">
-              <Switch
-                size="1"
-                checked={
-                  typeof llmDefaults.boost_reasoning === "boolean"
-                    ? llmDefaults.boost_reasoning
-                    : false
-                }
-                onCheckedChange={(checked) =>
-                  patch(
-                    ["llm_defaults", "boost_reasoning"],
-                    checked || undefined,
-                  )
-                }
-              />
-              <Text size="1">Boost Reasoning</Text>
-            </Flex>
-            <Flex align="center" gap="1">
-              <Switch
-                size="1"
-                checked={
-                  typeof llmDefaults.parallel_tool_calls === "boolean"
-                    ? llmDefaults.parallel_tool_calls
-                    : false
-                }
-                onCheckedChange={(checked) =>
-                  patch(
-                    ["llm_defaults", "parallel_tool_calls"],
-                    checked || undefined,
-                  )
-                }
-              />
-              <Text size="1">Parallel Tools</Text>
-            </Flex>
-          </Flex>
-
-          <Flex gap="2" wrap="wrap">
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 100 }}>
-              <Text size="1">Reasoning Effort</Text>
-              <TextField.Root
-                size="1"
-                value={
-                  typeof llmDefaults.reasoning_effort === "string"
-                    ? llmDefaults.reasoning_effort
-                    : ""
-                }
-                onChange={(e) =>
-                  patch(
-                    ["llm_defaults", "reasoning_effort"],
-                    e.target.value || undefined,
-                  )
-                }
-                placeholder="low/medium/high"
-              />
-            </Flex>
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 100 }}>
-              <Text size="1">Tool Choice</Text>
-              <TextField.Root
-                size="1"
-                value={
-                  typeof llmDefaults.tool_choice === "string"
-                    ? llmDefaults.tool_choice
-                    : ""
-                }
-                onChange={(e) =>
-                  patch(
-                    ["llm_defaults", "tool_choice"],
-                    e.target.value || undefined,
-                  )
-                }
-                placeholder="auto/none/required"
-              />
-            </Flex>
+          <Flex direction="column" gap="3">
+            <ModelTypeSection
+              title="Default Model"
+              typeKey="default"
+              config={modelDefaultsDefault}
+              groupedModels={groupedModels}
+              onPatch={patch}
+            />
+            <ModelTypeSection
+              title="Light Model"
+              typeKey="light"
+              config={modelDefaultsLight}
+              groupedModels={groupedModels}
+              onPatch={patch}
+            />
+            <ModelTypeSection
+              title="Thinking Model"
+              typeKey="thinking"
+              config={modelDefaultsThinking}
+              groupedModels={groupedModels}
+              onPatch={patch}
+            />
           </Flex>
         </div>
       )}

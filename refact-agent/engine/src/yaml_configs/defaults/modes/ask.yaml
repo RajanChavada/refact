@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: ask
 title: Ask
 description: Quick Q&A with web research capability
@@ -50,10 +50,6 @@ tools:
   - deep_research
   - subagent
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 2048
-  temperature: 0.3
 
 tool_confirm:
   rules:

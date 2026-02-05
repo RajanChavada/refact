@@ -63,11 +63,17 @@ export function useUsageCounter() {
     });
   }, [currentThreadUsage]);
 
-  // Deterministic fallback: scan backwards through assistant messages for first message with prompt_tokens > 0
+  // Deterministic fallback: scan backwards through assistant messages for first message with input tokens > 0
+  // Include cache tokens for accurate context size (prompt_tokens + cache_creation + cache_read)
   const currentSessionTokens = useMemo(() => {
     for (let i = assistantMessages.length - 1; i >= 0; i--) {
-      const t = assistantMessages[i]?.usage?.prompt_tokens;
-      if (typeof t === "number" && t > 0) return t;
+      const usage = assistantMessages[i]?.usage;
+      if (!usage) continue;
+      const promptTokens = usage.prompt_tokens;
+      const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+      const cacheRead = usage.cache_read_input_tokens ?? 0;
+      const total = promptTokens + cacheCreation + cacheRead;
+      if (total > 0) return total;
     }
     return 0;
   }, [assistantMessages]);
@@ -75,8 +81,12 @@ export function useUsageCounter() {
   const isContextFromPreviousMessage = useMemo(() => {
     if (assistantMessages.length === 0) return false;
     const lastMsg = assistantMessages[assistantMessages.length - 1];
-    const lastHasTokens = (lastMsg.usage?.prompt_tokens ?? 0) > 0;
-    return !lastHasTokens && currentSessionTokens > 0;
+    const usage = lastMsg.usage;
+    const lastTotal =
+      (usage?.prompt_tokens ?? 0) +
+      (usage?.cache_creation_input_tokens ?? 0) +
+      (usage?.cache_read_input_tokens ?? 0);
+    return lastTotal === 0 && currentSessionTokens > 0;
   }, [assistantMessages, currentSessionTokens]);
 
   const tokenPercentage = useMemo(() => {

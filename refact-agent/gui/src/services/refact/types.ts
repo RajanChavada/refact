@@ -580,6 +580,9 @@ export function isCDInstructionResponse(
   return json.role === "cd_instruction";
 }
 
+import type { MeteringUsd } from "./chat";
+export type { MeteringUsd };
+
 type CostInfo = {
   metering_prompt_tokens_n?: number;
   metering_generated_tokens_n?: number;
@@ -592,6 +595,8 @@ type CostInfo = {
   metering_coins_generated?: number;
   metering_coins_cache_creation?: number;
   metering_coins_cache_read?: number;
+
+  metering_usd?: MeteringUsd;
 };
 
 type ChatResponseChoice = {

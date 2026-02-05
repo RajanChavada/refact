@@ -1,20 +1,30 @@
-import { LspChatMode } from "../features/Chat/Thread/types";
+import {
+  LspChatMode,
+  ReasoningEffort,
+} from "../features/Chat/Thread/types";
 import { SystemPrompts } from "../services/refact/prompts";
 
-const LAST_THREAD_PARAMS_KEY = "refact_last_thread_params";
+const MODE_PARAMS_KEY_PREFIX = "refact_mode_params_";
 const DRAFT_MESSAGES_KEY = "refact_draft_messages";
 const MAX_DRAFT_MESSAGES = 50;
 
-export interface PersistedThreadParams {
-  model: string;
-  mode?: LspChatMode;
+export interface PersistedModeParams {
+  model?: string;
   boost_reasoning?: boolean;
+  reasoning_effort?: ReasoningEffort;
+  thinking_budget?: number;
+  temperature?: number;
+  max_tokens?: number;
   increase_max_tokens?: boolean;
   include_project_info?: boolean;
   context_tokens_cap?: number;
   system_prompt?: SystemPrompts;
   checkpoints_enabled?: boolean;
   follow_ups_enabled?: boolean;
+}
+
+export interface PersistedThreadParams extends PersistedModeParams {
+  mode?: LspChatMode;
 }
 
 type DraftMessagesStorage = Partial<
@@ -27,37 +37,49 @@ type DraftMessagesStorage = Partial<
   >
 >;
 
-export function saveLastThreadParams(
-  params: Partial<PersistedThreadParams>,
+function getModeKey(mode: LspChatMode): string {
+  return `${MODE_PARAMS_KEY_PREFIX}${mode}`;
+}
+
+export function saveModeParams(
+  mode: LspChatMode,
+  params: Partial<PersistedModeParams>,
 ): void {
   try {
     if (typeof localStorage === "undefined") return;
-    const existing = getLastThreadParams();
+    const existing = getModeParams(mode);
     const merged = { ...existing, ...params };
-    localStorage.setItem(LAST_THREAD_PARAMS_KEY, JSON.stringify(merged));
+    localStorage.setItem(getModeKey(mode), JSON.stringify(merged));
   } catch {
-    // Silent fail - localStorage might be unavailable
+    // Silent fail
   }
 }
 
-export function getLastThreadParams(): Partial<PersistedThreadParams> {
+export function getModeParams(mode: LspChatMode): Partial<PersistedModeParams> {
   try {
     if (typeof localStorage === "undefined") return {};
-    const stored = localStorage.getItem(LAST_THREAD_PARAMS_KEY);
+    const stored = localStorage.getItem(getModeKey(mode));
     if (!stored) return {};
-    return JSON.parse(stored) as Partial<PersistedThreadParams>;
+    return JSON.parse(stored) as Partial<PersistedModeParams>;
   } catch {
     return {};
   }
 }
 
-export function clearLastThreadParams(): void {
-  try {
-    if (typeof localStorage === "undefined") return;
-    localStorage.removeItem(LAST_THREAD_PARAMS_KEY);
-  } catch {
-    // Silent fail
-  }
+export function getLastThreadParams(
+  mode?: LspChatMode,
+): Partial<PersistedThreadParams> {
+  const defaultMode = mode ?? "agent";
+  const modeParams = getModeParams(defaultMode);
+  return { ...modeParams, mode: defaultMode };
+}
+
+export function saveLastThreadParams(
+  params: Partial<PersistedThreadParams>,
+): void {
+  const mode = params.mode ?? "agent";
+  const { mode: _, ...modeParams } = params;
+  saveModeParams(mode, modeParams);
 }
 
 function loadDraftMessagesStorage(): DraftMessagesStorage {

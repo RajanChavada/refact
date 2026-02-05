@@ -13,6 +13,7 @@ export type ModelSelectorProps = {
   label?: string;
   showLabel?: boolean;
   compact?: boolean;
+  defaultValue?: string;
 };
 
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
@@ -22,30 +23,23 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   label = "model:",
   showLabel = true,
   compact = true,
+  defaultValue,
 }) => {
   const isControlled = onValueChange !== undefined || value !== undefined;
   const capsForToolUse = useCapsForToolUse();
   const { data: caps } = useGetCapsQuery(undefined);
 
-  const capsData = isControlled ? caps : capsForToolUse.data;
+  const capsData = caps ?? capsForToolUse.data;
 
-  const usableModels = useMemo(() => {
-    if (isControlled && capsData) {
-      return Object.keys(capsData.chat_models).map((model) => ({
-        value: model,
-        textValue: model,
-        disabled: false,
-      }));
-    }
-    return capsForToolUse.usableModelsForPlan;
-  }, [isControlled, capsData, capsForToolUse.usableModelsForPlan]);
+  // Always use the same filtered model list as the main chat selector
+  const usableModels = capsForToolUse.usableModelsForPlan;
 
   const groupedModels = useMemo(
     () => enrichAndGroupModels(usableModels, capsData),
     [usableModels, capsData],
   );
 
-  const defaultModel = capsData?.chat_default_model ?? "";
+  const defaultModel = defaultValue ?? capsData?.chat_default_model ?? "";
   const effectiveValue = isControlled
     ? value ?? defaultModel
     : capsForToolUse.currentModel;
@@ -99,14 +93,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     key={model.value}
                     value={model.value}
                     disabled={model.disabled}
-                    textValue={model.displayName}
+                    textValue={model.value}
                   >
                     <span className={styles.trigger_only}>
-                      {model.displayName}
+                      {model.value}
                     </span>
                     <span className={styles.dropdown_only}>
                       <RichModelSelectItem
-                        displayName={model.displayName}
+                        displayName={model.value}
                         pricing={model.pricing}
                         nCtx={model.nCtx}
                         capabilities={model.capabilities}
@@ -148,14 +142,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   key={model.value}
                   value={model.value}
                   disabled={model.disabled}
-                  textValue={model.displayName}
+                  textValue={model.value}
                 >
                   <span className={styles.trigger_only}>
-                    {model.displayName}
+                    {model.value}
                   </span>
                   <span className={styles.dropdown_only}>
                     <RichModelSelectItem
-                      displayName={model.displayName}
+                      displayName={model.value}
                       pricing={model.pricing}
                       nCtx={model.nCtx}
                       capabilities={model.capabilities}

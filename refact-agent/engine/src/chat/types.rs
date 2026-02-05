@@ -84,6 +84,8 @@ pub struct ThreadParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
@@ -120,6 +122,7 @@ impl Default for ThreadParams {
             tool_use: "agent".to_string(),
             boost_reasoning: false,
             reasoning_effort: None,
+            thinking_budget: None,
             temperature: None,
             frequency_penalty: None,
             max_tokens: None,

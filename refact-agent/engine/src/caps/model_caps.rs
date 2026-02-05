@@ -15,7 +15,7 @@ fn get_refresh_lock() -> &'static AMutex<()> {
     REFRESH_LOCK.get_or_init(|| AMutex::new(()))
 }
 
-const MODEL_CAPS_URL: &str = "https://www.smallcloud.ai/v1/model-capabilities";
+const SMALLCLOUD_MODEL_CAPS_URL: &str = "https://www.smallcloud.ai/v1/model-capabilities";
 const CACHE_FILENAME: &str = "model-capabilities.json";
 const CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -59,6 +59,10 @@ pub enum ReasoningType {
     Deepseek,
     Xai,
     Qwen,
+    Gemini,
+    Kimi,
+    Zhipu,
+    Mistral,
 }
 
 impl Default for ReasoningType {
@@ -73,6 +77,7 @@ pub enum CachingType {
     None,
     Auto,
     Explicit,
+    Openai,
 }
 
 impl Default for CachingType {
@@ -109,6 +114,8 @@ pub struct ModelCapabilities {
     pub reasoning: ReasoningType,
     #[serde(default)]
     pub supports_reasoning_effort: bool,
+    #[serde(default)]
+    pub max_thinking_tokens: Option<usize>,
     #[serde(default)]
     pub caching: CachingType,
     #[serde(default)]
@@ -149,6 +156,22 @@ fn get_cache_path() -> PathBuf {
 const MAX_REASONABLE_N_CTX: usize = 10_000_000;
 const MAX_REASONABLE_OUTPUT_TOKENS: usize = 1_000_000;
 
+fn normalize_tokenizer(tokenizer: &str) -> String {
+    if tokenizer.is_empty()
+        || tokenizer.starts_with("hf://")
+        || tokenizer.starts_with("http://")
+        || tokenizer.starts_with("https://")
+        || tokenizer.starts_with("file://")
+        || tokenizer.starts_with("fake")
+    {
+        return tokenizer.to_string();
+    }
+    if tokenizer.contains('/') {
+        return format!("hf://{}", tokenizer);
+    }
+    tokenizer.to_string()
+}
+
 fn validate_model_caps(caps: &mut HashMap<String, ModelCapabilities>) {
     for (name, cap) in caps.iter_mut() {
         if cap.n_ctx > MAX_REASONABLE_N_CTX {
@@ -159,6 +182,7 @@ fn validate_model_caps(caps: &mut HashMap<String, ModelCapabilities>) {
             warn!("Model {} has unreasonable max_output_tokens {}, clamping to {}", name, cap.max_output_tokens, MAX_REASONABLE_OUTPUT_TOKENS);
             cap.max_output_tokens = MAX_REASONABLE_OUTPUT_TOKENS;
         }
+        cap.tokenizer = normalize_tokenizer(&cap.tokenizer);
     }
 }
 
@@ -201,15 +225,30 @@ pub async fn save_cached_model_caps(caps: &CachedModelCaps) -> Result<(), String
     Ok(())
 }
 
+fn build_model_caps_url(address_url: &str) -> Result<String, String> {
+    if address_url.to_lowercase() == "refact" {
+        return Ok(SMALLCLOUD_MODEL_CAPS_URL.to_string());
+    }
+
+    let base_url = url::Url::parse(address_url)
+        .map_err(|e| format!("Invalid address_url '{}': {}", address_url, e))?;
+    base_url
+        .join("v1/model-capabilities")
+        .map(|u| u.to_string())
+        .map_err(|e| format!("Failed to construct model-capabilities URL: {}", e))
+}
+
 pub async fn fetch_model_caps_from_server(
     gcx: Arc<ARwLock<GlobalContext>>,
+    address_url: &str,
 ) -> Result<HashMap<String, ModelCapabilities>, String> {
     let http_client = gcx.read().await.http_client.clone();
+    let model_caps_url = build_model_caps_url(address_url)?;
 
-    info!("Fetching model capabilities from {}", MODEL_CAPS_URL);
+    info!("Fetching model capabilities from {}", model_caps_url);
 
     let response = http_client
-        .get(MODEL_CAPS_URL)
+        .get(&model_caps_url)
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -231,6 +270,7 @@ pub async fn fetch_model_caps_from_server(
 
 pub async fn get_model_caps(
     gcx: Arc<ARwLock<GlobalContext>>,
+    address_url: &str,
     force_refresh: bool,
 ) -> Result<HashMap<String, ModelCapabilities>, String> {
     let _refresh_guard = get_refresh_lock().lock().await;
@@ -244,7 +284,7 @@ pub async fn get_model_caps(
         }
     }
 
-    match fetch_model_caps_from_server(gcx).await {
+    match fetch_model_caps_from_server(gcx, address_url).await {
         Ok(mut models) => {
             validate_model_caps(&mut models);
             let cached = CachedModelCaps {
@@ -619,5 +659,36 @@ mod tests {
         let resolved = resolve_model_caps(&caps, "gpt-4o").unwrap();
         assert_eq!(resolved.matched_key, "gpt-4o");
         assert_eq!(resolved.caps.n_ctx, 128000);
+    }
+
+    #[test]
+    fn test_normalize_tokenizer() {
+        assert_eq!(normalize_tokenizer(""), "");
+        assert_eq!(normalize_tokenizer("hf://Xenova/claude-tokenizer"), "hf://Xenova/claude-tokenizer");
+        assert_eq!(normalize_tokenizer("http://example.com/tokenizer.json"), "http://example.com/tokenizer.json");
+        assert_eq!(normalize_tokenizer("https://example.com/tokenizer.json"), "https://example.com/tokenizer.json");
+        assert_eq!(normalize_tokenizer("file:///path/to/tokenizer.json"), "file:///path/to/tokenizer.json");
+        assert_eq!(normalize_tokenizer("fake"), "fake");
+        assert_eq!(normalize_tokenizer("fake-tokenizer"), "fake-tokenizer");
+        assert_eq!(normalize_tokenizer("Xenova/claude-tokenizer"), "hf://Xenova/claude-tokenizer");
+        assert_eq!(normalize_tokenizer("meta-llama/Llama-3.3-70B"), "hf://meta-llama/Llama-3.3-70B");
+        assert_eq!(normalize_tokenizer("deepseek-ai/DeepSeek-V3"), "hf://deepseek-ai/DeepSeek-V3");
+        assert_eq!(normalize_tokenizer("local-tokenizer"), "local-tokenizer");
+    }
+
+    #[test]
+    fn test_validate_normalizes_tokenizer() {
+        let mut caps = HashMap::new();
+        caps.insert("test-model".to_string(), ModelCapabilities {
+            n_ctx: 128000,
+            max_output_tokens: 16384,
+            tokenizer: "Xenova/claude-tokenizer".to_string(),
+            ..Default::default()
+        });
+
+        validate_model_caps(&mut caps);
+
+        let model = caps.get("test-model").unwrap();
+        assert_eq!(model.tokenizer, "hf://Xenova/claude-tokenizer");
     }
 }

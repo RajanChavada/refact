@@ -1,44 +1,64 @@
 import isEqual from "lodash.isequal";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Provider } from "../../../services/refact";
+import type { ProviderDetailResponse } from "../../../services/refact";
 import {
   useGetConfiguredProvidersQuery,
   useGetProviderQuery,
 } from "../../../hooks/useProvidersQuery";
 
+export type ProviderFormValues = {
+  enabled: boolean;
+  readonly: boolean;
+  [key: string]: unknown;
+};
+
 export function useProviderForm({ providerName }: { providerName: string }) {
-  const { data: detailedProvider, isSuccess: isProviderLoadedSuccessfully } =
+  const { data: providerDetail, isSuccess: isProviderLoadedSuccessfully } =
     useGetProviderQuery({
       providerName: providerName,
     });
   const { data: configuredProviders } = useGetConfiguredProvidersQuery();
 
-  const [formValues, setFormValues] = useState<Provider | null>(null);
+  const [formValues, setFormValues] = useState<ProviderFormValues | null>(null);
   const [areShowingExtraFields, setAreShowingExtraFields] = useState(false);
 
+  // Convert provider detail to form values
   useEffect(() => {
-    if (detailedProvider) {
-      setFormValues(detailedProvider);
+    if (providerDetail) {
+      setFormValues({
+        enabled: providerDetail.enabled,
+        readonly: providerDetail.readonly,
+        ...providerDetail.settings,
+      });
     }
-  }, [detailedProvider]);
+  }, [providerDetail]);
 
   const shouldSaveButtonBeDisabled = useMemo(() => {
-    if (!detailedProvider) return true;
+    if (!providerDetail || !formValues) return true;
 
     const isProviderConfigured = configuredProviders?.providers.some(
-      (p) => p.name === providerName,
+      (p) => p.name === providerName && p.enabled,
     );
     if (!isProviderConfigured) return false;
 
-    return detailedProvider.readonly || isEqual(formValues, detailedProvider);
-  }, [configuredProviders, detailedProvider, formValues, providerName]);
+    const originalFormValues = {
+      enabled: providerDetail.enabled,
+      readonly: providerDetail.readonly,
+      ...providerDetail.settings,
+    };
+
+    return providerDetail.readonly || isEqual(formValues, originalFormValues);
+  }, [configuredProviders, providerDetail, formValues, providerName]);
 
   const handleFormValuesChange = useCallback(
-    (updatedProviderData: Provider) => {
+    (updatedProviderData: ProviderFormValues) => {
       setFormValues(updatedProviderData);
     },
     [],
   );
+
+  // Convert ProviderDetailResponse to legacy format for backward compatibility
+  const detailedProvider: ProviderDetailResponse | undefined = providerDetail;
 
   return {
     formValues,

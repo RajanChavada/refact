@@ -6,21 +6,13 @@ import { ProviderForm } from "../ProviderForm";
 import { useProviderPreview } from "./useProviderPreview";
 import { getProviderName } from "../getProviderName";
 
-import type { SimplifiedProvider } from "../../../services/refact";
+import type { ProviderListItem } from "../../../services/refact";
 import { DeletePopover } from "../../../components/DeletePopover";
 
 export type ProviderPreviewProps = {
-  configuredProviders: SimplifiedProvider<
-    "name" | "enabled" | "readonly" | "supports_completion"
-  >[];
-  currentProvider: SimplifiedProvider<
-    "name" | "enabled" | "readonly" | "supports_completion"
-  >;
-  handleSetCurrentProvider: (
-    provider: SimplifiedProvider<
-      "name" | "enabled" | "readonly" | "supports_completion"
-    > | null,
-  ) => void;
+  configuredProviders: ProviderListItem[];
+  currentProvider: ProviderListItem;
+  handleSetCurrentProvider: (provider: ProviderListItem | null) => void;
 };
 
 export const ProviderPreview: React.FC<ProviderPreviewProps> = ({
@@ -55,11 +47,11 @@ export const ProviderPreview: React.FC<ProviderPreviewProps> = ({
       <ProviderForm
         currentProvider={currentProvider}
         handleSaveChanges={(updatedProviderData) =>
-          void handleSaveChanges(updatedProviderData)
+          void handleSaveChanges(updatedProviderData, currentProvider.name)
         }
         isSaving={isSavingProvider}
         isProviderConfigured={configuredProviders.some(
-          (p) => p.name === currentProvider.name,
+          (p) => p.name === currentProvider.name && p.enabled,
         )}
         handleDiscardChanges={handleDiscardChanges}
       />

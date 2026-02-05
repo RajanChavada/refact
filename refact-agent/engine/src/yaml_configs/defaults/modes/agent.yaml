@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 id: agent
 title: Agent
 description: Full multi-step workflow with tools and editing capabilities
@@ -225,10 +225,6 @@ tools:
   - tasks_set
   - task_done
   - ask_questions
-
-llm_defaults:
-  max_new_tokens: 4096
-  temperature: 0.0
 
 tool_confirm:
   rules:

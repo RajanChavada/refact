@@ -3,15 +3,13 @@ import React from "react";
 import { Button, Flex, Heading, Select, Text } from "@radix-ui/themes";
 import { ProviderCard } from "../ProviderCard/ProviderCard";
 
-import type { ConfiguredProvidersResponse } from "../../../services/refact";
+import type { ProviderListItem } from "../../../services/refact";
 import { getProviderName } from "../getProviderName";
 import { useGetConfiguredProvidersView } from "./useConfiguredProvidersView";
 
 export type ConfiguredProvidersViewProps = {
-  configuredProviders: ConfiguredProvidersResponse["providers"];
-  handleSetCurrentProvider: (
-    provider: ConfiguredProvidersResponse["providers"][number],
-  ) => void;
+  configuredProviders: ProviderListItem[];
+  handleSetCurrentProvider: (provider: ProviderListItem) => void;
 };
 
 export const ConfiguredProvidersView: React.FC<
