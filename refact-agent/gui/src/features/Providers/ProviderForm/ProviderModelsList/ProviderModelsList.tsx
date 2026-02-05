@@ -47,9 +47,13 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
   if (isLoading) return <Spinner spinning />;
 
   if (isError) {
-    const err = error as { status?: unknown; data?: { detail?: unknown } } | undefined;
+    const err = error as
+      | { status?: unknown; data?: { detail?: unknown } }
+      | undefined;
     const errorMessage = err?.status
-      ? `${String(err.status)}: ${err.data?.detail ? String(err.data.detail) : "Unknown error"}`
+      ? `${String(err.status)}: ${
+          err.data?.detail ? String(err.data.detail) : "Unknown error"
+        }`
       : "Failed to load models";
 
     return (
@@ -69,7 +73,8 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
           <InfoCircledIcon />
         </Callout.Icon>
         <Callout.Text>
-          No model data available. Make sure the provider is properly configured.
+          No model data available. Make sure the provider is properly
+          configured.
         </Callout.Text>
       </Callout.Root>
     );

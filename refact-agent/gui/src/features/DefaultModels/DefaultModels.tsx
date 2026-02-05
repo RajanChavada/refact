@@ -37,7 +37,10 @@ export type DefaultModelsProps = {
 
 type ModelTypeKey = "chat" | "chat_light" | "chat_thinking";
 
-const MODEL_TYPE_LABELS: Record<ModelTypeKey, { title: string; description: string }> = {
+const MODEL_TYPE_LABELS: Record<
+  ModelTypeKey,
+  { title: string; description: string }
+> = {
   chat: {
     title: "Default Chat Model",
     description: "The primary model used for chat conversations",
@@ -63,10 +66,13 @@ const ModelTypeSection: React.FC<{
   const { title, description } = MODEL_TYPE_LABELS[typeKey];
 
   const handleChange = useCallback(
-    <K extends keyof ModelTypeDefaults>(field: K, value: ModelTypeDefaults[K]) => {
+    <K extends keyof ModelTypeDefaults>(
+      field: K,
+      value: ModelTypeDefaults[K],
+    ) => {
       onChange(typeKey, { ...config, [field]: value });
     },
-    [typeKey, config, onChange]
+    [typeKey, config, onChange],
   );
 
   return (
@@ -104,7 +110,7 @@ const ModelTypeSection: React.FC<{
               onChange={(e) =>
                 handleChange(
                   "max_new_tokens",
-                  e.target.value ? parseInt(e.target.value, 10) : undefined
+                  e.target.value ? parseInt(e.target.value, 10) : undefined,
                 )
               }
               placeholder="Default"
@@ -124,7 +130,7 @@ const ModelTypeSection: React.FC<{
               onChange={(e) =>
                 handleChange(
                   "temperature",
-                  e.target.value ? parseFloat(e.target.value) : undefined
+                  e.target.value ? parseFloat(e.target.value) : undefined,
                 )
               }
               placeholder="Default"
@@ -144,7 +150,7 @@ const ModelTypeSection: React.FC<{
               onChange={(e) =>
                 handleChange(
                   "top_p",
-                  e.target.value ? parseFloat(e.target.value) : undefined
+                  e.target.value ? parseFloat(e.target.value) : undefined,
                 )
               }
               placeholder="Default"
@@ -171,7 +177,10 @@ const ModelTypeSection: React.FC<{
               size="2"
               value={config.reasoning_effort ?? "__default__"}
               onValueChange={(v) =>
-                handleChange("reasoning_effort", v === "__default__" ? undefined : v)
+                handleChange(
+                  "reasoning_effort",
+                  v === "__default__" ? undefined : v,
+                )
               }
             >
               <Select.Trigger placeholder="Default" />
@@ -196,7 +205,7 @@ const ModelTypeSection: React.FC<{
               onChange={(e) =>
                 handleChange(
                   "thinking_budget",
-                  e.target.value ? parseInt(e.target.value, 10) : undefined
+                  e.target.value ? parseInt(e.target.value, 10) : undefined,
                 )
               }
               placeholder="Default"
@@ -213,15 +222,24 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
   host,
   tabbed,
 }) => {
-  const { data: defaults, isLoading, isSuccess, isError, refetch } = useGetDefaultsQuery(undefined);
+  const {
+    data: defaults,
+    isLoading,
+    isSuccess,
+    isError,
+    refetch,
+  } = useGetDefaultsQuery(undefined);
   const { data: capsData } = useGetCapsQuery(undefined);
   const [updateDefaults, { isLoading: isSaving }] = useUpdateDefaultsMutation();
 
-  const capsDefaults = useMemo(() => ({
-    chat: capsData?.chat_default_model ?? "",
-    chat_light: capsData?.chat_light_model ?? "",
-    chat_thinking: capsData?.chat_thinking_model ?? "",
-  }), [capsData]);
+  const capsDefaults = useMemo(
+    () => ({
+      chat: capsData?.chat_default_model ?? "",
+      chat_light: capsData?.chat_light_model ?? "",
+      chat_thinking: capsData?.chat_thinking_model ?? "",
+    }),
+    [capsData],
+  );
 
   const [localDefaults, setLocalDefaults] = useState<ProviderDefaults>({
     chat: {},
@@ -248,7 +266,7 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
       setHasChanges(true);
       setSaveError(null);
     },
-    []
+    [],
   );
 
   const handleSave = useCallback(async () => {
@@ -273,10 +291,14 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
             <Callout.Icon>
               <ExclamationTriangleIcon />
             </Callout.Icon>
-            <Callout.Text>Failed to load default models configuration.</Callout.Text>
+            <Callout.Text>
+              Failed to load default models configuration.
+            </Callout.Text>
           </Callout.Root>
           <Button onClick={() => void refetch()}>Retry</Button>
-          <Button variant="outline" onClick={backFromDefaultModels}>Back</Button>
+          <Button variant="outline" onClick={backFromDefaultModels}>
+            Back
+          </Button>
         </Flex>
       </PageWrapper>
     );

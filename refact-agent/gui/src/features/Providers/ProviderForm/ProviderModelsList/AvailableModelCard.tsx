@@ -65,6 +65,7 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
         modelId: model.id,
       }).unwrap();
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error("Failed to remove custom model:", e);
     }
   }, [removeCustomModel, providerName, model.id, model.is_custom]);
@@ -101,7 +102,9 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
           </Flex>
 
           <Flex gap="2" align="center" wrap="wrap">
-            <Tooltip content={`Context window: ${model.n_ctx.toLocaleString()} tokens`}>
+            <Tooltip
+              content={`Context window: ${model.n_ctx.toLocaleString()} tokens`}
+            >
               <Text as="span" size="1" color="gray">
                 📏 {formatContextSize(model.n_ctx)}
               </Text>
@@ -121,7 +124,9 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
               </Tooltip>
             )}
             {model.supports_reasoning && (
-              <Tooltip content={`Supports reasoning (${model.supports_reasoning})`}>
+              <Tooltip
+                content={`Supports reasoning (${model.supports_reasoning})`}
+              >
                 <Text as="span" size="1" color="gray">
                   🧠
                 </Text>

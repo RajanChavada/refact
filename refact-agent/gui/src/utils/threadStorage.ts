@@ -1,7 +1,4 @@
-import {
-  LspChatMode,
-  ReasoningEffort,
-} from "../features/Chat/Thread/types";
+import { LspChatMode, ReasoningEffort } from "../features/Chat/Thread/types";
 import { SystemPrompts } from "../services/refact/prompts";
 
 const MODE_PARAMS_KEY_PREFIX = "refact_mode_params_";

@@ -66,7 +66,10 @@ export function formatPricing(cost: CapCost, compact = true): string {
   if (typeof cost.cache_read === "number" && Number.isFinite(cost.cache_read)) {
     parts.push(`cache read: ${fmt(cost.cache_read)}`);
   }
-  if (typeof cost.cache_creation === "number" && Number.isFinite(cost.cache_creation)) {
+  if (
+    typeof cost.cache_creation === "number" &&
+    Number.isFinite(cost.cache_creation)
+  ) {
     parts.push(`cache create: ${fmt(cost.cache_creation)}`);
   }
 
@@ -86,7 +89,8 @@ function pickPricingKey(args: {
   const pricing = caps.metadata?.pricing;
   if (!pricing) return null;
 
-  const hasKey = (key: string) => Object.prototype.hasOwnProperty.call(pricing, key);
+  const hasKey = (key: string) =>
+    Object.prototype.hasOwnProperty.call(pricing, key);
 
   // 1. Try exact match first (handles both bare and qualified names)
   if (hasKey(modelName)) {

@@ -73,7 +73,11 @@ export const MessageUsageInfo: React.FC<MessageUsageInfoProps> = ({
   const contextTokens = useMemo(() => {
     return calculateUsageInputTokens({
       usage,
-      keys: ["prompt_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"],
+      keys: [
+        "prompt_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+      ],
     });
   }, [usage]);
 
@@ -122,7 +126,10 @@ export const MessageUsageInfo: React.FC<MessageUsageInfoProps> = ({
                   <TokenDisplay label="Cache read" value={cacheReadTokens} />
                 )}
                 {cacheCreationTokens > 0 && (
-                  <TokenDisplay label="Cache creation" value={cacheCreationTokens} />
+                  <TokenDisplay
+                    label="Cache creation"
+                    value={cacheCreationTokens}
+                  />
                 )}
                 <TokenDisplay label="Output tokens" value={outputTokens} />
                 {usage.completion_tokens_details?.reasoning_tokens !== null &&

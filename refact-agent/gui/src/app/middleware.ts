@@ -338,7 +338,9 @@ startListening({
       "condition" in action.meta &&
       !action.meta.condition
     ) {
-      const payload = action.payload as { status?: number; data?: unknown } | undefined;
+      const payload = action.payload as
+        | { status?: number; data?: unknown }
+        | undefined;
       const errorStatus = payload?.status;
       const isAuthError = errorStatus === 401;
       const message = isAuthError

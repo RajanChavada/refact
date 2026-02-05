@@ -846,7 +846,8 @@ export const chatReducer = createReducer(initialState, (builder) => {
           task_meta: snapshotTaskMeta,
           reasoning_effort:
             "reasoning_effort" in event.thread
-              ? (event.thread.reasoning_effort as ChatThread["reasoning_effort"])
+              ? (event.thread
+                  .reasoning_effort as ChatThread["reasoning_effort"])
               : existing?.reasoning_effort,
           thinking_budget:
             "thinking_budget" in event.thread

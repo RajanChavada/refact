@@ -1,4 +1,8 @@
-import { ChatMessage, ChatMessages, MeteringUsd } from "../services/refact/types";
+import {
+  ChatMessage,
+  ChatMessages,
+  MeteringUsd,
+} from "../services/refact/types";
 import type { Usage } from "../services/refact/chat";
 
 type MessageWithExtra = ChatMessage & {
@@ -125,7 +129,9 @@ function hasUsdMetering(message: ChatMessage): boolean {
   return m.usage?.metering_usd !== undefined;
 }
 
-export function getTotalUsdMeteringForMessages(messages: ChatMessages): MeteringUsd | null {
+export function getTotalUsdMeteringForMessages(
+  messages: ChatMessages,
+): MeteringUsd | null {
   const meteringMessages = messages.filter(hasUsdMetering);
   if (meteringMessages.length === 0) return null;
 
@@ -136,8 +142,11 @@ export function getTotalUsdMeteringForMessages(messages: ChatMessages): Metering
       return {
         prompt_usd: acc.prompt_usd + usd.prompt_usd,
         generated_usd: acc.generated_usd + usd.generated_usd,
-        cache_read_usd: (acc.cache_read_usd ?? 0) + (usd.cache_read_usd ?? 0) || undefined,
-        cache_creation_usd: (acc.cache_creation_usd ?? 0) + (usd.cache_creation_usd ?? 0) || undefined,
+        cache_read_usd:
+          (acc.cache_read_usd ?? 0) + (usd.cache_read_usd ?? 0) || undefined,
+        cache_creation_usd:
+          (acc.cache_creation_usd ?? 0) + (usd.cache_creation_usd ?? 0) ||
+          undefined,
         total_usd: acc.total_usd + usd.total_usd,
       };
     },

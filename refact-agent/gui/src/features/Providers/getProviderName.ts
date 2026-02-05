@@ -1,8 +1,6 @@
 import { BEAUTIFUL_PROVIDER_NAMES } from "./constants";
 
-export function getProviderName(
-  provider: { name: string } | string,
-): string {
+export function getProviderName(provider: { name: string } | string): string {
   if (typeof provider === "string") return BEAUTIFUL_PROVIDER_NAMES[provider];
   const maybeName = provider.name;
   if (!maybeName) return "Unknown Provider";

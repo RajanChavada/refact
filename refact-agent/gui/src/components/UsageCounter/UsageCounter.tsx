@@ -235,7 +235,10 @@ const TokensHoverContent: React.FC<{
             <TokenDisplay label="Cache read" value={cacheReadTokens ?? 0} />
           )}
           {(cacheCreationTokens ?? 0) > 0 && (
-            <TokenDisplay label="Cache creation" value={cacheCreationTokens ?? 0} />
+            <TokenDisplay
+              label="Cache creation"
+              value={cacheCreationTokens ?? 0}
+            />
           )}
           {outputTokens > 0 && (
             <TokenDisplay label="Output" value={outputTokens} />

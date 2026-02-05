@@ -95,9 +95,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     disabled={model.disabled}
                     textValue={model.value}
                   >
-                    <span className={styles.trigger_only}>
-                      {model.value}
-                    </span>
+                    <span className={styles.trigger_only}>{model.value}</span>
                     <span className={styles.dropdown_only}>
                       <RichModelSelectItem
                         displayName={model.value}
@@ -144,9 +142,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   disabled={model.disabled}
                   textValue={model.value}
                 >
-                  <span className={styles.trigger_only}>
-                    {model.value}
-                  </span>
+                  <span className={styles.trigger_only}>{model.value}</span>
                   <span className={styles.dropdown_only}>
                     <RichModelSelectItem
                       displayName={model.value}

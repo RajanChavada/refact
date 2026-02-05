@@ -48,36 +48,74 @@ const ModelTypeSection: React.FC<ModelTypeSectionProps> = ({
   onPatch,
 }) => {
   const model = safeString(config.model);
-  const maxNewTokens = typeof config.max_new_tokens === "number" ? config.max_new_tokens : undefined;
-  const temperature = typeof config.temperature === "number" ? config.temperature : undefined;
+  const maxNewTokens =
+    typeof config.max_new_tokens === "number"
+      ? config.max_new_tokens
+      : undefined;
+  const temperature =
+    typeof config.temperature === "number" ? config.temperature : undefined;
   const topP = typeof config.top_p === "number" ? config.top_p : undefined;
-  const boostReasoning = typeof config.boost_reasoning === "boolean" ? config.boost_reasoning : false;
-  const reasoningEffort = typeof config.reasoning_effort === "string" ? config.reasoning_effort : "";
-  const thinkingBudget = typeof config.thinking_budget === "number" ? config.thinking_budget : undefined;
-  const toolChoice = typeof config.tool_choice === "string" ? config.tool_choice : "";
-  const parallelToolCalls = typeof config.parallel_tool_calls === "boolean" ? config.parallel_tool_calls : false;
+  const boostReasoning =
+    typeof config.boost_reasoning === "boolean"
+      ? config.boost_reasoning
+      : false;
+  const reasoningEffort =
+    typeof config.reasoning_effort === "string" ? config.reasoning_effort : "";
+  const thinkingBudget =
+    typeof config.thinking_budget === "number"
+      ? config.thinking_budget
+      : undefined;
+  const toolChoice =
+    typeof config.tool_choice === "string" ? config.tool_choice : "";
+  const parallelToolCalls =
+    typeof config.parallel_tool_calls === "boolean"
+      ? config.parallel_tool_calls
+      : false;
 
   const basePath = ["model_defaults", typeKey];
 
   return (
-    <Flex direction="column" gap="2" p="2" style={{ border: "1px solid var(--gray-6)", borderRadius: "var(--radius-2)" }}>
-      <Text size="1" weight="medium">{title}</Text>
+    <Flex
+      direction="column"
+      gap="2"
+      p="2"
+      style={{
+        border: "1px solid var(--gray-6)",
+        borderRadius: "var(--radius-2)",
+      }}
+    >
+      <Text size="1" weight="medium">
+        {title}
+      </Text>
       <Flex direction="column" gap="1">
-        <Text size="1" color="gray">Model</Text>
+        <Text size="1" color="gray">
+          Model
+        </Text>
         <Select.Root
           value={model || "__inherit__"}
-          onValueChange={(v) => onPatch([...basePath, "model"], v === "__inherit__" ? undefined : v)}
+          onValueChange={(v) =>
+            onPatch([...basePath, "model"], v === "__inherit__" ? undefined : v)
+          }
           size="1"
         >
-          <Select.Trigger placeholder="Inherit from global" style={{ width: "100%" }} />
+          <Select.Trigger
+            placeholder="Inherit from global"
+            style={{ width: "100%" }}
+          />
           <Select.Content position="popper">
-            <Select.Item value="__inherit__"><Text color="gray">Inherit from global</Text></Select.Item>
+            <Select.Item value="__inherit__">
+              <Text color="gray">Inherit from global</Text>
+            </Select.Item>
             <Select.Separator />
             {groupedModels.map((group) => (
               <Select.Group key={group.provider}>
                 <Select.Label>{group.displayName}</Select.Label>
                 {group.models.map((m) => (
-                  <Select.Item key={m.value} value={m.value} textValue={m.value}>
+                  <Select.Item
+                    key={m.value}
+                    value={m.value}
+                    textValue={m.value}
+                  >
                     <span className={selectStyles.trigger_only}>{m.value}</span>
                     <span className={selectStyles.dropdown_only}>
                       <RichModelSelectItem
@@ -99,44 +137,125 @@ const ModelTypeSection: React.FC<ModelTypeSectionProps> = ({
       </Flex>
       <Flex gap="2" wrap="wrap">
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
-          <Text size="1" color="gray">Max Tokens</Text>
-          <TextField.Root size="1" type="number" value={maxNewTokens?.toString() ?? ""} placeholder="Default"
-            onChange={(e) => onPatch([...basePath, "max_new_tokens"], e.target.value ? parseInt(e.target.value, 10) : undefined)} />
+          <Text size="1" color="gray">
+            Max Tokens
+          </Text>
+          <TextField.Root
+            size="1"
+            type="number"
+            value={maxNewTokens?.toString() ?? ""}
+            placeholder="Default"
+            onChange={(e) =>
+              onPatch(
+                [...basePath, "max_new_tokens"],
+                e.target.value ? parseInt(e.target.value, 10) : undefined,
+              )
+            }
+          />
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
-          <Text size="1" color="gray">Temp</Text>
-          <TextField.Root size="1" type="number" step="0.1" value={temperature?.toString() ?? ""} placeholder="Default"
-            onChange={(e) => onPatch([...basePath, "temperature"], e.target.value ? parseFloat(e.target.value) : undefined)} />
+          <Text size="1" color="gray">
+            Temp
+          </Text>
+          <TextField.Root
+            size="1"
+            type="number"
+            step="0.1"
+            value={temperature?.toString() ?? ""}
+            placeholder="Default"
+            onChange={(e) =>
+              onPatch(
+                [...basePath, "temperature"],
+                e.target.value ? parseFloat(e.target.value) : undefined,
+              )
+            }
+          />
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 70 }}>
-          <Text size="1" color="gray">Top P</Text>
-          <TextField.Root size="1" type="number" step="0.1" value={topP?.toString() ?? ""} placeholder="Default"
-            onChange={(e) => onPatch([...basePath, "top_p"], e.target.value ? parseFloat(e.target.value) : undefined)} />
+          <Text size="1" color="gray">
+            Top P
+          </Text>
+          <TextField.Root
+            size="1"
+            type="number"
+            step="0.1"
+            value={topP?.toString() ?? ""}
+            placeholder="Default"
+            onChange={(e) =>
+              onPatch(
+                [...basePath, "top_p"],
+                e.target.value ? parseFloat(e.target.value) : undefined,
+              )
+            }
+          />
         </Flex>
       </Flex>
       <Flex gap="2" wrap="wrap" align="center">
         <Flex align="center" gap="1">
-          <Switch size="1" checked={boostReasoning} onCheckedChange={(c) => onPatch([...basePath, "boost_reasoning"], c || undefined)} />
+          <Switch
+            size="1"
+            checked={boostReasoning}
+            onCheckedChange={(c) =>
+              onPatch([...basePath, "boost_reasoning"], c || undefined)
+            }
+          />
           <Text size="1">Boost</Text>
         </Flex>
         <Flex align="center" gap="1">
-          <Switch size="1" checked={parallelToolCalls} onCheckedChange={(c) => onPatch([...basePath, "parallel_tool_calls"], c || undefined)} />
+          <Switch
+            size="1"
+            checked={parallelToolCalls}
+            onCheckedChange={(c) =>
+              onPatch([...basePath, "parallel_tool_calls"], c || undefined)
+            }
+          />
           <Text size="1">Parallel</Text>
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
-          <Text size="1" color="gray">Effort</Text>
-          <TextField.Root size="1" value={reasoningEffort} placeholder="low/med/high"
-            onChange={(e) => onPatch([...basePath, "reasoning_effort"], e.target.value || undefined)} />
+          <Text size="1" color="gray">
+            Effort
+          </Text>
+          <TextField.Root
+            size="1"
+            value={reasoningEffort}
+            placeholder="low/med/high"
+            onChange={(e) =>
+              onPatch(
+                [...basePath, "reasoning_effort"],
+                e.target.value || undefined,
+              )
+            }
+          />
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
-          <Text size="1" color="gray">Tool Choice</Text>
-          <TextField.Root size="1" value={toolChoice} placeholder="auto/none"
-            onChange={(e) => onPatch([...basePath, "tool_choice"], e.target.value || undefined)} />
+          <Text size="1" color="gray">
+            Tool Choice
+          </Text>
+          <TextField.Root
+            size="1"
+            value={toolChoice}
+            placeholder="auto/none"
+            onChange={(e) =>
+              onPatch([...basePath, "tool_choice"], e.target.value || undefined)
+            }
+          />
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 80 }}>
-          <Text size="1" color="gray">Think Budget</Text>
-          <TextField.Root size="1" type="number" value={thinkingBudget?.toString() ?? ""} placeholder="Default"
-            onChange={(e) => onPatch([...basePath, "thinking_budget"], e.target.value ? parseInt(e.target.value, 10) : undefined)} />
+          <Text size="1" color="gray">
+            Think Budget
+          </Text>
+          <TextField.Root
+            size="1"
+            type="number"
+            value={thinkingBudget?.toString() ?? ""}
+            placeholder="Default"
+            onChange={(e) =>
+              onPatch(
+                [...basePath, "thinking_budget"],
+                e.target.value ? parseInt(e.target.value, 10) : undefined,
+              )
+            }
+          />
         </Flex>
       </Flex>
     </Flex>

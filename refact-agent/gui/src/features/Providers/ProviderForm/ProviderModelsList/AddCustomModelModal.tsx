@@ -59,6 +59,7 @@ export const AddCustomModelModal: FC<AddCustomModelModalProps> = ({
       resetForm();
       onClose();
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error("Failed to add custom model:", e);
     }
   }, [
@@ -190,7 +191,10 @@ export const AddCustomModelModal: FC<AddCustomModelModalProps> = ({
               Cancel
             </Button>
           </Dialog.Close>
-          <Button onClick={() => void handleSubmit()} disabled={!isValid || isLoading}>
+          <Button
+            onClick={() => void handleSubmit()}
+            disabled={!isValid || isLoading}
+          >
             {isLoading ? "Adding..." : "Add Model"}
           </Button>
         </Flex>

@@ -178,7 +178,10 @@ export const providersApi = createApi({
     },
   }),
   endpoints: (builder) => ({
-    getConfiguredProviders: builder.query<ConfiguredProvidersResponse, undefined>({
+    getConfiguredProviders: builder.query<
+      ConfiguredProvidersResponse,
+      undefined
+    >({
       queryFn: async (_args, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort as unknown as number;
@@ -210,43 +213,44 @@ export const providersApi = createApi({
       providesTags: [{ type: "PROVIDERS", id: "LIST" }],
     }),
 
-    getProvider: builder.query<ProviderDetailResponse, { providerName: string }>(
-      {
-        providesTags: (_result, _error, { providerName }) => [
-          { type: "PROVIDER", id: providerName },
-        ],
-        queryFn: async (args, api, extraOptions, baseQuery) => {
-          const state = api.getState() as RootState;
-          const port = state.config.lspPort as unknown as number;
-          const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}`;
+    getProvider: builder.query<
+      ProviderDetailResponse,
+      { providerName: string }
+    >({
+      providesTags: (_result, _error, { providerName }) => [
+        { type: "PROVIDER", id: providerName },
+      ],
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${args.providerName}`;
 
-          const result = await baseQuery({
-            ...extraOptions,
-            method: "GET",
-            url,
-            credentials: "same-origin",
-            redirect: "follow",
-          });
+        const result = await baseQuery({
+          ...extraOptions,
+          method: "GET",
+          url,
+          credentials: "same-origin",
+          redirect: "follow",
+        });
 
-          if (result.error) {
-            return { error: result.error };
-          }
+        if (result.error) {
+          return { error: result.error };
+        }
 
-          if (!isProviderDetailResponse(result.data)) {
-            return {
-              meta: result.meta,
-              error: {
-                error: `Invalid response from /v1/providers/${args.providerName}`,
-                data: result.data,
-                status: "CUSTOM_ERROR",
-              },
-            };
-          }
+        if (!isProviderDetailResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
 
-          return { data: result.data };
-        },
+        return { data: result.data };
       },
-    ),
+    }),
 
     getProviderSchema: builder.query<
       ProviderSchemaResponse,
@@ -393,7 +397,9 @@ export const providersApi = createApi({
           return { error: result.error };
         }
 
-        const data = result.data as { success?: boolean; detail?: string } | undefined;
+        const data = result.data as
+          | { success?: boolean; detail?: string }
+          | undefined;
         if (data?.success === false) {
           return {
             meta: result.meta,
@@ -442,7 +448,9 @@ export const providersApi = createApi({
           return { error: result.error };
         }
 
-        const data = result.data as { success?: boolean; detail?: string } | undefined;
+        const data = result.data as
+          | { success?: boolean; detail?: string }
+          | undefined;
         if (data?.success === false) {
           return {
             meta: result.meta,
@@ -485,7 +493,9 @@ export const providersApi = createApi({
           return { error: result.error };
         }
 
-        const data = result.data as { success?: boolean; detail?: string } | undefined;
+        const data = result.data as
+          | { success?: boolean; detail?: string }
+          | undefined;
         if (data?.success === false) {
           return {
             meta: result.meta,
@@ -653,7 +663,10 @@ function isProviderListResponse(data: unknown): data is ProviderListResponse {
 function isProviderListItem(data: unknown): data is ProviderListItem {
   if (typeof data !== "object" || data === null) return false;
   if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
-  if (!hasProperty(data, "display_name") || typeof data.display_name !== "string")
+  if (
+    !hasProperty(data, "display_name") ||
+    typeof data.display_name !== "string"
+  )
     return false;
   if (!hasProperty(data, "enabled") || typeof data.enabled !== "boolean")
     return false;
@@ -669,7 +682,10 @@ function isProviderDetailResponse(
 ): data is ProviderDetailResponse {
   if (typeof data !== "object" || data === null) return false;
   if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
-  if (!hasProperty(data, "display_name") || typeof data.display_name !== "string")
+  if (
+    !hasProperty(data, "display_name") ||
+    typeof data.display_name !== "string"
+  )
     return false;
   if (!hasProperty(data, "enabled") || typeof data.enabled !== "boolean")
     return false;
@@ -718,8 +734,13 @@ function isProviderDefaults(data: unknown): data is ProviderDefaults {
   if (typeof data !== "object" || data === null) return false;
   const obj = data as Record<string, unknown>;
   if (hasProperty(obj, "chat") && !isModelTypeDefaults(obj.chat)) return false;
-  if (hasProperty(obj, "chat_light") && !isModelTypeDefaults(obj.chat_light)) return false;
-  if (hasProperty(obj, "chat_thinking") && !isModelTypeDefaults(obj.chat_thinking)) return false;
+  if (hasProperty(obj, "chat_light") && !isModelTypeDefaults(obj.chat_light))
+    return false;
+  if (
+    hasProperty(obj, "chat_thinking") &&
+    !isModelTypeDefaults(obj.chat_thinking)
+  )
+    return false;
   if (hasProperty(obj, "detail")) return false;
   return true;
 }
