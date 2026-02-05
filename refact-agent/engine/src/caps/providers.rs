@@ -313,19 +313,10 @@ pub fn get_provider_model_default_settings_ui() -> &'static IndexMap<String, Mod
             let yaml_value = serde_yaml::from_str::<serde_yaml::Value>(yaml)
                 .unwrap_or_else(|_| panic!("Failed to parse YAML for provider {}", name));
 
-            let model_default_settings_ui_value = yaml_value
+            let model_default_settings_ui = yaml_value
                 .get("model_default_settings_ui")
-                .cloned()
-                .expect(&format!(
-                    "Missing `model_model_default_settings_ui` for provider template {name}"
-                ));
-            let model_default_settings_ui = serde_yaml::from_value(model_default_settings_ui_value)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to parse model_defaults for provider {}: {}",
-                        name, e
-                    )
-                });
+                .and_then(|v| serde_yaml::from_value::<ModelDefaultSettingsUI>(v.clone()).ok())
+                .unwrap_or_default();
 
             map.insert(name.to_string(), model_default_settings_ui);
         }
@@ -676,23 +667,14 @@ fn populate_model_records(provider: &mut CapsProvider, experimental: bool) {
         }
 
         if !provider.chat_models.contains_key(model_name) {
-            if let Some(model_rec) = find_model_match(
-                model_name,
-                &provider.chat_models,
-                &known_models.chat_models,
-                experimental,
-            ) {
-                provider.chat_models.insert(model_name.clone(), model_rec);
-            }
-        }
-    }
-
-    for model in &provider.running_models {
-        if !provider.completion_models.contains_key(model)
-            && !provider.chat_models.contains_key(model)
-            && !(model == &provider.embedding_model.base.name)
-        {
-            tracing::warn!("Indicated as running, unknown model {:?} for provider {}, maybe update this rust binary", model, provider.name);
+            let placeholder = ChatModelRecord {
+                base: BaseModelRecord {
+                    enabled: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            provider.chat_models.insert(model_name.clone(), placeholder);
         }
     }
 

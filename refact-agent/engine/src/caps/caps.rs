@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -15,6 +16,7 @@ use crate::caps::providers::{
     CapsProvider,
 };
 use crate::caps::self_hosted::SelfHostedCaps;
+use crate::caps::model_caps::{ModelCapabilities, get_model_caps, resolve_model_caps};
 use crate::llm::WireFormat;
 
 pub const CAPS_FILENAME: &str = "refact-caps";
@@ -231,7 +233,7 @@ pub struct CapsMetadata {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CodeAssistantCaps {
     #[serde(deserialize_with = "normalize_string")]
-    pub cloud_name: String, // "refact" or "refact_self_hosted"
+    pub cloud_name: String,
 
     #[serde(default = "default_telemetry_basic_dest")]
     pub telemetry_basic_dest: String,
@@ -239,7 +241,7 @@ pub struct CodeAssistantCaps {
     pub telemetry_basic_retrieve_my_own: String,
 
     #[serde(skip_deserializing)]
-    pub completion_models: IndexMap<String, Arc<CompletionModelRecord>>, // keys are "provider/model"
+    pub completion_models: IndexMap<String, Arc<CompletionModelRecord>>,
     #[serde(skip_deserializing)]
     pub chat_models: IndexMap<String, Arc<ChatModelRecord>>,
     #[serde(skip_deserializing)]
@@ -249,17 +251,19 @@ pub struct CodeAssistantCaps {
     pub defaults: DefaultModels,
 
     #[serde(default)]
-    pub caps_version: i64, // need to reload if it increases on server, that happens when server configuration changes
+    pub caps_version: i64,
 
     #[serde(default)]
-    pub customization: String, // on self-hosting server, allows to customize yaml_configs & friends for all engineers
+    pub customization: String,
 
     #[serde(default = "default_hf_tokenizer_template")]
-    pub hf_tokenizer_template: String, // template for HuggingFace tokenizer URLs
+    pub hf_tokenizer_template: String,
 
     #[serde(default)]
-    // Need for metadata from cloud, e.g. pricing for models; used only in chat-js
     pub metadata: CapsMetadata,
+
+    #[serde(skip)]
+    pub model_caps: Arc<HashMap<String, ModelCapabilities>>,
 }
 
 fn default_telemetry_retrieve_my_own() -> String {
@@ -422,7 +426,7 @@ pub async fn load_caps(
         )
     };
 
-    let (caps_value, caps_url) = load_caps_value_from_url(cmdline, gcx).await?;
+    let (caps_value, caps_url) = load_caps_value_from_url(cmdline, gcx.clone()).await?;
 
     let (mut caps, server_providers) =
         match serde_json::from_value::<SelfHostedCaps>(caps_value.clone()) {
@@ -454,9 +458,49 @@ pub async fn load_caps(
         post_process_provider(provider, false, experimental);
         provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
     }
+
+    let model_caps_map = get_model_caps(gcx.clone(), false).await?;
+    caps.model_caps = Arc::new(model_caps_map);
+
     add_models_to_caps(&mut caps, providers);
 
+    validate_default_models(&caps)?;
+
     Ok(Arc::new(caps))
+}
+
+fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
+    if !caps.defaults.chat_default_model.is_empty() {
+        let model_name = caps.defaults.chat_default_model.split('/').last()
+            .unwrap_or(&caps.defaults.chat_default_model);
+        if resolve_model_caps(&caps.model_caps, model_name).is_none() {
+            return Err(format!(
+                "Default chat model '{}' is not supported (not found in model capabilities registry)",
+                caps.defaults.chat_default_model
+            ));
+        }
+    }
+    if !caps.defaults.chat_thinking_model.is_empty() {
+        let model_name = caps.defaults.chat_thinking_model.split('/').last()
+            .unwrap_or(&caps.defaults.chat_thinking_model);
+        if resolve_model_caps(&caps.model_caps, model_name).is_none() {
+            return Err(format!(
+                "Default thinking model '{}' is not supported (not found in model capabilities registry)",
+                caps.defaults.chat_thinking_model
+            ));
+        }
+    }
+    if !caps.defaults.chat_light_model.is_empty() {
+        let model_name = caps.defaults.chat_light_model.split('/').last()
+            .unwrap_or(&caps.defaults.chat_light_model);
+        if resolve_model_caps(&caps.model_caps, model_name).is_none() {
+            return Err(format!(
+                "Default light model '{}' is not supported (not found in model capabilities registry)",
+                caps.defaults.chat_light_model
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn resolve_relative_urls(provider: &mut CapsProvider, caps_url: &str) -> Result<(), String> {
@@ -500,7 +544,7 @@ pub fn resolve_model<'a, T>(
         ))
 }
 
-pub fn resolve_chat_model<'a>(
+pub fn resolve_chat_model(
     caps: Arc<CodeAssistantCaps>,
     requested_model_id: &str,
 ) -> Result<Arc<ChatModelRecord>, String> {
@@ -509,7 +553,51 @@ pub fn resolve_chat_model<'a>(
     } else {
         &caps.defaults.chat_default_model
     };
-    resolve_model(&caps.chat_models, model_id)
+
+    let base_record = resolve_model(&caps.chat_models, model_id)?;
+
+    let model_name = model_id.split('/').last().unwrap_or(model_id);
+    let resolved = resolve_model_caps(&caps.model_caps, model_name);
+
+    match resolved {
+        Some(resolved_caps) => {
+            let mut effective = (*base_record).clone();
+            apply_registry_caps_to_chat_model(&mut effective, &resolved_caps.caps);
+            Ok(Arc::new(effective))
+        }
+        None => {
+            Err(format!(
+                "Model '{}' is not supported (not found in model capabilities registry)",
+                model_id
+            ))
+        }
+    }
+}
+
+fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelCapabilities) {
+    record.base.n_ctx = caps.n_ctx;
+    record.supports_tools = caps.supports_tools;
+    record.supports_multimodality = caps.supports_vision;
+    record.supports_clicks = caps.supports_clicks;
+    record.default_temperature = caps.default_temperature;
+    record.default_max_tokens = caps.default_max_tokens;
+
+    if !caps.tokenizer.is_empty() {
+        record.base.tokenizer = caps.tokenizer.clone();
+    }
+
+    record.supports_reasoning = match caps.reasoning {
+        crate::caps::model_caps::ReasoningType::None => None,
+        crate::caps::model_caps::ReasoningType::Openai => Some("openai".to_string()),
+        crate::caps::model_caps::ReasoningType::Anthropic => Some("anthropic".to_string()),
+        crate::caps::model_caps::ReasoningType::Deepseek => Some("deepseek".to_string()),
+        crate::caps::model_caps::ReasoningType::Xai => Some("xai".to_string()),
+        crate::caps::model_caps::ReasoningType::Qwen => Some("qwen".to_string()),
+    };
+
+    record.supports_boost_reasoning = caps.supports_reasoning_effort;
+
+    record.supports_agent = caps.supports_tools;
 }
 
 pub fn resolve_completion_model<'a>(

@@ -16,8 +16,9 @@ use crate::http::routers::v1::at_commands::{
 use crate::http::routers::v1::at_tools::{
     handle_v1_get_tools, handle_v1_tools_check_if_confirmation_needed, handle_v1_tools_execute,
 };
-use crate::http::routers::v1::caps::handle_v1_caps;
-use crate::http::routers::v1::caps::handle_v1_ping;
+use crate::http::routers::v1::caps::{
+    handle_v1_caps, handle_v1_ping, handle_v1_model_capabilities, handle_v1_model_supported,
+};
 
 use crate::http::routers::v1::chat_based_handlers::{
     handle_v1_commit_message_from_diff, handle_v1_trajectory_compress,
@@ -148,6 +149,8 @@ pub fn make_v1_router() -> Router {
         .route("/telemetry-chat", post(handle_v1_telemetry_chat))
         .route("/snippet-accepted", post(handle_v1_snippet_accepted))
         .route("/caps", get(handle_v1_caps))
+        .route("/model-capabilities", get(handle_v1_model_capabilities))
+        .route("/model-supported", get(handle_v1_model_supported))
         .route("/tools", get(handle_v1_get_tools))
         .route("/tools", post(handle_v1_post_tools))
         .route(

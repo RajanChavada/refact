@@ -338,6 +338,8 @@ impl SelfHostedCaps {
             hf_tokenizer_template: default_hf_tokenizer_template(),
 
             metadata: self.metadata.clone(),
+
+            model_caps: Arc::new(std::collections::HashMap::new()),
         };
 
         for (model_name, model_rec) in &self.completion.models {

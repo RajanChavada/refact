@@ -441,7 +441,8 @@ async fn run_streaming_generation(
     const TEMPERATURE_BUMP: f32 = 0.1;
     const MAX_RETRY_TEMPERATURE: f32 = 0.5;
     let user_specified_temp = llm_request.params.temperature;
-    let can_retry_with_temp_bump = user_specified_temp.is_none();
+    let model_supports_temperature = model_rec.supports_reasoning.is_none();
+    let can_retry_with_temp_bump = user_specified_temp.is_none() && model_supports_temperature;
     let max_attempts = if can_retry_with_temp_bump {
         (MAX_RETRY_TEMPERATURE / TEMPERATURE_BUMP).floor() as usize + 2
     } else {
