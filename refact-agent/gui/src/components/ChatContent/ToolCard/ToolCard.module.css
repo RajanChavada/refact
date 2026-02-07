@@ -64,6 +64,10 @@
   opacity: 1;
 }
 
+.noTransition {
+  transition: none !important;
+}
+
 .contentInner {
   overflow: hidden;
 }

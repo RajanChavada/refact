@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
 use crate::providers::traits::{
-    CustomModelConfig, ModelPricing, ModelSource, ProviderModel, ProviderRuntime, ProviderTrait,
+    CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
     parse_enabled_models, parse_custom_models, set_model_enabled_impl,
 };
 use crate::providers::pricing::openai_pricing;
@@ -20,12 +20,6 @@ pub struct OpenAIProvider {
     pub enabled_models: Vec<String>,
     #[serde(default)]
     pub custom_models: HashMap<String, CustomModelConfig>,
-    #[serde(default, skip_serializing)]
-    pub chat_models: Vec<ProviderModel>,
-    #[serde(default, skip_serializing)]
-    pub completion_models: Vec<ProviderModel>,
-    #[serde(default, skip_serializing)]
-    pub embedding_model: Option<ProviderModel>,
 }
 
 impl ProviderTrait for OpenAIProvider {
@@ -54,7 +48,7 @@ impl ProviderTrait for OpenAIProvider {
     }
 
     fn model_filter_regex(&self) -> Option<&'static str> {
-        Some(r"^(gpt-|o1-|o3-)")
+        Some(r"^(gpt-|o1-|o1$|o3-|o3$|o4-)")
     }
 
     fn provider_schema(&self) -> &'static str {
@@ -115,9 +109,9 @@ available:
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
             support_metadata: false,
-            chat_models: self.chat_models.clone(),
-            completion_models: self.completion_models.clone(),
-            embedding_model: self.embedding_model.clone(),
+            chat_models: Vec::new(),
+            completion_models: Vec::new(),
+            embedding_model: None,
         })
     }
 

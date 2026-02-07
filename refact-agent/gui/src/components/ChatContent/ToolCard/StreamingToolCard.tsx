@@ -46,7 +46,7 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
     return "success";
   }, [maybeResult]);
 
-  const { isOpen, onToggle } = useAutoExpandCollapse({ status });
+  const { isOpen, onToggle, animate } = useAutoExpandCollapse({ status });
 
   const content =
     maybeResult && typeof maybeResult.content === "string"
@@ -61,6 +61,7 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(
     isOpen && !!content,
     200,
+    animate,
   );
 
   return (
@@ -103,6 +104,7 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
           className={classNames(
             styles.contentWrapper,
             isAnimatingOpen && styles.contentWrapperOpen,
+            !animate && styles.noTransition,
           )}
         >
           <div className={styles.contentInner}>

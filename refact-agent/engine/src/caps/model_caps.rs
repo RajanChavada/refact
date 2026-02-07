@@ -347,6 +347,42 @@ pub fn canonicalize_model_name(model_id: &str) -> CanonicalNameParts {
     }
 }
 
+/// Known suffixes added by cloud providers that don't change model capabilities.
+/// Stripping these allows matching e.g. "gemini-3-flash-preview" → "gemini-3-flash".
+const IGNORABLE_SUFFIXES: &[&str] = &[
+    "-latest",
+    "-preview",
+    "-cheap",
+    "-deep-research",
+    "-fp4",
+    "-fp8",
+    "-fp16",
+    "-int4",
+    "-int8",
+];
+
+/// Normalize a model name for fuzzy matching:
+/// - lowercase
+/// - strip known ignorable suffixes (repeatedly, to handle e.g. "-preview-cheap")
+/// - replace '.' with '-' (e.g. "claude-opus-4.6" → "claude-opus-4-6")
+fn normalize_model_name_for_matching(name: &str) -> String {
+    let mut result = name.to_lowercase();
+    loop {
+        let mut changed = false;
+        for suffix in IGNORABLE_SUFFIXES {
+            if result.ends_with(suffix) {
+                result.truncate(result.len() - suffix.len());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    result = result.replace('.', "-");
+    result
+}
+
 fn matches_pattern(pattern: &str, name: &str) -> bool {
     if !pattern.contains('*') {
         return pattern == name;
@@ -389,6 +425,7 @@ pub fn resolve_model_caps(
         &canonical.last_segment_base,
     ];
 
+    // Phase 1: Exact case-sensitive match
     for name in &names_to_try {
         if let Some(model_caps) = caps.get(*name) {
             let source = if canonical.is_finetune && (*name == &canonical.base_model || *name == &canonical.last_segment_base) {
@@ -404,6 +441,39 @@ pub fn resolve_model_caps(
         }
     }
 
+    // Phase 2: Normalized matching (case-insensitive + suffix stripping + dot→dash)
+    let normalized_names: Vec<String> = names_to_try.iter()
+        .map(|n| normalize_model_name_for_matching(n))
+        .collect();
+
+    // Deduplicate normalized names while preserving order
+    let mut seen = std::collections::HashSet::new();
+    let unique_normalized: Vec<&String> = normalized_names.iter()
+        .filter(|n| seen.insert(n.as_str().to_string()))
+        .collect();
+
+    for (key, model_caps) in caps.iter() {
+        if key.contains('*') {
+            continue;
+        }
+        let key_normalized = normalize_model_name_for_matching(key);
+        for norm_name in &unique_normalized {
+            if key_normalized == **norm_name {
+                let source = if canonical.is_finetune {
+                    ModelCapsSource::Finetune
+                } else {
+                    ModelCapsSource::Registry
+                };
+                return Some(ResolvedCaps {
+                    caps: model_caps.clone(),
+                    source,
+                    matched_key: key.clone(),
+                });
+            }
+        }
+    }
+
+    // Phase 3: Wildcard pattern matching (case-sensitive first)
     let mut best_match: Option<(&str, &ModelCapabilities, usize)> = None;
 
     for (pattern, model_caps) in caps.iter() {
@@ -418,6 +488,26 @@ pub fn resolve_model_caps(
                     best_match = Some((pattern, model_caps, specificity));
                 } else if specificity == best_match.unwrap().2 && pattern.as_str() < best_match.unwrap().0 {
                     best_match = Some((pattern, model_caps, specificity));
+                }
+            }
+        }
+    }
+
+    // Phase 4: Wildcard pattern matching with normalized names
+    if best_match.is_none() {
+        for (pattern, model_caps) in caps.iter() {
+            if !pattern.contains('*') {
+                continue;
+            }
+            let pattern_normalized = normalize_model_name_for_matching(pattern);
+            for norm_name in &unique_normalized {
+                if matches_pattern(&pattern_normalized, norm_name) {
+                    let specificity = pattern_specificity(&pattern_normalized);
+                    if best_match.is_none() || specificity > best_match.unwrap().2 {
+                        best_match = Some((pattern, model_caps, specificity));
+                    } else if specificity == best_match.unwrap().2 && pattern.as_str() < best_match.unwrap().0 {
+                        best_match = Some((pattern, model_caps, specificity));
+                    }
                 }
             }
         }
@@ -690,5 +780,124 @@ mod tests {
 
         let model = caps.get("test-model").unwrap();
         assert_eq!(model.tokenizer, "hf://Xenova/claude-tokenizer");
+    }
+
+    #[test]
+    fn test_normalize_model_name_for_matching() {
+        assert_eq!(normalize_model_name_for_matching("claude-3-7-sonnet-latest"), "claude-3-7-sonnet");
+        assert_eq!(normalize_model_name_for_matching("gemini-3-pro-preview-cheap"), "gemini-3-pro");
+        assert_eq!(normalize_model_name_for_matching("o4-mini-deep-research"), "o4-mini");
+        assert_eq!(normalize_model_name_for_matching("claude-opus-4.6"), "claude-opus-4-6");
+        assert_eq!(normalize_model_name_for_matching("Kimi-K2-Instruct"), "kimi-k2-instruct");
+        assert_eq!(normalize_model_name_for_matching("MiniMax-M2.1"), "minimax-m2-1");
+        assert_eq!(normalize_model_name_for_matching("llama-3-70b-fp8"), "llama-3-70b");
+        assert_eq!(normalize_model_name_for_matching("gpt-4o"), "gpt-4o");
+    }
+
+    #[test]
+    fn test_case_insensitive_matching() {
+        let mut caps = HashMap::new();
+        caps.insert("kimi-k2-instruct".to_string(), ModelCapabilities {
+            n_ctx: 131000,
+            max_output_tokens: 32768,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "Kimi-K2-Instruct");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().matched_key, "kimi-k2-instruct");
+    }
+
+    #[test]
+    fn test_suffix_stripping_latest() {
+        let mut caps = HashMap::new();
+        caps.insert("claude-3-7-sonnet".to_string(), ModelCapabilities {
+            n_ctx: 200000,
+            max_output_tokens: 16384,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "claude-3-7-sonnet-latest");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().matched_key, "claude-3-7-sonnet");
+    }
+
+    #[test]
+    fn test_suffix_stripping_compound() {
+        let mut caps = HashMap::new();
+        caps.insert("gemini-3-pro".to_string(), ModelCapabilities {
+            n_ctx: 1000000,
+            max_output_tokens: 64000,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "gemini-3-pro-preview-cheap");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().matched_key, "gemini-3-pro");
+    }
+
+    #[test]
+    fn test_dot_to_dash_normalization() {
+        let mut caps = HashMap::new();
+        caps.insert("claude-opus-4-6".to_string(), ModelCapabilities {
+            n_ctx: 200000,
+            max_output_tokens: 128000,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "claude-opus-4.6");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().matched_key, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn test_exact_match_preferred_over_normalized() {
+        let mut caps = HashMap::new();
+        caps.insert("gpt-4o".to_string(), ModelCapabilities {
+            n_ctx: 128000,
+            max_output_tokens: 16384,
+            ..Default::default()
+        });
+        caps.insert("gpt-4o-latest".to_string(), ModelCapabilities {
+            n_ctx: 200000,
+            max_output_tokens: 32768,
+            ..Default::default()
+        });
+
+        // Exact match should win over suffix-stripped
+        let resolved = resolve_model_caps(&caps, "gpt-4o-latest").unwrap();
+        assert_eq!(resolved.matched_key, "gpt-4o-latest");
+        assert_eq!(resolved.caps.n_ctx, 200000);
+    }
+
+    #[test]
+    fn test_fp_suffix_stripping() {
+        let mut caps = HashMap::new();
+        caps.insert("llama-3-70b".to_string(), ModelCapabilities {
+            n_ctx: 128000,
+            max_output_tokens: 8192,
+            ..Default::default()
+        });
+
+        let resolved = resolve_model_caps(&caps, "llama-3-70b-fp8");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().matched_key, "llama-3-70b");
+    }
+
+    #[test]
+    fn test_provider_prefix_with_case_mismatch() {
+        let mut caps = HashMap::new();
+        caps.insert("minimax-m2.1".to_string(), ModelCapabilities {
+            n_ctx: 196000,
+            max_output_tokens: 16384,
+            ..Default::default()
+        });
+
+        // Both "refact/MiniMax-M2.1" and "MiniMax-M2.1" should resolve
+        let resolved = resolve_model_caps(&caps, "refact/MiniMax-M2.1");
+        assert!(resolved.is_some());
+
+        let resolved = resolve_model_caps(&caps, "MiniMax-M2.1");
+        assert!(resolved.is_some());
     }
 }

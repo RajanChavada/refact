@@ -19,13 +19,11 @@ export function VirtualizedChatList<T extends { key: string }>({
 }: VirtualizedChatListProps<T>) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [atBottom, setAtBottom] = useState(true);
-  const [followMode, setFollowMode] = useState(true);
+  const [followMode, setFollowMode] = useState(false);
 
   const handleAtBottomChange = useCallback((bottom: boolean) => {
     setAtBottom(bottom);
     if (bottom) {
-      setFollowMode(true);
-    } else {
       setFollowMode(false);
     }
   }, []);
@@ -39,15 +37,12 @@ export function VirtualizedChatList<T extends { key: string }>({
     });
   }, [items.length]);
 
-  const followOutput = useCallback(
-    (isAtBottom: boolean) => {
-      if (followMode || isAtBottom) {
-        return "smooth";
-      }
-      return false;
-    },
-    [followMode],
-  );
+  const followOutput = useCallback((isAtBottom: boolean) => {
+    if (isAtBottom) {
+      return "smooth";
+    }
+    return false;
+  }, []);
 
   const computeItemKey = useCallback((_index: number, item: T) => item.key, []);
 

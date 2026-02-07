@@ -268,6 +268,14 @@ fn adapt_sampling_for_reasoning_models(
         }
     }
 
+    if sampling_parameters.temperature.is_none() {
+        sampling_parameters.temperature = model_record.default_temperature;
+    }
+
+    if sampling_parameters.frequency_penalty.is_none() {
+        sampling_parameters.frequency_penalty = model_record.default_frequency_penalty;
+    }
+
     let Some(ref supports_reasoning) = model_record.supports_reasoning else {
         sampling_parameters.reasoning_effort = None;
         sampling_parameters.thinking = None;
@@ -549,7 +557,7 @@ mod tests {
         let model = make_model_record(Some("openai"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
         assert_eq!(params.reasoning_effort, Some(ReasoningEffort::Medium));
-        assert_eq!(params.temperature, None);
+        assert_eq!(params.temperature, Some(0.7)); // Filled from model default_temperature
     }
 
     #[test]
@@ -644,7 +652,7 @@ mod tests {
         let model = make_model_record(Some("qwen"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
         assert_eq!(params.enable_thinking, Some(true));
-        assert_eq!(params.temperature, None);
+        assert_eq!(params.temperature, Some(0.7)); // Filled from model default_temperature
     }
 
     #[test]
@@ -687,7 +695,7 @@ mod tests {
         params.temperature = None;
         let model = make_model_record(Some("unknown_provider"));
         adapt_sampling_for_reasoning_models(&mut params, &model);
-        assert_eq!(params.temperature, None);
+        assert_eq!(params.temperature, Some(0.7)); // Filled from model default_temperature
         assert!(params.reasoning_effort.is_none());
     }
 
@@ -703,7 +711,7 @@ mod tests {
         assert!(params.reasoning_effort.is_none());
         assert!(params.thinking.is_none());
         assert!(params.enable_thinking.is_none());
-        assert_eq!(params.temperature, None);
+        assert_eq!(params.temperature, Some(0.7)); // Filled from model default_temperature
     }
 
     #[test]

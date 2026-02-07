@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
-use crate::providers::traits::{CustomModelConfig, ModelPricing, ModelSource, ProviderModel, ProviderRuntime, ProviderTrait, parse_enabled_models, parse_custom_models, set_model_enabled_impl};
+use crate::providers::traits::{CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait, parse_enabled_models, parse_custom_models, set_model_enabled_impl};
 use crate::providers::pricing::google_gemini_pricing;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -17,10 +17,6 @@ pub struct GoogleGeminiProvider {
     pub enabled_models: Vec<String>,
     #[serde(default)]
     pub custom_models: HashMap<String, CustomModelConfig>,
-    #[serde(default, skip_serializing)]
-    pub chat_models: Vec<ProviderModel>,
-    #[serde(default, skip_serializing)]
-    pub embedding_model: Option<ProviderModel>,
 }
 
 impl ProviderTrait for GoogleGeminiProvider {
@@ -110,9 +106,9 @@ available:
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
             support_metadata: false,
-            chat_models: self.chat_models.clone(),
+            chat_models: Vec::new(),
             completion_models: Vec::new(),
-            embedding_model: self.embedding_model.clone(),
+            embedding_model: None,
         })
     }
 

@@ -1073,6 +1073,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         rt.streaming = true;
         rt.waiting_for_response = true;
+        rt.session_state = "generating";
         rt.thread.messages.push({
           role: "assistant",
           content: "",
@@ -1107,6 +1108,10 @@ export const chatReducer = createReducer(initialState, (builder) => {
           event.finish_reason === "error"
         ) {
           rt.waiting_for_response = false;
+          rt.session_state = "idle";
+        } else {
+          // tool_calls or other finish reasons: tools about to execute
+          rt.session_state = "executing_tools";
         }
         const msgIdx = rt.thread.messages.findIndex(
           (m) => "message_id" in m && m.message_id === event.message_id,
@@ -1125,6 +1130,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         rt.streaming = false;
         rt.waiting_for_response = false;
+        rt.session_state = "paused";
         rt.confirmation.pause = true;
         rt.confirmation.pause_reasons =
           event.reasons as ToolConfirmationPauseReason[];

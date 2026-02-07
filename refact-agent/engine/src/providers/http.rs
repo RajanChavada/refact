@@ -12,6 +12,16 @@ use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 use crate::providers::refact::fetch_refact_cloud_models;
 
+fn json_response(status: StatusCode, body: &impl Serialize) -> Result<Response<Body>, ScratchError> {
+    let json = serde_json::to_string(body)
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("JSON serialization failed: {}", e)))?;
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .body(Body::from(json))
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Response build failed: {}", e)))
+}
+
 async fn invalidate_caps(gcx: Arc<ARwLock<GlobalContext>>) {
     let mut gcx_locked = gcx.write().await;
     gcx_locked.caps = None;
@@ -39,7 +49,7 @@ struct ProviderListResponse {
 
 pub async fn handle_v1_providers_list(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
-) -> Response<Body> {
+) -> Result<Response<Body>, ScratchError> {
     let gcx_locked = gcx.read().await;
     let registry = gcx_locked.providers.read().await;
 
@@ -69,11 +79,7 @@ pub async fn handle_v1_providers_list(
     }
 
     let response = ProviderListResponse { providers };
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap()
+    json_response(StatusCode::OK, &response)
 }
 
 #[derive(Deserialize)]
@@ -120,11 +126,7 @@ pub async fn handle_v1_provider_get(
         runtime: runtime.map(|r| r.redacted()),
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap())
+    json_response(StatusCode::OK, &response)
 }
 
 #[derive(Serialize)]
@@ -158,11 +160,7 @@ pub async fn handle_v1_provider_schema(
         schema,
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap())
+    json_response(StatusCode::OK, &response)
 }
 
 pub async fn handle_v1_provider_update(
@@ -236,11 +234,7 @@ pub async fn handle_v1_provider_update(
 
     invalidate_caps(gcx).await;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(json!({"success": true}).to_string()))
-        .unwrap())
+    json_response(StatusCode::OK, &json!({"success": true}))
 }
 
 pub async fn handle_v1_provider_delete(
@@ -282,11 +276,7 @@ pub async fn handle_v1_provider_delete(
 
     invalidate_caps(gcx).await;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(json!({"success": true}).to_string()))
-        .unwrap())
+    json_response(StatusCode::OK, &json!({"success": true}))
 }
 
 #[derive(Serialize)]
@@ -325,11 +315,7 @@ pub async fn handle_v1_provider_models(
 
     let response = ProviderModelsResponse { models };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap())
+    json_response(StatusCode::OK, &response)
 }
 
 pub async fn handle_v1_defaults_get(
@@ -340,11 +326,7 @@ pub async fn handle_v1_defaults_get(
         .await
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&defaults).unwrap()))
-        .unwrap())
+    json_response(StatusCode::OK, &defaults)
 }
 
 pub async fn handle_v1_defaults_update(
@@ -366,11 +348,7 @@ pub async fn handle_v1_defaults_update(
 
     invalidate_caps(gcx).await;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(json!({"success": true}).to_string()))
-        .unwrap())
+    json_response(StatusCode::OK, &json!({"success": true}))
 }
 
 // /v1/models endpoint - returns models grouped by type for frontend compatibility
@@ -435,11 +413,7 @@ pub async fn handle_v1_models(
         embedding_model: runtime.embedding_model.as_ref().map(SimplifiedModel::from),
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap())
+    json_response(StatusCode::OK, &response)
 }
 
 // ============================================================================
@@ -576,11 +550,7 @@ pub async fn handle_v1_provider_available_models(
         error,
     };
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap())
+    json_response(StatusCode::OK, &response)
 }
 
 #[derive(Deserialize)]
@@ -675,11 +645,7 @@ async fn update_model_enabled_state(
 
     invalidate_caps(gcx).await;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(json!({"success": true, "model_id": model_id, "enabled": enabled}).to_string()))
-        .unwrap())
+    json_response(StatusCode::OK, &json!({"success": true, "model_id": model_id, "enabled": enabled}))
 }
 
 #[derive(Deserialize)]
@@ -746,11 +712,7 @@ pub async fn handle_v1_provider_add_custom_model(
 
     invalidate_caps(gcx).await;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(json!({"success": true, "model_id": request.id}).to_string()))
-        .unwrap())
+    json_response(StatusCode::OK, &json!({"success": true, "model_id": request.id}))
 }
 
 #[derive(Deserialize)]
@@ -847,11 +809,7 @@ async fn handle_v1_provider_remove_custom_model_impl(
 
     invalidate_caps(gcx).await;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Body::from(json!({"success": true, "model_id": request.model_id}).to_string()))
-        .unwrap())
+    json_response(StatusCode::OK, &json!({"success": true, "model_id": request.model_id}))
 }
 
 /// Merge new settings with existing config, preserving secret fields when value is "***"

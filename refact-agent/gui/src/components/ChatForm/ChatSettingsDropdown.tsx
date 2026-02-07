@@ -190,11 +190,11 @@ export const ChatSettingsDropdown: React.FC = () => {
     };
   }, [caps.currentModel, capsQuery.data]);
 
-  // Context cap data
   const maxTokens = useMemo(() => {
     const chatModels = capsQuery.data?.chat_models;
     if (!chatModels || !threadModel) return 0;
     const modelData = chatModels[threadModel];
+    if (!modelData) return 0;
     return modelData.n_ctx;
   }, [capsQuery.data, threadModel]);
 

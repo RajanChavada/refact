@@ -16,7 +16,6 @@ use crate::caps::providers::{
     CapsProvider,
 };
 use crate::providers::config::ProviderDefaults;
-use crate::caps::self_hosted::SelfHostedCaps;
 use crate::caps::model_caps::{ModelCapabilities, ReasoningType, get_model_caps, resolve_model_caps};
 use crate::llm::WireFormat;
 use crate::providers::traits::AvailableModel;
@@ -440,40 +439,46 @@ fn build_chat_model_record(
         .or_else(|| resolve_model_caps(model_caps, &model.id));
 
     // Get capabilities from model_caps or use the model's own values (for custom models)
-    let (n_ctx, supports_tools, supports_multimodality, supports_reasoning, tokenizer, supports_clicks) =
-        if let Some(ref resolved) = resolved_caps {
-            let caps = &resolved.caps;
-            let reasoning = match caps.reasoning {
-                ReasoningType::None => None,
-                ReasoningType::Openai => Some("openai".to_string()),
-                ReasoningType::Anthropic => Some("anthropic".to_string()),
-                ReasoningType::Deepseek => Some("deepseek".to_string()),
-                ReasoningType::Xai => Some("xai".to_string()),
-                ReasoningType::Qwen => Some("qwen".to_string()),
-                ReasoningType::Gemini => Some("gemini".to_string()),
-                ReasoningType::Kimi => Some("kimi".to_string()),
-                ReasoningType::Zhipu => Some("zhipu".to_string()),
-                ReasoningType::Mistral => Some("mistral".to_string()),
-            };
-            (
-                caps.n_ctx,
-                caps.supports_tools,
-                caps.supports_vision,
-                reasoning,
-                caps.tokenizer.clone(),
-                caps.supports_clicks,
-            )
-        } else {
-            // Use model's own values (typically from CustomModelConfig)
-            (
-                model.n_ctx,
-                model.supports_tools,
-                model.supports_multimodality,
-                model.supports_reasoning.clone(),
-                model.tokenizer.clone().unwrap_or_default(),
-                false,
-            )
+    let (
+        n_ctx,
+        supports_tools,
+        supports_multimodality,
+        supports_reasoning,
+        tokenizer,
+        supports_clicks,
+    ) = if let Some(ref resolved) = resolved_caps {
+        let caps = &resolved.caps;
+        let reasoning = match caps.reasoning {
+            ReasoningType::None => None,
+            ReasoningType::Openai => Some("openai".to_string()),
+            ReasoningType::Anthropic => Some("anthropic".to_string()),
+            ReasoningType::Deepseek => Some("deepseek".to_string()),
+            ReasoningType::Xai => Some("xai".to_string()),
+            ReasoningType::Qwen => Some("qwen".to_string()),
+            ReasoningType::Gemini => Some("gemini".to_string()),
+            ReasoningType::Kimi => Some("kimi".to_string()),
+            ReasoningType::Zhipu => Some("zhipu".to_string()),
+            ReasoningType::Mistral => Some("mistral".to_string()),
         };
+        (
+            caps.n_ctx,
+            caps.supports_tools,
+            caps.supports_vision,
+            reasoning,
+            caps.tokenizer.clone(),
+            caps.supports_clicks,
+        )
+    } else {
+        // Use model's own values (typically from CustomModelConfig)
+        (
+            model.n_ctx,
+            model.supports_tools,
+            model.supports_multimodality,
+            model.supports_reasoning.clone(),
+            model.tokenizer.clone().unwrap_or_default(),
+            false,
+        )
+    };
 
     let supports_agent = supports_tools;
     let endpoint = runtime_endpoint.replace("$MODEL", &model.id);
@@ -481,7 +486,8 @@ fn build_chat_model_record(
     let endpoint_style = match runtime_wire_format {
         WireFormat::AnthropicMessages => "anthropic",
         _ => "openai",
-    }.to_string();
+    }
+    .to_string();
 
     ChatModelRecord {
         base: BaseModelRecord {
@@ -556,7 +562,11 @@ pub async fn populate_chat_models_from_providers(
         let runtime = match provider.build_runtime() {
             Ok(r) => r,
             Err(e) => {
-                warn!("Failed to build runtime for provider '{}': {}", provider.name(), e);
+                warn!(
+                    "Failed to build runtime for provider '{}': {}",
+                    provider.name(),
+                    e
+                );
                 continue;
             }
         };
@@ -606,7 +616,9 @@ pub async fn populate_chat_models_from_providers(
 
     if !caps.chat_models.is_empty() {
         let need_new_default = caps.defaults.chat_default_model.is_empty()
-            || !caps.chat_models.contains_key(&caps.defaults.chat_default_model);
+            || !caps
+                .chat_models
+                .contains_key(&caps.defaults.chat_default_model);
 
         if need_new_default {
             if let Some((first_model_id, _)) = caps.chat_models.first() {
@@ -615,6 +627,143 @@ pub async fn populate_chat_models_from_providers(
             }
         }
     }
+}
+
+fn convert_self_hosted_caps_if_needed(
+    caps_value: serde_json::Value,
+    caps_url: &str,
+    cmdline_api_key: &str,
+) -> Result<serde_json::Value, String> {
+    let obj = match caps_value.as_object() {
+        Some(o) => o,
+        None => return Ok(caps_value),
+    };
+
+    let has_nested_chat = obj.get("chat").and_then(|v| v.get("models")).is_some();
+    if !has_nested_chat {
+        return Ok(caps_value);
+    }
+
+    tracing::info!("Detected self-hosted caps format, converting to provider format");
+
+    let cloud_name = obj.get("cloud_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("self-hosted");
+    let support_metadata = obj.get("support_metadata")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let tokenizer_endpoints = obj.get("tokenizer_endpoints")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut chat_models = serde_json::Map::new();
+    if let Some(chat) = obj.get("chat").and_then(|v| v.as_object()) {
+        let endpoint = chat.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(models) = chat.get("models").and_then(|v| v.as_object()) {
+            for (model_name, model_val) in models {
+                let mut record = model_val.clone();
+                if let Some(rec) = record.as_object_mut() {
+                    rec.insert("name".to_string(), serde_json::json!(model_name));
+                    let model_endpoint = endpoint.replace("$MODEL", model_name);
+                    let full_endpoint = relative_to_full_url(caps_url, &model_endpoint)
+                        .unwrap_or(model_endpoint);
+                    rec.insert("endpoint".to_string(), serde_json::json!(full_endpoint));
+                    rec.insert("endpoint_style".to_string(), serde_json::json!("openai"));
+                    rec.insert("enabled".to_string(), serde_json::json!(true));
+                    rec.insert("support_metadata".to_string(), serde_json::json!(support_metadata));
+                    if !cmdline_api_key.is_empty() {
+                        rec.insert("api_key".to_string(), serde_json::json!(cmdline_api_key));
+                    }
+                    if let Some(tok_url) = tokenizer_endpoints.get(model_name) {
+                        if let Some(tok_str) = tok_url.as_str() {
+                            let full_tok = relative_to_full_url(caps_url, tok_str)
+                                .unwrap_or(tok_str.to_string());
+                            rec.insert("tokenizer".to_string(), serde_json::json!(full_tok));
+                        }
+                    }
+                    chat_models.insert(model_name.clone(), record);
+                }
+            }
+        }
+    }
+
+    let mut completion_models = serde_json::Map::new();
+    if let Some(completion) = obj.get("completion").and_then(|v| v.as_object()) {
+        let endpoint = completion.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(models) = completion.get("models").and_then(|v| v.as_object()) {
+            for (model_name, model_val) in models {
+                let mut record = model_val.clone();
+                if let Some(rec) = record.as_object_mut() {
+                    rec.insert("name".to_string(), serde_json::json!(model_name));
+                    let model_endpoint = endpoint.replace("$MODEL", model_name);
+                    let full_endpoint = relative_to_full_url(caps_url, &model_endpoint)
+                        .unwrap_or(model_endpoint);
+                    rec.insert("endpoint".to_string(), serde_json::json!(full_endpoint));
+                    rec.insert("endpoint_style".to_string(), serde_json::json!("openai"));
+                    rec.insert("enabled".to_string(), serde_json::json!(true));
+                    if !cmdline_api_key.is_empty() {
+                        rec.insert("api_key".to_string(), serde_json::json!(cmdline_api_key));
+                    }
+                    if let Some(tok_url) = tokenizer_endpoints.get(model_name) {
+                        if let Some(tok_str) = tok_url.as_str() {
+                            let full_tok = relative_to_full_url(caps_url, tok_str)
+                                .unwrap_or(tok_str.to_string());
+                            rec.insert("tokenizer".to_string(), serde_json::json!(full_tok));
+                        }
+                    }
+                    completion_models.insert(model_name.clone(), record);
+                }
+            }
+        }
+    }
+
+    let mut result = caps_value.clone();
+    if let Some(result_obj) = result.as_object_mut() {
+        result_obj.insert("chat_models".to_string(), serde_json::Value::Object(chat_models));
+        result_obj.insert("completion_models".to_string(), serde_json::Value::Object(completion_models));
+
+        if let Some(chat) = obj.get("chat").and_then(|v| v.as_object()) {
+            let chat_endpoint = chat.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+            let full_chat_endpoint = relative_to_full_url(caps_url, chat_endpoint)
+                .unwrap_or(chat_endpoint.to_string());
+            result_obj.insert("chat_endpoint".to_string(), serde_json::json!(full_chat_endpoint));
+
+            if let Some(dm) = chat.get("default_model").and_then(|v| v.as_str()) {
+                if !dm.is_empty() {
+                    result_obj.insert("chat_default_model".to_string(), serde_json::json!(dm));
+                }
+            }
+            if let Some(dm) = chat.get("default_light_model").and_then(|v| v.as_str()) {
+                if !dm.is_empty() {
+                    result_obj.insert("chat_light_model".to_string(), serde_json::json!(dm));
+                }
+            }
+            if let Some(dm) = chat.get("default_thinking_model").and_then(|v| v.as_str()) {
+                if !dm.is_empty() {
+                    result_obj.insert("chat_thinking_model".to_string(), serde_json::json!(dm));
+                }
+            }
+        }
+
+        if let Some(completion) = obj.get("completion").and_then(|v| v.as_object()) {
+            let comp_endpoint = completion.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+            let full_comp_endpoint = relative_to_full_url(caps_url, comp_endpoint)
+                .unwrap_or(comp_endpoint.to_string());
+            result_obj.insert("completion_endpoint".to_string(), serde_json::json!(full_comp_endpoint));
+        }
+
+        if let Some(telem) = obj.get("telemetry_endpoints").and_then(|v| v.as_object()) {
+            if let Some(basic) = telem.get("telemetry_basic_endpoint").and_then(|v| v.as_str()) {
+                result_obj.insert("telemetry_basic_dest".to_string(), serde_json::json!(basic));
+            }
+            if let Some(own) = telem.get("telemetry_basic_retrieve_my_own_endpoint").and_then(|v| v.as_str()) {
+                result_obj.insert("telemetry_basic_retrieve_my_own".to_string(), serde_json::json!(own));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 pub async fn load_caps(
@@ -632,25 +781,18 @@ pub async fn load_caps(
 
     let (caps_value, caps_url) = load_caps_value_from_url(cmdline, gcx.clone()).await?;
 
-    let (mut caps, server_providers) =
-        match serde_json::from_value::<SelfHostedCaps>(caps_value.clone()) {
-            Ok(self_hosted_caps) => (
-                self_hosted_caps.into_caps(&caps_url, &cmdline_api_key)?,
-                Vec::new(),
-            ),
-            Err(_) => {
-                let caps = serde_json::from_value::<CodeAssistantCaps>(caps_value.clone())
-                    .map_err_with_prefix("Failed to parse caps:")?;
-                let mut server_provider = serde_json::from_value::<CapsProvider>(caps_value)
-                    .map_err_with_prefix("Failed to parse caps provider:")?;
-                resolve_relative_urls(&mut server_provider, &caps_url)?;
-                if caps.cloud_name == "refact" {
-                    server_provider.wire_format = WireFormat::Refact;
-                    server_provider.support_metadata = true;
-                }
-                (caps, vec![server_provider])
-            }
-        };
+    let caps_value = convert_self_hosted_caps_if_needed(caps_value, &caps_url, &cmdline_api_key)?;
+
+    let mut caps = serde_json::from_value::<CodeAssistantCaps>(caps_value.clone())
+        .map_err_with_prefix("Failed to parse caps:")?;
+    let mut server_provider = serde_json::from_value::<CapsProvider>(caps_value)
+        .map_err_with_prefix("Failed to parse caps provider:")?;
+    resolve_relative_urls(&mut server_provider, &caps_url)?;
+    if caps.cloud_name == "refact" {
+        server_provider.wire_format = WireFormat::Refact;
+        server_provider.support_metadata = true;
+    }
+    let server_providers = vec![server_provider];
 
     caps.telemetry_basic_dest = relative_to_full_url(&caps_url, &caps.telemetry_basic_dest)?;
     caps.telemetry_basic_retrieve_my_own =
@@ -672,37 +814,47 @@ pub async fn load_caps(
     caps.model_caps = Arc::new(model_caps_map);
 
     add_models_to_caps(&mut caps, providers);
-
-    // Also populate models from the new provider registry (user-configured providers)
     populate_chat_models_from_providers(&mut caps, gcx.clone()).await;
+    apply_model_caps_to_all_chat_models(&mut caps);
 
-    // Apply user's global defaults from providers.d/defaults.yaml
     match ProviderDefaults::load(&config_dir).await {
         Ok(user_defaults) => {
             if let Some(model) = &user_defaults.chat.model {
                 if !model.is_empty() && caps.chat_models.contains_key(model) {
                     caps.defaults.chat_default_model = model.clone();
                 } else if !model.is_empty() {
-                    warn!("User default chat model '{}' not found in available models, ignoring", model);
+                    warn!(
+                        "User default chat model '{}' not found in available models, ignoring",
+                        model
+                    );
                 }
             }
             if let Some(model) = &user_defaults.chat_light.model {
                 if !model.is_empty() && caps.chat_models.contains_key(model) {
                     caps.defaults.chat_light_model = model.clone();
                 } else if !model.is_empty() {
-                    warn!("User default light model '{}' not found in available models, ignoring", model);
+                    warn!(
+                        "User default light model '{}' not found in available models, ignoring",
+                        model
+                    );
                 }
             }
             if let Some(model) = &user_defaults.chat_thinking.model {
                 if !model.is_empty() && caps.chat_models.contains_key(model) {
                     caps.defaults.chat_thinking_model = model.clone();
                 } else if !model.is_empty() {
-                    warn!("User default thinking model '{}' not found in available models, ignoring", model);
+                    warn!(
+                        "User default thinking model '{}' not found in available models, ignoring",
+                        model
+                    );
                 }
             }
         }
         Err(e) => {
-            warn!("Failed to load user defaults from providers.d/defaults.yaml: {}", e);
+            warn!(
+                "Failed to load user defaults from providers.d/defaults.yaml: {}",
+                e
+            );
         }
     }
 
@@ -712,10 +864,11 @@ pub async fn load_caps(
 }
 
 fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
-    // Validate default models exist in chat_models (either from model_caps or custom models)
     if !caps.defaults.chat_default_model.is_empty() {
-        if !caps.chat_models.contains_key(&caps.defaults.chat_default_model) {
-            // Also check model_caps for backward compatibility (model might not be enabled yet)
+        if !caps
+            .chat_models
+            .contains_key(&caps.defaults.chat_default_model)
+        {
             if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_default_model).is_none() {
                 warn!(
                     "Default chat model '{}' is not in chat_models and not found in model capabilities registry",
@@ -725,7 +878,10 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
         }
     }
     if !caps.defaults.chat_thinking_model.is_empty() {
-        if !caps.chat_models.contains_key(&caps.defaults.chat_thinking_model) {
+        if !caps
+            .chat_models
+            .contains_key(&caps.defaults.chat_thinking_model)
+        {
             if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_thinking_model).is_none() {
                 warn!(
                     "Default thinking model '{}' is not in chat_models and not found in model capabilities registry",
@@ -735,7 +891,10 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
         }
     }
     if !caps.defaults.chat_light_model.is_empty() {
-        if !caps.chat_models.contains_key(&caps.defaults.chat_light_model) {
+        if !caps
+            .chat_models
+            .contains_key(&caps.defaults.chat_light_model)
+        {
             if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_light_model).is_none() {
                 warn!(
                     "Default light model '{}' is not in chat_models and not found in model capabilities registry",
@@ -806,7 +965,9 @@ pub fn resolve_chat_model(
         Some(resolved_caps) => {
             tracing::debug!(
                 "Model '{}' resolved via {:?}, matched key: '{}'",
-                model_id, resolved_caps.source, resolved_caps.matched_key
+                model_id,
+                resolved_caps.source,
+                resolved_caps.matched_key
             );
             let mut effective = (*base_record).clone();
             apply_registry_caps_to_chat_model(&mut effective, &resolved_caps.caps);
@@ -824,6 +985,19 @@ pub fn resolve_chat_model(
     }
 }
 
+fn apply_model_caps_to_all_chat_models(caps: &mut CodeAssistantCaps) {
+    let model_ids: Vec<String> = caps.chat_models.keys().cloned().collect();
+    for model_id in model_ids {
+        if let Some(resolved) = resolve_model_caps(&caps.model_caps, &model_id) {
+            if let Some(record) = caps.chat_models.get(&model_id) {
+                let mut updated = (**record).clone();
+                apply_registry_caps_to_chat_model(&mut updated, &resolved.caps);
+                caps.chat_models.insert(model_id, Arc::new(updated));
+            }
+        }
+    }
+}
+
 fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelCapabilities) {
     record.base.n_ctx = caps.n_ctx;
     record.base.supports_max_completion_tokens = caps.supports_max_completion_tokens;
@@ -834,7 +1008,11 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     record.supports_clicks = caps.supports_clicks;
     record.default_temperature = caps.default_temperature;
     record.default_max_tokens = caps.default_max_tokens;
-    record.max_output_tokens = if caps.max_output_tokens > 0 { Some(caps.max_output_tokens) } else { None };
+    record.max_output_tokens = if caps.max_output_tokens > 0 {
+        Some(caps.max_output_tokens)
+    } else {
+        None
+    };
 
     if !caps.tokenizer.is_empty() {
         record.base.tokenizer = caps.tokenizer.clone();
@@ -873,12 +1051,6 @@ pub fn resolve_completion_model<'a>(
         Err(first_err) if try_refact_fallbacks => {
             if let Ok(model) = resolve_model(&caps.completion_models, &format!("refact/{model_id}"))
             {
-                return Ok(model);
-            }
-            if let Ok(model) = resolve_model(
-                &caps.completion_models,
-                &format!("refact_self_hosted/{model_id}"),
-            ) {
                 return Ok(model);
             }
             Err(first_err)

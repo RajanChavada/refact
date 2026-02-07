@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAppSelector } from "./useAppSelector";
 import { useAppDispatch } from "./useAppDispatch";
 import { useConfig } from "./useConfig";
@@ -25,6 +25,8 @@ export function useEventBusForApp() {
   const config = useConfig();
   const dispatch = useAppDispatch();
   const pages = useAppSelector(selectPages);
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
 
   useEffect(() => {
     const listener = (event: MessageEvent) => {
@@ -41,7 +43,7 @@ export function useEventBusForApp() {
       }
 
       if (newChatAction.match(event.data)) {
-        if (!isPageInHistory({ pages }, "chat")) {
+        if (!isPageInHistory({ pages: pagesRef.current }, "chat")) {
           dispatch(push({ name: "chat" }));
         }
         const payload = event.data.payload;
@@ -66,7 +68,7 @@ export function useEventBusForApp() {
       }
 
       if (ideSwitchToThread.match(event.data)) {
-        if (!isPageInHistory({ pages }, "chat")) {
+        if (!isPageInHistory({ pages: pagesRef.current }, "chat")) {
           dispatch(push({ name: "chat" }));
         }
         dispatch(switchToThread({ id: event.data.payload.chatId }));
@@ -84,5 +86,5 @@ export function useEventBusForApp() {
     return () => {
       window.removeEventListener("message", listener);
     };
-  }, [config.host, dispatch, pages]);
+  }, [config.host, dispatch]);
 }

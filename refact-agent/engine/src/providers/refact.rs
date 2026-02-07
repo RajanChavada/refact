@@ -9,7 +9,7 @@ use tokio::sync::RwLock as ARwLock;
 use crate::global_context::GlobalContext;
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
-use crate::providers::traits::{AvailableModel, ModelSource, ProviderModel, ProviderRuntime, ProviderTrait};
+use crate::providers::traits::{AvailableModel, ModelSource, ProviderRuntime, ProviderTrait};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RefactProvider {
@@ -18,12 +18,6 @@ pub struct RefactProvider {
     pub enabled: bool,
     #[serde(default)]
     pub disabled_models: Vec<String>,
-    #[serde(default)]
-    pub chat_models: Vec<ProviderModel>,
-    #[serde(default)]
-    pub completion_models: Vec<ProviderModel>,
-    #[serde(default)]
-    pub embedding_model: Option<ProviderModel>,
 }
 
 impl RefactProvider {
@@ -33,9 +27,6 @@ impl RefactProvider {
             api_key,
             enabled: true,
             disabled_models: Vec::new(),
-            chat_models: Vec::new(),
-            completion_models: Vec::new(),
-            embedding_model: None,
         }
     }
 }
@@ -130,9 +121,9 @@ available:
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
             support_metadata: true,
-            chat_models: self.chat_models.clone(),
-            completion_models: self.completion_models.clone(),
-            embedding_model: self.embedding_model.clone(),
+            chat_models: Vec::new(),
+            completion_models: Vec::new(),
+            embedding_model: None,
         })
     }
 

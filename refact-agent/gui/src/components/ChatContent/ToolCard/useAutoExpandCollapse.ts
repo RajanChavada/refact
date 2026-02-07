@@ -10,6 +10,7 @@ interface UseAutoExpandCollapseOptions {
 interface UseAutoExpandCollapseResult {
   isOpen: boolean;
   onToggle: () => void;
+  animate: boolean;
 }
 
 export function useAutoExpandCollapse({
@@ -17,18 +18,21 @@ export function useAutoExpandCollapse({
   collapseDelayMs = 500,
 }: UseAutoExpandCollapseOptions): UseAutoExpandCollapseResult {
   const [isOpen, setIsOpen] = useState(status === "running");
+  const [animate, setAnimate] = useState(false);
   const userToggledRef = useRef(false);
   const prevStatusRef = useRef(status);
 
   useEffect(() => {
     if (status === "running" && prevStatusRef.current !== "running") {
       if (!userToggledRef.current) {
+        setAnimate(false);
         setIsOpen(true);
       }
     }
 
     if (status !== "running" && prevStatusRef.current === "running") {
       const timer = setTimeout(() => {
+        setAnimate(false);
         setIsOpen(false);
         userToggledRef.current = false;
       }, collapseDelayMs);
@@ -40,8 +44,9 @@ export function useAutoExpandCollapse({
 
   const onToggle = useCallback(() => {
     userToggledRef.current = true;
+    setAnimate(true);
     setIsOpen((prev) => !prev);
   }, []);
 
-  return { isOpen, onToggle };
+  return { isOpen, onToggle, animate };
 }

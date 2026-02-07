@@ -1,5 +1,3 @@
-//! Refact Cloud adapter - OpenAI-compatible with Refact-specific extensions.
-
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{json, Value};
 

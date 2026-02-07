@@ -9,7 +9,6 @@ use crate::llm::params::CacheControl;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_THINKING_BUDGET: usize = 10000;
 
-/// Fields that cannot be overridden via extra_body for security
 const PROTECTED_FIELDS: &[&str] = &["model", "messages", "stream", "system", "tools", "tool_choice"];
 
 pub struct AnthropicAdapter;

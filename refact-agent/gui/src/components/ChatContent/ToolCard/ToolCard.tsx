@@ -15,6 +15,7 @@ export interface ToolCardProps {
   onToggle: () => void;
   children?: React.ReactNode;
   className?: string;
+  animate?: boolean;
 }
 
 export const ToolCard: React.FC<ToolCardProps> = ({
@@ -26,8 +27,9 @@ export const ToolCard: React.FC<ToolCardProps> = ({
   onToggle,
   children,
   className,
+  animate = true,
 }) => {
-  const { shouldRender, isAnimatingOpen } = useDelayedUnmount(isOpen, 200);
+  const { shouldRender, isAnimatingOpen } = useDelayedUnmount(isOpen, 200, animate);
 
   return (
     <div
@@ -60,6 +62,7 @@ export const ToolCard: React.FC<ToolCardProps> = ({
           className={classNames(
             styles.contentWrapper,
             isAnimatingOpen && styles.contentWrapperOpen,
+            !animate && styles.noTransition,
           )}
         >
           <div className={styles.contentInner}>

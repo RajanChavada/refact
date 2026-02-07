@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 type CollapsibleState = Record<string, boolean>;
 
@@ -28,7 +28,10 @@ export function useCollapsibleState(defaultOpen = false) {
     setState({});
   }, []);
 
-  return { isOpen, setOpen, toggle, reset };
+  return useMemo(
+    () => ({ isOpen, setOpen, toggle, reset }),
+    [isOpen, setOpen, toggle, reset],
+  );
 }
 
 export type CollapsibleStateManager = ReturnType<typeof useCollapsibleState>;

@@ -36,6 +36,51 @@ pub fn compute_cost(usage: &ChatUsage, pricing: &ModelPricing) -> Option<Meterin
 pub fn openai_pricing(model_id: &str) -> Option<ModelPricing> {
     let id = model_id.to_lowercase();
     match id.as_str() {
+        // GPT-5 family
+        s if s.contains("gpt-5") && s.contains("nano") => Some(ModelPricing {
+            prompt: 0.05,
+            generated: 0.40,
+            cache_read: Some(0.005),
+            cache_creation: None,
+        }),
+        s if s.contains("gpt-5") && s.contains("mini") => Some(ModelPricing {
+            prompt: 0.25,
+            generated: 2.00,
+            cache_read: Some(0.025),
+            cache_creation: None,
+        }),
+        s if s.contains("gpt-5") && s.contains("pro") => Some(ModelPricing {
+            prompt: 15.00,
+            generated: 120.00,
+            cache_read: None,
+            cache_creation: None,
+        }),
+        s if s.contains("gpt-5") => Some(ModelPricing {
+            prompt: 1.25,
+            generated: 10.00,
+            cache_read: Some(0.125),
+            cache_creation: None,
+        }),
+        // GPT-4.1 family
+        s if s.contains("gpt-4.1-nano") || s.contains("gpt-4.1_nano") => Some(ModelPricing {
+            prompt: 0.10,
+            generated: 0.40,
+            cache_read: Some(0.025),
+            cache_creation: None,
+        }),
+        s if s.contains("gpt-4.1-mini") || s.contains("gpt-4.1_mini") => Some(ModelPricing {
+            prompt: 0.40,
+            generated: 1.60,
+            cache_read: Some(0.10),
+            cache_creation: None,
+        }),
+        s if s.contains("gpt-4.1") => Some(ModelPricing {
+            prompt: 2.00,
+            generated: 8.00,
+            cache_read: Some(0.50),
+            cache_creation: None,
+        }),
+        // GPT-4o family
         s if s.contains("gpt-4o-mini") => Some(ModelPricing {
             prompt: 0.15,
             generated: 0.60,
@@ -48,13 +93,14 @@ pub fn openai_pricing(model_id: &str) -> Option<ModelPricing> {
             cache_read: Some(1.25),
             cache_creation: None,
         }),
+        // Legacy GPT-4
         s if s.contains("gpt-4-turbo") => Some(ModelPricing {
             prompt: 10.00,
             generated: 30.00,
             cache_read: None,
             cache_creation: None,
         }),
-        s if s.contains("gpt-4") && !s.contains("turbo") => Some(ModelPricing {
+        s if s.contains("gpt-4") && !s.contains("turbo") && !s.contains("4o") && !s.contains("4.1") => Some(ModelPricing {
             prompt: 30.00,
             generated: 60.00,
             cache_read: None,
@@ -66,22 +112,49 @@ pub fn openai_pricing(model_id: &str) -> Option<ModelPricing> {
             cache_read: None,
             cache_creation: None,
         }),
-        s if s.contains("o1-mini") => Some(ModelPricing {
-            prompt: 3.00,
-            generated: 12.00,
-            cache_read: Some(1.50),
+        // o4-mini
+        s if s.contains("o4-mini") => Some(ModelPricing {
+            prompt: 1.10,
+            generated: 4.40,
+            cache_read: Some(0.275),
             cache_creation: None,
         }),
-        s if s.contains("o1-preview") || s.contains("o1") && !s.contains("mini") => Some(ModelPricing {
-            prompt: 15.00,
-            generated: 60.00,
-            cache_read: Some(7.50),
+        // o3 family
+        s if s.contains("o3-pro") => Some(ModelPricing {
+            prompt: 20.00,
+            generated: 80.00,
+            cache_read: None,
             cache_creation: None,
         }),
         s if s.contains("o3-mini") => Some(ModelPricing {
             prompt: 1.10,
             generated: 4.40,
             cache_read: Some(0.55),
+            cache_creation: None,
+        }),
+        s if s.contains("o3") => Some(ModelPricing {
+            prompt: 2.00,
+            generated: 8.00,
+            cache_read: Some(0.50),
+            cache_creation: None,
+        }),
+        // o1 family
+        s if s.contains("o1-pro") => Some(ModelPricing {
+            prompt: 150.00,
+            generated: 600.00,
+            cache_read: None,
+            cache_creation: None,
+        }),
+        s if s.contains("o1-mini") => Some(ModelPricing {
+            prompt: 1.10,
+            generated: 4.40,
+            cache_read: Some(0.55),
+            cache_creation: None,
+        }),
+        s if s.contains("o1") => Some(ModelPricing {
+            prompt: 15.00,
+            generated: 60.00,
+            cache_read: Some(7.50),
             cache_creation: None,
         }),
         _ => None,
@@ -91,35 +164,68 @@ pub fn openai_pricing(model_id: &str) -> Option<ModelPricing> {
 pub fn anthropic_pricing(model_id: &str) -> Option<ModelPricing> {
     let id = model_id.to_lowercase();
     match id.as_str() {
+        // Claude Opus 4.5/4.6
+        s if s.contains("claude-opus-4") && (s.contains("4.5") || s.contains("4.6") || s.contains("4-5") || s.contains("4-6")) => Some(ModelPricing {
+            prompt: 5.00,
+            generated: 25.00,
+            cache_read: Some(0.50),
+            cache_creation: Some(6.25),
+        }),
+        // Claude Opus 4/4.1
+        s if s.contains("claude-opus-4") => Some(ModelPricing {
+            prompt: 15.00,
+            generated: 75.00,
+            cache_read: Some(1.50),
+            cache_creation: Some(18.75),
+        }),
+        // Claude 3 Opus (legacy)
+        s if s.contains("claude-3-opus") => Some(ModelPricing {
+            prompt: 15.00,
+            generated: 75.00,
+            cache_read: Some(1.50),
+            cache_creation: Some(18.75),
+        }),
+        // Claude Sonnet 4/4.5
+        s if s.contains("claude-sonnet-4") => Some(ModelPricing {
+            prompt: 3.00,
+            generated: 15.00,
+            cache_read: Some(0.30),
+            cache_creation: Some(3.75),
+        }),
+        // Claude 3.7 Sonnet (deprecated but still used)
+        s if s.contains("claude-3-7-sonnet") || s.contains("claude-3.7-sonnet") => Some(ModelPricing {
+            prompt: 3.00,
+            generated: 15.00,
+            cache_read: Some(0.30),
+            cache_creation: Some(3.75),
+        }),
+        // Claude 3.5 Sonnet
         s if s.contains("claude-3-5-sonnet") || s.contains("claude-3.5-sonnet") => Some(ModelPricing {
             prompt: 3.00,
             generated: 15.00,
             cache_read: Some(0.30),
             cache_creation: Some(3.75),
         }),
-        s if s.contains("claude-3-7-sonnet") || s.contains("claude-3.7-sonnet") || s.contains("claude-sonnet-4") => Some(ModelPricing {
-            prompt: 3.00,
-            generated: 15.00,
-            cache_read: Some(0.30),
-            cache_creation: Some(3.75),
+        // Claude Haiku 4.5
+        s if s.contains("claude-haiku-4") && s.contains("4.5") => Some(ModelPricing {
+            prompt: 1.00,
+            generated: 5.00,
+            cache_read: Some(0.10),
+            cache_creation: Some(1.25),
         }),
+        // Claude 3.5 Haiku
         s if s.contains("claude-3-5-haiku") || s.contains("claude-3.5-haiku") => Some(ModelPricing {
             prompt: 0.80,
             generated: 4.00,
             cache_read: Some(0.08),
             cache_creation: Some(1.00),
         }),
+        // Claude 3 Haiku
         s if s.contains("claude-3-haiku") => Some(ModelPricing {
             prompt: 0.25,
             generated: 1.25,
             cache_read: Some(0.03),
             cache_creation: Some(0.30),
-        }),
-        s if s.contains("claude-3-opus") || s.contains("claude-opus-4") => Some(ModelPricing {
-            prompt: 15.00,
-            generated: 75.00,
-            cache_read: Some(1.50),
-            cache_creation: Some(18.75),
         }),
         _ => None,
     }
@@ -128,6 +234,12 @@ pub fn anthropic_pricing(model_id: &str) -> Option<ModelPricing> {
 pub fn google_gemini_pricing(model_id: &str) -> Option<ModelPricing> {
     let id = model_id.to_lowercase();
     match id.as_str() {
+        s if s.contains("gemini-2.5-pro") || s.contains("gemini-2-5-pro") => Some(ModelPricing {
+            prompt: 1.25,
+            generated: 10.00,
+            cache_read: None,
+            cache_creation: None,
+        }),
         s if s.contains("gemini-2.0-flash") || s.contains("gemini-2-flash") => Some(ModelPricing {
             prompt: 0.10,
             generated: 0.40,
@@ -139,12 +251,6 @@ pub fn google_gemini_pricing(model_id: &str) -> Option<ModelPricing> {
             generated: 0.30,
             cache_read: Some(0.01875),
             cache_creation: Some(0.01875),
-        }),
-        s if s.contains("gemini-2.5-pro") || s.contains("gemini-2-5-pro") => Some(ModelPricing {
-            prompt: 1.25,
-            generated: 10.00,
-            cache_read: None,
-            cache_creation: None,
         }),
         s if s.contains("gemini-1.5-pro") || s.contains("gemini-pro") => Some(ModelPricing {
             prompt: 1.25,

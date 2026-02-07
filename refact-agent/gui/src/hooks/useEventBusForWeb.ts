@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useLocalStorage } from "usehooks-ts";
 import { isLogOut, isOpenExternalUrl, isSetupHost } from "../events/setup";
 import { useAppDispatch } from "./useAppDispatch";
@@ -12,6 +12,10 @@ export function useEventBusForWeb() {
   const [addressURL, setAddressURL] = useLocalStorage("lspUrl", "");
   const [apiKey, setApiKey] = useLocalStorage("apiKey", "");
   const dispatch = useAppDispatch();
+  const addressURLRef = useRef(addressURL);
+  const apiKeyRef = useRef(apiKey);
+  addressURLRef.current = addressURL;
+  apiKeyRef.current = apiKey;
 
   useEffect(() => {
     if (config.host !== "web") {
@@ -40,13 +44,23 @@ export function useEventBusForWeb() {
           setAddressURL(host.endpointAddress);
           setApiKey(host.apiKey);
         }
-        dispatch(updateConfig({ addressURL, apiKey }));
+        dispatch(
+          updateConfig({
+            addressURL: addressURLRef.current,
+            apiKey: apiKeyRef.current,
+          }),
+        );
       }
 
       if (isLogOut(event.data)) {
         setAddressURL("");
         setApiKey("");
-        dispatch(updateConfig({ addressURL, apiKey }));
+        dispatch(
+          updateConfig({
+            addressURL: addressURLRef.current,
+            apiKey: apiKeyRef.current,
+          }),
+        );
       }
     };
 
@@ -55,7 +69,7 @@ export function useEventBusForWeb() {
     return () => {
       window.removeEventListener("message", listener);
     };
-  }, [setApiKey, setAddressURL, config.host, dispatch, addressURL, apiKey]);
+  }, [setApiKey, setAddressURL, config.host, dispatch]);
 
   useEffect(() => {
     if (config.host !== "web") {

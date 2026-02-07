@@ -84,9 +84,9 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
 
   const [isPaddingApplied, setIsPaddingApplied] = useState<boolean>(false);
 
-  const handlePaddingShift = (state: boolean) => {
+  const handlePaddingShift = useCallback((state: boolean) => {
     setIsPaddingApplied(state);
-  };
+  }, []);
 
   const config = useConfig();
 
@@ -164,14 +164,14 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
     dispatch(push({ name: "history" }));
   };
 
-  const goBack = () => {
+  const goBack = useCallback(() => {
     dispatch(pop());
-  };
+  }, [dispatch]);
 
-  const goBackFromIntegrations = () => {
+  const goBackFromIntegrations = useCallback(() => {
     dispatch(pop());
     dispatch(integrationsApi.util.resetApiState());
-  };
+  }, [dispatch]);
 
   const activeTab: Tab | undefined = useMemo(() => {
     if (desiredPage.name === "chat") {
