@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::caps::model_caps::{ModelCapabilities, resolve_model_caps};
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
-use crate::providers::traits::{ModelSource, ProviderRuntime, ProviderTrait};
+use crate::providers::traits::{AvailableModel, ModelSource, ProviderRuntime, ProviderTrait};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RefactProvider {
@@ -15,6 +16,8 @@ pub struct RefactProvider {
     pub enabled: bool,
     #[serde(default)]
     pub disabled_models: Vec<String>,
+    #[serde(skip)]
+    pub running_models: Vec<String>,
 }
 
 impl RefactProvider {
@@ -24,6 +27,7 @@ impl RefactProvider {
             api_key,
             enabled: true,
             disabled_models: Vec::new(),
+            running_models: Vec::new(),
         }
     }
 }
@@ -138,6 +142,54 @@ available:
 
     fn set_model_enabled(&mut self, model_id: &str, enabled: bool) {
         crate::providers::traits::set_model_disabled_impl(&mut self.disabled_models, model_id, enabled);
+    }
+
+    fn set_running_models(&mut self, running_models: Vec<String>) {
+        self.running_models = running_models;
+    }
+
+    fn get_available_models_from_caps(
+        &self,
+        model_caps: &HashMap<String, ModelCapabilities>,
+    ) -> Vec<AvailableModel> {
+        if self.running_models.is_empty() {
+            return Vec::new();
+        }
+
+        let mut models: Vec<AvailableModel> = Vec::new();
+
+        for running_model in &self.running_models {
+            if let Some(resolved) = resolve_model_caps(model_caps, running_model) {
+                let disabled = self.disabled_models.contains(running_model);
+                let pricing = self.model_pricing(running_model);
+                let mut model = AvailableModel::from_caps(running_model, &resolved.caps, !disabled, pricing);
+                if running_model != &resolved.matched_key {
+                    model.display_name = Some(running_model.clone());
+                }
+                models.push(model);
+            } else {
+                tracing::warn!(
+                    "Refact running model '{}' not found in model capabilities, adding with defaults",
+                    running_model
+                );
+                let disabled = self.disabled_models.contains(running_model);
+                models.push(AvailableModel {
+                    id: running_model.clone(),
+                    display_name: None,
+                    n_ctx: 4096,
+                    supports_tools: false,
+                    supports_multimodality: false,
+                    supports_reasoning: None,
+                    tokenizer: None,
+                    enabled: !disabled,
+                    is_custom: false,
+                    pricing: None,
+                });
+            }
+        }
+
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models
     }
 }
 

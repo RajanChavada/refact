@@ -286,6 +286,10 @@ pub trait ProviderTrait: Send + Sync {
         None
     }
 
+    fn set_running_models(&mut self, _running_models: Vec<String>) {
+        // Default: no-op, providers that need running_models filtering override this
+    }
+
     fn get_available_models_from_caps(
         &self,
         model_caps: &HashMap<String, ModelCapabilities>,

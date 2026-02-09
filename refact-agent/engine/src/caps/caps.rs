@@ -849,6 +849,22 @@ pub async fn load_caps(
     let address_url = gcx.read().await.cmdline.address_url.clone();
     let model_caps_map = get_model_caps(gcx.clone(), &address_url, false).await?;
     caps.model_caps = Arc::new(model_caps_map);
+    if caps.cloud_name == "refact" {
+        let running_models: Vec<String> = if let Some(pricing_obj) = caps.metadata.pricing.as_object() {
+            pricing_obj.keys().cloned().collect()
+        } else {
+            Vec::new()
+        };
+        if !running_models.is_empty() {
+            let gcx_locked = gcx.write().await;
+            let mut registry = gcx_locked.providers.write().await;
+            if let Some(provider) = registry.get_mut("refact") {
+                provider.set_running_models(running_models);
+            }
+            drop(registry);
+            drop(gcx_locked);
+        }
+    }
 
     add_models_to_caps(&mut caps, providers);
     populate_chat_models_from_providers(&mut caps, gcx.clone()).await;
