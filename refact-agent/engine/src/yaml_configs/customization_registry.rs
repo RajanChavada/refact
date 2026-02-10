@@ -362,14 +362,54 @@ pub fn resolve_subagent_for_model(
 }
 
 fn model_matches_pattern(model_id: &str, pattern: &str) -> bool {
+    let canonical = crate::caps::model_caps::canonicalize_model_name(model_id);
+    let candidates = [
+        canonical.original.as_str(),
+        canonical.provider_stripped.as_str(),
+        canonical.base_model.as_str(),
+        canonical.last_segment.as_str(),
+        canonical.last_segment_base.as_str(),
+    ];
+
+    candidates.iter().any(|c| model_matches_pattern_single(c, pattern))
+        || {
+            let pattern_norm = normalize_model_match_str(pattern);
+            candidates
+                .iter()
+                .any(|c| model_matches_pattern_single(&normalize_model_match_str(c), &pattern_norm))
+        }
+}
+
+fn normalize_model_match_str(s: &str) -> String {
+    s.to_lowercase().replace('.', "-")
+}
+
+fn model_matches_pattern_single(model_id: &str, pattern: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    if pattern.ends_with("*") {
+
+    if !pattern.contains('*') {
+        return model_id == pattern;
+    }
+
+    if pattern.ends_with('*') {
         let prefix = &pattern[..pattern.len() - 1];
         return model_id.starts_with(prefix);
     }
-    model_id == pattern
+
+    if pattern.starts_with('*') {
+        let suffix = &pattern[1..];
+        return model_id.ends_with(suffix);
+    }
+
+    if let Some(star_pos) = pattern.find('*') {
+        let prefix = &pattern[..star_pos];
+        let suffix = &pattern[star_pos + 1..];
+        return model_id.starts_with(prefix) && model_id.ends_with(suffix);
+    }
+
+    false
 }
 
 pub fn match_tool_confirm_action(rules: &[ToolConfirmRule], tool_name: &str) -> Option<String> {
@@ -504,6 +544,11 @@ mod tests {
 
     #[test]
     fn test_model_matches_pattern_prefix() {
+        assert!(model_matches_pattern("openai/gpt-4o", "gpt-4*"));
+        assert!(model_matches_pattern("openrouter/openai/gpt-4o", "gpt-4*"));
+        assert!(model_matches_pattern("claude-3.7-sonnet", "claude-3-7*"));
+        assert!(model_matches_pattern("anthropic/claude-3.7-sonnet", "claude-3-7*"));
+
         assert!(model_matches_pattern("gpt-4o", "gpt-*"));
         assert!(model_matches_pattern("gpt-4-turbo", "gpt-*"));
         assert!(!model_matches_pattern("claude-3", "gpt-*"));

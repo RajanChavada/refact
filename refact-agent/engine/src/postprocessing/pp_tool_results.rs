@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
@@ -104,7 +105,7 @@ fn deduplicate_and_merge_context_files(
     context_files: Vec<ContextFile>,
     existing_messages: &[ChatMessage],
 ) -> (Vec<ContextFile>, Vec<String>) {
-    let mut file_groups: HashMap<String, Vec<ContextFile>> = HashMap::new();
+    let mut file_groups: BTreeMap<String, Vec<ContextFile>> = BTreeMap::new();
 
     for cf in context_files {
         let canonical = canonical_path(&cf.file_name).to_string_lossy().to_string();

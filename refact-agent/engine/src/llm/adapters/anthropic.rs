@@ -981,13 +981,13 @@ mod tests {
             "claude".to_string(),
             vec![ChatMessage::new("user".to_string(), "test".to_string())],
         );
-        req_low_max.params.max_tokens = 4096;  // Less than DEFAULT_THINKING_BUDGET (10000)
+        req_low_max.params.max_tokens = 4096;  // Less than DEFAULT_THINKING_BUDGET
         req_low_max.reasoning = ReasoningIntent::High;  // Will use DEFAULT_THINKING_BUDGET
         req_low_max.stream = true;
 
         let http = adapter.build_http(&req_low_max, &settings()).unwrap();
-        // Should be adjusted: 10000 + max(4096, 1024) = 14096
-        assert_eq!(http.body["max_tokens"], 14096);
+        // Should be adjusted: budget + max(current_max, 1024)
+        assert_eq!(http.body["max_tokens"], DEFAULT_THINKING_BUDGET + 4096);
         assert_eq!(http.body["thinking"]["budget_tokens"], DEFAULT_THINKING_BUDGET);
 
         // Test with max_tokens > thinking budget (should NOT be adjusted)

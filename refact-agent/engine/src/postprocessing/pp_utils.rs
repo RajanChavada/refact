@@ -148,8 +148,9 @@ pub async fn pp_resolve_ctx_file_paths(
         }
         unique_cpaths.insert(context_file.file_name.clone());
     }
+    let mut unique_cpaths_vec: Vec<String> = unique_cpaths.into_iter().collect();
+    unique_cpaths_vec.sort();
 
-    let unique_cpaths_vec: Vec<String> = unique_cpaths.into_iter().collect();
     let shortified_vec: Vec<String> = shortify_paths(gcx.clone(), &unique_cpaths_vec).await;
     unique_cpaths_vec
         .into_iter()

@@ -324,7 +324,7 @@ fn adapt_sampling_for_reasoning_models(
                 && model_record.supports_boost_reasoning
                 && sampling_parameters.boost_reasoning
             {
-                sampling_parameters.reasoning_effort = Some(ReasoningEffort::High);
+                sampling_parameters.reasoning_effort = Some(ReasoningEffort::Medium);
             }
             sampling_parameters.thinking = None;
             sampling_parameters.enable_thinking = None;

@@ -11,6 +11,8 @@ use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
 use crate::yaml_configs::customization_registry::{load_merged_registry, load_registry_from_dir, invalidate_all_registry_caches, ConfigScope};
 use crate::yaml_configs::customization_types::*;
+use crate::yaml_configs::project_configs_bootstrap::{global_configs_try_create_all, project_configs_ensure_dirs};
+
 
 fn json_error(status: StatusCode, msg: &str) -> Result<Response<Body>, ScratchError> {
     let body = serde_json::json!({"error": msg});
@@ -81,9 +83,13 @@ pub async fn handle_v1_customization_registry(
     let dirs = get_project_dirs(gcx.clone()).await;
     let project_root = dirs.first().cloned();
 
+    let _ = global_configs_try_create_all(&config_dir).await;
+    if let Some(ref root) = project_root {
+        let _ = project_configs_ensure_dirs(root).await;
+    }
+
     let registry = load_merged_registry(&config_dir, project_root.as_deref()).await;
     let _global_registry = load_registry_from_dir(&config_dir).await;
-
     let local_refact_dir = project_root.as_ref().map(|p| p.join(".refact"));
 
     let make_config_item = |id: &str, kind: &str, title: &str, specific: bool| -> ConfigItem {
@@ -111,9 +117,31 @@ pub async fn handle_v1_customization_registry(
         }
     };
 
-    let mut modes: Vec<_> = registry.modes.values().map(|m| {
-        make_config_item(&m.id, "modes", if m.title.is_empty() { &m.id } else { &m.title }, m.specific)
-    }).collect();
+    let mut modes: Vec<_> = Vec::new();
+    let mut seen_mode_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for m in registry.modes.values() {
+        if seen_mode_ids.insert(m.id.clone()) {
+            modes.push(make_config_item(
+                &m.id,
+                "modes",
+                if m.title.is_empty() { &m.id } else { &m.title },
+                m.specific,
+            ));
+        }
+    }
+
+    for m in &registry.mode_overrides {
+        if seen_mode_ids.insert(m.id.clone()) {
+            modes.push(make_config_item(
+                &m.id,
+                "modes",
+                if m.title.is_empty() { &m.id } else { &m.title },
+                m.specific,
+            ));
+        }
+    }
+
     modes.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
 
     let mut subagents: Vec<_> = registry.subagents.values().map(|s| {
