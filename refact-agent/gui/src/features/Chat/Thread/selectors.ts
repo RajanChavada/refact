@@ -172,6 +172,17 @@ export const selectThreadMaximumTokens = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread
     .currentMaximumContextTokens;
 
+export const selectEffectiveMaxContextTokens = (state: RootState) => {
+  const thread = state.chat.threads[state.chat.current_thread_id]?.thread;
+  if (!thread) return undefined;
+  const modelMax = thread.currentMaximumContextTokens;
+  const cap = thread.context_tokens_cap;
+  if (cap && cap > 0) {
+    return modelMax && modelMax > 0 ? Math.min(cap, modelMax) : cap;
+  }
+  return modelMax;
+};
+
 export const selectThreadCurrentMessageTokens = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread
     .currentMessageContextTokens;

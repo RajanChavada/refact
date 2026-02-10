@@ -1,5 +1,8 @@
 import { useMemo } from "react";
-import { selectMessages, selectThreadMaximumTokens } from "../../features/Chat";
+import {
+  selectMessages,
+  selectEffectiveMaxContextTokens,
+} from "../../features/Chat";
 import { useAppSelector } from "../../hooks";
 import {
   calculateUsageInputTokens,
@@ -9,7 +12,7 @@ import { isAssistantMessage } from "../../services/refact";
 
 export function useUsageCounter() {
   const messages = useAppSelector(selectMessages);
-  const maxContextTokens = useAppSelector(selectThreadMaximumTokens);
+  const maxContextTokens = useAppSelector(selectEffectiveMaxContextTokens);
 
   // Memoize assistant messages list
   const assistantMessages = useMemo(

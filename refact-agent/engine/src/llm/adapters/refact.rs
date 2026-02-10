@@ -10,7 +10,7 @@ const DEFAULT_THINKING_BUDGET: usize = 10000;
 const PROTECTED_FIELDS: &[&str] = &[
     "model", "messages", "stream", "tools", "tool_choice", "stream_options",
     "max_completion_tokens", "temperature", "frequency_penalty", "stop", "n",
-    "reasoning_effort", "thinking", "meta", "parallel_tool_calls",
+    "reasoning_effort", "thinking", "meta", "parallel_tool_calls", "n_ctx",
 ];
 
 pub struct RefactAdapter;
@@ -52,8 +52,14 @@ impl LlmWireAdapter for RefactAdapter {
             "stream": req.stream,
         });
 
-        if req.params.max_tokens > 0 {
+        if let Some(n_ctx) = req.params.n_ctx {
+            body["n_ctx"] = json!(n_ctx);
+        }
+
+        if settings.supports_max_completion_tokens {
             body["max_completion_tokens"] = json!(req.params.max_tokens);
+        } else {
+            body["max_tokens"] = json!(req.params.max_tokens);
         }
 
         if settings.supports_temperature {
@@ -231,12 +237,59 @@ impl LlmWireAdapter for RefactAdapter {
                     }
 
                     // Citations support (Refact cloud via litellm)
+                    // Format 1: Perplexity/OpenAI-style flat array in delta
                     if let Some(citations) = delta.get("citations") {
                         if let Some(arr) = citations.as_array() {
                             for citation in arr {
                                 deltas.push(LlmStreamDelta::AddCitation {
                                     citation: citation.clone(),
                                 });
+                            }
+                        }
+                    }
+
+                    // Format 2: Anthropic citations via LiteLLM — streamed as
+                    // delta.provider_specific_fields.citation (singular per chunk)
+                    if let Some(psf) = delta.get("provider_specific_fields") {
+                        // Singular citation object (streaming Anthropic via LiteLLM)
+                        if let Some(citation) = psf.get("citation") {
+                            if !citation.is_null() {
+                                deltas.push(LlmStreamDelta::AddCitation {
+                                    citation: citation.clone(),
+                                });
+                            }
+                        }
+                        // Array of citations (non-streaming or accumulated)
+                        if let Some(citations) = psf.get("citations") {
+                            if let Some(arr) = citations.as_array() {
+                                for citation in arr {
+                                    deltas.push(LlmStreamDelta::AddCitation {
+                                        citation: citation.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Non-streaming responses: LiteLLM uses "message" instead of "delta"
+                // Extract citations from message.provider_specific_fields
+                if let Some(message) = choice.get("message") {
+                    if let Some(psf) = message.get("provider_specific_fields") {
+                        if let Some(citation) = psf.get("citation") {
+                            if !citation.is_null() {
+                                deltas.push(LlmStreamDelta::AddCitation {
+                                    citation: citation.clone(),
+                                });
+                            }
+                        }
+                        if let Some(citations) = psf.get("citations") {
+                            if let Some(arr) = citations.as_array() {
+                                for citation in arr {
+                                    deltas.push(LlmStreamDelta::AddCitation {
+                                        citation: citation.clone(),
+                                    });
+                                }
                             }
                         }
                     }
@@ -345,6 +398,10 @@ fn convert_messages_to_refact(messages: &[crate::call_validation::ChatMessage]) 
                 }
             }
 
+            if !msg.citations.is_empty() {
+                obj["citations"] = json!(msg.citations);
+            }
+
             Some(obj)
         })
         .collect()
@@ -407,79 +464,61 @@ fn tool_choice_to_refact(choice: &CanonicalToolChoice) -> Value {
 }
 
 fn parse_refact_usage(usage: &Value) -> Option<ChatUsage> {
-    // Refact cloud uses LiteLLM to proxy various providers. Each has different
-    // usage semantics that we must normalize to a consistent format:
+    // Refact cloud uses LiteLLM to proxy various providers.
     //
     // OUTPUT CONTRACT (what UI expects):
     //   prompt_tokens = NON-cached input tokens only
     //   cache_creation_tokens = newly cached tokens
     //   cache_read_tokens = tokens read from cache
     //   total_tokens = prompt + completion + cache_creation + cache_read
-    //   UI displays context as: prompt_tokens + cache_creation + cache_read
     //
-    // PROVIDER SEMANTICS:
+    // LiteLLM includes cached tokens in prompt_tokens for ALL providers
+    // (both Anthropic and OpenAI). We always subtract cache_read from
+    // prompt_tokens to get the non-cached portion. This matches the server's
+    // parse_usage() which does: prompt_tokens -= cache_read_input_tokens
     //
-    // LiteLLM proxying Anthropic:
-    //   prompt_tokens = Anthropic's input_tokens (NON-cached, already correct)
-    //   completion_tokens = output_tokens
-    //   total_tokens = input_tokens + output_tokens (does NOT include cache)
-    //   cache_creation_input_tokens = passed through at top level
-    //   cache_read_input_tokens = passed through at top level
-    //   → Just pass prompt_tokens through, recompute total to include cache
-    //
-    // OpenAI (native or via LiteLLM):
-    //   prompt_tokens = TOTAL input (includes cached tokens)
-    //   prompt_tokens_details.cached_tokens = cached subset
-    //   total_tokens = prompt_tokens + completion_tokens (includes everything)
-    //   → Subtract cached_tokens from prompt_tokens to get non-cached
-    //
-    // Plain OpenAI (no caching):
-    //   prompt_tokens = total input
-    //   total_tokens = prompt + completion
-    //   → Pass through as-is
+    // Cache fields location varies by provider:
+    //   Anthropic: top-level cache_read_input_tokens, cache_creation_input_tokens
+    //   OpenAI: prompt_tokens_details.cached_tokens
+    //   LiteLLM may also nest Anthropic fields inside prompt_tokens_details
 
     let completion_tokens = parse_token_value(usage.get("completion_tokens"))
         .or_else(|| parse_token_value(usage.get("output_tokens")))
         .unwrap_or(0);
 
-    // Check for Anthropic-style cache fields (top-level, from LiteLLM passthrough)
-    let anthropic_cache_creation = parse_token_value(usage.get("cache_creation_input_tokens"));
-    let anthropic_cache_read = parse_token_value(usage.get("cache_read_input_tokens"));
+    // Anthropic-style cache fields (top-level, from LiteLLM passthrough).
+    // Filter zeros so `.or()` falls through to nested/OpenAI fields correctly.
+    let anthropic_cache_creation = parse_token_value(usage.get("cache_creation_input_tokens")).filter(|&v| v > 0);
+    let anthropic_cache_read = parse_token_value(usage.get("cache_read_input_tokens")).filter(|&v| v > 0);
 
-    // Check for OpenAI-style cache fields (nested in prompt_tokens_details)
+    // OpenAI-style cache fields (nested in prompt_tokens_details)
     let details = usage.get("prompt_tokens_details");
-    let openai_cached = details.and_then(|d| parse_token_value(d.get("cached_tokens")));
+    let openai_cached = details.and_then(|d| parse_token_value(d.get("cached_tokens"))).filter(|&v| v > 0);
     // LiteLLM may also put Anthropic fields inside prompt_tokens_details
-    let details_cache_creation = details.and_then(|d| parse_token_value(d.get("cache_creation_input_tokens")));
-    let details_cache_read = details.and_then(|d| parse_token_value(d.get("cache_read_input_tokens")));
+    let details_cache_creation = details.and_then(|d| parse_token_value(d.get("cache_creation_input_tokens"))).filter(|&v| v > 0);
+    let details_cache_read = details.and_then(|d| parse_token_value(d.get("cache_read_input_tokens"))).filter(|&v| v > 0);
 
-    let has_anthropic_cache = anthropic_cache_creation.is_some()
-        || anthropic_cache_read.is_some()
-        || details_cache_creation.is_some()
-        || details_cache_read.is_some();
-
+    // Merge: prefer top-level Anthropic fields, fall back to nested details
     let effective_cache_creation = anthropic_cache_creation.or(details_cache_creation);
     let effective_cache_read = anthropic_cache_read.or(details_cache_read).or(openai_cached);
 
     let raw_prompt = parse_token_value(usage.get("prompt_tokens")).unwrap_or(0);
 
-    let prompt_tokens = if has_anthropic_cache {
-        // Anthropic via LiteLLM: prompt_tokens = Anthropic's input_tokens
-        // This is already the NON-cached portion. Pass through as-is.
-        raw_prompt
-    } else if let Some(cached) = openai_cached {
-        // OpenAI: prompt_tokens includes cached tokens. Subtract to get non-cached.
-        raw_prompt.saturating_sub(cached)
+    // Subtract cache_read from prompt_tokens (LiteLLM includes cached tokens
+    // in prompt_tokens for all providers). Guard: only subtract when
+    // raw_prompt >= cache_read to avoid clamping partial/delta chunks to 0.
+    let cache_read = effective_cache_read.unwrap_or(0);
+    let prompt_tokens = if raw_prompt >= cache_read {
+        raw_prompt - cache_read
     } else {
-        // No caching info: pass through as-is
         raw_prompt
     };
 
-    // Always recompute total to include cache tokens (provider's total may exclude them)
+    // Recompute total to include cache tokens (provider's total may exclude them)
     let total_tokens = prompt_tokens
         + completion_tokens
         + effective_cache_creation.unwrap_or(0)
-        + effective_cache_read.unwrap_or(0);
+        + cache_read;
 
     let cache_creation_out = effective_cache_creation.filter(|&v| v > 0);
     let cache_read_out = effective_cache_read.filter(|&v| v > 0);
@@ -836,20 +875,19 @@ mod tests {
 
     #[test]
     fn test_parse_usage_litellm_anthropic_style() {
-        // LiteLLM maps Anthropic's input_tokens → prompt_tokens (non-cached portion)
-        // total_tokens = input_tokens + output_tokens (does NOT include cache)
-        // Cache fields passed through at top level
+        // LiteLLM includes cached tokens in prompt_tokens for all providers.
+        // prompt_tokens = 1500 (includes 1000 cache_read), non-cached = 500
         let usage = serde_json::json!({
-            "prompt_tokens": 500,
+            "prompt_tokens": 1500,
             "completion_tokens": 200,
             "cache_read_input_tokens": 1000,
             "cache_creation_input_tokens": 300,
-            "total_tokens": 700
+            "total_tokens": 1700
         });
 
         let parsed = parse_refact_usage(&usage).unwrap();
 
-        // prompt_tokens passed through (already non-cached)
+        // prompt_tokens normalized: 1500 - 1000 = 500
         assert_eq!(parsed.prompt_tokens, 500);
         assert_eq!(parsed.completion_tokens, 200);
         assert_eq!(parsed.cache_creation_tokens, Some(300));
@@ -881,22 +919,80 @@ mod tests {
     #[test]
     fn test_parse_usage_litellm_anthropic_cache_read_only() {
         // LiteLLM Anthropic: second request, most tokens from cache
+        // prompt_tokens = 5100 (includes 5000 cache_read), non-cached = 100
         let usage = serde_json::json!({
-            "prompt_tokens": 100,
+            "prompt_tokens": 5100,
             "completion_tokens": 200,
             "cache_read_input_tokens": 5000,
             "cache_creation_input_tokens": 0,
-            "total_tokens": 300
+            "total_tokens": 5300
         });
 
         let parsed = parse_refact_usage(&usage).unwrap();
 
+        // prompt_tokens normalized: 5100 - 5000 = 100
         assert_eq!(parsed.prompt_tokens, 100);
         assert_eq!(parsed.completion_tokens, 200);
         assert_eq!(parsed.cache_creation_tokens, None);
         assert_eq!(parsed.cache_read_tokens, Some(5000));
         // total recomputed: 100 + 200 + 0 + 5000 = 5300
         assert_eq!(parsed.total_tokens, 5300);
+    }
+
+    #[test]
+    fn test_parse_usage_zero_top_level_falls_through_to_nested() {
+        // Top-level cache_read_input_tokens=0 should not block nested cached_tokens
+        let usage = serde_json::json!({
+            "prompt_tokens": 1500,
+            "completion_tokens": 200,
+            "cache_read_input_tokens": 0,
+            "prompt_tokens_details": { "cached_tokens": 1000 }
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        // Should use nested cached_tokens=1000: 1500 - 1000 = 500
+        assert_eq!(parsed.prompt_tokens, 500);
+        assert_eq!(parsed.cache_read_tokens, Some(1000));
+        assert_eq!(parsed.total_tokens, 1700);
+    }
+
+    #[test]
+    fn test_parse_usage_cache_read_exceeds_prompt_no_clamp() {
+        // Partial/delta chunk where cache_read > prompt_tokens (e.g., streaming)
+        // Should not subtract to avoid clamping to 0
+        let usage = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 200,
+            "cache_read_input_tokens": 5000
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        // raw_prompt < cache_read → keep raw_prompt as-is
+        assert_eq!(parsed.prompt_tokens, 100);
+        assert_eq!(parsed.cache_read_tokens, Some(5000));
+        assert_eq!(parsed.total_tokens, 5300);
+    }
+
+    #[test]
+    fn test_parse_usage_cache_creation_in_details_only() {
+        // Cache creation nested in prompt_tokens_details (LiteLLM oddity)
+        let usage = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "prompt_tokens_details": {
+                "cache_creation_input_tokens": 300,
+                "cached_tokens": 500
+            }
+        });
+
+        let parsed = parse_refact_usage(&usage).unwrap();
+
+        assert_eq!(parsed.prompt_tokens, 500);
+        assert_eq!(parsed.cache_creation_tokens, Some(300));
+        assert_eq!(parsed.cache_read_tokens, Some(500));
+        assert_eq!(parsed.total_tokens, 1500);
     }
 
     #[test]
@@ -1313,5 +1409,144 @@ mod tests {
         assert_eq!(http.body["model"], "gpt-4");
         assert_ne!(http.body["messages"], json!([]));
         assert_eq!(http.body["allowed_field"], "ok");
+    }
+
+    #[test]
+    fn test_stream_anthropic_citation_in_provider_specific_fields() {
+        // LiteLLM streams Anthropic citations as delta.provider_specific_fields.citation (singular)
+        let adapter = RefactAdapter;
+        let chunk = r#"{"id":"123","choices":[{"index":0,"delta":{"content":"the grass is green","provider_specific_fields":{"citation":{"type":"char_location","cited_text":"The grass is green.","document_index":0,"document_title":"My Document","start_char_index":0,"end_char_index":20}}}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        let has_content = deltas.iter().any(|d| matches!(d, LlmStreamDelta::AppendContent { text } if text == "the grass is green"));
+        assert!(has_content, "Should have content delta");
+
+        let citation_count = deltas.iter().filter(|d| matches!(d, LlmStreamDelta::AddCitation { .. })).count();
+        assert_eq!(citation_count, 1, "Should have exactly one citation from provider_specific_fields");
+
+        if let Some(LlmStreamDelta::AddCitation { citation }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddCitation { .. })) {
+            assert_eq!(citation.get("type").and_then(|v| v.as_str()), Some("char_location"));
+            assert_eq!(citation.get("cited_text").and_then(|v| v.as_str()), Some("The grass is green."));
+            assert_eq!(citation.get("document_index").and_then(|v| v.as_u64()), Some(0));
+        }
+    }
+
+    #[test]
+    fn test_stream_anthropic_citations_array_in_provider_specific_fields() {
+        // LiteLLM may also return citations as an array in provider_specific_fields
+        let adapter = RefactAdapter;
+        let chunk = r#"{"id":"123","choices":[{"index":0,"delta":{"content":"colors","provider_specific_fields":{"citations":[{"type":"char_location","cited_text":"The grass is green.","document_index":0,"start_char_index":0,"end_char_index":20},{"type":"char_location","cited_text":"The sky is blue.","document_index":0,"start_char_index":20,"end_char_index":36}]}}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        let citation_count = deltas.iter().filter(|d| matches!(d, LlmStreamDelta::AddCitation { .. })).count();
+        assert_eq!(citation_count, 2, "Should have two citations from provider_specific_fields array");
+    }
+
+    #[test]
+    fn test_non_streaming_anthropic_citations_in_message() {
+        // Non-streaming LiteLLM response: citations in message.provider_specific_fields.citations
+        let adapter = RefactAdapter;
+        let chunk = r#"{"id":"msg_123","choices":[{"index":0,"message":{"role":"assistant","content":"The grass is green and the sky is blue.","provider_specific_fields":{"citations":[{"type":"char_location","cited_text":"The grass is green.","document_index":0,"document_title":"My Document","start_char_index":0,"end_char_index":20}]}},"finish_reason":"stop"}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        let citation_count = deltas.iter().filter(|d| matches!(d, LlmStreamDelta::AddCitation { .. })).count();
+        assert_eq!(citation_count, 1, "Should extract citation from non-streaming message.provider_specific_fields");
+
+        if let Some(LlmStreamDelta::AddCitation { citation }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddCitation { .. })) {
+            assert_eq!(citation.get("type").and_then(|v| v.as_str()), Some("char_location"));
+            assert_eq!(citation.get("document_title").and_then(|v| v.as_str()), Some("My Document"));
+        }
+
+        let has_finish = deltas.iter().any(|d| matches!(d, LlmStreamDelta::SetFinishReason { reason } if reason == "stop"));
+        assert!(has_finish, "Should also have finish reason");
+    }
+
+    #[test]
+    fn test_null_citation_in_provider_specific_fields_ignored() {
+        // LiteLLM sends provider_specific_fields.citations: null when no citations
+        let adapter = RefactAdapter;
+        let chunk = r#"{"id":"123","choices":[{"index":0,"delta":{"content":"hello","provider_specific_fields":{"citation":null,"citations":null}}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        let citation_count = deltas.iter().filter(|d| matches!(d, LlmStreamDelta::AddCitation { .. })).count();
+        assert_eq!(citation_count, 0, "Null citations should be ignored");
+
+        let has_content = deltas.iter().any(|d| matches!(d, LlmStreamDelta::AppendContent { text } if text == "hello"));
+        assert!(has_content, "Content should still be parsed");
+    }
+
+    #[test]
+    fn test_citations_resent_in_multi_turn() {
+        // Citations from prior assistant responses should be included when re-sending messages
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "What color is the grass?".to_string()),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("The grass is green.".to_string()),
+                citations: vec![
+                    json!({
+                        "type": "char_location",
+                        "cited_text": "The grass is green.",
+                        "document_index": 0,
+                        "document_title": "My Document",
+                        "start_char_index": 0,
+                        "end_char_index": 20
+                    }),
+                ],
+                ..Default::default()
+            },
+            ChatMessage::new("user".to_string(), "And the sky?".to_string()),
+        ];
+
+        let converted = convert_messages_to_refact(&messages);
+
+        assert_eq!(converted.len(), 3);
+        // Assistant message should have citations
+        let assistant = &converted[1];
+        assert!(assistant.get("citations").is_some(),
+            "Assistant message should include citations for multi-turn context");
+        let citations = assistant["citations"].as_array().unwrap();
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0]["type"], "char_location");
+        assert_eq!(citations[0]["cited_text"], "The grass is green.");
+    }
+
+    #[test]
+    fn test_empty_citations_not_included() {
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("Hi".to_string()),
+                citations: vec![],
+                ..Default::default()
+            },
+        ];
+
+        let converted = convert_messages_to_refact(&messages);
+
+        assert!(converted[0].get("citations").is_none(),
+            "Empty citations should not be included");
+    }
+
+    #[test]
+    fn test_anthropic_pdf_page_location_citation() {
+        // Anthropic PDF citations use page_location type
+        let adapter = RefactAdapter;
+        let chunk = r#"{"id":"123","choices":[{"index":0,"delta":{"content":"water is essential","provider_specific_fields":{"citation":{"type":"page_location","cited_text":"Water is essential for life.","document_index":1,"document_title":"PDF Document","start_page_number":5,"end_page_number":6}}}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        let citation_count = deltas.iter().filter(|d| matches!(d, LlmStreamDelta::AddCitation { .. })).count();
+        assert_eq!(citation_count, 1);
+
+        if let Some(LlmStreamDelta::AddCitation { citation }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddCitation { .. })) {
+            assert_eq!(citation.get("type").and_then(|v| v.as_str()), Some("page_location"));
+            assert_eq!(citation.get("start_page_number").and_then(|v| v.as_u64()), Some(5));
+            assert_eq!(citation.get("end_page_number").and_then(|v| v.as_u64()), Some(6));
+        }
     }
 }

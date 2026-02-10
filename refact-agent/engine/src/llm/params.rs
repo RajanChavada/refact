@@ -12,6 +12,8 @@ pub enum CacheControl {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommonParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n_ctx: Option<usize>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,6 +33,7 @@ fn default_max_tokens() -> usize {
 impl Default for CommonParams {
     fn default() -> Self {
         Self {
+            n_ctx: None,
             max_tokens: DEFAULT_MAX_TOKENS,
             temperature: None,
             frequency_penalty: None,

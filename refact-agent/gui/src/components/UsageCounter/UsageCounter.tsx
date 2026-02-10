@@ -16,8 +16,8 @@ import { useUsageCounter } from "./useUsageCounter";
 
 import {
   selectThreadCurrentMessageTokens,
-  selectThreadMaximumTokens,
   selectThreadImages,
+  selectEffectiveMaxContextTokens,
 } from "../../features/Chat";
 import { TokensMapContent } from "./TokensMapContent";
 import { useTokenMap } from "./useTokenMap";
@@ -127,7 +127,9 @@ const CoinDisplay: React.FC<{ label: React.ReactNode; value: number }> = ({
 const InlineHoverCard: React.FC<{ messageTokens: number }> = ({
   messageTokens,
 }) => {
-  const maximumThreadContextTokens = useAppSelector(selectThreadMaximumTokens);
+  const maximumThreadContextTokens = useAppSelector(
+    selectEffectiveMaxContextTokens,
+  );
 
   return (
     <Flex direction="column" align="start" gap="2">
@@ -500,7 +502,8 @@ export const UsageCounter: React.FC<UsageCounterProps> = ({
     return currentThreadUsage?.cache_creation_input_tokens ?? 0;
   }, [meteringTokens, currentThreadUsage]);
 
-  const maxContextTokens = useAppSelector(selectThreadMaximumTokens) ?? 0;
+  const maxContextTokens =
+    useAppSelector(selectEffectiveMaxContextTokens) ?? 0;
 
   const shouldUsageBeHidden = useMemo(() => {
     if (isInline) return false;

@@ -355,7 +355,31 @@ fn convert_to_anthropic(
                         }
                     }
                 }
-                content.extend(msg_content_to_anthropic(&msg.content));
+                if !msg.citations.is_empty() {
+                    // Re-send citations from prior responses as content blocks with
+                    // their citation data. Anthropic expects text blocks with citations
+                    // arrays when re-sending cited content in multi-turn conversations.
+                    let text_blocks = msg_content_to_anthropic(&msg.content);
+                    if text_blocks.len() == 1 {
+                        // Single text block: attach all citations directly
+                        let mut block = text_blocks.into_iter().next().unwrap();
+                        if let Some(obj) = block.as_object_mut() {
+                            obj.insert("citations".to_string(), json!(msg.citations));
+                        }
+                        content.push(block);
+                    } else {
+                        // Multiple blocks: append citations to the last text block
+                        let mut blocks = text_blocks;
+                        if let Some(last) = blocks.last_mut() {
+                            if let Some(obj) = last.as_object_mut() {
+                                obj.insert("citations".to_string(), json!(msg.citations));
+                            }
+                        }
+                        content.extend(blocks);
+                    }
+                } else {
+                    content.extend(msg_content_to_anthropic(&msg.content));
+                }
                 if msg.role == "assistant" {
                     if let Some(tcs) = &msg.tool_calls {
                         let tool_blocks: Vec<Value> = tcs.iter()
@@ -1256,6 +1280,60 @@ mod tests {
         assert_eq!(content[1]["type"], "redacted_thinking");
         assert_eq!(content[1]["data"], "encrypted_data_here");
         assert_eq!(content[2]["type"], "text");
+    }
+
+    #[test]
+    fn test_citations_resent_in_multi_turn() {
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "What color is the grass?".to_string()),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("The grass is green.".to_string()),
+                citations: vec![
+                    json!({
+                        "type": "char_location",
+                        "cited_text": "The grass is green.",
+                        "document_index": 0,
+                        "document_title": "My Document",
+                        "start_char_index": 0,
+                        "end_char_index": 20
+                    }),
+                ],
+                ..Default::default()
+            },
+            ChatMessage::new("user".to_string(), "And the sky?".to_string()),
+        ];
+
+        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+
+        assert_eq!(msgs.len(), 3);
+        let assistant_content = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(assistant_content.len(), 1);
+        // Text block should have citations attached
+        assert_eq!(assistant_content[0]["type"], "text");
+        assert_eq!(assistant_content[0]["text"], "The grass is green.");
+        let citations = assistant_content[0]["citations"].as_array().unwrap();
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0]["type"], "char_location");
+        assert_eq!(citations[0]["cited_text"], "The grass is green.");
+    }
+
+    #[test]
+    fn test_empty_citations_not_included_in_resend() {
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("Hello".to_string()),
+                citations: vec![],
+                ..Default::default()
+            },
+        ];
+
+        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert!(content[0].get("citations").is_none(),
+            "Empty citations should not be included in re-sent messages");
     }
 
     #[test]

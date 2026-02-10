@@ -290,11 +290,14 @@ pub async fn run_llm_stream<C: StreamCollector>(
             // Merge accumulated reasoning text into thinking_blocks if present.
             // This is required for Anthropic tool calling - the thinking_blocks must contain
             // both the thinking text AND the signature for multi-turn conversations.
+            // Only merge into Anthropic-style "thinking" blocks — OpenAI "reasoning" items
+            // are opaque and must not be modified (they're passed back verbatim).
             let thinking_blocks = if !acc.thinking_blocks.is_empty() && !acc.reasoning.is_empty() {
                 acc.thinking_blocks.into_iter().map(|mut block| {
                     if let Some(obj) = block.as_object_mut() {
-                        // Only add thinking text if block doesn't already have it
-                        if !obj.contains_key("thinking") {
+                        let is_anthropic_thinking = obj.get("type")
+                            .and_then(|t| t.as_str()) == Some("thinking");
+                        if is_anthropic_thinking && !obj.contains_key("thinking") {
                             obj.insert("thinking".to_string(), json!(acc.reasoning.clone()));
                         }
                     }

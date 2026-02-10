@@ -219,6 +219,7 @@ pub async fn prepare_chat_passthrough(
     // 10. Build LlmRequest
     // Enforce n=1 for chat - multi-choice not supported in streaming accumulation
     let common_params = CommonParams {
+        n_ctx: Some(effective_n_ctx),
         max_tokens: sampling_parameters.max_new_tokens,
         temperature: sampling_parameters.temperature,
         frequency_penalty: sampling_parameters.frequency_penalty,

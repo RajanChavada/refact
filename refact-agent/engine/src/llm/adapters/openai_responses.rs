@@ -6,7 +6,7 @@ use crate::llm::adapter::{AdapterSettings, HttpParts, LlmWireAdapter, StreamPars
 use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat};
 
 /// Fields that cannot be overridden via extra_body for security
-const PROTECTED_FIELDS: &[&str] = &["model", "input", "stream", "tools", "tool_choice", "instructions"];
+const PROTECTED_FIELDS: &[&str] = &["model", "input", "stream", "tools", "tool_choice", "instructions", "include"];
 
 pub struct OpenAiResponsesAdapter;
 
@@ -81,6 +81,10 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
             if let Some(effort) = req.reasoning.to_openai_effort() {
                 body["reasoning"] = json!({"effort": effort});
             }
+            // Request encrypted reasoning content so we can pass it back in multi-turn
+            // tool-calling flows. OpenAI returns reasoning items with encrypted_content
+            // that can be included in subsequent requests for ~3% better performance.
+            body["include"] = json!(["reasoning.encrypted_content"]);
         }
 
         if !req.params.stop.is_empty() {
@@ -219,6 +223,15 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                                 }
                             }
                         }
+                        Some("reasoning") => {
+                            // Capture reasoning items for multi-turn tool-calling flows.
+                            // These opaque items (with id + optional encrypted_content)
+                            // should be stored and passed back in subsequent requests
+                            // for better model performance.
+                            deltas.push(LlmStreamDelta::SetThinkingBlocks {
+                                blocks: vec![item.clone()],
+                            });
+                        }
                         _ => {}
                     }
                 }
@@ -314,6 +327,16 @@ fn convert_to_responses_format(
                 }));
             }
             "assistant" => {
+                // Re-send reasoning items from prior turns for multi-turn tool-calling.
+                // OpenAI Responses API reasoning items are opaque JSON with type="reasoning",
+                // and must be included in input[] for the model to continue its reasoning.
+                if let Some(blocks) = &msg.thinking_blocks {
+                    for block in blocks {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("reasoning") {
+                            input_messages.push(block.clone());
+                        }
+                    }
+                }
                 let text_content = msg.content.content_text_only();
                 if !text_content.is_empty() {
                     input_messages.push(json!({
@@ -859,5 +882,153 @@ mod tests {
         if let Some(LlmStreamDelta::AddCitation { citation }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddCitation { .. })) {
             assert_eq!(citation.get("url").and_then(|v| v.as_str()), Some("https://search.com"));
         }
+    }
+
+    #[test]
+    fn test_reasoning_item_captured_from_output_item_done() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.output_item.done","item":{"id":"rs_abc123","type":"reasoning","summary":[],"status":null}}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        let has_thinking = deltas.iter().any(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. }));
+        assert!(has_thinking, "Should capture reasoning item as SetThinkingBlocks");
+
+        if let Some(LlmStreamDelta::SetThinkingBlocks { blocks }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. })) {
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0]["type"], "reasoning");
+            assert_eq!(blocks[0]["id"], "rs_abc123");
+        }
+    }
+
+    #[test]
+    fn test_reasoning_item_with_encrypted_content() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.output_item.done","item":{"id":"rs_xyz789","type":"reasoning","summary":[],"encrypted_content":"gAAAAABo...encrypted...","status":null}}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        if let Some(LlmStreamDelta::SetThinkingBlocks { blocks }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. })) {
+            assert_eq!(blocks[0]["type"], "reasoning");
+            assert_eq!(blocks[0]["encrypted_content"], "gAAAAABo...encrypted...");
+        }
+    }
+
+    #[test]
+    fn test_reasoning_items_resent_in_multi_turn() {
+        use crate::call_validation::{ChatToolCall, ChatToolFunction};
+
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "What's the weather?".to_string()),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("".to_string()),
+                thinking_blocks: Some(vec![json!({
+                    "id": "rs_abc123",
+                    "type": "reasoning",
+                    "summary": [],
+                    "encrypted_content": "gAAAAABo...encrypted..."
+                })]),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: "call_weather".to_string(),
+                    tool_type: "function".to_string(),
+                    function: ChatToolFunction {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"city":"Paris"}"#.to_string(),
+                    },
+                    index: None,
+                }]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("20°C sunny".to_string()),
+                tool_call_id: "call_weather".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let (input, _) = convert_to_responses_format(&messages);
+        let items = input.as_array().unwrap();
+
+        // Should be: user message, reasoning item, function_call, function_call_output
+        assert_eq!(items.len(), 4);
+
+        // First item: user message
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["role"], "user");
+
+        // Second item: reasoning item (re-sent from prior assistant turn)
+        assert_eq!(items[1]["type"], "reasoning");
+        assert_eq!(items[1]["id"], "rs_abc123");
+        assert_eq!(items[1]["encrypted_content"], "gAAAAABo...encrypted...");
+
+        // Third item: function call
+        assert_eq!(items[2]["type"], "function_call");
+        assert_eq!(items[2]["name"], "get_weather");
+
+        // Fourth item: function call output
+        assert_eq!(items[3]["type"], "function_call_output");
+        assert_eq!(items[3]["output"], "20°C sunny");
+    }
+
+    #[test]
+    fn test_non_reasoning_thinking_blocks_not_resent() {
+        // Thinking blocks from Anthropic (type="thinking") should NOT be included
+        // in Responses API input — only type="reasoning" items are valid
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "Hello".to_string()),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: crate::call_validation::ChatContent::SimpleText("Hi".to_string()),
+                thinking_blocks: Some(vec![json!({
+                    "type": "thinking",
+                    "thinking": "Let me think...",
+                    "signature": "sig_abc"
+                })]),
+                ..Default::default()
+            },
+        ];
+
+        let (input, _) = convert_to_responses_format(&messages);
+        let items = input.as_array().unwrap();
+
+        // Should only have user message + assistant message, no thinking blocks
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[1]["type"], "message");
+        assert_eq!(items[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_include_encrypted_reasoning_in_request() {
+        let adapter = OpenAiResponsesAdapter;
+        let req = LlmRequest::new("o4-mini".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hi".to_string()),
+        ]).with_reasoning(crate::llm::params::ReasoningIntent::Medium);
+
+        let http = adapter.build_http(&req, &default_settings()).unwrap();
+
+        // Should include reasoning.encrypted_content for multi-turn support
+        let include = http.body["include"].as_array().unwrap();
+        assert!(include.contains(&json!("reasoning.encrypted_content")),
+            "Should request encrypted reasoning content");
+    }
+
+    #[test]
+    fn test_no_include_when_reasoning_not_supported() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut settings = default_settings();
+        settings.supports_reasoning = false;
+
+        let req = LlmRequest::new("gpt-4.1".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hi".to_string()),
+        ]);
+
+        let http = adapter.build_http(&req, &settings).unwrap();
+
+        assert!(http.body.get("include").is_none(),
+            "Should not include reasoning request when reasoning not supported");
     }
 }

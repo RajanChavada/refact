@@ -19,6 +19,7 @@ import {
   Checkbox,
 } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { Markdown } from "../../Markdown";
 import { useAppSelector, useChatActions } from "../../../hooks";
 import {
   selectToolResultById,
@@ -134,9 +135,7 @@ const QuestionWidget: React.FC<{
     case "yes_no":
       return (
         <Box className={styles.questionItem}>
-          <Text weight="medium" size="2" mb="2" as="p">
-            {question.text}
-          </Text>
+          <Box mb="2"><Markdown>{question.text}</Markdown></Box>
           <RadioGroup.Root
             value={typeof value === "string" ? value : ""}
             onValueChange={onChange}
@@ -152,9 +151,7 @@ const QuestionWidget: React.FC<{
     case "single_select":
       return (
         <Box className={styles.questionItem}>
-          <Text weight="medium" size="2" mb="2" as="p">
-            {question.text}
-          </Text>
+          <Box mb="2"><Markdown>{question.text}</Markdown></Box>
           <RadioGroup.Root
             value={typeof value === "string" ? value : ""}
             onValueChange={onChange}
@@ -173,9 +170,7 @@ const QuestionWidget: React.FC<{
     case "multi_select":
       return (
         <Box className={styles.questionItem}>
-          <Text weight="medium" size="2" mb="2" as="p">
-            {question.text}
-          </Text>
+          <Box mb="2"><Markdown>{question.text}</Markdown></Box>
           <Flex direction="column" gap="2">
             {question.options?.map((opt) => (
               <Flex key={opt} align="center" gap="2">
@@ -200,9 +195,7 @@ const QuestionWidget: React.FC<{
     case "free_text":
       return (
         <Box className={styles.questionItem}>
-          <Text weight="medium" size="2" mb="2" as="p">
-            {question.text}
-          </Text>
+          <Box mb="2"><Markdown>{question.text}</Markdown></Box>
           <TextArea
             value={typeof value === "string" ? value : ""}
             onChange={(e) => onChange(e.target.value)}
@@ -376,9 +369,7 @@ export const AskQuestionsTool: React.FC<AskQuestionsToolProps> = ({
           <Flex direction="column" gap="2">
             {data.questions.map((q) => (
               <Box key={q.id}>
-                <Text weight="medium" size="2">
-                  {q.text}
-                </Text>
+                <Markdown>{q.text}</Markdown>
                 <Text color="gray" size="2" ml="2">
                   → {parsedAnswers[q.id] || "(no answer)"}
                 </Text>
@@ -410,9 +401,9 @@ export const AskQuestionsTool: React.FC<AskQuestionsToolProps> = ({
         <Box className={styles.content}>
           <Flex direction="column" gap="1">
             {data.questions.map((q) => (
-              <Text key={q.id} size="2">
-                • {q.text}
-              </Text>
+              <Box key={q.id}>
+                <Markdown>{`• ${q.text}`}</Markdown>
+              </Box>
             ))}
           </Flex>
         </Box>

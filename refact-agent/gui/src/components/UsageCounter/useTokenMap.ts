@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import { useAppSelector } from "../../hooks";
-import { selectMessages, selectThreadMaximumTokens } from "../../features/Chat";
+import {
+  selectMessages,
+  selectEffectiveMaxContextTokens,
+} from "../../features/Chat";
 import {
   isAssistantMessage,
   isUserMessage,
@@ -114,7 +117,7 @@ function createEmptyCategoryTokens(): CategoryTokens {
 
 export function useTokenMap(): TokenMap | null {
   const messages = useAppSelector(selectMessages);
-  const maxContextTokens = useAppSelector(selectThreadMaximumTokens) ?? 0;
+  const maxContextTokens = useAppSelector(selectEffectiveMaxContextTokens) ?? 0;
 
   return useMemo(() => {
     if (messages.length === 0) return null;
