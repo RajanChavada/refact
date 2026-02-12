@@ -53,8 +53,8 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
 
   const hideSettings = SETTINGS_HIDDEN_PROVIDERS.includes(currentProvider.name);
   const hasOAuth = parsedSchema.oauth?.supported === true;
-  const status: ProviderStatus = detailedProvider?.status ?? currentProvider.status ?? "not_configured";
-  const hasCredentials = detailedProvider?.has_credentials ?? currentProvider.has_credentials ?? false;
+  const status: ProviderStatus = detailedProvider?.status ?? currentProvider.status;
+  const hasCredentials = detailedProvider?.has_credentials ?? currentProvider.has_credentials;
   const isReadonly = formValues.readonly;
 
   return (
@@ -81,14 +81,10 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
               <ProviderOAuth
                 providerName={currentProvider.name}
                 oauthConnected={Boolean(
-                  formValues &&
-                  typeof formValues === "object" &&
                   "oauth_connected" in formValues &&
                   formValues.oauth_connected,
                 )}
                 authStatus={
-                  formValues &&
-                  typeof formValues === "object" &&
                   "auth_status" in formValues
                     ? String(formValues.auth_status)
                     : ""

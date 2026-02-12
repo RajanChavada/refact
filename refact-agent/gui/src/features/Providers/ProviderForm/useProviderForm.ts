@@ -19,7 +19,7 @@ export type ProviderFormValues = {
 
 type ParsedSchema = {
   fields: SchemaFieldDef[];
-  oauth?: { supported: boolean; methods?: Array<{ id: string; label: string; description?: string }> };
+  oauth?: { supported: boolean; methods?: { id: string; label: string; description?: string }[] };
   description?: string;
 };
 

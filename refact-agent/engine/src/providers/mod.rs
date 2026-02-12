@@ -9,6 +9,7 @@ mod anthropic;
 mod openai;
 mod openai_responses;
 mod openai_codex;
+pub mod openai_codex_oauth;
 mod openrouter;
 mod ollama;
 mod lmstudio;

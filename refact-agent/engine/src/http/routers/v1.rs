@@ -53,7 +53,7 @@ use crate::providers::http::{
     handle_v1_provider_remove_custom_model_post,
     handle_v1_defaults_get, handle_v1_defaults_update, handle_v1_models,
     handle_v1_provider_oauth_start, handle_v1_provider_oauth_exchange,
-    handle_v1_provider_oauth_logout,
+    handle_v1_provider_oauth_logout, handle_v1_provider_oauth_callback,
 };
 
 use crate::http::routers::v1::vecdb::{handle_v1_vecdb_search, handle_v1_vecdb_status};
@@ -245,6 +245,7 @@ pub fn make_v1_router() -> Router {
         .route("/providers/:name/oauth/start", post(handle_v1_provider_oauth_start))
         .route("/providers/:name/oauth/exchange", post(handle_v1_provider_oauth_exchange))
         .route("/providers/:name/oauth/logout", post(handle_v1_provider_oauth_logout))
+        .route("/providers/:name/oauth/callback", get(handle_v1_provider_oauth_callback))
         .route("/defaults", get(handle_v1_defaults_get))
         .route("/defaults", post(handle_v1_defaults_update))
         // cloud related

@@ -1,10 +1,19 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Flex, Text, TextField } from "@radix-ui/themes";
 import {
   useOauthStartMutation,
   useOauthExchangeMutation,
   useOauthLogoutMutation,
+  providersApi,
 } from "../../../services/refact";
+import { useAppDispatch } from "../../../hooks";
+
+const PROVIDERS_WITH_AUTO_CALLBACK = ["openai_codex"];
+
+const PROVIDER_LOGIN_LABELS: Record<string, string> = {
+  claude_code: "Login with Anthropic",
+  openai_codex: "Login with OpenAI",
+};
 
 type ProviderOAuthProps = {
   providerName: string;
@@ -17,6 +26,7 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
   oauthConnected,
   authStatus,
 }) => {
+  const dispatch = useAppDispatch();
   const [oauthStart] = useOauthStartMutation();
   const [oauthExchange] = useOauthExchangeMutation();
   const [oauthLogout] = useOauthLogoutMutation();
@@ -26,6 +36,27 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [waitingForCallback, setWaitingForCallback] = useState(false);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isAutoCallback = PROVIDERS_WITH_AUTO_CALLBACK.includes(providerName);
+  const loginLabel = PROVIDER_LOGIN_LABELS[providerName] || "Login";
+
+  const invalidateProvider = useCallback(() => {
+    dispatch(providersApi.util.invalidateTags([
+      { type: "PROVIDER", id: providerName },
+      { type: "PROVIDERS", id: "LIST" },
+      { type: "AVAILABLE_MODELS", id: providerName },
+    ]));
+  }, [dispatch, providerName]);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleStartOAuth = async () => {
     setError(null);
@@ -35,12 +66,31 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
       setSessionId(result.session_id);
       setAuthorizeUrl(result.authorize_url);
       window.open(result.authorize_url, "_blank");
+
+      if (isAutoCallback) {
+        setWaitingForCallback(true);
+        pollTimerRef.current = setInterval(() => {
+          invalidateProvider();
+        }, 2000);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start OAuth");
     } finally {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (waitingForCallback && oauthConnected) {
+      setWaitingForCallback(false);
+      setSessionId(null);
+      setAuthorizeUrl(null);
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    }
+  }, [waitingForCallback, oauthConnected]);
 
   const handleExchangeCode = async () => {
     if (!sessionId || !code.trim()) return;
@@ -55,6 +105,7 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
       setSessionId(null);
       setAuthorizeUrl(null);
       setCode("");
+      invalidateProvider();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to exchange code");
     } finally {
@@ -77,6 +128,17 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
     }
   };
 
+  const handleCancel = () => {
+    setSessionId(null);
+    setAuthorizeUrl(null);
+    setCode("");
+    setWaitingForCallback(false);
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
   if (oauthConnected) {
     return (
       <Flex direction="column" gap="2" p="3" style={{
@@ -93,7 +155,7 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
             color="red"
             size="1"
             disabled={isLoading}
-            onClick={handleLogout}
+            onClick={() => void handleLogout()}
           >
             Disconnect
           </Button>
@@ -103,6 +165,42 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
   }
 
   if (sessionId && authorizeUrl) {
+    if (isAutoCallback && waitingForCallback) {
+      return (
+        <Flex direction="column" gap="2" p="3" style={{
+          border: "1px solid var(--gray-6)",
+          borderRadius: "var(--radius-2)",
+        }}>
+          <Text size="2" weight="medium">Waiting for authentication...</Text>
+          <Text size="1" color="gray">
+            Complete the login in the browser window that opened. This page will update automatically.
+          </Text>
+          <Flex gap="2" align="center">
+            <Text size="1" color="gray">
+              Browser didn&apos;t open?{" "}
+              <a
+                href={authorizeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--accent-9)" }}
+              >
+                Click here
+              </a>
+            </Text>
+            <Button
+              variant="ghost"
+              size="1"
+              color="gray"
+              onClick={handleCancel}
+            >
+              Cancel
+            </Button>
+          </Flex>
+          {error && <Text size="1" color="red">{error}</Text>}
+        </Flex>
+      );
+    }
+
     return (
       <Flex direction="column" gap="2" p="3" style={{
         border: "1px solid var(--gray-6)",
@@ -118,12 +216,12 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
             placeholder="Paste code here..."
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleExchangeCode(); }}
+            onKeyDown={(e) => { if (e.key === "Enter") void handleExchangeCode(); }}
           />
           <Button
             variant="solid"
             disabled={isLoading || !code.trim()}
-            onClick={handleExchangeCode}
+            onClick={() => void handleExchangeCode()}
           >
             {isLoading ? "Connecting..." : "Connect"}
           </Button>
@@ -144,11 +242,7 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
             variant="ghost"
             size="1"
             color="gray"
-            onClick={() => {
-              setSessionId(null);
-              setAuthorizeUrl(null);
-              setCode("");
-            }}
+            onClick={handleCancel}
           >
             Cancel
           </Button>
@@ -164,11 +258,11 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
       borderRadius: "var(--radius-2)",
     }}>
       <Flex align="center" justify="between">
-        <Text size="2" weight="medium">Login with Anthropic</Text>
+        <Text size="2" weight="medium">{loginLabel}</Text>
         <Button
           variant="solid"
           disabled={isLoading}
-          onClick={handleStartOAuth}
+          onClick={() => void handleStartOAuth()}
         >
           {isLoading ? "Starting..." : "Login"}
         </Button>

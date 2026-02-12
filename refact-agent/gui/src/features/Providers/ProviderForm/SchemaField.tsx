@@ -12,7 +12,7 @@ export type SchemaFieldDef = {
   f_default?: string;
   f_extra?: boolean;
   f_secret?: boolean;
-  smartlinks?: Array<{ sl_label: string; sl_goto: string }>;
+  smartlinks?: { sl_label: string; sl_goto: string }[];
 };
 
 type FieldSaveState = "idle" | "saving" | "saved" | "error";
@@ -274,7 +274,7 @@ const StringField: React.FC<SchemaFieldProps> = ({
     }
   }, [localValue, field.key, onSave]);
 
-  const isLong = field.f_type === "string_long" || (localValue?.length ?? 0) > 80;
+  const isLong = field.f_type === "string_long" || localValue.length > 80;
 
   return (
     <Flex direction="column" gap="1">
@@ -330,14 +330,19 @@ const StringField: React.FC<SchemaFieldProps> = ({
 };
 
 const SaveIndicator: React.FC<{ state: FieldSaveState }> = ({ state }) => {
-  if (state === "idle") return null;
-  if (state === "saving") return <Text size="1" color="gray">Saving…</Text>;
-  if (state === "saved") return (
-    <Flex align="center" gap="1">
-      <CheckIcon width={12} height={12} color="var(--green-9)" />
-      <Text size="1" color="green">Saved</Text>
-    </Flex>
-  );
-  if (state === "error") return <Text size="1" color="red">Error</Text>;
-  return null;
+  switch (state) {
+    case "idle":
+      return null;
+    case "saving":
+      return <Text size="1" color="gray">Saving…</Text>;
+    case "saved":
+      return (
+        <Flex align="center" gap="1">
+          <CheckIcon width={12} height={12} color="var(--green-9)" />
+          <Text size="1" color="green">Saved</Text>
+        </Flex>
+      );
+    case "error":
+      return <Text size="1" color="red">Error</Text>;
+  }
 };

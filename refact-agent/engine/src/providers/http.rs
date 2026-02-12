@@ -956,25 +956,32 @@ async fn patch_provider_model_config(
 }
 
 pub async fn handle_v1_provider_oauth_start(
-    Extension(_gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(params): Path<ProviderPathParams>,
     _body_bytes: hyper::body::Bytes,
 ) -> Result<Response<Body>, ScratchError> {
-    if params.name != "claude_code" {
-        return Err(ScratchError::new(
+    match params.name.as_str() {
+        "claude_code" => {
+            let mode = crate::providers::claude_code_oauth::OAuthMode::Max;
+            let (session_id, authorize_url) = crate::providers::claude_code_oauth::start_oauth_session(mode).await;
+            json_response(StatusCode::OK, &json!({
+                "session_id": session_id,
+                "authorize_url": authorize_url,
+            }))
+        }
+        "openai_codex" => {
+            let callback_port = gcx.read().await.cmdline.http_port;
+            let (session_id, authorize_url) = crate::providers::openai_codex_oauth::start_oauth_session(callback_port).await;
+            json_response(StatusCode::OK, &json!({
+                "session_id": session_id,
+                "authorize_url": authorize_url,
+            }))
+        }
+        _ => Err(ScratchError::new(
             StatusCode::BAD_REQUEST,
             format!("OAuth not supported for provider '{}'", params.name),
-        ));
+        )),
     }
-
-    let mode = crate::providers::claude_code_oauth::OAuthMode::Max;
-
-    let (session_id, authorize_url) = crate::providers::claude_code_oauth::start_oauth_session(mode).await;
-
-    json_response(StatusCode::OK, &json!({
-        "session_id": session_id,
-        "authorize_url": authorize_url,
-    }))
 }
 
 #[derive(Deserialize)]
@@ -988,29 +995,47 @@ pub async fn handle_v1_provider_oauth_exchange(
     Path(params): Path<ProviderPathParams>,
     body_bytes: hyper::body::Bytes,
 ) -> Result<Response<Body>, ScratchError> {
-    if params.name != "claude_code" {
-        return Err(ScratchError::new(
-            StatusCode::BAD_REQUEST,
-            format!("OAuth not supported for provider '{}'", params.name),
-        ));
-    }
-
     let request: OAuthExchangeRequest = serde_json::from_slice(&body_bytes).map_err(|e| {
         ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("Invalid JSON: {}", e))
     })?;
 
     let http_client = gcx.read().await.http_client.clone();
-
-    let tokens = crate::providers::claude_code_oauth::exchange_code(
-        &http_client,
-        &request.session_id,
-        &request.code,
-    )
-    .await
-    .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
-
     let config_dir = gcx.read().await.config_dir.clone();
-    save_oauth_tokens_to_provider(&gcx, &config_dir, &tokens).await?;
+
+    match params.name.as_str() {
+        "claude_code" => {
+            let tokens = crate::providers::claude_code_oauth::exchange_code(
+                &http_client,
+                &request.session_id,
+                &request.code,
+            )
+            .await
+            .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
+
+            save_provider_oauth_tokens(&gcx, &config_dir, "claude_code", &serde_yaml::to_value(&tokens)
+                .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize tokens: {}", e)))?
+            ).await?;
+        }
+        "openai_codex" => {
+            let tokens = crate::providers::openai_codex_oauth::exchange_code(
+                &http_client,
+                &request.session_id,
+                &request.code,
+            )
+            .await
+            .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
+
+            save_provider_oauth_tokens(&gcx, &config_dir, "openai_codex", &serde_yaml::to_value(&tokens)
+                .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize tokens: {}", e)))?
+            ).await?;
+        }
+        _ => {
+            return Err(ScratchError::new(
+                StatusCode::BAD_REQUEST,
+                format!("OAuth not supported for provider '{}'", params.name),
+            ));
+        }
+    }
 
     json_response(StatusCode::OK, &json!({
         "success": true,
@@ -1022,16 +1047,26 @@ pub async fn handle_v1_provider_oauth_logout(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(params): Path<ProviderPathParams>,
 ) -> Result<Response<Body>, ScratchError> {
-    if params.name != "claude_code" {
-        return Err(ScratchError::new(
-            StatusCode::BAD_REQUEST,
-            format!("OAuth not supported for provider '{}'", params.name),
-        ));
-    }
-
     let config_dir = gcx.read().await.config_dir.clone();
-    let empty_tokens = crate::providers::claude_code_oauth::OAuthTokens::default();
-    save_oauth_tokens_to_provider(&gcx, &config_dir, &empty_tokens).await?;
+
+    match params.name.as_str() {
+        "claude_code" => {
+            let empty = serde_yaml::to_value(&crate::providers::claude_code_oauth::OAuthTokens::default())
+                .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize: {}", e)))?;
+            save_provider_oauth_tokens(&gcx, &config_dir, "claude_code", &empty).await?;
+        }
+        "openai_codex" => {
+            let empty = serde_yaml::to_value(&crate::providers::openai_codex_oauth::OAuthTokens::default())
+                .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize: {}", e)))?;
+            save_provider_oauth_tokens(&gcx, &config_dir, "openai_codex", &empty).await?;
+        }
+        _ => {
+            return Err(ScratchError::new(
+                StatusCode::BAD_REQUEST,
+                format!("OAuth not supported for provider '{}'", params.name),
+            ));
+        }
+    }
 
     json_response(StatusCode::OK, &json!({
         "success": true,
@@ -1039,13 +1074,135 @@ pub async fn handle_v1_provider_oauth_logout(
     }))
 }
 
-async fn save_oauth_tokens_to_provider(
+
+#[derive(Deserialize)]
+pub struct OAuthCallbackParams {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub error_description: Option<String>,
+}
+
+fn html_response(title: &str, heading: &str, heading_color: &str, message: &str) -> Result<Response<Body>, ScratchError> {
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html><head><title>{title}</title></head>
+<body style="font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #1a1a2e; color: #e0e0e0;">
+<div style="text-align: center;">
+<h1 style="color: {heading_color};">{heading}</h1>
+<p>{message}</p>
+</div>
+</body></html>"#
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/html")
+        .body(Body::from(html))
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Response build failed: {}", e)))
+}
+
+pub async fn handle_v1_provider_oauth_callback(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+    Path(params): Path<ProviderPathParams>,
+    Query(query): Query<OAuthCallbackParams>,
+) -> Result<Response<Body>, ScratchError> {
+    if params.name != "openai_codex" {
+        return Err(ScratchError::new(
+            StatusCode::BAD_REQUEST,
+            format!("OAuth callback not supported for provider '{}'", params.name),
+        ));
+    }
+
+    if let Some(err) = &query.error {
+        let desc = query.error_description.as_deref().unwrap_or("Unknown error");
+        tracing::warn!("OpenAI OAuth error: {} — {}", err, desc);
+        return html_response(
+            "Authentication Failed",
+            "✗ Authentication Failed",
+            "#ef4444",
+            &format!("{}: {}", err, desc),
+        );
+    }
+
+    let code = match &query.code {
+        Some(c) if !c.is_empty() => c.clone(),
+        _ => {
+            return html_response(
+                "Authentication Failed",
+                "✗ Authentication Failed",
+                "#ef4444",
+                "No authorization code received. Please try again.",
+            );
+        }
+    };
+
+    let session_id = match &query.state {
+        Some(s) if !s.is_empty() => s.clone(),
+        _ => {
+            return html_response(
+                "Authentication Failed",
+                "✗ Authentication Failed",
+                "#ef4444",
+                "Missing state parameter. Please start the OAuth flow again.",
+            );
+        }
+    };
+
+    let http_client = gcx.read().await.http_client.clone();
+    let config_dir = gcx.read().await.config_dir.clone();
+
+    let tokens = match crate::providers::openai_codex_oauth::exchange_code(
+        &http_client,
+        &session_id,
+        &code,
+    ).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("OpenAI OAuth exchange failed: {}", e);
+            return html_response(
+                "Authentication Failed",
+                "✗ Authentication Failed",
+                "#ef4444",
+                &format!("Token exchange failed: {}", e),
+            );
+        }
+    };
+
+    if let Err(e) = save_provider_oauth_tokens(
+        &gcx, &config_dir, "openai_codex",
+        &serde_yaml::to_value(&tokens)
+            .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize tokens: {}", e)))?,
+    ).await {
+        tracing::warn!("Failed to save OAuth tokens: {:?}", e);
+        return html_response(
+            "Authentication Failed",
+            "✗ Authentication Failed",
+            "#ef4444",
+            "Tokens received but failed to save. Please try again.",
+        );
+    }
+
+    html_response(
+        "Authentication Successful",
+        "✓ Authentication Successful",
+        "#4ade80",
+        "You can close this window and return to the application.",
+    )
+}
+
+async fn save_provider_oauth_tokens(
     gcx: &Arc<ARwLock<GlobalContext>>,
     config_dir: &std::path::Path,
-    tokens: &crate::providers::claude_code_oauth::OAuthTokens,
+    provider_name: &str,
+    tokens_value: &serde_yaml::Value,
 ) -> Result<(), ScratchError> {
     let providers_dir = config_dir.join("providers.d");
-    let config_path = providers_dir.join("claude_code.yaml");
+    let config_path = providers_dir.join(format!("{}.yaml", provider_name));
 
     tokio::fs::create_dir_all(&providers_dir).await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create providers.d: {}", e)))?;
@@ -1067,13 +1224,8 @@ async fn save_oauth_tokens_to_provider(
     };
 
     yaml_map.insert(
-        serde_yaml::Value::String("enabled".to_string()),
-        serde_yaml::Value::Bool(true),
-    );
-    yaml_map.insert(
         serde_yaml::Value::String("oauth_tokens".to_string()),
-        serde_yaml::to_value(tokens)
-            .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize tokens: {}", e)))?,
+        tokens_value.clone(),
     );
 
     let content = serde_yaml::to_string(&yaml_map)
@@ -1098,8 +1250,8 @@ async fn save_oauth_tokens_to_provider(
         let yaml: serde_yaml::Value = serde_yaml::from_str(&full_content)
             .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid YAML after save: {}", e)))?;
 
-        let mut provider = create_provider("claude_code")
-            .ok_or_else(|| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create provider".to_string()))?;
+        let mut provider = create_provider(provider_name)
+            .ok_or_else(|| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create provider '{}'", provider_name)))?;
         provider.provider_settings_apply(yaml)
             .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to apply settings: {}", e)))?;
         registry.add(provider);
