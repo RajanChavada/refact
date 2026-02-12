@@ -9,6 +9,7 @@ use crate::llm::params::CacheControl;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_THINKING_BUDGET: usize = 8192;
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+const EFFORT: &str = "effort-2025-11-24";
 const CLAUDE_CODE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.2 (external, cli)";
 const CLAUDE_CODE_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
@@ -168,11 +169,13 @@ impl LlmWireAdapter for AnthropicAdapter {
             let mut betas = Vec::new();
             if body.get("thinking").and_then(|t| t.get("type")).and_then(|t| t.as_str()) == Some("enabled") {
                 betas.push(INTERLEAVED_THINKING_BETA);
+                betas.push(EFFORT);
             }
             if is_claude_code_oauth {
                 betas.push(CLAUDE_CODE_OAUTH_BETA);
                 if !betas.contains(&INTERLEAVED_THINKING_BETA) {
                     betas.push(INTERLEAVED_THINKING_BETA);
+                    betas.push(EFFORT);
                 }
             }
             if !betas.is_empty() {
