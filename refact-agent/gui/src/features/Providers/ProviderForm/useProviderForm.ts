@@ -19,7 +19,10 @@ export type ProviderFormValues = {
 
 type ParsedSchema = {
   fields: SchemaFieldDef[];
-  oauth?: { supported: boolean; methods?: { id: string; label: string; description?: string }[] };
+  oauth?: {
+    supported: boolean;
+    methods?: { id: string; label: string; description?: string }[];
+  };
   description?: string;
 };
 
@@ -33,7 +36,9 @@ async function parseSchema(yamlStr: string): Promise<ParsedSchema> {
   }
 
   const fields: SchemaFieldDef[] = [];
-  const rawFields = parsed.fields as Record<string, Record<string, unknown>> | undefined;
+  const rawFields = parsed.fields as
+    | Record<string, Record<string, unknown>>
+    | undefined;
   if (rawFields && typeof rawFields === "object") {
     for (const [key, def] of Object.entries(rawFields)) {
       fields.push({
@@ -41,7 +46,9 @@ async function parseSchema(yamlStr: string): Promise<ParsedSchema> {
         f_type: String(def.f_type ?? "string"),
         f_desc: def.f_desc ? String(def.f_desc) : undefined,
         f_label: def.f_label ? String(def.f_label) : undefined,
-        f_placeholder: def.f_placeholder ? String(def.f_placeholder) : undefined,
+        f_placeholder: def.f_placeholder
+          ? String(def.f_placeholder)
+          : undefined,
         f_default: def.f_default ? String(def.f_default) : undefined,
         f_extra: Boolean(def.f_extra),
         f_secret: Boolean(def.f_secret),
@@ -56,7 +63,9 @@ async function parseSchema(yamlStr: string): Promise<ParsedSchema> {
   }
 
   const oauth = parsed.oauth as ParsedSchema["oauth"] | undefined;
-  const description = parsed.description ? String(parsed.description) : undefined;
+  const description = parsed.description
+    ? String(parsed.description)
+    : undefined;
 
   return { fields, oauth, description };
 }

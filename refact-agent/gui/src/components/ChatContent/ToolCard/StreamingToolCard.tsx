@@ -117,7 +117,9 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
         <div className={styles.entertainmentRow}>
           <Text size="1" className={styles.entertainmentText}>
             {entertainmentMessage.step && (
-              <span style={{ marginRight: 6 }}>{entertainmentMessage.step}</span>
+              <span style={{ marginRight: 6 }}>
+                {entertainmentMessage.step}
+              </span>
             )}
             {entertainmentMessage.text}
           </Text>

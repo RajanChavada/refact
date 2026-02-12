@@ -43,11 +43,13 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
   const loginLabel = PROVIDER_LOGIN_LABELS[providerName] || "Login";
 
   const invalidateProvider = useCallback(() => {
-    dispatch(providersApi.util.invalidateTags([
-      { type: "PROVIDER", id: providerName },
-      { type: "PROVIDERS", id: "LIST" },
-      { type: "AVAILABLE_MODELS", id: providerName },
-    ]));
+    dispatch(
+      providersApi.util.invalidateTags([
+        { type: "PROVIDER", id: providerName },
+        { type: "PROVIDERS", id: "LIST" },
+        { type: "AVAILABLE_MODELS", id: providerName },
+      ]),
+    );
   }, [dispatch, providerName]);
 
   useEffect(() => {
@@ -141,14 +143,23 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
 
   if (oauthConnected) {
     return (
-      <Flex direction="column" gap="2" p="3" style={{
-        border: "1px solid var(--gray-6)",
-        borderRadius: "var(--radius-2)",
-      }}>
+      <Flex
+        direction="column"
+        gap="2"
+        p="3"
+        style={{
+          border: "1px solid var(--gray-6)",
+          borderRadius: "var(--radius-2)",
+        }}
+      >
         <Flex align="center" justify="between">
           <Flex align="center" gap="2">
-            <Text size="2" weight="medium" color="green">● Connected</Text>
-            <Text size="1" color="gray">{authStatus}</Text>
+            <Text size="2" weight="medium" color="green">
+              ● Connected
+            </Text>
+            <Text size="1" color="gray">
+              {authStatus}
+            </Text>
           </Flex>
           <Button
             variant="ghost"
@@ -167,13 +178,21 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
   if (sessionId && authorizeUrl) {
     if (isAutoCallback && waitingForCallback) {
       return (
-        <Flex direction="column" gap="2" p="3" style={{
-          border: "1px solid var(--gray-6)",
-          borderRadius: "var(--radius-2)",
-        }}>
-          <Text size="2" weight="medium">Waiting for authentication...</Text>
+        <Flex
+          direction="column"
+          gap="2"
+          p="3"
+          style={{
+            border: "1px solid var(--gray-6)",
+            borderRadius: "var(--radius-2)",
+          }}
+        >
+          <Text size="2" weight="medium">
+            Waiting for authentication...
+          </Text>
           <Text size="1" color="gray">
-            Complete the login in the browser window that opened. This page will update automatically.
+            Complete the login in the browser window that opened. This page will
+            update automatically.
           </Text>
           <Flex gap="2" align="center">
             <Text size="1" color="gray">
@@ -196,19 +215,31 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
               Cancel
             </Button>
           </Flex>
-          {error && <Text size="1" color="red">{error}</Text>}
+          {error && (
+            <Text size="1" color="red">
+              {error}
+            </Text>
+          )}
         </Flex>
       );
     }
 
     return (
-      <Flex direction="column" gap="2" p="3" style={{
-        border: "1px solid var(--gray-6)",
-        borderRadius: "var(--radius-2)",
-      }}>
-        <Text size="2" weight="medium">Paste the authorization code</Text>
+      <Flex
+        direction="column"
+        gap="2"
+        p="3"
+        style={{
+          border: "1px solid var(--gray-6)",
+          borderRadius: "var(--radius-2)",
+        }}
+      >
+        <Text size="2" weight="medium">
+          Paste the authorization code
+        </Text>
         <Text size="1" color="gray">
-          A browser window should have opened. Log in and copy the code shown on the page.
+          A browser window should have opened. Log in and copy the code shown on
+          the page.
         </Text>
         <Flex gap="2">
           <TextField.Root
@@ -216,7 +247,9 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
             placeholder="Paste code here..."
             value={code}
             onChange={(e) => setCode(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void handleExchangeCode(); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleExchangeCode();
+            }}
           />
           <Button
             variant="solid"
@@ -238,27 +271,33 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
               Click here
             </a>
           </Text>
-          <Button
-            variant="ghost"
-            size="1"
-            color="gray"
-            onClick={handleCancel}
-          >
+          <Button variant="ghost" size="1" color="gray" onClick={handleCancel}>
             Cancel
           </Button>
         </Flex>
-        {error && <Text size="1" color="red">{error}</Text>}
+        {error && (
+          <Text size="1" color="red">
+            {error}
+          </Text>
+        )}
       </Flex>
     );
   }
 
   return (
-    <Flex direction="column" gap="2" p="3" style={{
-      border: "1px solid var(--gray-6)",
-      borderRadius: "var(--radius-2)",
-    }}>
+    <Flex
+      direction="column"
+      gap="2"
+      p="3"
+      style={{
+        border: "1px solid var(--gray-6)",
+        borderRadius: "var(--radius-2)",
+      }}
+    >
       <Flex align="center" justify="between">
-        <Text size="2" weight="medium">{loginLabel}</Text>
+        <Text size="2" weight="medium">
+          {loginLabel}
+        </Text>
         <Button
           variant="solid"
           disabled={isLoading}
@@ -267,7 +306,11 @@ export const ProviderOAuth: React.FC<ProviderOAuthProps> = ({
           {isLoading ? "Starting..." : "Login"}
         </Button>
       </Flex>
-      {error && <Text size="1" color="red">{error}</Text>}
+      {error && (
+        <Text size="1" color="red">
+          {error}
+        </Text>
+      )}
     </Flex>
   );
 };

@@ -35,7 +35,9 @@ export const ProviderPreview: React.FC<ProviderPreviewProps> = ({
     if (response.error) return;
     dispatch(
       setInformation(
-        `${getProviderName(providerName)}'s Provider configuration was deleted successfully`,
+        `${getProviderName(
+          providerName,
+        )}'s Provider configuration was deleted successfully`,
       ),
     );
     dispatch(providersApi.util.resetApiState());

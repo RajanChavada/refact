@@ -85,10 +85,7 @@ export const KnowledgeTool: React.FC<KnowledgeToolProps> = ({
       const query = knowledgeArgs.search_key ?? "knowledge";
       return (
         <>
-          Recall{" "}
-          <span className={styles.query}>
-            &quot;{query}&quot;
-          </span>
+          Recall <span className={styles.query}>&quot;{query}&quot;</span>
         </>
       );
     }
@@ -98,10 +95,7 @@ export const KnowledgeTool: React.FC<KnowledgeToolProps> = ({
       const preview = createArgs.content ?? "memory";
       return (
         <>
-          Remember{" "}
-          <span className={styles.query}>
-            &quot;{preview}&quot;
-          </span>
+          Remember <span className={styles.query}>&quot;{preview}&quot;</span>
         </>
       );
     }
@@ -111,8 +105,7 @@ export const KnowledgeTool: React.FC<KnowledgeToolProps> = ({
     const query = trajArgs.query ?? "conversations";
     return (
       <>
-        Recall{" "}
-        <span className={styles.query}>&quot;{query}&quot;</span>
+        Recall <span className={styles.query}>&quot;{query}&quot;</span>
       </>
     );
   }, [toolType, args]);

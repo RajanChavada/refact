@@ -6,7 +6,10 @@ import { ProviderOAuth } from "./ProviderOAuth";
 import { Spinner } from "../../../components/Spinner";
 
 import { useProviderForm } from "./useProviderForm";
-import type { ProviderListItem, ProviderStatus } from "../../../services/refact";
+import type {
+  ProviderListItem,
+  ProviderStatus,
+} from "../../../services/refact";
 
 import styles from "./ProviderForm.module.css";
 import { ProviderModelsList } from "./ProviderModelsList/ProviderModelsList";
@@ -22,11 +25,23 @@ export type { ProviderListItem };
 const StatusBadge: React.FC<{ status: ProviderStatus }> = ({ status }) => {
   switch (status) {
     case "active":
-      return <Badge color="green" size="1">Active</Badge>;
+      return (
+        <Badge color="green" size="1">
+          Active
+        </Badge>
+      );
     case "configured":
-      return <Badge color="orange" size="1">Configured</Badge>;
+      return (
+        <Badge color="orange" size="1">
+          Configured
+        </Badge>
+      );
     case "not_configured":
-      return <Badge color="gray" size="1">Not configured</Badge>;
+      return (
+        <Badge color="gray" size="1">
+          Not configured
+        </Badge>
+      );
     default:
       return null;
   }
@@ -53,18 +68,14 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
 
   const hideSettings = SETTINGS_HIDDEN_PROVIDERS.includes(currentProvider.name);
   const hasOAuth = parsedSchema.oauth?.supported === true;
-  const status: ProviderStatus = detailedProvider?.status ?? currentProvider.status;
-  const hasCredentials = detailedProvider?.has_credentials ?? currentProvider.has_credentials;
+  const status: ProviderStatus =
+    detailedProvider?.status ?? currentProvider.status;
+  const hasCredentials =
+    detailedProvider?.has_credentials ?? currentProvider.has_credentials;
   const isReadonly = formValues.readonly;
 
   return (
-    <Flex
-      direction="column"
-      width="100%"
-      height="100%"
-      mt="2"
-      gap="3"
-    >
+    <Flex direction="column" width="100%" height="100%" mt="2" gap="3">
       <Flex align="center" gap="2">
         <StatusBadge status={status} />
         {parsedSchema.description && (
@@ -81,8 +92,7 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
               <ProviderOAuth
                 providerName={currentProvider.name}
                 oauthConnected={Boolean(
-                  "oauth_connected" in formValues &&
-                  formValues.oauth_connected,
+                  "oauth_connected" in formValues && formValues.oauth_connected,
                 )}
                 authStatus={
                   "auth_status" in formValues

@@ -9,7 +9,6 @@ import {
 import { ToolCall } from "../../../services/refact/types";
 import { StreamingToolCard } from "./StreamingToolCard";
 
-
 interface ShellServiceArgs {
   service_name?: string;
   action?: string;

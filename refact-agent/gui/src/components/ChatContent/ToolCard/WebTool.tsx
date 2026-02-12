@@ -90,8 +90,7 @@ export const WebTool: React.FC<WebToolProps> = ({
     const query = searchArgs.query ?? "query";
     return (
       <>
-        Search web{" "}
-        <span className={styles.query}>&quot;{query}&quot;</span>
+        Search web <span className={styles.query}>&quot;{query}&quot;</span>
       </>
     );
   }, [toolType, args]);

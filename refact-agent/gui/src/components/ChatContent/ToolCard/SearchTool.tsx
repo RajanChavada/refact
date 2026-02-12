@@ -109,10 +109,7 @@ export const SearchTool: React.FC<SearchToolProps> = ({
         const query = semanticArgs.queries ?? "query";
         return (
           <>
-            Search{" "}
-            <span className={styles.query}>
-              &quot;{query}&quot;
-            </span>
+            Search <span className={styles.query}>&quot;{query}&quot;</span>
             {matchCount !== null && (
               <span className={styles.count}> → {matchCount} results</span>
             )}

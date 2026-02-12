@@ -138,9 +138,7 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
         summary: (
           <>
             Add workspace{" "}
-            <span className={styles.filename}>
-              {basename(path)}
-            </span>
+            <span className={styles.filename}>{basename(path)}</span>
           </>
         ),
       };
@@ -159,10 +157,7 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
       icon: <TrashIcon />,
       summary: (
         <>
-          Delete{" "}
-          <span className={styles.filename}>
-            {basename(path)}
-          </span>
+          Delete <span className={styles.filename}>{basename(path)}</span>
           {isDir && <span className={styles.meta}> (recursive)</span>}
           {linesRemoved > 0 && (
             <span className={styles.removed}> −{linesRemoved}</span>

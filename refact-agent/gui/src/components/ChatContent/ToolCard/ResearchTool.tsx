@@ -20,9 +20,7 @@ export const ResearchTool: React.FC<ResearchToolProps> = ({ toolCall }) => {
   }, [toolCall.function.arguments]);
 
   const query = args.research_query ?? "";
-  const summary = query
-    ? `Research "${query}"`
-    : "Research";
+  const summary = query ? `Research "${query}"` : "Research";
 
   return (
     <StreamingToolCard

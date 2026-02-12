@@ -1,6 +1,19 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Button, Flex, Switch, Text, TextField, TextArea } from "@radix-ui/themes";
-import { ExternalLinkIcon, EyeOpenIcon, EyeClosedIcon, Cross2Icon, CheckIcon } from "@radix-ui/react-icons";
+import {
+  Button,
+  Flex,
+  Switch,
+  Text,
+  TextField,
+  TextArea,
+} from "@radix-ui/themes";
+import {
+  ExternalLinkIcon,
+  EyeOpenIcon,
+  EyeClosedIcon,
+  Cross2Icon,
+  CheckIcon,
+} from "@radix-ui/react-icons";
 import styles from "./ProviderForm.module.css";
 
 export type SchemaFieldDef = {
@@ -30,7 +43,8 @@ export const SchemaField: React.FC<SchemaFieldProps> = ({
   disabled = false,
   onSave,
 }) => {
-  const isSecret = field.f_secret === true ||
+  const isSecret =
+    field.f_secret === true ||
     field.key.toLowerCase().includes("key") ||
     field.key.toLowerCase().includes("token") ||
     field.key.toLowerCase().includes("secret");
@@ -97,10 +111,14 @@ const BooleanField: React.FC<SchemaFieldProps> = ({
       <Flex align="center" justify="between" gap="3">
         <Flex direction="column" gap="0">
           <label htmlFor={field.key}>
-            <Text size="2" weight="medium">{field.f_label ?? field.key}</Text>
+            <Text size="2" weight="medium">
+              {field.f_label ?? field.key}
+            </Text>
           </label>
           {field.f_desc && (
-            <Text size="1" color="gray">{field.f_desc}</Text>
+            <Text size="1" color="gray">
+              {field.f_desc}
+            </Text>
           )}
         </Flex>
         <Flex align="center" gap="2">
@@ -175,29 +193,31 @@ const SecretField: React.FC<SchemaFieldProps> = ({
     }
   }, [field.key, onSave]);
 
-  const displayValue = editing ? localValue : (isMasked ? "" : String(value ?? ""));
-  const placeholder = isMasked && !editing
-    ? "••••••••  (saved)"
-    : (field.f_placeholder ?? "");
+  const displayValue = editing
+    ? localValue
+    : isMasked
+      ? ""
+      : String(value ?? "");
+  const placeholder =
+    isMasked && !editing ? "••••••••  (saved)" : field.f_placeholder ?? "";
 
   return (
     <Flex direction="column" gap="1">
       <Flex align="center" justify="between">
         <Flex direction="column" gap="0">
-          <Text size="2" weight="medium">{field.f_label ?? field.key}</Text>
+          <Text size="2" weight="medium">
+            {field.f_label ?? field.key}
+          </Text>
           {field.f_desc && (
-            <Text size="1" color="gray">{field.f_desc}</Text>
+            <Text size="1" color="gray">
+              {field.f_desc}
+            </Text>
           )}
         </Flex>
         <Flex align="center" gap="1">
           <SaveIndicator state={saveState} />
           {field.smartlinks?.map((link) => (
-            <Button
-              key={link.sl_goto}
-              variant="ghost"
-              size="1"
-              asChild
-            >
+            <Button key={link.sl_goto} variant="ghost" size="1" asChild>
               <a href={link.sl_goto} target="_blank" rel="noopener noreferrer">
                 <ExternalLinkIcon width={12} height={12} />
                 <Text size="1">{link.sl_label}</Text>
@@ -217,7 +237,9 @@ const SecretField: React.FC<SchemaFieldProps> = ({
           onFocus={() => setEditing(true)}
           onChange={(e) => setLocalValue(e.target.value)}
           onBlur={() => void handleBlur()}
-          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
           className={disabled ? styles.disabledField : undefined}
         />
         <Button
@@ -250,7 +272,9 @@ const StringField: React.FC<SchemaFieldProps> = ({
   disabled,
   onSave,
 }) => {
-  const [localValue, setLocalValue] = useState(String(value ?? field.f_default ?? ""));
+  const [localValue, setLocalValue] = useState(
+    String(value ?? field.f_default ?? ""),
+  );
   const [saveState, setSaveState] = useState<FieldSaveState>("idle");
   const originalValueRef = useRef(value);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -280,20 +304,19 @@ const StringField: React.FC<SchemaFieldProps> = ({
     <Flex direction="column" gap="1">
       <Flex align="center" justify="between">
         <Flex direction="column" gap="0">
-          <Text size="2" weight="medium">{field.f_label ?? field.key}</Text>
+          <Text size="2" weight="medium">
+            {field.f_label ?? field.key}
+          </Text>
           {field.f_desc && (
-            <Text size="1" color="gray">{field.f_desc}</Text>
+            <Text size="1" color="gray">
+              {field.f_desc}
+            </Text>
           )}
         </Flex>
         <Flex align="center" gap="1">
           <SaveIndicator state={saveState} />
           {field.smartlinks?.map((link) => (
-            <Button
-              key={link.sl_goto}
-              variant="ghost"
-              size="1"
-              asChild
-            >
+            <Button key={link.sl_goto} variant="ghost" size="1" asChild>
               <a href={link.sl_goto} target="_blank" rel="noopener noreferrer">
                 <ExternalLinkIcon width={12} height={12} />
                 <Text size="1">{link.sl_label}</Text>
@@ -321,7 +344,9 @@ const StringField: React.FC<SchemaFieldProps> = ({
           disabled={disabled}
           onChange={(e) => setLocalValue(e.target.value)}
           onBlur={() => void handleBlur()}
-          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
           className={disabled ? styles.disabledField : undefined}
         />
       )}
@@ -334,15 +359,25 @@ const SaveIndicator: React.FC<{ state: FieldSaveState }> = ({ state }) => {
     case "idle":
       return null;
     case "saving":
-      return <Text size="1" color="gray">Saving…</Text>;
+      return (
+        <Text size="1" color="gray">
+          Saving…
+        </Text>
+      );
     case "saved":
       return (
         <Flex align="center" gap="1">
           <CheckIcon width={12} height={12} color="var(--green-9)" />
-          <Text size="1" color="green">Saved</Text>
+          <Text size="1" color="green">
+            Saved
+          </Text>
         </Flex>
       );
     case "error":
-      return <Text size="1" color="red">Error</Text>;
+      return (
+        <Text size="1" color="red">
+          Error
+        </Text>
+      );
   }
 };
