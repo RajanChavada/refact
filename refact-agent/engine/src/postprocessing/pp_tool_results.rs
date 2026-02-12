@@ -16,7 +16,7 @@ use crate::postprocessing::pp_plain_text::postprocess_plain_text;
 use crate::tokens::count_text_tokens_with_fallback;
 
 const MIN_CONTEXT_SIZE: usize = 8192;
-const MAX_TOOL_BUDGET: usize = 16384;
+const MAX_TOOL_BUDGET: usize = 32768;
 
 #[derive(Debug)]
 pub struct ToolBudget {
@@ -343,7 +343,7 @@ async fn postprocess_context_file_results(
 }
 
 const MIN_PER_FILE_BUDGET: usize = 50;
-const MAX_PER_FILE_BUDGET: usize = 2048;
+const MAX_PER_FILE_BUDGET: usize = 32768;
 
 async fn fill_skip_pp_files_with_budget(
     gcx: Arc<ARwLock<GlobalContext>>,
@@ -667,10 +667,10 @@ mod tests {
         assert!(budget_small.is_err());
         assert!(budget_small.unwrap_err().contains("below minimum"));
 
-        // Large context models are capped at MAX_TOOL_BUDGET (16384) to prevent bloated context
+        // Large context models are capped at MAX_TOOL_BUDGET (32768) to prevent bloated context
         let budget_large = ToolBudget::try_from_n_ctx(128000).unwrap();
-        assert_eq!(budget_large.tokens_for_code, 16384);
-        assert_eq!(budget_large.tokens_for_text, 4915);
+        assert_eq!(budget_large.tokens_for_code, 32768);
+        assert_eq!(budget_large.tokens_for_text, 9830);
     }
 
     #[test]

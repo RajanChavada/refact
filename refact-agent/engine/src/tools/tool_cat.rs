@@ -27,6 +27,7 @@ pub struct ToolCat {
 }
 
 const CAT_MAX_IMAGES_CNT: usize = 1;
+const CAT_MAX_LINES: usize = 2000;
 
 fn parse_cat_args(
     args: &HashMap<String, Value>,
@@ -525,12 +526,20 @@ pub async fn paths_and_symbols_to_cat_with_path_ranges(
                                     "⚠️ line {} is beyond file end ({} lines). 💡 Use cat('{}:1-{}')",
                                     start, total_lines, p, total_lines
                                 ));
-                                (1, total_lines.min(100))
+                                (1, total_lines.min(CAT_MAX_LINES))
                             } else {
                                 (start, end)
                             }
                         }
-                        None => (1, total_lines),
+                        None => {
+                            if total_lines > CAT_MAX_LINES {
+                                not_found_messages.push(format!(
+                                    "⚠️ {} has {} lines, showing first {} lines. 💡 Use cat('{}:START-END') to read specific line ranges",
+                                    p, total_lines, CAT_MAX_LINES, p
+                                ));
+                            }
+                            (1, total_lines.min(CAT_MAX_LINES))
+                        }
                     };
 
                     let cf = ContextFile {
