@@ -114,7 +114,7 @@ available:
         Ok(ProviderRuntime {
             name: self.name().to_string(),
             display_name: self.display_name().to_string(),
-            enabled: self.enabled,
+            enabled: self.enabled && !self.running_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
             chat_endpoint: format!("{}/v1/chat/completions", base_url),
@@ -135,8 +135,21 @@ available:
         false
     }
 
+    fn has_credentials(&self) -> bool {
+        true
+    }
+
     fn model_source(&self) -> ModelSource {
         ModelSource::ModelCaps
+    }
+
+    fn selected_model_count(&self) -> usize {
+        if self.running_models.is_empty() {
+            return 0;
+        }
+        self.running_models.iter()
+            .filter(|m| !self.disabled_models.contains(m))
+            .count()
     }
 
     fn disabled_models(&self) -> &[String] {

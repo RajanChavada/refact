@@ -401,7 +401,9 @@ impl LlmWireAdapter for AnthropicAdapter {
                 // It does NOT include the content_block payload. Thinking content is already
                 // streamed via thinking_delta -> AppendReasoning, so no action needed here.
             }
-            _ => {}
+            _ => {
+                tracing::warn!("Unknown event type: {json:?}");
+            }
         }
 
         // Extract Refact-specific extra fields on ALL events consistently

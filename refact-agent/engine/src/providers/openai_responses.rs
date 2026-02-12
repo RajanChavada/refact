@@ -98,7 +98,7 @@ available:
         Ok(ProviderRuntime {
             name: self.name().to_string(),
             display_name: self.display_name().to_string(),
-            enabled: self.enabled && !api_key.is_empty(),
+            enabled: !api_key.is_empty() && !self.enabled_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
             chat_endpoint: "https://api.openai.com/v1/responses".to_string(),
@@ -117,6 +117,11 @@ available:
 
     fn is_hidden_from_list(&self) -> bool {
         true
+    }
+
+    fn has_credentials(&self) -> bool {
+        let key = resolve_env_var(&self.api_key, "", "openai api_key");
+        !key.is_empty()
     }
 
     fn model_source(&self) -> ModelSource {

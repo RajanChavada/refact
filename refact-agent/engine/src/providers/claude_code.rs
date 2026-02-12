@@ -295,7 +295,7 @@ available:
         Ok(ProviderRuntime {
             name: self.name().to_string(),
             display_name: self.display_name().to_string(),
-            enabled: self.enabled && has_auth,
+            enabled: has_auth && !self.enabled_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
             chat_endpoint: "https://api.anthropic.com/v1/messages".to_string(),
@@ -310,6 +310,26 @@ available:
             completion_models: Vec::new(),
             embedding_model: None,
         })
+    }
+
+    fn has_credentials(&self) -> bool {
+        // Fast check: avoid blocking IO from resolve_auth() which reads filesystem
+        if !self.oauth_tokens.is_empty() && !self.oauth_tokens.access_token.is_empty() {
+            return true;
+        }
+        if !self.oauth_token.is_empty() && self.oauth_token != "***" {
+            return true;
+        }
+        if std::env::var("CLAUDE_CODE_OAUTH_TOKEN").map(|t| !t.is_empty()).unwrap_or(false) {
+            return true;
+        }
+        // Check CLI credentials file existence (metadata only, no read)
+        if let Some(home) = home::home_dir() {
+            if home.join(".claude/.credentials.json").exists() {
+                return true;
+            }
+        }
+        false
     }
 
     fn model_source(&self) -> ModelSource {
@@ -368,7 +388,7 @@ available:
                 .unwrap_or_else(|| api_id.clone());
 
             if let Some(caps) = crate::caps::model_caps::resolve_model_caps(model_caps, &api_id_without_date) {
-                let enabled = enabled_set.is_empty() || enabled_set.contains(api_id.as_str());
+                let enabled = enabled_set.contains(api_id.as_str());
                 let pricing = self.model_pricing(api_id);
                 let mut model = AvailableModel::from_caps(api_id, &caps.caps, enabled, pricing);
                 if api_id != &caps.matched_key {

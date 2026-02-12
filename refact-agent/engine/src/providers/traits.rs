@@ -261,6 +261,19 @@ pub trait ProviderTrait: Send + Sync {
         false
     }
 
+    /// Whether this provider has valid credentials configured.
+    /// Used to derive provider status without the manual `enabled` toggle.
+    fn has_credentials(&self) -> bool {
+        false
+    }
+
+    /// Number of models the user has selected/enabled for this provider.
+    /// For allowlist providers: enabled_models().len()
+    /// For denylist providers: override to compute actual selected count.
+    fn selected_model_count(&self) -> usize {
+        self.enabled_models().len()
+    }
+
     // Model discovery methods
     fn model_source(&self) -> ModelSource {
         ModelSource::ModelCaps
@@ -331,7 +344,7 @@ pub trait ProviderTrait: Send + Sync {
             };
             if matches {
                 let disabled = self.disabled_models().contains(&name.to_string());
-                let enabled = if disabled { false } else { enabled_set.is_empty() || enabled_set.contains(name.as_str()) };
+                let enabled = if disabled { false } else { enabled_set.contains(name.as_str()) };
                 let pricing = self.model_pricing(name);
                 models_map.insert(name.clone(), AvailableModel::from_caps(name, caps, enabled, pricing));
             }

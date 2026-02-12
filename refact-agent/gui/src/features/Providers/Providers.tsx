@@ -5,7 +5,6 @@ import { ScrollArea } from "../../components/ScrollArea";
 import { PageWrapper } from "../../components/PageWrapper";
 import { Spinner } from "../../components/Spinner";
 import { ProvidersView } from "./ProvidersView";
-import { ProviderUpdateProvider } from "./ProviderUpdateContext";
 
 import { useGetConfiguredProvidersQuery } from "../../hooks/useProvidersQuery";
 
@@ -42,12 +41,10 @@ export const Providers: React.FC<ProvidersProps> = ({
             height: "100%",
           }}
         >
-          <ProviderUpdateProvider>
-            <ProvidersView
-              configuredProviders={configuredProvidersData.providers}
-              backFromProviders={backFromProviders}
-            />
-          </ProviderUpdateProvider>
+          <ProvidersView
+            configuredProviders={configuredProvidersData.providers}
+            backFromProviders={backFromProviders}
+          />
         </Flex>
       </ScrollArea>
     </PageWrapper>

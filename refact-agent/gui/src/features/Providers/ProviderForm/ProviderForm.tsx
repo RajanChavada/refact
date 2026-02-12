@@ -1,16 +1,12 @@
 import React from "react";
-import classNames from "classnames";
-import { Button, Flex, Separator, Switch } from "@radix-ui/themes";
+import { Badge, Button, Flex, Separator, Text } from "@radix-ui/themes";
 
-import { FormFields } from "./FormFields";
+import { SchemaField } from "./SchemaField";
 import { ProviderOAuth } from "./ProviderOAuth";
 import { Spinner } from "../../../components/Spinner";
 
-import { useProviderForm, ProviderFormValues } from "./useProviderForm";
-import type { ProviderListItem } from "../../../services/refact";
-
-import { toPascalCase } from "../../../utils/toPascalCase";
-import { aggregateProviderFields } from "./utils";
+import { useProviderForm } from "./useProviderForm";
+import type { ProviderListItem, ProviderStatus } from "../../../services/refact";
 
 import styles from "./ProviderForm.module.css";
 import { ProviderModelsList } from "./ProviderModelsList/ProviderModelsList";
@@ -19,34 +15,47 @@ const SETTINGS_HIDDEN_PROVIDERS = ["refact", "refact_self_hosted"];
 
 export type ProviderFormProps = {
   currentProvider: ProviderListItem;
-  isProviderConfigured: boolean;
-  isSaving: boolean;
-  handleDiscardChanges: () => void;
-  handleSaveChanges: (updatedProviderData: ProviderFormValues) => void;
 };
 
 export type { ProviderListItem };
 
+const StatusBadge: React.FC<{ status: ProviderStatus }> = ({ status }) => {
+  switch (status) {
+    case "active":
+      return <Badge color="green" size="1">Active</Badge>;
+    case "configured":
+      return <Badge color="orange" size="1">Configured</Badge>;
+    case "not_configured":
+      return <Badge color="gray" size="1">Not configured</Badge>;
+    default:
+      return null;
+  }
+};
+
 export const ProviderForm: React.FC<ProviderFormProps> = ({
   currentProvider,
-  isProviderConfigured,
-  isSaving,
-  handleDiscardChanges,
-  handleSaveChanges,
 }) => {
   const {
     areShowingExtraFields,
     formValues,
-    handleFormValuesChange,
+    parsedSchema,
+    importantFields,
+    extraFields,
     isProviderLoadedSuccessfully,
     setAreShowingExtraFields,
-    shouldSaveButtonBeDisabled,
+    handleFieldSave,
+    detailedProvider,
   } = useProviderForm({ providerName: currentProvider.name });
 
-  if (!isProviderLoadedSuccessfully || !formValues) return <Spinner spinning />;
+  if (!isProviderLoadedSuccessfully || !formValues || !parsedSchema) {
+    return <Spinner spinning />;
+  }
 
   const hideSettings = SETTINGS_HIDDEN_PROVIDERS.includes(currentProvider.name);
-  const { extraFields, importantFields } = aggregateProviderFields(formValues);
+  const hasOAuth = parsedSchema.oauth?.supported === true;
+  const status: ProviderStatus = detailedProvider?.status ?? currentProvider.status ?? "not_configured";
+  const hasCredentials = detailedProvider?.has_credentials ?? currentProvider.has_credentials ?? false;
+  const isReadonly = formValues.readonly;
 
   return (
     <Flex
@@ -54,105 +63,87 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
       width="100%"
       height="100%"
       mt="2"
-      justify="between"
+      gap="3"
     >
-      <Flex direction="column" width="100%" gap="2">
-        {!hideSettings && (
-          <>
-            <Flex align="center" justify="between" gap="3" mb="2">
-              <label htmlFor={"enabled"}>{toPascalCase("enabled")}</label>
-              <Switch
-                id={"enabled"}
-                checked={Boolean(formValues.enabled)}
-                value={formValues.enabled ? "on" : "off"}
-                disabled={formValues.readonly}
-                className={classNames({
-                  [styles.disabledSwitch]: formValues.readonly,
-                })}
-                onCheckedChange={(checked) =>
-                  handleFormValuesChange({
-                    ...formValues,
-                    ["enabled"]: checked,
-                  })
+      <Flex align="center" gap="2">
+        <StatusBadge status={status} />
+        {parsedSchema.description && (
+          <Text size="1" color="gray" style={{ flex: 1 }}>
+            {parsedSchema.description.trim().split("\n")[0]}
+          </Text>
+        )}
+      </Flex>
+
+      {!hideSettings && (
+        <Flex direction="column" width="100%" gap="3">
+          {hasOAuth && (
+            <>
+              <ProviderOAuth
+                providerName={currentProvider.name}
+                oauthConnected={Boolean(
+                  formValues &&
+                  typeof formValues === "object" &&
+                  "oauth_connected" in formValues &&
+                  formValues.oauth_connected,
+                )}
+                authStatus={
+                  formValues &&
+                  typeof formValues === "object" &&
+                  "auth_status" in formValues
+                    ? String(formValues.auth_status)
+                    : ""
                 }
               />
-            </Flex>
-            <Separator size="4" mb="2" />
-            {currentProvider.name === "claude_code" && (
-              <Flex direction="column" gap="2" mb="3">
-                <ProviderOAuth
-                  providerName={currentProvider.name}
-                  oauthConnected={Boolean(
-                    formValues &&
-                    typeof formValues === "object" &&
-                    "oauth_connected" in formValues &&
-                    formValues.oauth_connected
-                  )}
-                  authStatus={
-                    formValues &&
-                    typeof formValues === "object" &&
-                    "auth_status" in formValues
-                      ? String(formValues.auth_status)
-                      : ""
-                  }
-                />
-                <Separator size="4" />
-              </Flex>
-            )}
-            <Flex direction="column" gap="2">
-              <FormFields
-                providerData={formValues}
-                fields={importantFields}
-                onChange={handleFormValuesChange}
-              />
-            </Flex>
+              {importantFields.length > 0 && <Separator size="4" />}
+            </>
+          )}
 
-            {areShowingExtraFields && Object.keys(extraFields).length > 0 && (
-              <Flex direction="column" gap="2" mt="4">
-                <FormFields
-                  providerData={formValues}
-                  fields={extraFields}
-                  onChange={handleFormValuesChange}
-                />
-              </Flex>
-            )}
-            {Object.keys(extraFields).length > 0 && (
-              <Flex my="2" align="center" justify="center">
+          <Flex direction="column" gap="3">
+            {importantFields.map((field) => (
+              <SchemaField
+                key={field.key}
+                field={field}
+                value={formValues[field.key]}
+                disabled={isReadonly}
+                onSave={handleFieldSave}
+              />
+            ))}
+          </Flex>
+
+          {extraFields.length > 0 && (
+            <>
+              <Flex align="center" justify="center">
                 <Button
-                  className={classNames(styles.button, styles.extraButton)}
+                  className={styles.extraButton}
                   variant="ghost"
                   color="gray"
+                  size="1"
                   onClick={() => setAreShowingExtraFields((prev) => !prev)}
                 >
                   {areShowingExtraFields ? "Hide" : "Show"} advanced fields
                 </Button>
               </Flex>
-            )}
-          </>
-        )}
-        {(isProviderConfigured || hideSettings) && (
-          <ProviderModelsList provider={currentProvider} />
-        )}
-      </Flex>
-      {!hideSettings && (
-        <Flex gap="2" align="center" mt="4">
-          <Button
-            className={styles.button}
-            variant="outline"
-            onClick={handleDiscardChanges}
-          >
-            Cancel
-          </Button>
-          <Button
-            className={styles.button}
-            variant="solid"
-            disabled={isSaving || shouldSaveButtonBeDisabled}
-            title="Save Provider configuration"
-            onClick={() => handleSaveChanges(formValues)}
-          >
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
+
+              {areShowingExtraFields && (
+                <Flex direction="column" gap="3">
+                  {extraFields.map((field) => (
+                    <SchemaField
+                      key={field.key}
+                      field={field}
+                      value={formValues[field.key]}
+                      disabled={isReadonly}
+                      onSave={handleFieldSave}
+                    />
+                  ))}
+                </Flex>
+              )}
+            </>
+          )}
         </Flex>
+      )}
+
+      {(hasCredentials || hideSettings) && (
+        <ProviderModelsList provider={currentProvider} />
       )}
     </Flex>
   );

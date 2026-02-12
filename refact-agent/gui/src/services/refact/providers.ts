@@ -40,11 +40,15 @@ export type ProviderRuntime = {
   embedding_model: ProviderModel | null;
 };
 
+export type ProviderStatus = "not_configured" | "configured" | "active";
+
 export type ProviderListItem = {
   name: string;
   display_name: string;
   enabled: boolean;
   readonly: boolean;
+  has_credentials: boolean;
+  status: ProviderStatus;
   model_count: number;
 };
 
@@ -57,6 +61,9 @@ export type ProviderDetailResponse = {
   display_name: string;
   enabled: boolean;
   readonly: boolean;
+  has_credentials: boolean;
+  selected_models_count: number;
+  status: ProviderStatus;
   settings: Record<string, unknown>;
   runtime: ProviderRuntime | null;
 };
@@ -740,6 +747,7 @@ function isProviderListItem(data: unknown): data is ProviderListItem {
     return false;
   if (!hasProperty(data, "model_count") || typeof data.model_count !== "number")
     return false;
+  // has_credentials and status are optional for backward compat
   return true;
 }
 

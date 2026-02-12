@@ -332,7 +332,7 @@ available:
         Ok(ProviderRuntime {
             name: self.name().to_string(),
             display_name: self.display_name().to_string(),
-            enabled: self.enabled && has_auth,
+            enabled: has_auth && !self.enabled_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
             chat_endpoint: format!("{}/v1/responses", base_url),
@@ -347,6 +347,26 @@ available:
             completion_models: Vec::new(),
             embedding_model: None,
         })
+    }
+
+    fn has_credentials(&self) -> bool {
+        // Fast check: avoid blocking IO from resolve_auth()
+        if !self.api_key.is_empty() && self.api_key != "***" {
+            return true;
+        }
+        if !self.oauth_token.is_empty() && self.oauth_token != "***" {
+            return true;
+        }
+        if std::env::var("OPENAI_API_KEY").map(|t| !t.is_empty()).unwrap_or(false) {
+            return true;
+        }
+        // Check CLI credentials file existence (metadata only)
+        if let Some(home) = home::home_dir() {
+            if home.join(".codex/codex-credentials.json").exists() {
+                return true;
+            }
+        }
+        false
     }
 
     fn model_source(&self) -> ModelSource {
@@ -409,7 +429,7 @@ available:
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_else(|| api_id.clone());
 
-            let enabled = enabled_set.is_empty() || enabled_set.contains(api_id.as_str());
+            let enabled = enabled_set.contains(api_id.as_str());
             let pricing = self.model_pricing(api_id);
 
             if let Some(caps) = crate::caps::model_caps::resolve_model_caps(model_caps, &api_id_without_date) {

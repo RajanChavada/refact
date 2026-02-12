@@ -97,7 +97,7 @@ available:
         Ok(ProviderRuntime {
             name: self.name().to_string(),
             display_name: self.display_name().to_string(),
-            enabled: self.enabled && !api_key.is_empty(),
+            enabled: !api_key.is_empty() && !self.enabled_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
             chat_endpoint: "https://openrouter.ai/api/v1/chat/completions".to_string(),
@@ -112,6 +112,11 @@ available:
             completion_models: Vec::new(),
             embedding_model: None,
         })
+    }
+
+    fn has_credentials(&self) -> bool {
+        let key = resolve_env_var(&self.api_key, "", "openrouter api_key");
+        !key.is_empty()
     }
 
     fn model_source(&self) -> ModelSource {

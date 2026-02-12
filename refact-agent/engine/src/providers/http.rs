@@ -39,6 +39,8 @@ struct ProviderListItem {
     display_name: &'static str,
     enabled: bool,
     readonly: bool,
+    has_credentials: bool,
+    status: &'static str,
     model_count: usize,
 }
 
@@ -63,12 +65,23 @@ pub async fn handle_v1_providers_list(
                 Ok(runtime) => (runtime.enabled, provider.is_readonly()),
                 Err(_) => (false, provider.is_readonly()),
             };
+            let has_creds = provider.has_credentials();
+            let model_count = provider.selected_model_count();
+            let status = if has_creds && model_count > 0 && enabled {
+                "active"
+            } else if has_creds {
+                "configured"
+            } else {
+                "not_configured"
+            };
             providers.push(ProviderListItem {
                 name: provider.name(),
                 display_name: provider.display_name(),
                 enabled,
                 readonly,
-                model_count: provider.enabled_models().len(),
+                has_credentials: has_creds,
+                status,
+                model_count,
             });
         } else if let Some(default_provider) = create_provider(name) {
             if default_provider.is_hidden_from_list() {
@@ -79,6 +92,8 @@ pub async fn handle_v1_providers_list(
                 display_name: default_provider.display_name(),
                 enabled: false,
                 readonly: default_provider.is_readonly(),
+                has_credentials: false,
+                status: "not_configured",
                 model_count: 0,
             });
         }
@@ -99,6 +114,9 @@ struct ProviderDetailResponse {
     display_name: String,
     enabled: bool,
     readonly: bool,
+    has_credentials: bool,
+    selected_models_count: usize,
+    status: &'static str,
     settings: serde_json::Value,
     runtime: Option<ProviderRuntime>,
 }
@@ -123,11 +141,24 @@ pub async fn handle_v1_provider_get(
         };
 
     let runtime = provider.build_runtime().ok();
+    let has_creds = provider.has_credentials();
+    let selected_count = provider.selected_model_count();
+    let enabled = runtime.as_ref().map(|r| r.enabled).unwrap_or(false);
+    let status = if has_creds && selected_count > 0 && enabled {
+        "active"
+    } else if has_creds {
+        "configured"
+    } else {
+        "not_configured"
+    };
     let response = ProviderDetailResponse {
         name: provider.name().to_string(),
         display_name: provider.display_name().to_string(),
-        enabled: runtime.as_ref().map(|r| r.enabled).unwrap_or(false),
+        enabled,
         readonly: provider.is_readonly(),
+        has_credentials: has_creds,
+        selected_models_count: selected_count,
+        status,
         settings: provider.provider_settings_as_json(),
         runtime: runtime.map(|r| r.redacted()),
     };
@@ -882,21 +913,21 @@ async fn patch_provider_model_config(
     };
 
     // Update only the model-related fields, preserving everything else (including secrets)
-    // Write enabled_models only if non-empty (allowlist providers)
-    if !enabled_models.is_empty() {
-        yaml_map.insert(
-            serde_yaml::Value::String("enabled_models".to_string()),
-            serde_yaml::to_value(&enabled_models)
-                .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize enabled_models: {}", e)))?,
-        );
-    }
-    // Write disabled_models only if non-empty (denylist providers like Refact)
+    // Always persist enabled_models (even empty) so clearing all models is reflected on reload
+    yaml_map.insert(
+        serde_yaml::Value::String("enabled_models".to_string()),
+        serde_yaml::to_value(&enabled_models)
+            .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize enabled_models: {}", e)))?,
+    );
+    // Always persist disabled_models for denylist providers
     if !disabled_models.is_empty() {
         yaml_map.insert(
             serde_yaml::Value::String("disabled_models".to_string()),
             serde_yaml::to_value(&disabled_models)
                 .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize disabled_models: {}", e)))?,
         );
+    } else {
+        yaml_map.remove(serde_yaml::Value::String("disabled_models".to_string()));
     }
     yaml_map.insert(
         serde_yaml::Value::String("custom_models".to_string()),
