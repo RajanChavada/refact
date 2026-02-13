@@ -197,7 +197,8 @@ export const ChatSettingsDropdown: React.FC = () => {
       maxOutputTokens: modelData.max_output_tokens,
       reasoningEffortOptions: modelData.reasoning_effort_options,
       supportsThinkingBudget: modelData.supports_thinking_budget,
-      supportsAdaptiveThinkingBudget: modelData.supports_adaptive_thinking_budget,
+      supportsAdaptiveThinkingBudget:
+        modelData.supports_adaptive_thinking_budget,
       pricing: pricing ? formatPricingDetailed(pricing) : null,
     };
   }, [caps.currentModel, capsQuery.data]);
@@ -560,38 +561,38 @@ export const ChatSettingsDropdown: React.FC = () => {
                 {/* Reasoning effort options (transparent) */}
                 {selectedModelDetail.reasoningEffortOptions &&
                   selectedModelDetail.reasoningEffortOptions.length > 0 && (
-                  <Flex align="center" justify="between" gap="2" mt="2">
-                    <Text size="1" color="gray">
-                      Effort
-                    </Text>
-                    <Flex gap="1">
-                      {selectedModelDetail.reasoningEffortOptions.map(
-                        (level) => (
-                          <button
-                            key={level}
-                            type="button"
-                            className={`${styles.effortButton} ${
-                              (threadReasoningEffort ?? "medium") === level
-                                ? styles.effortButtonActive
-                                : ""
-                            }`}
-                            onClick={() =>
-                              dispatch(
-                                setReasoningEffort({
-                                  chatId,
-                                  value: level as ReasoningEffort,
-                                }),
-                              )
-                            }
-                            disabled={isInteractionDisabled}
-                          >
-                            <Text size="1">{level}</Text>
-                          </button>
-                        ),
-                      )}
+                    <Flex align="center" justify="between" gap="2" mt="2">
+                      <Text size="1" color="gray">
+                        Effort
+                      </Text>
+                      <Flex gap="1">
+                        {selectedModelDetail.reasoningEffortOptions.map(
+                          (level) => (
+                            <button
+                              key={level}
+                              type="button"
+                              className={`${styles.effortButton} ${
+                                (threadReasoningEffort ?? "medium") === level
+                                  ? styles.effortButtonActive
+                                  : ""
+                              }`}
+                              onClick={() =>
+                                dispatch(
+                                  setReasoningEffort({
+                                    chatId,
+                                    value: level as ReasoningEffort,
+                                  }),
+                                )
+                              }
+                              disabled={isInteractionDisabled}
+                            >
+                              <Text size="1">{level}</Text>
+                            </button>
+                          ),
+                        )}
+                      </Flex>
                     </Flex>
-                  </Flex>
-                )}
+                  )}
                 {/* Thinking budget slider */}
                 {selectedModelDetail.supportsThinkingBudget && (
                   <Flex direction="column" gap="1" mt="2">

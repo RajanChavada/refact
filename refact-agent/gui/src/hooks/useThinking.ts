@@ -31,10 +31,10 @@ export function useThinking() {
     const models = caps.data?.chat_models;
     const item = models?.[currentModel];
     if (!item) return false;
-    return !!(
-      item.reasoning_effort_options?.length ||
-      item.supports_thinking_budget ||
-      item.supports_adaptive_thinking_budget
+    return (
+      !!item.reasoning_effort_options?.length ||
+      !!item.supports_thinking_budget ||
+      !!item.supports_adaptive_thinking_budget
     );
   }, [caps.data?.chat_models, currentModel]);
 

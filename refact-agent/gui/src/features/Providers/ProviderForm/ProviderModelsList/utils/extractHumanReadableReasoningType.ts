@@ -3,9 +3,9 @@ export function hasReasoningSupport(model: {
   supports_thinking_budget?: boolean;
   supports_adaptive_thinking_budget?: boolean;
 }): boolean {
-  return !!(
-    model.reasoning_effort_options?.length ||
-    model.supports_thinking_budget ||
-    model.supports_adaptive_thinking_budget
+  return (
+    !!model.reasoning_effort_options?.length ||
+    !!model.supports_thinking_budget ||
+    !!model.supports_adaptive_thinking_budget
   );
 }

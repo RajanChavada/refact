@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { Flex, Text, Box, Spinner } from "@radix-ui/themes";
 import classNames from "classnames";
 import { useAutoExpandCollapse, ToolStatus } from "./useAutoExpandCollapse";
@@ -77,6 +77,24 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
     return { step: null, text: last };
   }, [status, toolCall.subchat_log]);
 
+  const entertainmentRef = useRef<HTMLDivElement | null>(null);
+  const userScrolledRef = useRef(false);
+
+  const handleEntertainmentScroll = useCallback(() => {
+    const el = entertainmentRef.current;
+    if (!el) return;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
+    userScrolledRef.current = !isAtBottom;
+  }, []);
+
+  useEffect(() => {
+    if (status !== "running") return;
+    const el = entertainmentRef.current;
+    if (!el) return;
+    if (userScrolledRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [status, entertainmentMessage?.text]);
+
   const header = (
     <Flex
       className={classNames(styles.header, status === "error" && styles.error)}
@@ -114,15 +132,16 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
       <ToolCallTooltip toolCall={toolCall}>{header}</ToolCallTooltip>
 
       {entertainmentMessage && (
-        <div className={styles.entertainmentRow}>
-          <Text size="1" className={styles.entertainmentText}>
-            {entertainmentMessage.step && (
-              <span style={{ marginRight: 6 }}>
-                {entertainmentMessage.step}
-              </span>
-            )}
-            {entertainmentMessage.text}
-          </Text>
+        <div
+          className={styles.entertainmentContent}
+          ref={entertainmentRef}
+          onScroll={handleEntertainmentScroll}
+        >
+          <div className={styles.entertainmentMarkdown}>
+            <Markdown canHaveInteractiveElements={false}>
+              {entertainmentMessage.text}
+            </Markdown>
+          </div>
         </div>
       )}
 

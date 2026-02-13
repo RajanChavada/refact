@@ -188,7 +188,7 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
               className={styles.content}
               onScroll={handleScroll}
             >
-              <Text size="2" color="gray" as="div">
+              <Text size="1" color="gray" as="div">
                 <Markdown
                   canHaveInteractiveElements={true}
                   onCopyClick={onCopyClick}

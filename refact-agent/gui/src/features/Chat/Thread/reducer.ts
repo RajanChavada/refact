@@ -1201,10 +1201,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
               tc.subchat = event.subchat_id;
               const isToolNotification = event.subchat_id.includes("/tool:");
               if (!isToolNotification) {
-                const prev = tc.subchat_log ?? [];
-                if (prev[prev.length - 1] !== event.subchat_id) {
-                  tc.subchat_log = [...prev, event.subchat_id].slice(-50);
-                }
+                // Streaming progress: keep only the latest entry so UI doesn't
+                // accumulate stale partial text.
+                tc.subchat_log = [event.subchat_id];
               }
             }
             if (event.attached_files && event.attached_files.length > 0) {

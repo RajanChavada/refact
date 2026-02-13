@@ -594,6 +594,17 @@ async fn run_streaming_generation(
             if parsed.is_empty() {
                 return Err("Model returned tool_calls but none were parsable".to_string());
             }
+            if parsed.len() < result.tool_calls_raw.len() {
+                let dropped: Vec<_> = result.tool_calls_raw.iter()
+                    .filter(|tc| normalize_tool_call(tc).is_none())
+                    .collect();
+                tracing::warn!(
+                    "Dropped {}/{} tool calls during normalization: {:?}",
+                    dropped.len(),
+                    result.tool_calls_raw.len(),
+                    dropped,
+                );
+            }
         }
 
         break result;

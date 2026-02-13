@@ -52,11 +52,11 @@ import {
   AskQuestionsTool,
 } from "./ToolCard";
 
-function parseProgressEntry(entry: string): { step?: string; lines: string[] } {
-  const m = entry.match(/^(\d+\/\d+): ([\s\S]+)$/);
-  if (!m) return { lines: [entry] };
-  const [, step, content] = m;
-  return { step, lines: content.split("\n").filter((l) => l.trim()) };
+function parseProgressEntry(entry: string): { step?: string; text: string } {
+  const m = entry.match(/^(\d+\/\d+):\s*([\s\S]+)$/);
+  if (!m) return { text: entry };
+  const [, step, text] = m;
+  return { step, text };
 }
 
 type ResultProps = {
@@ -1043,17 +1043,18 @@ const ToolUsageSummary = forwardRef<HTMLDivElement, ToolUsageSummaryProps>(
                         </Text>
                       </Flex>
                     )}
-                    {parsed.lines.map((line, i) => (
-                      <Text
-                        key={i}
-                        weight="light"
-                        size="1"
-                        ml={parsed.step ? "4" : "0"}
-                      >
-                        {parsed.step ? "🔨 " : ""}
-                        {line}
-                      </Text>
-                    ))}
+                    <Text
+                      size="1"
+                      color="gray"
+                      as="div"
+                      ml={parsed.step ? "4" : "0"}
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {parsed.text}
+                    </Text>
                   </Flex>
                 );
               })()}

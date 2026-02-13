@@ -45,9 +45,9 @@ export const CapabilityIcons: FC<CapabilityIconsProps> = ({
           <RocketIcon style={iconStyle} color="var(--gray-11)" />
         </span>
       )}
-      {(capabilities.reasoningEffortOptions?.length ||
-        capabilities.supportsThinkingBudget ||
-        capabilities.supportsAdaptiveThinkingBudget) && (
+      {(!!capabilities.reasoningEffortOptions?.length ||
+        !!capabilities.supportsThinkingBudget ||
+        !!capabilities.supportsAdaptiveThinkingBudget) && (
         <span title="Reasoning">
           <ChatBubbleIcon style={iconStyle} color="var(--blue-11)" />
         </span>

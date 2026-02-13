@@ -6,7 +6,7 @@ use crate::llm::adapter::{AdapterSettings, HttpParts, LlmWireAdapter, StreamPars
 use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat};
 
 /// Fields that cannot be overridden via extra_body for security
-const PROTECTED_FIELDS: &[&str] = &["model", "input", "stream", "tools", "tool_choice", "instructions", "include"];
+const PROTECTED_FIELDS: &[&str] = &["model", "input", "stream", "tools", "tool_choice", "instructions", "include", "store"];
 
 pub struct OpenAiResponsesAdapter;
 
@@ -106,10 +106,19 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         }
 
         if let Some(extra) = &req.extra_body {
+            // Fields the ChatGPT backend rejects — block even via extra_body.
+            const CHATGPT_REJECTED: &[&str] = &[
+                "max_output_tokens", "max_tokens", "max_completion_tokens",
+                "temperature", "frequency_penalty", "stop",
+            ];
             if let Some(obj) = body.as_object_mut() {
                 for (k, v) in extra {
                     if PROTECTED_FIELDS.contains(&k.as_str()) {
                         tracing::warn!("extra_body attempted to override protected field '{}', ignoring", k);
+                        continue;
+                    }
+                    if is_chatgpt_backend && CHATGPT_REJECTED.contains(&k.as_str()) {
+                        tracing::warn!("extra_body field '{}' rejected by ChatGPT backend, ignoring", k);
                         continue;
                     }
                     obj.insert(k.clone(), v.clone());
@@ -159,7 +168,7 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         let json: Value = serde_json::from_str(trimmed)
             .map_err(|e| StreamParseError::MalformedChunk(format!("json parse: {e}")))?;
 
-        if let Some(error) = json.get("error") {
+        if let Some(error) = json.get("error").filter(|e| !e.is_null()) {
             return Err(StreamParseError::FatalError(
                 error
                     .get("message")
@@ -173,6 +182,7 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         let mut deltas = Vec::new();
 
         match event_type {
+            // ── Text content streaming ──
             "response.output_text.delta" => {
                 if let Some(delta) = json.get("delta").and_then(|d| d.as_str()) {
                     deltas.push(LlmStreamDelta::AppendContent {
@@ -180,13 +190,40 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                     });
                 }
             }
-            "response.reasoning.delta" => {
+
+            // ── Reasoning streaming (3 flavours) ──
+            // 1. Legacy: response.reasoning.delta (older models)
+            // 2. GPT-OSS: response.reasoning_text.delta (reasoning content)
+            // 3. Summary: response.reasoning_summary_text.delta (shareable summary)
+            "response.reasoning.delta"
+            | "response.reasoning_text.delta"
+            | "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = json.get("delta").and_then(|d| d.as_str()) {
                     deltas.push(LlmStreamDelta::AppendReasoning {
                         text: delta.to_string(),
                     });
                 }
             }
+
+            // ── Refusal streaming ──
+            "response.refusal.delta" => {
+                if let Some(delta) = json.get("delta").and_then(|d| d.as_str()) {
+                    deltas.push(LlmStreamDelta::AppendContent {
+                        text: delta.to_string(),
+                    });
+                }
+            }
+
+            // ── Text annotations (citations in output text) ──
+            "response.output_text.annotation.added" => {
+                if let Some(annotation) = json.get("annotation") {
+                    deltas.push(LlmStreamDelta::AddCitation {
+                        citation: annotation.clone(),
+                    });
+                }
+            }
+
+            // ── Function call tool streaming ──
             "response.output_item.added" => {
                 if let Some(item) = json.get("item") {
                     if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
@@ -206,25 +243,26 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                 }
             }
             "response.function_call_arguments.done" => {
-                if let Some(tc) = extract_tool_call_done(&json) {
-                    deltas.push(LlmStreamDelta::SetToolCalls {
+                if let Some(tc) = extract_tool_call_final(&json) {
+                    deltas.push(LlmStreamDelta::FinalizeToolCalls {
                         tool_calls: vec![tc],
                     });
                 }
             }
+
+            // ── Output item completion ──
             "response.output_item.done" => {
                 if let Some(item) = json.get("item") {
                     let item_type = item.get("type").and_then(|t| t.as_str());
                     match item_type {
                         Some("function_call") => {
                             if let Some(tc) = extract_tool_call_from_item(item, &json) {
-                                deltas.push(LlmStreamDelta::SetToolCalls {
+                                deltas.push(LlmStreamDelta::FinalizeToolCalls {
                                     tool_calls: vec![tc],
                                 });
                             }
                         }
                         Some("web_search_call") => {
-                            // Extract citations from web search results
                             if let Some(results) = item.get("results").and_then(|r| r.as_array()) {
                                 for result in results {
                                     deltas.push(LlmStreamDelta::AddCitation {
@@ -234,10 +272,8 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                             }
                         }
                         Some("reasoning") => {
-                            // Capture reasoning items for multi-turn tool-calling flows.
-                            // These opaque items (with id + optional encrypted_content)
-                            // should be stored and passed back in subsequent requests
-                            // for better model performance.
+                            // Capture opaque reasoning items (id + encrypted_content)
+                            // for multi-turn tool-calling flows.
                             deltas.push(LlmStreamDelta::SetThinkingBlocks {
                                 blocks: vec![item.clone()],
                             });
@@ -246,38 +282,20 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                     }
                 }
             }
-            "response.output_text.done" | "response.reasoning.done" => {}
-            "response.web_search_call.searching" | "response.web_search_call.completed" => {
-                // Web search tool events - citations may be in results
-            }
-            "response.completed" => {
-                // Also check for citations in completed response
-                if let Some(output) = json.get("response").and_then(|r| r.get("output")).and_then(|o| o.as_array()) {
-                    for item in output {
-                        if item.get("type").and_then(|t| t.as_str()) == Some("web_search_call") {
-                            if let Some(results) = item.get("results").and_then(|r| r.as_array()) {
-                                for result in results {
-                                    deltas.push(LlmStreamDelta::AddCitation {
-                                        citation: result.clone(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+
+            // ── Incomplete response (hit max_output_tokens or content_filter) ──
+            "response.incomplete" => {
                 let finish_reason = json
                     .get("response")
-                    .and_then(|r| r.get("status"))
-                    .and_then(|s| s.as_str())
-                    .or_else(|| json.get("status").and_then(|s| s.as_str()))
+                    .and_then(|r| r.get("incomplete_details"))
+                    .and_then(|d| d.get("reason"))
+                    .and_then(|r| r.as_str())
                     .map(|s| match s {
-                        "completed" => "stop",
-                        "cancelled" => "stop",
-                        "failed" => "error",
-                        "incomplete" => "length",
+                        "max_output_tokens" => "length",
+                        "content_filter" => "content_filter",
                         other => other,
                     })
-                    .unwrap_or("stop");
+                    .unwrap_or("length");
                 deltas.push(LlmStreamDelta::SetFinishReason {
                     reason: finish_reason.to_string(),
                 });
@@ -286,16 +304,82 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                 }
                 deltas.push(LlmStreamDelta::Done);
             }
+
+            // ── Completed response ──
+            "response.completed" => {
+                let raw_status = json
+                    .get("response")
+                    .and_then(|r| r.get("status"))
+                    .and_then(|s| s.as_str())
+                    .or_else(|| json.get("status").and_then(|s| s.as_str()));
+                let finish_reason = raw_status
+                    .map(|s| match s {
+                        "completed" => "stop",
+                        "cancelled" => "stop",
+                        "failed" => "error",
+                        "incomplete" => "length",
+                        other => other,
+                    })
+                    .unwrap_or("stop");
+                tracing::info!("response.completed: raw_status={:?}, finish_reason={}", raw_status, finish_reason);
+                deltas.push(LlmStreamDelta::SetFinishReason {
+                    reason: finish_reason.to_string(),
+                });
+                if let Some(usage) = extract_usage(&json) {
+                    deltas.push(LlmStreamDelta::SetUsage { usage });
+                }
+                // Safety net: extract tool calls and reasoning from response.output[]
+                // in case output_item.done events were missed during streaming.
+                if let Some(output) = json.get("response").and_then(|r| r.get("output")).and_then(|o| o.as_array()) {
+                    let output_types: Vec<_> = output.iter()
+                        .map(|item| item.get("type").and_then(|t| t.as_str()).unwrap_or("unknown"))
+                        .collect();
+                    tracing::info!("response.completed output items: {:?}", output_types);
+                    for (idx, item) in output.iter().enumerate() {
+                        let item_type = item.get("type").and_then(|t| t.as_str());
+                        match item_type {
+                            Some("function_call") => {
+                                let event_wrapper = json!({"output_index": idx});
+                                if let Some(tc) = extract_tool_call_from_item(item, &event_wrapper) {
+                                    deltas.push(LlmStreamDelta::FinalizeToolCalls {
+                                        tool_calls: vec![tc],
+                                    });
+                                }
+                            }
+                            Some("reasoning") => {
+                                deltas.push(LlmStreamDelta::SetThinkingBlocks {
+                                    blocks: vec![item.clone()],
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                deltas.push(LlmStreamDelta::Done);
+            }
+            // ── Error events ──
             "response.failed" => {
                 let error_msg = json
-                    .get("error")
+                    .get("response")
+                    .and_then(|r| r.get("error"))
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
+                    .or_else(|| json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()))
                     .unwrap_or("response failed");
                 return Err(StreamParseError::FatalError(error_msg.to_string()));
             }
-            "response.created" | "response.in_progress" => {}
-            _ => {}
+            "error" => {
+                let error_msg = json
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("stream error");
+                return Err(StreamParseError::FatalError(error_msg.to_string()));
+            }
+
+            // ── Unhandled events — log and skip ──
+            _ => {
+                tracing::trace!("Unhandled Responses API event: {}", event_type);
+            }
         }
 
         // Extract Refact-specific extra fields on ALL events consistently
@@ -419,13 +503,21 @@ fn convert_tools_to_responses(tools: &[Value]) -> Value {
     let converted: Vec<Value> = tools
         .iter()
         .filter_map(|tool| {
-            let func = tool.get("function")?;
-            Some(json!({
-                "type": "function",
-                "name": func.get("name")?,
-                "description": func.get("description").unwrap_or(&json!("")),
-                "parameters": func.get("parameters").unwrap_or(&json!({}))
-            }))
+            // Chat Completions format: {"type":"function","function":{"name":...,"parameters":...}}
+            if let Some(func) = tool.get("function") {
+                return Some(json!({
+                    "type": "function",
+                    "name": func.get("name")?,
+                    "description": func.get("description").unwrap_or(&json!("")),
+                    "parameters": func.get("parameters").unwrap_or(&json!({}))
+                }));
+            }
+            // Already in Responses API format (has "type" + "name" but no "function" wrapper)
+            if tool.get("type").is_some() && tool.get("name").is_some() {
+                return Some(tool.clone());
+            }
+            tracing::warn!("Dropping unrecognized tool shape: {}", tool);
+            None
         })
         .collect();
     json!(converted)
@@ -488,6 +580,26 @@ fn extract_tool_call_from_item(item: &Value, event: &Value) -> Option<Value> {
     }))
 }
 
+fn extract_tool_call_final(json: &Value) -> Option<Value> {
+    let output_index = json
+        .get("output_index")
+        .and_then(|i| i.as_u64())
+        .unwrap_or(0);
+    let name = json.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let arguments = json
+        .get("arguments")
+        .map(value_to_arguments_string)
+        .unwrap_or_default();
+    Some(json!({
+        "index": output_index,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments
+        }
+    }))
+}
+
 fn extract_tool_call_delta(json: &Value) -> Option<Value> {
     let output_index = json
         .get("output_index")
@@ -500,25 +612,6 @@ fn extract_tool_call_delta(json: &Value) -> Option<Value> {
         "index": output_index,
         "type": "function",
         "function": {
-            "arguments": arguments
-        }
-    }))
-}
-
-fn extract_tool_call_done(json: &Value) -> Option<Value> {
-    let output_index = json
-        .get("output_index")
-        .and_then(|i| i.as_u64())
-        .unwrap_or(0);
-    let arguments = json
-        .get("arguments")
-        .map(value_to_arguments_string)
-        .unwrap_or_default();
-    Some(json!({
-        "index": output_index,
-        "type": "function",
-        "function": {
-            "name": json.get("name")?,
             "arguments": arguments
         }
     }))
@@ -575,6 +668,75 @@ mod tests {
             eof_is_done: false,
             supports_web_search: false,
         }
+    }
+
+    fn chatgpt_backend_settings() -> AdapterSettings {
+        AdapterSettings {
+            endpoint: "https://chatgpt.com/backend-api/codex/responses".to_string(),
+            ..default_settings()
+        }
+    }
+
+    #[test]
+    fn test_chatgpt_backend_omits_rejected_params() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut req = LlmRequest::new("gpt-5.3-codex".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hello".to_string()),
+        ]);
+        req.params.temperature = Some(0.5);
+        req.params.frequency_penalty = Some(0.3);
+        req.params.stop = vec!["STOP".to_string()];
+
+        let http = adapter.build_http(&req, &chatgpt_backend_settings()).unwrap();
+
+        assert!(http.body.get("max_output_tokens").is_none(),
+            "ChatGPT backend must not have max_output_tokens");
+        assert!(http.body.get("temperature").is_none(),
+            "ChatGPT backend must not have temperature");
+        assert!(http.body.get("frequency_penalty").is_none(),
+            "ChatGPT backend must not have frequency_penalty");
+        assert!(http.body.get("stop").is_none(),
+            "ChatGPT backend must not have stop");
+        assert_eq!(http.body["store"], false,
+            "ChatGPT backend must have store=false");
+    }
+
+    #[test]
+    fn test_chatgpt_backend_extra_body_blocked() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut req = LlmRequest::new("gpt-5.3-codex".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hello".to_string()),
+        ]);
+        let mut extra = serde_json::Map::new();
+        extra.insert("temperature".to_string(), json!(0.7));
+        extra.insert("max_output_tokens".to_string(), json!(1000));
+        extra.insert("custom_field".to_string(), json!("allowed"));
+        req.extra_body = Some(extra);
+
+        let http = adapter.build_http(&req, &chatgpt_backend_settings()).unwrap();
+
+        assert!(http.body.get("temperature").is_none(),
+            "extra_body temperature should be blocked on ChatGPT backend");
+        assert!(http.body.get("max_output_tokens").is_none(),
+            "extra_body max_output_tokens should be blocked on ChatGPT backend");
+        assert_eq!(http.body["custom_field"], "allowed",
+            "non-rejected extra_body fields should still be passed");
+    }
+
+    #[test]
+    fn test_standard_api_includes_params() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut req = LlmRequest::new("gpt-4.1".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hello".to_string()),
+        ]);
+        req.params.temperature = Some(0.5);
+
+        let http = adapter.build_http(&req, &default_settings()).unwrap();
+
+        assert!(http.body.get("max_output_tokens").is_some(),
+            "Standard API should have max_output_tokens");
+        assert_eq!(http.body["temperature"], 0.5,
+            "Standard API should have temperature");
     }
 
     #[test]
@@ -749,45 +911,35 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_stream_tool_call_arguments_done() {
+    fn test_parse_stream_function_call_arguments_done() {
         let adapter = OpenAiResponsesAdapter;
         let chunk = r#"{"type":"response.function_call_arguments.done","item_id":"fc_123","output_index":0,"name":"get_weather","arguments":"{\"location\":\"Paris\"}"}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
 
-        assert_eq!(deltas.len(), 1);
-        match &deltas[0] {
-            LlmStreamDelta::SetToolCalls { tool_calls } => {
-                assert_eq!(tool_calls.len(), 1);
-                assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
-                assert_eq!(
-                    tool_calls[0]["function"]["arguments"],
-                    "{\"location\":\"Paris\"}"
-                );
-            }
-            _ => panic!("expected SetToolCalls"),
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::FinalizeToolCalls { .. })),
+            "arguments.done should emit FinalizeToolCalls");
+        if let Some(LlmStreamDelta::FinalizeToolCalls { tool_calls }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::FinalizeToolCalls { .. })) {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+            assert_eq!(tool_calls[0]["function"]["arguments"], "{\"location\":\"Paris\"}");
         }
     }
 
     #[test]
-    fn test_parse_stream_tool_call_output_item_done() {
+    fn test_parse_stream_output_item_done_function_call() {
         let adapter = OpenAiResponsesAdapter;
         let chunk = r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_123","call_id":"call_abc123","name":"get_weather","arguments":"{\"location\":\"Paris\"}"}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
 
-        assert_eq!(deltas.len(), 1);
-        match &deltas[0] {
-            LlmStreamDelta::SetToolCalls { tool_calls } => {
-                assert_eq!(tool_calls.len(), 1);
-                assert_eq!(tool_calls[0]["id"], "call_abc123");
-                assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
-                assert_eq!(
-                    tool_calls[0]["function"]["arguments"],
-                    "{\"location\":\"Paris\"}"
-                );
-            }
-            _ => panic!("expected SetToolCalls"),
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::FinalizeToolCalls { .. })),
+            "output_item.done (function_call) should emit FinalizeToolCalls");
+        if let Some(LlmStreamDelta::FinalizeToolCalls { tool_calls }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::FinalizeToolCalls { .. })) {
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0]["id"], "call_abc123");
+            assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+            assert_eq!(tool_calls[0]["function"]["arguments"], "{\"location\":\"Paris\"}");
         }
     }
 
@@ -882,18 +1034,14 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_completed_with_web_search_citations() {
+    fn test_stream_completed_no_duplicate_citations() {
         let adapter = OpenAiResponsesAdapter;
-        // Citations in response.completed event
+        // response.completed should NOT emit citations (they come from output_item.done)
         let chunk = r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"web_search_call","results":[{"url":"https://search.com","title":"Search Result"}]}]}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
         let citation_count = deltas.iter().filter(|d| matches!(d, LlmStreamDelta::AddCitation { .. })).count();
-        assert_eq!(citation_count, 1);
-
-        if let Some(LlmStreamDelta::AddCitation { citation }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddCitation { .. })) {
-            assert_eq!(citation.get("url").and_then(|v| v.as_str()), Some("https://search.com"));
-        }
+        assert_eq!(citation_count, 0, "response.completed should not duplicate citations from output_item.done");
     }
 
     #[test]
@@ -1042,5 +1190,74 @@ mod tests {
 
         assert!(http.body.get("include").is_none(),
             "Should not include reasoning request when reasoning not supported");
+    }
+
+    #[test]
+    fn test_reasoning_summary_text_delta() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.reasoning_summary_text.delta","item_id":"rs_abc","output_index":0,"summary_index":0,"delta":"Thinking about"}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::AppendReasoning { .. })),
+            "reasoning_summary_text.delta should produce AppendReasoning");
+        if let Some(LlmStreamDelta::AppendReasoning { text }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AppendReasoning { .. })) {
+            assert_eq!(text, "Thinking about");
+        }
+    }
+
+    #[test]
+    fn test_reasoning_text_delta() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.reasoning_text.delta","item_id":"rs_abc","output_index":0,"content_index":0,"delta":"Let me reason"}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::AppendReasoning { .. })),
+            "reasoning_text.delta should produce AppendReasoning");
+    }
+
+    #[test]
+    fn test_refusal_delta() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.refusal.delta","item_id":"msg_abc","output_index":0,"content_index":0,"delta":"I cannot help with"}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::AppendContent { .. })),
+            "refusal.delta should produce AppendContent");
+    }
+
+    #[test]
+    fn test_response_incomplete() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":100,"output_tokens":4096}}}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::Done)));
+        if let Some(LlmStreamDelta::SetFinishReason { reason }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::SetFinishReason { .. })) {
+            assert_eq!(reason, "length");
+        }
+    }
+
+    #[test]
+    fn test_error_event() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"error","code":"server_error","message":"Internal server error"}"#;
+
+        let result = adapter.parse_stream_chunk(chunk);
+        assert!(matches!(result, Err(StreamParseError::FatalError(_))));
+    }
+
+    #[test]
+    fn test_annotation_added() {
+        let adapter = OpenAiResponsesAdapter;
+        let chunk = r#"{"type":"response.output_text.annotation.added","item_id":"msg_abc","output_index":0,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","url":"https://example.com","title":"Example"}}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::AddCitation { .. })),
+            "annotation.added should produce AddCitation");
     }
 }

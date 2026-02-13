@@ -227,4 +227,7 @@
 .virtuosoScroller {
   composes: scrollbarThin from "../shared/scrollbar.module.css";
   height: 100%;
+
+  /* Keep gutter stable so content doesn't shift when thumb appears. */
+  scrollbar-gutter: stable;
 }

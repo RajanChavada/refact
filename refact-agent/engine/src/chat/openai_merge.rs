@@ -93,6 +93,71 @@ impl ToolCallAccumulator {
         }
     }
 
+    /// Set the final/complete state of a tool call entry, replacing accumulated arguments.
+    /// Used by `.done` events that carry the complete data instead of incremental deltas.
+    pub fn set_final(&mut self, new_tc: &serde_json::Value) {
+        let index = new_tc
+            .get("index")
+            .and_then(|i| {
+                i.as_u64()
+                    .or_else(|| i.as_str().and_then(|s| s.parse().ok()))
+            })
+            .unwrap_or(0) as usize;
+
+        if index >= MAX_TOOL_CALLS {
+            tracing::warn!("Tool call index {} exceeds maximum {}, ignoring finalize", index, MAX_TOOL_CALLS);
+            return;
+        }
+
+        while self.entries.len() <= index {
+            self.entries.push(ToolCallEntry {
+                index: self.entries.len(),
+                ..Default::default()
+            });
+        }
+
+        let entry = &mut self.entries[index];
+        let mut has_meaningful_data = false;
+
+        if let Some(id) = new_tc.get("id").and_then(|v| v.as_str()) {
+            if !id.is_empty() {
+                entry.id = Some(id.to_string());
+                has_meaningful_data = true;
+            }
+        }
+
+        if let Some(t) = new_tc.get("type").and_then(|v| v.as_str()) {
+            entry.tool_type = Some(t.to_string());
+            has_meaningful_data = true;
+        }
+
+        if let Some(func) = new_tc.get("function") {
+            if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                if !name.is_empty() {
+                    entry.name = name.to_string();
+                    has_meaningful_data = true;
+                }
+            }
+
+            if let Some(args) = func.get("arguments") {
+                if !args.is_null() {
+                    let final_args = if let Some(s) = args.as_str() {
+                        s.to_string()
+                    } else {
+                        serde_json::to_string(args).unwrap_or_default()
+                    };
+                    // Replace unconditionally — this is finalization, even empty is valid
+                    entry.arguments = final_args;
+                    has_meaningful_data = true;
+                }
+            }
+        }
+
+        if has_meaningful_data {
+            entry.initialized = true;
+        }
+    }
+
     /// Convert accumulated entries to final JSON format.
     /// Filters out uninitialized placeholder entries (phantom tool calls).
     /// Uses stable synthetic IDs based on index for entries without real IDs.
@@ -230,6 +295,55 @@ mod tests {
 
         let result = acc.finalize();
         assert!(result.is_empty(), "Empty delta should not create initialized entry");
+    }
+
+    #[test]
+    fn test_set_final_replaces_accumulated_arguments() {
+        let mut acc = ToolCallAccumulator::default();
+        // Simulate streaming deltas
+        acc.merge(&json!({
+            "index": 0,
+            "id": "call_123",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"loc"}
+        }));
+        acc.merge(&json!({
+            "index": 0,
+            "function": {"arguments": "ation\":"}
+        }));
+        acc.merge(&json!({
+            "index": 0,
+            "function": {"arguments": "\"Paris\"}"}
+        }));
+
+        // Now finalize with complete arguments (should replace, not append)
+        acc.set_final(&json!({
+            "index": 0,
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"location\":\"Paris\"}"}
+        }));
+
+        let result = acc.finalize();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["function"]["arguments"], "{\"location\":\"Paris\"}");
+        assert_eq!(result[0]["id"], "call_123");
+    }
+
+    #[test]
+    fn test_set_final_without_prior_deltas() {
+        let mut acc = ToolCallAccumulator::default();
+        acc.set_final(&json!({
+            "index": 0,
+            "id": "call_456",
+            "type": "function",
+            "function": {"name": "search", "arguments": "{\"q\":\"test\"}"}
+        }));
+
+        let result = acc.finalize();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["id"], "call_456");
+        assert_eq!(result[0]["function"]["name"], "search");
+        assert_eq!(result[0]["function"]["arguments"], "{\"q\":\"test\"}");
     }
 
     #[test]

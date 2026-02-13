@@ -123,7 +123,9 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
                 </Text>
               </Tooltip>
             )}
-            {(model.reasoning_effort_options || model.supports_thinking_budget || model.supports_adaptive_thinking_budget) && (
+            {(!!model.reasoning_effort_options?.length ||
+              !!model.supports_thinking_budget ||
+              !!model.supports_adaptive_thinking_budget) && (
               <Tooltip content="Supports reasoning">
                 <Text as="span" size="1" color="gray">
                   🧠

@@ -258,9 +258,31 @@ pub async fn run_llm_stream<C: StreamCollector>(
                     }
                     ops.push(DeltaOp::SetToolCalls { tool_calls: acc.tool_calls.finalize() });
                 }
+                LlmStreamDelta::FinalizeToolCalls { tool_calls } => {
+                    let tool_calls = if !params.model_rec.auth_token.is_empty() {
+                        tool_calls.into_iter().map(|mut tc| {
+                            strip_mcp_prefix_from_tool_call(&mut tc);
+                            tc
+                        }).collect()
+                    } else {
+                        tool_calls
+                    };
+                    for tc in &tool_calls {
+                        acc.tool_calls.set_final(tc);
+                    }
+                    ops.push(DeltaOp::SetToolCalls { tool_calls: acc.tool_calls.finalize() });
+                }
                 LlmStreamDelta::SetThinkingBlocks { blocks } => {
-                    acc.thinking_blocks = blocks.clone();
-                    ops.push(DeltaOp::SetThinkingBlocks { blocks });
+                    for block in blocks {
+                        let block_id = block.get("id").and_then(|v| v.as_str());
+                        if let Some(id) = block_id {
+                            if acc.thinking_blocks.iter().any(|b| b.get("id").and_then(|v| v.as_str()) == Some(id)) {
+                                continue;
+                            }
+                        }
+                        acc.thinking_blocks.push(block);
+                    }
+                    ops.push(DeltaOp::SetThinkingBlocks { blocks: acc.thinking_blocks.clone() });
                 }
                 LlmStreamDelta::AddCitation { citation } => {
                     acc.citations.push(citation.clone());
@@ -303,11 +325,11 @@ pub async fn run_llm_stream<C: StreamCollector>(
         .enumerate()
         .map(|(idx, acc)| {
             collector.on_finish(idx, acc.finish_reason.clone());
-            // Merge accumulated reasoning text into thinking_blocks if present.
-            // This is required for Anthropic tool calling - the thinking_blocks must contain
-            // both the thinking text AND the signature for multi-turn conversations.
-            // Only merge into Anthropic-style "thinking" blocks — OpenAI "reasoning" items
-            // are opaque and must not be modified (they're passed back verbatim).
+            // Merge accumulated reasoning text into thinking_blocks.
+            // Three cases:
+            // 1) Anthropic: thinking_blocks exist with type="thinking" — merge reasoning text in
+            // 2) OpenAI: thinking_blocks exist with type="reasoning" — leave opaque, don't modify
+            // 3) No blocks but reasoning text exists — create a synthetic reasoning block
             let thinking_blocks = if !acc.thinking_blocks.is_empty() && !acc.reasoning.is_empty() {
                 acc.thinking_blocks.into_iter().map(|mut block| {
                     if let Some(obj) = block.as_object_mut() {
@@ -319,6 +341,11 @@ pub async fn run_llm_stream<C: StreamCollector>(
                     }
                     block
                 }).collect()
+            } else if acc.thinking_blocks.is_empty() && !acc.reasoning.is_empty() {
+                vec![json!({
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": acc.reasoning.clone()}]
+                })]
             } else {
                 acc.thinking_blocks
             };

@@ -136,6 +136,7 @@ struct SubchatProgressCollector {
     sender: Option<mpsc::UnboundedSender<Value>>,
     tool_call_id: Option<String>,
     thinking_tail: String,
+    reasoning_tail: String,
     content_tail: String,
     last_sent: String,
     last_sent_at: std::time::Instant,
@@ -147,6 +148,7 @@ impl SubchatProgressCollector {
             sender,
             tool_call_id,
             thinking_tail: String::new(),
+            reasoning_tail: String::new(),
             content_tail: String::new(),
             last_sent: String::new(),
             last_sent_at: std::time::Instant::now()
@@ -186,12 +188,8 @@ impl SubchatProgressCollector {
     }
 
     fn normalize_preview(text: &str) -> String {
-        text.replace(['\r', '\n', '\t'], " ")
-            // Don't accidentally trip frontend's /tool: filter.
-            .replace("/tool:", "/ tool:")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        // Preserve newlines for markdown rendering, just normalize CRLF/CR.
+        text.replace("\r\n", "\n").replace('\r', "\n")
     }
 
     fn maybe_send_update(&mut self) {
@@ -204,6 +202,8 @@ impl SubchatProgressCollector {
 
         let raw = if !self.thinking_tail.trim().is_empty() {
             &self.thinking_tail
+        } else if !self.reasoning_tail.trim().is_empty() {
+            &self.reasoning_tail
         } else {
             &self.content_tail
         };
@@ -213,7 +213,8 @@ impl SubchatProgressCollector {
             return;
         }
 
-        const MAX_CHARS: usize = 220;
+        // UI renders markdown up to ~50k chars; keep progress within that.
+        const MAX_CHARS: usize = 50_000;
         let truncated = crate::llm::safe_truncate(&progress, MAX_CHARS);
         if truncated.len() != progress.len() {
             progress = format!("{}…", truncated);
@@ -245,9 +246,14 @@ impl StreamCollector for SubchatProgressCollector {
     fn on_delta_ops(&mut self, _choice_idx: usize, ops: Vec<crate::chat::types::DeltaOp>) {
         for op in ops {
             match op {
-                crate::chat::types::DeltaOp::AppendContent { text } => {
+                crate::chat::types::DeltaOp::AppendReasoning { text } => {
                     if self.thinking_tail.trim().is_empty() {
-                        Self::append_tail(&mut self.content_tail, &text, 4_000);
+                        Self::append_tail(&mut self.reasoning_tail, &text, 50_000);
+                    }
+                }
+                crate::chat::types::DeltaOp::AppendContent { text } => {
+                    if self.thinking_tail.trim().is_empty() && self.reasoning_tail.trim().is_empty() {
+                        Self::append_tail(&mut self.content_tail, &text, 50_000);
                     }
                 }
                 crate::chat::types::DeltaOp::SetThinkingBlocks { blocks } => {

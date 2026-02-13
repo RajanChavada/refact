@@ -123,6 +123,9 @@ pub enum LlmStreamDelta {
     SetToolCalls {
         tool_calls: Vec<Value>,
     },
+    FinalizeToolCalls {
+        tool_calls: Vec<Value>,
+    },
     SetThinkingBlocks {
         blocks: Vec<Value>,
     },
