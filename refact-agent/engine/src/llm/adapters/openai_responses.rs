@@ -31,7 +31,6 @@ const ALL_INCLUDE_FIELDS: &[&str] = &[
 
     // Message extras
     "message.input_image.image_url",
-    "message.output_text.logprobs",
 ];
 
 impl LlmWireAdapter for OpenAiResponsesAdapter {
@@ -69,10 +68,8 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         // It rejects max_output_tokens, temperature, frequency_penalty, stop, etc.
         let is_chatgpt_backend = settings.endpoint.contains("chatgpt.com/backend-api");
 
-        // Stateful Responses API multi-turn requires server-side storage.
-        // Policy: for all OpenAI-compatible Responses endpoints, enable `store=true` so that
-        // subsequent requests can reliably chain with `previous_response_id`.
-        body["store"] = json!(true);
+        // ChatGPT backend rejects store=true; Platform API needs it for previous_response_id chaining.
+        body["store"] = json!(!is_chatgpt_backend);
 
         if is_chatgpt_backend {
             // ChatGPT backend rejects most sampling params.
@@ -91,15 +88,31 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         }
 
         if !input.is_null() {
-            body["input"] = input;
+            // ChatGPT backend uses store=false, so reasoning items (rs_*) aren't
+            // persisted server-side. Sending them back causes 404 "Item not found".
+            if is_chatgpt_backend {
+                if let Some(arr) = input.as_array() {
+                    let filtered: Vec<_> = arr.iter()
+                        .filter(|item| item.get("type").and_then(|t| t.as_str()) != Some("reasoning"))
+                        .cloned()
+                        .collect();
+                    body["input"] = json!(filtered);
+                } else {
+                    body["input"] = input;
+                }
+            } else {
+                body["input"] = input;
+            }
         }
         if let Some(inst) = instructions {
             body["instructions"] = json!(inst);
         }
 
-        if let Some(prev) = &req.previous_response_id {
-            if !prev.is_empty() {
-                body["previous_response_id"] = json!(prev);
+        if !is_chatgpt_backend {
+            if let Some(prev) = &req.previous_response_id {
+                if !prev.is_empty() {
+                    body["previous_response_id"] = json!(prev);
+                }
             }
         }
 
@@ -129,12 +142,14 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         }
 
         // Ask server to include extra fields we rely on for rich tool cards.
-        // Append reasoning.encrypted_content only when supported.
-        let mut include_fields: Vec<&str> = ALL_INCLUDE_FIELDS.to_vec();
-        if settings.supports_reasoning {
-            include_fields.push("reasoning.encrypted_content");
+        // ChatGPT backend rejects `include`; only send on Platform API.
+        if !is_chatgpt_backend {
+            let mut include_fields: Vec<&str> = ALL_INCLUDE_FIELDS.to_vec();
+            if settings.supports_reasoning {
+                include_fields.push("reasoning.encrypted_content");
+            }
+            body["include"] = json!(include_fields);
         }
-        body["include"] = json!(include_fields);
 
         if !is_chatgpt_backend && !req.params.stop.is_empty() {
             body["stop"] = json!(req.params.stop);
@@ -225,23 +240,18 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         }
 
         match event_type {
-            // ── Response lifecycle ──
+            // ── Response lifecycle (extract ID only, no server content block) ──
             "response.created" | "response.queued" | "response.in_progress" => {
                 if let Some(resp_id) = json
                     .get("response")
                     .and_then(|r| r.get("id"))
                     .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
                 {
                     let mut extra = serde_json::Map::new();
                     extra.insert("openai_response_id".to_string(), json!(resp_id));
                     deltas.push(LlmStreamDelta::MergeExtra { extra });
                 }
-                deltas.push(LlmStreamDelta::AddServerContentBlock {
-                    block: json!({
-                        "type": event_type,
-                        "payload": json,
-                    }),
-                });
             }
 
             // ── Text content streaming ──
@@ -253,18 +263,9 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                 }
             }
 
+            // Text already accumulated via output_text.delta — skip redundant .done
             "response.output_text.done" => {
-                if let Some(text) = json.get("text").and_then(|t| t.as_str()) {
-                    // Replace semantics to avoid duplication if the server re-sends the full content.
-                    deltas.push(LlmStreamDelta::AddServerContentBlock {
-                        block: json!({
-                            "type": "response.output_text.done",
-                            "text": text,
-                        }),
-                    });
-                    // We don't have a dedicated "SetContentFinal" delta. Use AppendContent only if this
-                    // server emits done without deltas (rare). This avoids doubling in normal cases.
-                }
+                tracing::trace!("output_text.done (redundant, text already streamed via deltas)");
             }
 
             // ── Reasoning streaming (3 flavours) ──
@@ -310,11 +311,7 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
             | "response.audio.transcript.done"
             | "response.code_interpreter_call_code.delta"
             | "response.code_interpreter_call_code.done"
-            | "response.reasoning_text.done"
-            | "response.reasoning_summary_text.done"
-            | "response.refusal.done"
-            | "response.content_part.added"
-            | "response.content_part.done"
+
             | "response.custom_tool_call_input.delta"
             | "response.custom_tool_call_input.done"
             | "response.mcp_call_arguments.delta"
@@ -333,6 +330,15 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                 });
             }
 
+            // ── Redundant lifecycle/done events — data already captured by deltas ──
+            "response.reasoning_text.done"
+            | "response.reasoning_summary_text.done"
+            | "response.refusal.done"
+            | "response.content_part.added"
+            | "response.content_part.done" => {
+                tracing::trace!("{} (redundant, skipping server content block)", event_type);
+            }
+
             // ── Text annotations (citations in output text) ──
             "response.output_text.annotation.added" => {
                 if let Some(annotation) = json.get("annotation") {
@@ -342,27 +348,32 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                 }
             }
 
-            // ── Function call tool streaming ──
+            // ── Function call / output item start ──
             "response.output_item.added" => {
                 if let Some(item) = json.get("item") {
-                    if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
-                        if let Some(tc) = extract_tool_call_from_item(item, &json) {
-                            deltas.push(LlmStreamDelta::SetToolCalls {
-                                tool_calls: vec![tc],
-                            });
+                    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    match item_type {
+                        "function_call" => {
+                            if let Some(tc) = extract_tool_call_from_item(item, &json) {
+                                deltas.push(LlmStreamDelta::SetToolCalls {
+                                    tool_calls: vec![tc],
+                                });
+                            }
                         }
-                    } else {
-                        if let Some(tc) = extract_server_tool_call_from_output_item(item, &json) {
-                            deltas.push(LlmStreamDelta::SetToolCalls {
-                                tool_calls: vec![tc],
-                            });
+                        // Server-executed tools: register as srvtoolu_ but no content block yet
+                        // (the real content arrives in output_item.done)
+                        "web_search_call" | "file_search_call" | "code_interpreter_call"
+                        | "computer_call" | "image_generation_call" | "mcp_call" => {
+                            if let Some(tc) = extract_server_tool_call_from_output_item(item, &json) {
+                                deltas.push(LlmStreamDelta::SetToolCalls {
+                                    tool_calls: vec![tc],
+                                });
+                            }
                         }
-                        deltas.push(LlmStreamDelta::AddServerContentBlock {
-                            block: json!({
-                                "type": event_type,
-                                "payload": json,
-                            }),
-                        });
+                        // reasoning, message, etc. — just "starting", no useful data yet
+                        _ => {
+                            tracing::trace!("output_item.added type={} (no content yet)", item_type);
+                        }
                     }
                 }
             }
@@ -415,9 +426,9 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                                 blocks: vec![item.clone()],
                             });
                         }
+                        // Server-executed tools with results — emit content block
                         Some("file_search_call") | Some("code_interpreter_call") | Some("computer_call")
-                        | Some("computer_call_output") | Some("image_generation_call") | Some("audio")
-                        | Some("refusal") | Some("message") | Some("output_text") => {
+                        | Some("computer_call_output") | Some("image_generation_call") | Some("audio") => {
                             if let Some(tc) = extract_server_tool_call_from_output_item(item, &json) {
                                 deltas.push(LlmStreamDelta::FinalizeToolCalls {
                                     tool_calls: vec![tc],
@@ -429,6 +440,10 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                                     "payload": item,
                                 }),
                             });
+                        }
+                        // message, output_text, refusal — content already streamed via deltas
+                        Some("message") | Some("output_text") | Some("refusal") => {
+                            tracing::trace!("output_item.done type={:?} (redundant, content already streamed)", item_type);
                         }
                         _ => {
                             deltas.push(LlmStreamDelta::AddServerContentBlock {
@@ -529,9 +544,6 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                                 | "computer_call_output"
                                 | "image_generation_call"
                                 | "audio"
-                                | "refusal"
-                                | "message"
-                                | "output_text"
                                 | "mcp_call"
                                 | "mcp_list_tools",
                             ) => {
@@ -548,6 +560,8 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                                     }),
                                 });
                             }
+                            // message, output_text, refusal — already streamed via deltas
+                            Some("message") | Some("output_text") | Some("refusal") => {}
                             _ => {}
                         }
                     }
@@ -965,8 +979,8 @@ mod tests {
             "ChatGPT backend must not have frequency_penalty");
         assert!(http.body.get("stop").is_none(),
             "ChatGPT backend must not have stop");
-        assert_eq!(http.body["store"], true,
-            "ChatGPT backend must have store=true");
+        assert_eq!(http.body["store"], false,
+            "ChatGPT backend must have store=false");
     }
 
     #[test]

@@ -663,7 +663,12 @@ async fn run_streaming_generation(
             }
         }
 
-        if model_rec.base.wire_format == crate::llm::WireFormat::OpenaiResponses {
+        // Store previous_response_id for stateful multi-turn on Platform API only.
+        // ChatGPT backend doesn't support previous_response_id, so don't store it —
+        // otherwise prepare_chat_passthrough activates tail-only mode and the server
+        // receives function_call_output without matching function_call items.
+        let is_chatgpt_backend = model_rec.base.endpoint.contains("chatgpt.com/backend-api");
+        if model_rec.base.wire_format == crate::llm::WireFormat::OpenaiResponses && !is_chatgpt_backend {
             if let Some(resp_id) = session
                 .draft_message
                 .as_ref()
