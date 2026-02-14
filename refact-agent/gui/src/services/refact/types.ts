@@ -172,6 +172,7 @@ export interface AssistantMessage extends BaseMessage, CostInfo {
   reasoning_content?: string | null;
   tool_calls?: ToolCall[] | null;
   server_executed_tools?: ToolCall[] | null;
+  server_content_blocks?: unknown[] | null;
   thinking_blocks?: ThinkingBlock[] | null;
   citations?: WebSearchCitation[] | null;
   finish_reason?: "stop" | "length" | "abort" | "tool_calls" | "error" | null;

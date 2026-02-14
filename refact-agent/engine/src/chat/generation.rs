@@ -445,6 +445,7 @@ pub async fn run_llm_generation(
         ccx_arc.clone(),
         &t,
         messages,
+        &thread,
         &model_rec.base.id,
         &thread.mode,
         tools,
@@ -659,6 +660,20 @@ async fn run_streaming_generation(
             }
             if !result.extra.is_empty() {
                 draft.extra = result.extra;
+            }
+        }
+
+        if model_rec.base.wire_format == crate::llm::WireFormat::OpenaiResponses {
+            if let Some(resp_id) = session
+                .draft_message
+                .as_ref()
+                .and_then(|m| m.extra.get("openai_response_id"))
+                .and_then(|v| v.as_str())
+            {
+                if session.thread.previous_response_id.as_deref() != Some(resp_id) {
+                    session.thread.previous_response_id = Some(resp_id.to_string());
+                    session.increment_version();
+                }
             }
         }
 

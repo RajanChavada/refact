@@ -177,6 +177,7 @@ impl ChatSession {
             .position(|m| m.message_id == message_id)
         {
             self.messages[idx] = message.clone();
+            self.thread.previous_response_id = None;
             self.emit(ChatEvent::MessageUpdated {
                 message_id: message_id.to_string(),
                 message,
@@ -202,6 +203,7 @@ impl ChatSession {
                 .unwrap_or_default();
 
             self.messages.remove(idx);
+            self.thread.previous_response_id = None;
             self.emit(ChatEvent::MessageRemoved {
                 message_id: message_id.to_string(),
             });
@@ -231,6 +233,7 @@ impl ChatSession {
     pub fn truncate_messages(&mut self, from_index: usize) {
         if from_index < self.messages.len() {
             self.messages.truncate(from_index);
+            self.thread.previous_response_id = None;
             self.emit(ChatEvent::MessagesTruncated { from_index });
             self.increment_version();
             self.touch();

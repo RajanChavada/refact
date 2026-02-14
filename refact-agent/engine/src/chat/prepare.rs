@@ -9,7 +9,7 @@ use crate::at_commands::execute_at::run_at_commands_locally;
 use crate::call_validation::{ChatMessage, ChatMeta, ReasoningEffort, SamplingParameters};
 use crate::caps::{resolve_chat_model, ChatModelRecord};
 use crate::global_context::GlobalContext;
-use crate::llm::{LlmRequest, CanonicalToolChoice, CommonParams, ReasoningIntent};
+use crate::llm::{LlmRequest, CanonicalToolChoice, CommonParams, ReasoningIntent, WireFormat};
 use crate::llm::params::CacheControl;
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::scratchpads::scratchpad_utils::HasRagResults;
@@ -20,6 +20,28 @@ use super::types::ThreadParams;
 use super::history_limit::fix_and_limit_messages_history;
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
 use super::config::tokens;
+
+fn responses_stateful_tail(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    // For stateful Responses API (previous_response_id), we should send only *new* items.
+    // In our chat representation, those are the messages *after* the last assistant message
+    // (tool outputs, context_files, new user message, etc.).
+    if let Some(last_asst) = messages.iter().rposition(|m| m.role == "assistant") {
+        if last_asst + 1 < messages.len() {
+            return messages[last_asst + 1..].to_vec();
+        }
+        return vec![];
+    }
+    // If we don't have an assistant message yet, keep whatever we have (first turn).
+    messages
+}
+
+fn last_system_message(messages: &[ChatMessage]) -> Option<ChatMessage> {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "system")
+        .cloned()
+}
 
 pub struct PreparedChat {
     pub llm_request: LlmRequest,
@@ -68,6 +90,7 @@ pub async fn prepare_chat_passthrough(
     ccx: Arc<AMutex<AtCommandsContext>>,
     t: &HasTokenizerAndEot,
     messages: Vec<ChatMessage>,
+    thread: &ThreadParams,
     model_id: &str,
     mode_id: &str,
     tools: Vec<ToolDesc>,
@@ -166,19 +189,16 @@ pub async fn prepare_chat_passthrough(
                         .collect();
 
                     if !unanswered_calls.is_empty() && pending_call_ids.len() == unanswered_calls.len() + answered_call_ids.iter().filter(|id| pending_call_ids.contains(*id)).count() {
-                        let thread = ThreadParams {
-                            id: meta.chat_id.clone(),
-                            model: model_id.to_string(),
-                            context_tokens_cap: Some(effective_n_ctx),
-                            ..Default::default()
-                        };
+                        let mut prerun_thread = thread.clone();
+                        prerun_thread.context_tokens_cap = Some(effective_n_ctx);
+                        prerun_thread.model = model_id.to_string();
                         let (tool_results, _) = execute_tools(
                             gcx.clone(),
                             &unanswered_calls,
                             &messages,
-                            &thread,
+                            &prerun_thread,
                             "agent",
-                            Some(&thread.model),
+                            Some(&prerun_thread.model),
                             super::tools::ExecuteToolsOptions::default(),
                         )
                         .await;
@@ -214,7 +234,21 @@ pub async fn prepare_chat_passthrough(
 
     // 9. Linearize thread: merge consecutive user-like messages for cache-friendly
     //    strict role alternation (system/user/assistant/user/assistant/...)
-    let linearized_msgs = super::linearize::linearize_thread_for_llm(&limited_adapted_msgs);
+    let mut linearized_msgs = super::linearize::linearize_thread_for_llm(&limited_adapted_msgs);
+
+    // OpenAI Responses API stateful multi-turn: when we chain with previous_response_id,
+    // we should send only the new tail items (tool outputs and/or new user message).
+    if model_record.base.wire_format == WireFormat::OpenaiResponses
+        && thread.previous_response_id.as_ref().is_some_and(|s| !s.is_empty())
+    {
+        let tail = responses_stateful_tail(linearized_msgs.clone());
+        let mut stitched = Vec::new();
+        if let Some(sys) = last_system_message(&limited_adapted_msgs) {
+            stitched.push(sys);
+        }
+        stitched.extend(tail);
+        linearized_msgs = stitched;
+    }
 
     // 10. Build LlmRequest
     // Enforce n=1 for chat - multi-choice not supported in streaming accumulation
@@ -242,6 +276,10 @@ pub async fn prepare_chat_passthrough(
         .with_reasoning(reasoning)
         .with_parallel_tool_calls(options.parallel_tool_calls.unwrap_or(false))
         .with_cache_control(options.cache_control);
+
+    if model_record.base.wire_format == WireFormat::OpenaiResponses {
+        llm_request = llm_request.with_previous_response_id(thread.previous_response_id.clone());
+    }
 
     // Add meta for Refact cloud when support_metadata is enabled
     if model_record.base.support_metadata {

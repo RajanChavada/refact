@@ -22,6 +22,7 @@ type ChatInputProps = {
   thinkingBlocks?: ThinkingBlock[] | null;
   toolCalls?: ToolCall[] | null;
   serverExecutedTools?: ToolCall[] | null;
+  serverContentBlocks?: unknown[] | null;
   citations?: WebSearchCitation[] | null;
   messageId?: string;
   onBranch?: (messageId: string) => void;
@@ -42,6 +43,7 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
   thinkingBlocks,
   toolCalls,
   serverExecutedTools,
+  serverContentBlocks,
   citations,
   messageId,
   onBranch,
@@ -136,6 +138,21 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
           />
         </Box>
       )}
+
+      {!!serverContentBlocks?.length && (
+        <Box mb={!message && !combinedReasoning ? "3" : undefined}>
+          <Card>
+            <Flex direction="column" gap="2">
+              <Text size="2" weight="bold">
+                Server content blocks ({serverContentBlocks.length})
+              </Text>
+              <Markdown>
+                {"```json\n" + JSON.stringify(serverContentBlocks, null, 2) + "\n```"}
+              </Markdown>
+            </Flex>
+          </Card>
+        </Box>
+      )}
       {message && (
         <Box py="4">
           <Markdown canHaveInteractiveElements={true} onCopyClick={handleCopy}>
@@ -195,6 +212,11 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
           </Flex>
         </Card>
       )}
+
+      {serverExecutedTools && serverExecutedTools.length > 0 && (
+        <ToolContent toolCalls={serverExecutedTools} />
+      )}
+
       {toolCalls && (
         <ToolContent
           toolCalls={toolCalls}

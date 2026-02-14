@@ -28,6 +28,9 @@ pub struct LlmRequest {
     /// Metadata for Refact cloud (chat_id, mode, etc.) - sent when support_metadata is true
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<ChatMeta>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +63,7 @@ impl LlmRequest {
             cache_control: CacheControl::Off,
             extra_body: None,
             meta: None,
+            previous_response_id: None,
         }
     }
 
@@ -93,6 +97,11 @@ impl LlmRequest {
 
     pub fn with_cache_control(mut self, cache_control: CacheControl) -> Self {
         self.cache_control = cache_control;
+        self
+    }
+
+    pub fn with_previous_response_id(mut self, previous_response_id: Option<String>) -> Self {
+        self.previous_response_id = previous_response_id;
         self
     }
 }

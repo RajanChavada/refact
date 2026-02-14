@@ -50,6 +50,17 @@ import {
   GenericTool,
   TaskDoneTool,
   AskQuestionsTool,
+  OpenAIResponsesTool,
+  OpenAIWebSearchCallTool,
+  OpenAIFileSearchCallTool,
+  OpenAICodeInterpreterCallTool,
+  OpenAIComputerCallTool,
+  OpenAIComputerCallOutputTool,
+  OpenAIImageGenerationCallTool,
+  OpenAIAudioTool,
+  OpenAIRefusalTool,
+  OpenAIMcpCallTool,
+  OpenAIMcpListToolsTool,
 } from "./ToolCard";
 
 function parseProgressEntry(entry: string): { step?: string; text: string } {
@@ -751,6 +762,109 @@ function processToolCalls(
         toolCall={head}
       />
     );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+    );
+  }
+
+  if (head.function.name?.startsWith("openai_")) {
+    const name = head.function.name;
+    let elem: React.ReactNode;
+    switch (name) {
+      case "openai_web_search_call":
+        elem = (
+          <OpenAIWebSearchCallTool
+            key={`openai-web-search-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_file_search_call":
+        elem = (
+          <OpenAIFileSearchCallTool
+            key={`openai-file-search-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_code_interpreter_call":
+        elem = (
+          <OpenAICodeInterpreterCallTool
+            key={`openai-code-interpreter-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_computer_call":
+        elem = (
+          <OpenAIComputerCallTool
+            key={`openai-computer-call-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_computer_call_output":
+        elem = (
+          <OpenAIComputerCallOutputTool
+            key={`openai-computer-output-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_image_generation_call":
+        elem = (
+          <OpenAIImageGenerationCallTool
+            key={`openai-image-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_audio":
+        elem = (
+          <OpenAIAudioTool
+            key={`openai-audio-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_refusal":
+        elem = (
+          <OpenAIRefusalTool
+            key={`openai-refusal-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_mcp_call":
+        elem = (
+          <OpenAIMcpCallTool
+            key={`openai-mcp-call-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      case "openai_mcp_list_tools":
+        elem = (
+          <OpenAIMcpListToolsTool
+            key={`openai-mcp-list-tools-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+        break;
+      default:
+        elem = (
+          <OpenAIResponsesTool
+            key={`openai-responses-tool-${head.id ?? processed.length}`}
+            toolCall={head}
+          />
+        );
+    }
+
     return processToolCalls(
       tail,
       toolResults,

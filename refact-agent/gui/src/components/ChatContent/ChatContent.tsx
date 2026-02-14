@@ -239,6 +239,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
               thinkingBlocks={item.message.thinking_blocks}
               toolCalls={item.message.tool_calls}
               serverExecutedTools={item.message.server_executed_tools}
+              serverContentBlocks={item.message.server_content_blocks}
               citations={item.message.citations}
               messageId={item.message.message_id}
               onBranch={handleBranch}

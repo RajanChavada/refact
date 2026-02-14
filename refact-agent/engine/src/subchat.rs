@@ -1079,6 +1079,14 @@ async fn subchat_stream(
         request_attempt_id: Uuid::new_v4().to_string(),
     };
 
+    let thread = ThreadParams {
+        id: meta.chat_id.clone(),
+        model: model_id.to_string(),
+        mode: mode_id.to_string(),
+        context_tokens_cap: Some(capped_n_ctx),
+        ..Default::default()
+    };
+
     let mut parameters = SamplingParameters {
         max_new_tokens,
         temperature,
@@ -1105,6 +1113,7 @@ async fn subchat_stream(
         ccx.clone(),
         &t,
         messages.clone(),
+        &thread,
         model_id,
         mode_id,
         tools,

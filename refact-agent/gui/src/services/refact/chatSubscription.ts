@@ -36,6 +36,9 @@ export type ThreadParams = {
     agent_id?: string;
     card_id?: string;
   };
+
+  // OpenAI Responses API stateful multi-turn
+  previous_response_id?: string;
 };
 
 export type PauseReason = {
@@ -416,6 +419,7 @@ export function applyDeltaOps(
     tool_calls?: unknown[];
     thinking_blocks?: unknown[];
     citations?: unknown[];
+    server_content_blocks?: unknown[];
     usage?: unknown;
     extra?: Record<string, unknown>;
   };
@@ -447,8 +451,10 @@ export function applyDeltaOps(
         break;
 
       case "add_server_content_block":
-        // Server content blocks (web_search) are stored for multi-turn passthrough
-        // but not displayed in the UI directly
+        updated.server_content_blocks = [
+          ...((updated as any).server_content_blocks ?? []),
+          op.block,
+        ];
         break;
 
       case "set_usage":

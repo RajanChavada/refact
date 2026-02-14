@@ -95,6 +95,9 @@ export type ChatThread = {
     agent_id?: string;
     card_id?: string;
   };
+
+  /** OpenAI Responses API multi-turn state: link next request to the previous response */
+  previous_response_id?: string;
 };
 
 export type SuggestedChat = {

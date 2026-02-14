@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use futures::StreamExt;
 use eventsource_stream::Eventsource;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::RwLock as ARwLock;
 
 use crate::call_validation::ChatUsage;
@@ -304,7 +304,20 @@ pub async fn run_llm_stream<C: StreamCollector>(
                 }
                 LlmStreamDelta::MergeExtra { extra } => {
                     for (k, v) in &extra {
-                        acc.extra.insert(k.clone(), v.clone());
+                        match (acc.extra.get_mut(k), v) {
+                            (Some(Value::Array(existing)), Value::Array(incoming)) => {
+                                existing.extend(incoming.clone());
+                            }
+                            (Some(Value::Object(existing)), Value::Object(incoming)) => {
+                                // Shallow-merge objects.
+                                for (ik, iv) in incoming {
+                                    existing.insert(ik.clone(), iv.clone());
+                                }
+                            }
+                            _ => {
+                                acc.extra.insert(k.clone(), v.clone());
+                            }
+                        }
                     }
                     ops.push(DeltaOp::MergeExtra { extra });
                 }

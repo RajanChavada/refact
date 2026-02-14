@@ -182,6 +182,8 @@ pub struct TrajectorySnapshot {
     pub frequency_penalty: Option<f32>,
     pub max_tokens: Option<usize>,
     pub parallel_tool_calls: Option<bool>,
+
+    pub previous_response_id: Option<String>,
 }
 
 impl TrajectorySnapshot {
@@ -212,6 +214,8 @@ impl TrajectorySnapshot {
             frequency_penalty: session.thread.frequency_penalty,
             max_tokens: session.thread.max_tokens,
             parallel_tool_calls: session.thread.parallel_tool_calls,
+
+            previous_response_id: session.thread.previous_response_id.clone(),
         }
     }
 }
@@ -444,6 +448,11 @@ pub async fn load_trajectory_for_chat(
         parallel_tool_calls: t
             .get("parallel_tool_calls")
             .and_then(|v| v.as_bool()),
+
+        previous_response_id: t
+            .get("previous_response_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     };
 
     let auto_approve_editing_tools_present = t.get("auto_approve_editing_tools").and_then(|v| v.as_bool()).is_some();
@@ -604,6 +613,7 @@ pub async fn save_trajectory_as(
         frequency_penalty: thread.frequency_penalty,
         max_tokens: thread.max_tokens,
         parallel_tool_calls: thread.parallel_tool_calls,
+        previous_response_id: thread.previous_response_id.clone(),
     };
     if let Err(e) = save_trajectory_snapshot(gcx, snapshot).await {
         warn!("Failed to save trajectory: {}", e);
@@ -657,6 +667,9 @@ pub async fn save_trajectory_snapshot(
     }
     if let Some(max_t) = snapshot.max_tokens {
         trajectory["max_tokens"] = json!(max_t);
+    }
+    if let Some(ref prev) = snapshot.previous_response_id {
+        trajectory["previous_response_id"] = serde_json::Value::String(prev.clone());
     }
     if let Some(parallel) = snapshot.parallel_tool_calls {
         trajectory["parallel_tool_calls"] = json!(parallel);
@@ -2609,6 +2622,7 @@ mod tests {
                 parent_id: Some("parent-chat-id".to_string()),
                 link_type: Some("subagent".to_string()),
                 root_chat_id: Some("root-chat-id".to_string()),
+                previous_response_id: None,
             },
             messages: vec![ChatMessage::new("user".to_string(), "Hello".to_string())],
             runtime: super::super::types::RuntimeState::default(),

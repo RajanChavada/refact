@@ -378,6 +378,7 @@ impl Tool for ToolTaskSpawnAgent {
                 frequency_penalty: None,
                 max_tokens: None,
                 parallel_tool_calls: None,
+                previous_response_id: None,
             };
 
             let user_prompt = build_agent_prompt(

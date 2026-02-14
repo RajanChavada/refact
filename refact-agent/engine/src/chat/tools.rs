@@ -32,6 +32,7 @@ pub enum ToolStepOutcome {
 
 use super::types::*;
 use super::trajectories::maybe_save_trajectory;
+
 use super::config::{limits, tokens};
 
 async fn get_effective_n_ctx(gcx: Arc<ARwLock<GlobalContext>>, thread: &ThreadParams) -> usize {
@@ -483,13 +484,18 @@ pub async fn process_tool_calls_once(
                 .iter()
                 .any(|m| m.role == "tool" && m.tool_call_id == tc.id);
             if !result_exists {
+                let content = if tc.function.name.starts_with("openai_") {
+                    format_openai_server_tool_result(tc)
+                } else {
+                    format!(
+                        "[Results from '{}' are included in the assistant's response above]",
+                        tc.function.name
+                    )
+                };
                 let tool_message = ChatMessage {
                     message_id: Uuid::new_v4().to_string(),
                     role: "tool".to_string(),
-                    content: ChatContent::SimpleText(format!(
-                        "[Results from '{}' are included in the assistant's response above]",
-                        tc.function.name
-                    )),
+                    content: ChatContent::SimpleText(content),
                     tool_call_id: tc.id.clone(),
                     tool_failed: Some(false),
                     ..Default::default()
@@ -616,6 +622,27 @@ pub async fn process_tool_calls_once(
     } else {
         ToolStepOutcome::Continue
     }
+}
+
+fn format_openai_server_tool_result(tc: &ChatToolCall) -> String {
+    let mut out = String::new();
+    out.push_str("## Server tool (OpenAI Responses)\n\n");
+    out.push_str(&format!("**{}**\n\n", tc.function.name));
+
+    // Best-effort pretty JSON of the tool call arguments (usually a whole output item).
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&tc.function.arguments) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&v) {
+            out.push_str("### Raw item\n\n```json\n");
+            out.push_str(&pretty);
+            out.push_str("\n```\n");
+            return out;
+        }
+    }
+
+    out.push_str("### Raw item\n\n```\n");
+    out.push_str(&tc.function.arguments);
+    out.push_str("\n```\n");
+    out
 }
 
 pub async fn check_tools_confirmation(
