@@ -100,6 +100,149 @@ pub trait StreamCollector: Send {
     fn on_finish(&mut self, choice_idx: usize, finish_reason: Option<String>);
 }
 
+const THINK_OPEN_TAG: &str = "<think>";
+const THINK_CLOSE_TAG: &str = "</think>";
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    for (idx, _) in haystack.match_indices('<') {
+        if idx + needle.len() > haystack.len() {
+            continue;
+        }
+        if let Some(candidate) = haystack.get(idx..idx + needle.len()) {
+            if candidate.eq_ignore_ascii_case(needle) {
+                return Some(idx);
+            }
+        }
+    }
+    None
+}
+
+fn split_with_partial_tag_suffix<'a>(text: &'a str, tag: &str) -> (&'a str, &'a str) {
+    if let Some(last_lt) = text.rfind('<') {
+        let suffix = &text[last_lt..];
+        if suffix.len() < tag.len() {
+            if let Some(tag_prefix) = tag.get(..suffix.len()) {
+                if suffix.eq_ignore_ascii_case(tag_prefix) {
+                    return (&text[..last_lt], suffix);
+                }
+            }
+        }
+    }
+    (text, "")
+}
+
+fn push_content_delta(
+    acc: &mut ChoiceAccumulator,
+    ops: &mut Vec<DeltaOp>,
+    text: String,
+    block_index: Option<u64>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    acc.content.push_str(&text);
+    if let Some(idx) = block_index {
+        acc.content_per_block.entry(idx).or_default().push_str(&text);
+    }
+    ops.push(DeltaOp::AppendContent { text });
+}
+
+fn push_reasoning_delta(
+    acc: &mut ChoiceAccumulator,
+    ops: &mut Vec<DeltaOp>,
+    text: String,
+    block_index: Option<u64>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    acc.reasoning.push_str(&text);
+    if let Some(idx) = block_index {
+        acc.reasoning_per_block.entry(idx).or_default().push_str(&text);
+    }
+    ops.push(DeltaOp::AppendReasoning { text });
+}
+
+fn route_append_content_with_think_tags(
+    acc: &mut ChoiceAccumulator,
+    ops: &mut Vec<DeltaOp>,
+    incoming_text: String,
+    block_index: Option<u64>,
+) {
+    if !acc.inside_think_tag && acc.pending_think_parse.is_empty() && !incoming_text.contains('<') {
+        push_content_delta(acc, ops, incoming_text, block_index);
+        return;
+    }
+
+    acc.pending_think_parse.push_str(&incoming_text);
+
+    loop {
+        if acc.inside_think_tag {
+            if let Some(close_idx) = find_ascii_case_insensitive(&acc.pending_think_parse, THINK_CLOSE_TAG) {
+                let reasoning_text = acc.pending_think_parse[..close_idx].to_string();
+                push_reasoning_delta(acc, ops, reasoning_text, block_index);
+                let drain_until = close_idx + THINK_CLOSE_TAG.len();
+                acc.pending_think_parse.drain(..drain_until);
+                acc.inside_think_tag = false;
+                continue;
+            }
+
+            let (emit, keep) = split_with_partial_tag_suffix(&acc.pending_think_parse, THINK_CLOSE_TAG);
+            let reasoning_text = emit.to_string();
+            let keep_text = keep.to_string();
+            push_reasoning_delta(acc, ops, reasoning_text, block_index);
+            acc.pending_think_parse = keep_text;
+            break;
+        }
+
+        if let Some(open_idx) = find_ascii_case_insensitive(&acc.pending_think_parse, THINK_OPEN_TAG) {
+            let content_text = acc.pending_think_parse[..open_idx].to_string();
+            push_content_delta(acc, ops, content_text, block_index);
+            let drain_until = open_idx + THINK_OPEN_TAG.len();
+            acc.pending_think_parse.drain(..drain_until);
+            acc.inside_think_tag = true;
+            continue;
+        }
+
+        let (emit, keep) = split_with_partial_tag_suffix(&acc.pending_think_parse, THINK_OPEN_TAG);
+        let content_text = emit.to_string();
+        let keep_text = keep.to_string();
+        push_content_delta(acc, ops, content_text, block_index);
+        acc.pending_think_parse = keep_text;
+        break;
+    }
+}
+
+fn flush_pending_think_parse(acc: &mut ChoiceAccumulator, ops: &mut Vec<DeltaOp>) {
+    if acc.pending_think_parse.is_empty() {
+        return;
+    }
+
+    let pending = std::mem::take(&mut acc.pending_think_parse);
+    if acc.inside_think_tag {
+        push_reasoning_delta(acc, ops, pending, None);
+    } else {
+        push_content_delta(acc, ops, pending, None);
+    }
+}
+
+fn handle_append_content_delta(
+    acc: &mut ChoiceAccumulator,
+    ops: &mut Vec<DeltaOp>,
+    text: String,
+    block_index: Option<u64>,
+) {
+    if block_index.is_some() {
+        flush_pending_think_parse(acc, ops);
+        push_content_delta(acc, ops, text, block_index);
+    } else {
+        route_append_content_with_think_tags(acc, ops, text, block_index);
+    }
+}
+
 
 pub async fn run_llm_stream<C: StreamCollector>(
     gcx: Arc<ARwLock<GlobalContext>>,
@@ -261,18 +404,11 @@ pub async fn run_llm_stream<C: StreamCollector>(
         for delta in deltas {
             match delta {
                 LlmStreamDelta::AppendContent { text, block_index } => {
-                    acc.content.push_str(&text);
-                    if let Some(idx) = block_index {
-                        acc.content_per_block.entry(idx).or_default().push_str(&text);
-                    }
-                    ops.push(DeltaOp::AppendContent { text });
+                    handle_append_content_delta(acc, &mut ops, text, block_index);
                 }
                 LlmStreamDelta::AppendReasoning { text, block_index } => {
-                    acc.reasoning.push_str(&text);
-                    if let Some(idx) = block_index {
-                        acc.reasoning_per_block.entry(idx).or_default().push_str(&text);
-                    }
-                    ops.push(DeltaOp::AppendReasoning { text });
+                    flush_pending_think_parse(acc, &mut ops);
+                    push_reasoning_delta(acc, &mut ops, text, block_index);
                 }
                 LlmStreamDelta::SetToolCalls { tool_calls } => {
                     let tool_calls = if !params.model_rec.auth_token.is_empty() {
@@ -352,6 +488,14 @@ pub async fn run_llm_stream<C: StreamCollector>(
 
         if !ops.is_empty() {
             collector.on_delta_ops(0, ops);
+        }
+    }
+
+    for (idx, acc) in accumulators.iter_mut().enumerate() {
+        let mut tail_ops = Vec::new();
+        flush_pending_think_parse(acc, &mut tail_ops);
+        if !tail_ops.is_empty() {
+            collector.on_delta_ops(idx, tail_ops);
         }
     }
 
@@ -491,6 +635,8 @@ struct ChoiceAccumulator {
     extra: serde_json::Map<String, serde_json::Value>,
     finish_reason: Option<String>,
     usage: Option<ChatUsage>,
+    pending_think_parse: String,
+    inside_think_tag: bool,
 }
 
 fn strip_mcp_prefix_from_tool_call(tc: &mut serde_json::Value) {
@@ -837,7 +983,7 @@ mod tests {
         })]);
         assert_eq!(blocks[0]["signature"].as_str().unwrap(), "abc");
 
-        // Second signature chunk — should concatenate, not replace
+        // Second signature chunk — should replace, not concatenate
         merge_thinking_blocks(&mut blocks, vec![json!({
             "index": 0,
             "type": "thinking",
@@ -1094,6 +1240,126 @@ mod tests {
 
         assert_eq!(dst.len(), 2,
             "Blocks with no dedup key should always append");
+    }
+
+    #[test]
+    fn test_route_append_content_with_think_tags_single_chunk() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        route_append_content_with_think_tags(
+            &mut acc,
+            &mut ops,
+            "before <think>secret</think> after".to_string(),
+            None,
+        );
+
+        assert_eq!(acc.content, "before  after");
+        assert_eq!(acc.reasoning, "secret");
+        assert_eq!(ops.len(), 3);
+        assert!(matches!(&ops[0], DeltaOp::AppendContent { text } if text == "before "));
+        assert!(matches!(&ops[1], DeltaOp::AppendReasoning { text } if text == "secret"));
+        assert!(matches!(&ops[2], DeltaOp::AppendContent { text } if text == " after"));
+    }
+
+    #[test]
+    fn test_route_append_content_with_think_tags_split_open_and_close() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        route_append_content_with_think_tags(&mut acc, &mut ops, "before <thi".to_string(), None);
+        route_append_content_with_think_tags(&mut acc, &mut ops, "nk>secret</th".to_string(), None);
+        route_append_content_with_think_tags(&mut acc, &mut ops, "ink> after".to_string(), None);
+
+        assert_eq!(acc.content, "before  after");
+        assert_eq!(acc.reasoning, "secret");
+        assert!(!acc.inside_think_tag);
+        assert!(acc.pending_think_parse.is_empty());
+    }
+
+    #[test]
+    fn test_route_append_content_with_think_tags_case_insensitive() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        route_append_content_with_think_tags(
+            &mut acc,
+            &mut ops,
+            "A<THINK>B</THINK>C".to_string(),
+            None,
+        );
+
+        assert_eq!(acc.content, "AC");
+        assert_eq!(acc.reasoning, "B");
+    }
+
+    #[test]
+    fn test_flush_pending_think_parse_outside_think_keeps_text() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        route_append_content_with_think_tags(&mut acc, &mut ops, "hello <thi".to_string(), None);
+        flush_pending_think_parse(&mut acc, &mut ops);
+
+        assert_eq!(acc.content, "hello <thi");
+        assert_eq!(acc.reasoning, "");
+    }
+
+    #[test]
+    fn test_flush_pending_think_parse_inside_think_goes_to_reasoning() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        acc.inside_think_tag = true;
+        acc.pending_think_parse = "secret tail".to_string();
+        flush_pending_think_parse(&mut acc, &mut ops);
+
+        assert_eq!(acc.content, "");
+        assert_eq!(acc.reasoning, "secret tail");
+    }
+
+    #[test]
+    fn test_route_append_content_with_think_tags_multiple_segments_single_chunk() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        route_append_content_with_think_tags(
+            &mut acc,
+            &mut ops,
+            "a <think>x</think> b <think>y</think> c".to_string(),
+            None,
+        );
+
+        assert_eq!(acc.content, "a  b  c");
+        assert_eq!(acc.reasoning, "xy");
+    }
+
+    #[test]
+    fn test_route_append_content_with_think_tags_close_without_open_is_content() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        route_append_content_with_think_tags(&mut acc, &mut ops, "a </think> b".to_string(), None);
+
+        assert_eq!(acc.content, "a </think> b");
+        assert_eq!(acc.reasoning, "");
+    }
+
+    #[test]
+    fn test_handle_append_content_delta_indexed_keeps_tags_as_content() {
+        let mut acc = ChoiceAccumulator::default();
+        let mut ops = Vec::new();
+
+        handle_append_content_delta(
+            &mut acc,
+            &mut ops,
+            "before <think>secret</think> after".to_string(),
+            Some(4),
+        );
+
+        assert_eq!(acc.content, "before <think>secret</think> after");
+        assert_eq!(acc.reasoning, "");
+        assert_eq!(acc.content_per_block.get(&4).map(|s| s.as_str()), Some("before <think>secret</think> after"));
     }
 
 }

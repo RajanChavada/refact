@@ -34,6 +34,7 @@ import {
   setApiKey,
   setAddressURL,
 } from "../Config/configSlice";
+import { hasAnyUsableActiveProvider } from "./providerAccess";
 
 export const LoginPage: React.FC = () => {
   const { loginWithProvider, polling, cancelLogin } = useLogin();
@@ -80,18 +81,10 @@ export const LoginPage: React.FC = () => {
   }, [cancelLogin, emailLoginAbort]);
 
   const hasAnyActiveProvider = React.useMemo(() => {
-    return sortedConfiguredProviders.some((p) => {
-      if (p.status !== "active") return false;
-
-      // Guard against backend versions that may mark refact configured
-      // without a real Cloud login.
-      if (p.name === "refact") {
-        const addr = (addressURL ?? "").trim();
-        const key = (apiKey ?? "").trim();
-        return addr.toLowerCase() === "refact" && key.length > 0;
-      }
-
-      return true;
+    return hasAnyUsableActiveProvider({
+      providers: sortedConfiguredProviders,
+      addressURL,
+      apiKey,
     });
   }, [sortedConfiguredProviders, addressURL, apiKey]);
 

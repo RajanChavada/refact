@@ -10,6 +10,7 @@ import {
   useEventsBusForIDE,
   useSidebarSubscription,
   useAllChatsSubscription,
+  useGetConfiguredProvidersQuery,
 } from "../hooks";
 import { useGetPing } from "../hooks/useGetPing";
 import { useBrowserOnlineStatus } from "../hooks/useBrowserOnlineStatus";
@@ -52,6 +53,7 @@ import classNames from "classnames";
 import { usePatchesAndDiffsEventsForIDE } from "../hooks/usePatchesAndDiffEventsForIDE";
 import { UrqlProvider } from "../../urqlProvider";
 import { selectActiveGroup } from "./Teams";
+import { hasAnyUsableActiveProvider } from "./Login/providerAccess";
 
 export interface AppProps {
   style?: React.CSSProperties;
@@ -76,6 +78,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
   const historyState = useAppSelector((state: RootState) => state.history);
   const maybeCurrentActiveGroup = useAppSelector(selectActiveGroup);
   const chatId = useAppSelector(selectChatId);
+  const providersQuery = useGetConfiguredProvidersQuery();
   useEventBusForWeb();
   useEventBusForApp();
   usePatchesAndDiffsEventsForIDE();
@@ -118,8 +121,22 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
     isPageInHistory("welcome") ||
     isPageInHistory("chat");
 
+  const hasCloudSession =
+    (config.apiKey ?? "").trim().length > 0 &&
+    (config.addressURL ?? "").trim().length > 0;
+  const hasAnyActiveProvider = useMemo(() => {
+    return hasAnyUsableActiveProvider({
+      providers: providersQuery.data?.providers ?? [],
+      addressURL: config.addressURL,
+      apiKey: config.apiKey,
+    });
+  }, [providersQuery.data?.providers, config.addressURL, config.apiKey]);
+  const canAccessApp = hasCloudSession || hasAnyActiveProvider;
+  const canResolveProviderAccess =
+    providersQuery.isSuccess || providersQuery.isError;
+
   useEffect(() => {
-    if (config.apiKey && config.addressURL && !isLoggedIn) {
+    if (canAccessApp && !isLoggedIn) {
       if (tourState.type === "in_progress" && tourState.step === 1) {
         dispatch(push({ name: "welcome" }));
       } else if (
@@ -134,12 +151,13 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
         dispatch(push({ name: "history" }));
       }
     }
-    if (!config.apiKey && !config.addressURL && isLoggedIn) {
+
+    if (!canAccessApp && canResolveProviderAccess && isLoggedIn) {
       dispatch(popBackTo({ name: "login page" }));
     }
   }, [
-    config.apiKey,
-    config.addressURL,
+    canAccessApp,
+    canResolveProviderAccess,
     isLoggedIn,
     dispatch,
     tourState,

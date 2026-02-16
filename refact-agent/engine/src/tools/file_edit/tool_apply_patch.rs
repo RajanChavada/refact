@@ -55,13 +55,30 @@ fn parse_patch_arg(args: &HashMap<String, Value>) -> Result<ParsedPatch, String>
     parse_patch(patch_text).map_err(|e| e.to_string())
 }
 
+fn try_strip_workspace_prefix(path: &str, project_dirs: &[PathBuf]) -> String {
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return path.to_string();
+    }
+    for dir in project_dirs {
+        if let Ok(relative) = p.strip_prefix(dir) {
+            let rel_str = relative.to_string_lossy().to_string();
+            if !rel_str.is_empty() {
+                return rel_str;
+            }
+        }
+    }
+    path.to_string()
+}
+
 async fn resolve_patch_path(
     gcx: Arc<ARwLock<GlobalContext>>,
     rel_path: &str,
     must_exist: bool,
 ) -> Result<PathBuf, String> {
-    let rel_path_buf = validate_relative_path(rel_path)?;
     let project_dirs = get_project_dirs(gcx.clone()).await;
+    let corrected_path = try_strip_workspace_prefix(rel_path.trim(), &project_dirs);
+    let rel_path_buf = validate_relative_path(&corrected_path)?;
 
     if project_dirs.is_empty() {
         return Err("No workspace found".to_string());
