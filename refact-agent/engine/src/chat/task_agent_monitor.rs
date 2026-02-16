@@ -154,10 +154,32 @@ async fn notify_planner_all_agents_done(
     task_id: &str,
     board: &crate::tasks::types::TaskBoard,
 ) -> Result<(), String> {
+    let since = match storage::load_task_meta(gcx.clone(), task_id).await {
+        Ok(meta) => meta
+            .last_agents_summary_at
+            .as_deref()
+            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+            .map(|dt| dt.with_timezone(&Utc)),
+        Err(_) => None,
+    };
+
     let mut results = Vec::new();
     for card in &board.cards {
         if card.agent_chat_id.is_none() {
             continue;
+        }
+        if let Some(ref since_dt) = since {
+            let Some(completed_at) = card
+                .completed_at
+                .as_deref()
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+            else {
+                continue;
+            };
+            if completed_at < *since_dt {
+                continue;
+            }
         }
         let status = if card.column == "done" {
             "✅ done"
@@ -181,7 +203,15 @@ async fn notify_planner_all_agents_done(
 
     let planner_message = format!(
         "**All agents have completed.**\n\n{}\n\nRun `task_board_get(card_id)` to see full details for any card.",
-        results.join("\n\n")
+        if results.is_empty() {
+            let note = since
+                .as_ref()
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| "(unknown)".to_string());
+            format!("_(No newly-finished cards detected since {}.)_", note)
+        } else {
+            results.join("\n\n")
+        }
     );
 
     let sessions = {
@@ -216,6 +246,12 @@ async fn notify_planner_all_agents_done(
             planner_session.clone(),
             processor_flag,
         ));
+    }
+
+    // Best-effort: mark summary as emitted.
+    if let Ok(mut meta) = storage::load_task_meta(gcx.clone(), task_id).await {
+        meta.last_agents_summary_at = Some(Utc::now().to_rfc3339());
+        let _ = storage::save_task_meta(gcx.clone(), task_id, &meta).await;
     }
 
     Ok(())

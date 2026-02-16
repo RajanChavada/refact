@@ -22,6 +22,8 @@ pub struct TaskMeta {
     pub base_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agents_summary_at: Option<String>,
 }
 
 fn default_schema_version() -> u32 {
@@ -67,6 +69,7 @@ agents_active: 2
 base_branch: main
 base_commit: abc123def456
 default_agent_model: gpt-4o
+last_agents_summary_at: "2024-01-02T00:00:01Z"
 "#;
 
     let meta: TaskMeta = serde_yaml::from_str(new_yaml).expect("Failed to parse new YAML");
@@ -74,6 +77,10 @@ default_agent_model: gpt-4o
     assert_eq!(meta.base_branch, Some("main".to_string()));
     assert_eq!(meta.base_commit, Some("abc123def456".to_string()));
     assert_eq!(meta.default_agent_model, Some("gpt-4o".to_string()));
+    assert_eq!(
+        meta.last_agents_summary_at,
+        Some("2024-01-02T00:00:01Z".to_string())
+    );
 }
 
 #[test]
@@ -92,6 +99,7 @@ fn test_serialization_skips_none_fields() {
         base_branch: None,
         base_commit: None,
         default_agent_model: None,
+        last_agents_summary_at: None,
     };
 
     let yaml = serde_yaml::to_string(&meta).expect("Failed to serialize");
@@ -99,6 +107,7 @@ fn test_serialization_skips_none_fields() {
     assert!(!yaml.contains("base_branch"));
     assert!(!yaml.contains("base_commit"));
     assert!(!yaml.contains("default_agent_model"));
+    assert!(!yaml.contains("last_agents_summary_at"));
 }
 
 #[test]
@@ -117,10 +126,12 @@ fn test_serialization_includes_some_fields() {
         base_branch: Some("develop".to_string()),
         base_commit: Some("xyz789abc123".to_string()),
         default_agent_model: Some("claude-3-opus".to_string()),
+        last_agents_summary_at: Some("2024-01-04T00:00:01Z".to_string()),
     };
 
     let yaml = serde_yaml::to_string(&meta).expect("Failed to serialize");
     assert!(yaml.contains("base_branch: develop"));
     assert!(yaml.contains("base_commit: xyz789abc123"));
     assert!(yaml.contains("default_agent_model: claude-3-opus"));
+    assert!(yaml.contains("last_agents_summary_at: 2024-01-04T00:00:01Z"));
 }

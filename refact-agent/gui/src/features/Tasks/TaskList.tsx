@@ -209,7 +209,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onClick, onDelete }) => {
 export const TaskList: React.FC = () => {
   const dispatch = useAppDispatch();
   const { data: tasks = [], isLoading } = useListTasksQuery(undefined, {
-    pollingInterval: 2000,
+    pollingInterval: 0,
   });
   const [createTask] = useCreateTaskMutation();
   const [deleteTask] = useDeleteTaskMutation();

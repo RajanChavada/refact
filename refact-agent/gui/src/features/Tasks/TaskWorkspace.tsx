@@ -408,10 +408,10 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const dispatch = useAppDispatch();
   const config = useAppSelector(selectConfig);
   const { data: task, isLoading: taskLoading } = useGetTaskQuery(taskId, {
-    pollingInterval: 2000,
+    pollingInterval: 0,
   });
   const { data: board, isLoading: boardLoading } = useGetBoardQuery(taskId, {
-    pollingInterval: 2000,
+    pollingInterval: 0,
   });
   const { data: savedPlanners } = useListTaskTrajectoriesQuery({
     taskId,

@@ -6,7 +6,7 @@ use tokio::sync::Mutex as AMutex;
 use tokio::sync::RwLock as ARwLock;
 use async_trait::async_trait;
 use uuid::Uuid;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
@@ -142,6 +142,12 @@ async fn setup_agent_worktree(
     ))
 }
 
+fn parse_rfc3339_to_utc(ts: &str) -> Option<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
 pub struct ToolTaskSpawnAgent;
 
 impl ToolTaskSpawnAgent {
@@ -274,9 +280,19 @@ impl Tool for ToolTaskSpawnAgent {
             let agent_id_clone = agent_id.clone();
             let agent_chat_id_clone = agent_chat_id.clone();
 
-            let (board, _) = storage::update_board_atomic(gcx.clone(), &task_id, move |board| {
-                let card = board.get_card_mut(&card_id_owned)
-                    .ok_or(format!("Card {} not found", card_id_owned))?;
+            let (board, starting_new_run) = storage::update_board_atomic(
+                gcx.clone(),
+                &task_id,
+                move |board| {
+                    let agents_active_before = board
+                        .cards
+                        .iter()
+                        .filter(|c| c.column == "doing" && c.assignee.is_some())
+                        .count();
+
+                    let card = board
+                        .get_card_mut(&card_id_owned)
+                        .ok_or(format!("Card {} not found", card_id_owned))?;
 
                 if card.column == "done" {
                     return Err(format!("Card {} is already done", card_id_owned));
@@ -305,10 +321,36 @@ impl Tool for ToolTaskSpawnAgent {
                     timestamp: Utc::now().to_rfc3339(),
                     message: "Agent started working on card".to_string(),
                 });
-                Ok(())
-            }).await?;
+                    Ok(agents_active_before == 0)
+                },
+            )
+            .await?;
 
             storage::update_task_stats(gcx.clone(), &task_id).await?;
+
+            // Track the start of an "agent run" so the planner summary after all
+            // agents finish can include only cards completed since that run began.
+            if starting_new_run {
+                if let Ok(mut meta) = storage::load_task_meta(gcx.clone(), &task_id).await {
+                    meta.last_agents_summary_at = Some(Utc::now().to_rfc3339());
+                    let _ = storage::save_task_meta(gcx.clone(), &task_id, &meta).await;
+                }
+            } else if let Ok(mut meta) = storage::load_task_meta(gcx.clone(), &task_id).await {
+                // If this task predates the marker, initialize it.
+                if meta.last_agents_summary_at.is_none() {
+                    let earliest = board
+                        .cards
+                        .iter()
+                        .filter(|c| c.column == "doing" && c.assignee.is_some())
+                        .filter_map(|c| c.started_at.as_deref())
+                        .filter_map(parse_rfc3339_to_utc)
+                        .min();
+                    meta.last_agents_summary_at = Some(
+                        earliest.unwrap_or_else(Utc::now).to_rfc3339(),
+                    );
+                    let _ = storage::save_task_meta(gcx.clone(), &task_id, &meta).await;
+                }
+            }
 
             let card = board.get_card(card_id).unwrap();
             let dep_context = board

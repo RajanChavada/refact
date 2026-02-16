@@ -218,10 +218,11 @@ export const tasksApi = createApi({
         const state = api.getState() as RootState;
         const port = state.config.lspPort;
         const result = await baseQuery({
-          url: `http://127.0.0.1:${port}/v1/tasks/${taskId}/orchestrator-instructions`,
+          url: `http://127.0.0.1:${port}/v1/tasks/${taskId}/planner-instructions`,
         });
         if (result.error) return { error: result.error };
-        return { data: result.data as string };
+        const payload = result.data as { content?: unknown };
+        return { data: typeof payload?.content === "string" ? payload.content : "" };
       },
     }),
 
@@ -233,10 +234,9 @@ export const tasksApi = createApi({
         const state = api.getState() as RootState;
         const port = state.config.lspPort;
         const result = await baseQuery({
-          url: `http://127.0.0.1:${port}/v1/tasks/${taskId}/orchestrator-instructions`,
+          url: `http://127.0.0.1:${port}/v1/tasks/${taskId}/planner-instructions`,
           method: "PUT",
-          body: content,
-          headers: { "Content-Type": "text/plain" },
+          body: { content },
         });
         if (result.error) return { error: result.error };
         return { data: { saved: true } };

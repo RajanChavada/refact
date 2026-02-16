@@ -10,6 +10,26 @@ export type TaskEvent =
   | { type: "task_deleted"; task_id: string }
   | { type: "board_changed"; task_id: string; rev: number; board: TaskBoard };
 
+export type NotificationEvent =
+  | {
+      type: "task_done";
+      chat_id: string;
+      tool_call_id: string;
+      summary: string;
+      knowledge_path?: string;
+    }
+  | {
+      type: "ask_questions";
+      chat_id: string;
+      tool_call_id: string;
+      questions: {
+        id: string;
+        type: string;
+        text: string;
+        options?: string[];
+      }[];
+    };
+
 export type SidebarEvent =
   | {
       category: "snapshot";
@@ -17,7 +37,8 @@ export type SidebarEvent =
       tasks: TaskMeta[];
     }
   | ({ category: "trajectory" } & TrajectoryEvent)
-  | ({ category: "task" } & TaskEvent);
+  | ({ category: "task" } & TaskEvent)
+  | ({ category: "notification" } & NotificationEvent);
 
 export type SidebarEventEnvelope = {
   seq: number;
@@ -47,6 +68,22 @@ function isValidTaskEvent(obj: Record<string, unknown>): boolean {
   return typeof obj.task_id === "string" && obj.meta !== undefined;
 }
 
+function isValidNotificationEvent(obj: Record<string, unknown>): boolean {
+  if (typeof obj.type !== "string") return false;
+  if (typeof obj.chat_id !== "string") return false;
+  if (typeof obj.tool_call_id !== "string") return false;
+
+  if (obj.type === "task_done") {
+    return typeof obj.summary === "string";
+  }
+
+  if (obj.type === "ask_questions") {
+    return Array.isArray(obj.questions);
+  }
+
+  return false;
+}
+
 function isValidSidebarEventEnvelope(
   data: unknown,
 ): data is SidebarEventEnvelope {
@@ -62,6 +99,8 @@ function isValidSidebarEventEnvelope(
       return isValidTrajectoryEvent(obj);
     case "task":
       return isValidTaskEvent(obj);
+    case "notification":
+      return isValidNotificationEvent(obj);
     default:
       return false;
   }
