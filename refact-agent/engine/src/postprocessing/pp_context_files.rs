@@ -18,6 +18,7 @@ use crate::postprocessing::pp_utils::{
 use crate::tokens::count_text_tokens_with_fallback;
 
 pub const RESERVE_FOR_QUESTION_AND_FOLLOWUP: usize = 1024; // tokens
+pub const MAX_LINE_LENGTH: usize = 10_000; // characters; prevents minified single-line files from blowing the context budget
 pub const DEBUG: usize = 0; // 0 nothing, 1 summary "N lines in K files => X tokens", 2 everything
 #[derive(Debug)]
 pub struct PPFile {
@@ -47,10 +48,16 @@ fn collect_lines_from_files(
     let mut lines_in_files = IndexMap::new();
     for file_ref in files {
         for (line_n, line) in file_ref.file_content.lines().enumerate() {
+            let truncated_line = if line.len() > MAX_LINE_LENGTH {
+                let boundary = line.floor_char_boundary(MAX_LINE_LENGTH);
+                format!("{}...", &line[..boundary])
+            } else {
+                line.to_string()
+            };
             let a = FileLine {
                 file_ref: file_ref.clone(),
                 line_n,
-                line_content: line.to_string(),
+                line_content: truncated_line,
                 useful: 0.0,
                 color: "".to_string(),
                 take: false,
