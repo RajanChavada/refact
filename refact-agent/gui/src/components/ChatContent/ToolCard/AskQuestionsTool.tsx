@@ -19,6 +19,7 @@ import {
   Checkbox,
 } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { Markdown } from "../../Markdown";
 import { useAppSelector, useChatActions } from "../../../hooks";
 import {
@@ -220,7 +221,8 @@ const QuestionWidget: React.FC<{
 export const AskQuestionsTool: React.FC<AskQuestionsToolProps> = ({
   toolCall,
 }) => {
-  const [isOpen, setIsOpen] = useState(true);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle, setIsOpen] = useStoredOpen(storeKey, true);
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [additionalText, setAdditionalText] = useState("");
   const hasCollapsedManualRef = useRef(false);
@@ -296,16 +298,14 @@ export const AskQuestionsTool: React.FC<AskQuestionsToolProps> = ({
     return "success";
   }, [maybeResult, nextUserMessage]);
 
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
+
 
   useEffect(() => {
     if (nextUserMessage && !answeredViaForm && !hasCollapsedManualRef.current) {
       hasCollapsedManualRef.current = true;
       setIsOpen(false);
     }
-  }, [nextUserMessage, answeredViaForm]);
+  }, [nextUserMessage, answeredViaForm, setIsOpen]);
 
   const handleSubmit = useCallback(() => {
     if (!data) return;

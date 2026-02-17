@@ -79,27 +79,29 @@ export function useChatSubscription(
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const streamDeltaFlushRef = useRef<number | null>(null);
+  const streamDeltaFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStreamDeltaRef =
     useRef<Extract<ChatEventEnvelope, { type: "stream_delta" }> | null>(null);
+  const streamedBytesRef = useRef(0);
   const connectingRef = useRef(false);
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   const connectRef = useRef<() => void>(() => {});
 
   const MAX_MERGED_DELTA_OPS = 256;
 
+  // Adaptive flush thresholds (bytes of accumulated content)
+  const FLUSH_TIER_FAST_BYTES = 8_192;
+  const FLUSH_TIER_MEDIUM_BYTES = 200_000;
+  const FLUSH_MS_MEDIUM = 150;
+  const FLUSH_MS_SLOW = 500;
+  const MAX_BUFFERED_BYTES = 2_000_000;
+
   const clearStreamDeltaFlush = useCallback(() => {
-    const flushId = streamDeltaFlushRef.current;
-    if (flushId == null) return;
-    if (
-      typeof window !== "undefined" &&
-      typeof window.cancelAnimationFrame === "function"
-    ) {
-      window.cancelAnimationFrame(flushId);
-    } else {
-      clearTimeout(flushId);
+    const timerId = streamDeltaFlushRef.current;
+    if (timerId != null) {
+      clearTimeout(timerId);
+      streamDeltaFlushRef.current = null;
     }
-    streamDeltaFlushRef.current = null;
   }, []);
 
   const flushPendingStreamDelta = useCallback(() => {
@@ -112,24 +114,33 @@ export function useChatSubscription(
 
   const scheduleStreamDeltaFlush = useCallback(() => {
     if (streamDeltaFlushRef.current != null) return;
-    if (
-      typeof window !== "undefined" &&
-      typeof window.requestAnimationFrame === "function"
-    ) {
-      streamDeltaFlushRef.current = window.requestAnimationFrame(() => {
-        streamDeltaFlushRef.current = null;
-        flushPendingStreamDelta();
-      });
-      return;
+
+    const bytes = streamedBytesRef.current;
+    let delayMs: number;
+    if (bytes < FLUSH_TIER_FAST_BYTES) {
+      delayMs = 0;
+    } else if (bytes < FLUSH_TIER_MEDIUM_BYTES) {
+      delayMs = FLUSH_MS_MEDIUM;
+    } else {
+      delayMs = FLUSH_MS_SLOW;
     }
-    streamDeltaFlushRef.current = window.setTimeout(() => {
+
+    const flush = () => {
       streamDeltaFlushRef.current = null;
       flushPendingStreamDelta();
-    }, 16);
+    };
+
+    streamDeltaFlushRef.current = setTimeout(flush, Math.max(delayMs, 0));
   }, [flushPendingStreamDelta]);
 
   const enqueueStreamDelta = useCallback(
     (envelope: Extract<ChatEventEnvelope, { type: "stream_delta" }>) => {
+      for (const op of envelope.ops) {
+        if (op.op === "append_content" || op.op === "append_reasoning") {
+          streamedBytesRef.current += op.text.length;
+        }
+      }
+
       const pending = pendingStreamDeltaRef.current;
       if (pending && pending.message_id === envelope.message_id) {
         const mergedOpsLen = pending.ops.length + envelope.ops.length;
@@ -144,9 +155,16 @@ export function useChatSubscription(
         flushPendingStreamDelta();
         pendingStreamDeltaRef.current = envelope;
       }
+
+      if (streamedBytesRef.current > MAX_BUFFERED_BYTES) {
+        clearStreamDeltaFlush();
+        flushPendingStreamDelta();
+        return;
+      }
+
       scheduleStreamDeltaFlush();
     },
-    [flushPendingStreamDelta, scheduleStreamDeltaFlush],
+    [flushPendingStreamDelta, scheduleStreamDeltaFlush, clearStreamDeltaFlush],
   );
 
   const cleanup = useCallback(() => {
@@ -156,6 +174,7 @@ export function useChatSubscription(
     }
     clearStreamDeltaFlush();
     pendingStreamDeltaRef.current = null;
+    streamedBytesRef.current = 0;
     if (unsubscribeRef.current) {
       unsubscribeRef.current();
       unsubscribeRef.current = null;
@@ -206,6 +225,7 @@ export function useChatSubscription(
                     "?",
                 );
               }
+              streamedBytesRef.current = 0;
               lastSeqRef.current = seq;
             } else {
               if (seq <= lastSeqRef.current) {
@@ -234,6 +254,9 @@ export function useChatSubscription(
               enqueueStreamDelta(envelope);
             } else {
               flushPendingStreamDelta();
+              if (envelope.type === "stream_finished") {
+                streamedBytesRef.current = 0;
+              }
               dispatch(applyChatEvent(envelope));
               callbacksRef.current.onEvent?.(envelope);
             }

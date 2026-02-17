@@ -523,20 +523,24 @@ async fn run_streaming_generation(
         const EMITTER_QUEUE_CAPACITY: usize = 256;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<CollectorEventPayload>(EMITTER_QUEUE_CAPACITY);
         let overflow_usage = Arc::new(std::sync::Mutex::new(None::<ChatUsage>));
-        let dropped_events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let overflow_ops = Arc::new(std::sync::Mutex::new(Vec::<DeltaOp>::new()));
 
         struct SessionCollector {
             tx: tokio::sync::mpsc::Sender<CollectorEventPayload>,
             overflow_usage: Arc<std::sync::Mutex<Option<ChatUsage>>>,
-            dropped_events: Arc<std::sync::atomic::AtomicUsize>,
+            overflow_ops: Arc<std::sync::Mutex<Vec<DeltaOp>>>,
         }
 
         impl StreamCollector for SessionCollector {
             fn on_delta_ops(&mut self, _choice_idx: usize, ops: Vec<DeltaOp>) {
                 match self.tx.try_send(CollectorEventPayload::DeltaOps(ops)) {
                     Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
-                        self.dropped_events.fetch_add(1, Ordering::Relaxed);
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                        if let CollectorEventPayload::DeltaOps(ops) = event {
+                            if let Ok(mut guard) = self.overflow_ops.lock() {
+                                guard.extend(ops);
+                            }
+                        }
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_event)) => {}
                 }
@@ -550,7 +554,6 @@ async fn run_streaming_generation(
                         if let Ok(mut guard) = self.overflow_usage.lock() {
                             *guard = Some(usage_clone);
                         }
-                        self.dropped_events.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_event)) => {}
                 }
@@ -562,7 +565,7 @@ async fn run_streaming_generation(
         let mut collector = SessionCollector {
             tx,
             overflow_usage: overflow_usage.clone(),
-            dropped_events: dropped_events.clone(),
+            overflow_ops: overflow_ops.clone(),
         };
 
         let session_arc_emitter = session_arc.clone();
@@ -582,6 +585,33 @@ async fn run_streaming_generation(
                         }
                     }
                 }
+            }
+
+            fn coalesce_text_ops(ops: Vec<DeltaOp>) -> Vec<DeltaOp> {
+                if ops.len() <= 1 {
+                    return ops;
+                }
+                let mut out: Vec<DeltaOp> = Vec::with_capacity(ops.len());
+                for op in ops {
+                    match op {
+                        DeltaOp::AppendContent { text } => {
+                            if let Some(DeltaOp::AppendContent { text: ref mut prev }) = out.last_mut() {
+                                prev.push_str(&text);
+                            } else {
+                                out.push(DeltaOp::AppendContent { text });
+                            }
+                        }
+                        DeltaOp::AppendReasoning { text } => {
+                            if let Some(DeltaOp::AppendReasoning { text: ref mut prev }) = out.last_mut() {
+                                prev.push_str(&text);
+                            } else {
+                                out.push(DeltaOp::AppendReasoning { text });
+                            }
+                        }
+                        other => out.push(other),
+                    }
+                }
+                out
             }
 
             fn split_utf8_chunks(text: &str, max_bytes: usize) -> Vec<String> {
@@ -630,7 +660,7 @@ async fn run_streaming_generation(
 
             const MAX_BATCH_EVENTS: usize = 64;
             const MAX_DELTA_OPS_PER_EMIT: usize = 128;
-            const MAX_DELTA_TEXT_BYTES: usize = 16 * 1024;
+            const MAX_DELTA_TEXT_BYTES: usize = 64 * 1024;
             let mut pending = Vec::<CollectorEventPayload>::new();
 
             while let Some(first_event) = rx.recv().await {
@@ -647,12 +677,21 @@ async fn run_streaming_generation(
                 let mut batched_ops = Vec::new();
                 let mut latest_usage: Option<ChatUsage> = None;
                 merge_events(&mut pending, &mut batched_ops, &mut latest_usage);
+
+                if let Ok(mut guard) = overflow_ops.lock() {
+                    if !guard.is_empty() {
+                        let mut drained = std::mem::take(&mut *guard);
+                        drained.append(&mut batched_ops);
+                        batched_ops = drained;
+                    }
+                }
                 if let Ok(mut guard) = overflow_usage.lock() {
                     if let Some(usage) = guard.take() {
                         latest_usage = Some(usage);
                     }
                 }
 
+                let batched_ops = coalesce_text_ops(batched_ops);
                 let batched_ops = split_large_text_ops(batched_ops, MAX_DELTA_TEXT_BYTES);
 
                 let mut session = session_arc_emitter.lock().await;
@@ -664,14 +703,6 @@ async fn run_streaming_generation(
                 if let Some(usage) = latest_usage {
                     session.draft_usage = Some(usage);
                 }
-            }
-
-            let dropped = dropped_events.load(Ordering::Relaxed);
-            if dropped > 0 {
-                tracing::warn!(
-                    "Dropped {} collector events due to saturated emitter queue",
-                    dropped
-                );
             }
         });
 

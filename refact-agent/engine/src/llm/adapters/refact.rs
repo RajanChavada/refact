@@ -40,9 +40,14 @@ impl LlmWireAdapter for RefactAdapter {
 
         insert_extra_headers(&mut headers, &settings.extra_headers);
 
-        let mut messages = convert_messages_to_refact(&req.messages, settings.reasoning_type.as_deref());
+        let reasoning_type = settings.reasoning_type.as_deref();
+        let mut messages = convert_messages_to_refact(&req.messages, reasoning_type);
 
-        if matches!(req.cache_control, CacheControl::Ephemeral) {
+        // LiteLLM prompt caching via `cache_control` is intended for Anthropic-native routing.
+        // Some backends (notably Vertex/Gemini) treat cache controls as CachedContent and reject
+        // requests that also include system instruction / tools / tool_config.
+        let is_anthropic_target = reasoning_type.is_some_and(|rt| rt.starts_with("anthropic"));
+        if is_anthropic_target && matches!(req.cache_control, CacheControl::Ephemeral) {
             inject_cache_control(&mut messages);
         }
 
@@ -637,6 +642,14 @@ mod tests {
             support_metadata: true,
             eof_is_done: false,
             supports_web_search: false,
+        }
+    }
+
+    fn anthropic_target_settings() -> AdapterSettings {
+        AdapterSettings {
+            supports_reasoning: true,
+            reasoning_type: Some("anthropic_budget".to_string()),
+            ..default_settings()
         }
     }
 
@@ -1370,7 +1383,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "How are you?".to_string()),
         ]).with_cache_control(CacheControl::Ephemeral);
 
-        let http = adapter.build_http(&req, &default_settings()).unwrap();
+        let http = adapter.build_http(&req, &anthropic_target_settings()).unwrap();
 
         // No top-level cache_control field
         assert!(http.body.get("cache_control").is_none(),
@@ -1399,7 +1412,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hi".to_string()),
         ]).with_cache_control(CacheControl::Ephemeral);
 
-        let http = adapter.build_http(&req, &default_settings()).unwrap();
+        let http = adapter.build_http(&req, &anthropic_target_settings()).unwrap();
 
         let messages = http.body["messages"].as_array().unwrap();
         // Single non-system message: first == last, should get cache_control once
@@ -1426,6 +1439,22 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_control_ephemeral_non_anthropic_target_no_injection() {
+        // Regression: Gemini/Vertex rejects cache controls alongside
+        // system instruction / tools / tool config.
+        let adapter = RefactAdapter;
+        let req = LlmRequest::new("gpt-4".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hi".to_string()),
+        ])
+        .with_cache_control(CacheControl::Ephemeral);
+
+        let http = adapter.build_http(&req, &default_settings()).unwrap();
+
+        let messages = http.body["messages"].as_array().unwrap();
+        assert!(messages[0]["content"].is_string(), "Should not convert to multipart");
+    }
+
+    #[test]
     fn test_cache_control_multimodal_content() {
         use crate::scratchpads::multimodality::MultimodalElement;
         let adapter = RefactAdapter;
@@ -1447,7 +1476,7 @@ mod tests {
             multimodal_msg,
         ]).with_cache_control(CacheControl::Ephemeral);
 
-        let http = adapter.build_http(&req, &default_settings()).unwrap();
+        let http = adapter.build_http(&req, &anthropic_target_settings()).unwrap();
 
         let messages = http.body["messages"].as_array().unwrap();
         let content = messages[0]["content"].as_array().unwrap();

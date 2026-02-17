@@ -58,6 +58,8 @@ import {
 import { selectLspPort, selectApiKey } from "../../features/Config/configSlice";
 import { VirtualizedChatList } from "./VirtualizedChatList";
 import { useCollapsibleState } from "./useCollapsibleState";
+import { useCollapsibleStoreProvider } from "./useCollapsibleStoreProvider";
+import { CollapsibleStoreProvider } from "./useStoredOpen";
 
 export type ChatContentProps = {
   onRetry: (index: number, question: UserMessage["content"]) => void;
@@ -105,6 +107,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   const apiKey = useAppSelector(selectApiKey);
 
   const collapsibleState = useCollapsibleState(false);
+  const collapsibleStore = useCollapsibleStoreProvider(renderChatId);
   const prevChatIdRef = useRef(renderChatId);
   const prevDisplayMessagesRef = useRef<ChatMessages | null>(null);
   const prevDisplayItemsRef = useRef<DisplayItem[] | null>(null);
@@ -353,56 +356,58 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   }
 
   return (
-    <Box
-      style={{ flexGrow: 1, height: "100%", position: "relative" }}
-      data-element="ChatContent"
-    >
-      <VirtualizedChatList
-        key={renderChatId}
-        items={displayItems}
-        renderItem={renderDisplayItem}
-        initialScrollIndex={initialScrollIndex}
-        footer={virtuosoFooter}
-        isStreaming={isStreaming}
-      />
-
+    <CollapsibleStoreProvider value={collapsibleStore}>
       <Box
-        style={{
-          position: "absolute",
-          bottom: 0,
-          maxWidth: "100%",
-        }}
+        style={{ flexGrow: 1, height: "100%", position: "relative" }}
+        data-element="ChatContent"
       >
-        <ScrollArea scrollbars="horizontal">
-          <Flex align="start" gap="3" pb="2">
-            {shouldConfigButtonBeVisible && (
-              <Button
-                color="gray"
-                title="Return to configuration page"
-                onClick={handleReturnToConfigurationClick}
-              >
-                Return
-              </Button>
-            )}
-            <ChatLinks />
-          </Flex>
-        </ScrollArea>
-      </Box>
+        <VirtualizedChatList
+          key={renderChatId}
+          items={displayItems}
+          renderItem={renderDisplayItem}
+          initialScrollIndex={initialScrollIndex}
+          footer={virtuosoFooter}
+          isStreaming={isStreaming}
+        />
 
-      {queuedItems.length > 0 && (
-        <Box className={styles.queuedMessagesContainer}>
-          <Flex direction="column" gap="2" align="end">
-            {queuedItems.map((item, index) => (
-              <QueuedMessage
-                key={item.client_request_id}
-                queuedItem={item}
-                position={index + 1}
-              />
-            ))}
-          </Flex>
+        <Box
+          style={{
+            position: "absolute",
+            bottom: 0,
+            maxWidth: "100%",
+          }}
+        >
+          <ScrollArea scrollbars="horizontal">
+            <Flex align="start" gap="3" pb="2">
+              {shouldConfigButtonBeVisible && (
+                <Button
+                  color="gray"
+                  title="Return to configuration page"
+                  onClick={handleReturnToConfigurationClick}
+                >
+                  Return
+                </Button>
+              )}
+              <ChatLinks />
+            </Flex>
+          </ScrollArea>
         </Box>
-      )}
-    </Box>
+
+        {queuedItems.length > 0 && (
+          <Box className={styles.queuedMessagesContainer}>
+            <Flex direction="column" gap="2" align="end">
+              {queuedItems.map((item, index) => (
+                <QueuedMessage
+                  key={item.client_request_id}
+                  queuedItem={item}
+                  position={index + 1}
+                />
+              ))}
+            </Flex>
+          </Box>
+        )}
+      </Box>
+    </CollapsibleStoreProvider>
   );
 };
 
@@ -758,8 +763,8 @@ function tryIncrementalDisplayItemsUpdate(
 
   const changedMessage = nextMessages[changedIndex];
   if (changedMessage.role !== "assistant") return null;
+  if (!isAssistantMessage(changedMessage)) return null;
 
-  let patched = false;
   const nextItems = previousItems.map((item) => {
     if (item.type !== "assistant") return item;
     if (item.index !== changedIndex) {
@@ -772,18 +777,12 @@ function tryIncrementalDisplayItemsUpdate(
           };
     }
 
-    if (!isAssistantMessage(changedMessage)) return item;
-    patched = true;
     return {
       ...item,
       message: changedMessage,
       isStreaming: isStreaming && item.index === lastAssistantIdx,
     };
   });
-
-  if (!patched) {
-    return null;
-  }
 
   return nextItems;
 }

@@ -345,7 +345,7 @@ describe.skipIf(!(await isServerAvailable()))(
         // Start collecting events
         const eventsPromise = collectEvents(chatId, {
           maxEvents: 1000,
-          timeoutMs: 15000,
+          timeoutMs: 30000,
           stopWhen: (event: unknown) => {
             const type = (event as { type?: string }).type;
             return type === "message_removed" || type === "stream_finished";
@@ -358,7 +358,7 @@ describe.skipIf(!(await isServerAvailable()))(
         await withRetry(() =>
           updateChatParams(
             chatId,
-            { model: "refact/claude-haiku-4-5", mode: "NO_TOOLS" },
+            { model: "refact/gpt-4.1-nano", mode: "NO_TOOLS" },
             LSP_PORT,
           ),
         );

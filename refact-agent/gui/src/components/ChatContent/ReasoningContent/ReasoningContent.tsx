@@ -12,6 +12,7 @@ import { LightningBoltIcon } from "@radix-ui/react-icons";
 import { Markdown } from "../../Markdown";
 import { useDelayedUnmount } from "../../shared/useDelayedUnmount";
 
+import { useCollapsibleStore } from "../useStoredOpen";
 import styles from "./ReasoningContent.module.css";
 
 // Bold titles like "**Some Title**" often appear glued to the end of the
@@ -29,6 +30,7 @@ type ReasoningContentProps = {
   onCopyClick: (text: string) => void;
   isStreaming?: boolean;
   hasMessageContent?: boolean;
+  stateKey?: string;
 };
 
 function formatDuration(seconds: number): string {
@@ -48,8 +50,13 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
   onCopyClick,
   isStreaming = false,
   hasMessageContent = false,
+  stateKey,
 }) => {
-  const [isOpen, setIsOpen] = useState(true);
+  const store = useCollapsibleStore();
+  const storedOpen = stateKey && store ? store.get(stateKey) : undefined;
+  const hadStoredStateRef = useRef(storedOpen !== undefined);
+
+  const [isOpen, setIsOpen] = useState(storedOpen ?? true);
   const [thinkingDuration, setThinkingDuration] = useState<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
   const userToggledRef = useRef(false);
@@ -57,6 +64,10 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
   const durationCapturedRef = useRef(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
+
+  useEffect(() => {
+    if (stateKey && store) store.set(stateKey, isOpen);
+  }, [stateKey, store, isOpen]);
 
   // Track thinking duration - stop when message content starts appearing
   useEffect(() => {
@@ -93,6 +104,7 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
 
   // Handle initial mount for already-completed thinking blocks
   useEffect(() => {
+    if (hadStoredStateRef.current) return;
     if (
       !isStreaming &&
       reasoningContent &&

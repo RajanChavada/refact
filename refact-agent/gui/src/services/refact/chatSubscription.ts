@@ -433,6 +433,8 @@ export function applyDeltaOps(
   message: ChatMessage,
   ops: DeltaOp[],
 ): ChatMessage {
+  if (ops.length === 0) return message;
+
   const updated = { ...message } as ChatMessage & {
     content?: string;
     reasoning_content?: string;
@@ -444,47 +446,89 @@ export function applyDeltaOps(
     extra?: Record<string, unknown>;
   };
 
+  // Two-pass: accumulate all chunks first, apply once — avoids O(n²)
+  // string concatenation and repeated array spreading.
+  const contentChunks: string[] = [];
+  const reasoningChunks: string[] = [];
+  const newCitations: unknown[] = [];
+  const newServerBlocks: unknown[] = [];
+  let lastToolCalls: unknown[] | undefined;
+  let lastThinkingBlocks: unknown[] | undefined;
+  let lastUsage: unknown;
+  let mergedExtra: Record<string, unknown> | undefined;
+
   for (const op of ops) {
     switch (op.op) {
       case "append_content":
-        if (typeof updated.content === "string") {
-          updated.content = updated.content + op.text;
+        contentChunks.push(op.text);
+        break;
+      case "append_reasoning":
+        reasoningChunks.push(op.text);
+        break;
+      case "set_tool_calls":
+        lastToolCalls = op.tool_calls;
+        break;
+      case "set_thinking_blocks":
+        lastThinkingBlocks = op.blocks;
+        break;
+      case "add_citation":
+        newCitations.push(op.citation);
+        break;
+      case "add_server_content_block":
+        newServerBlocks.push(op.block);
+        break;
+      case "set_usage":
+        lastUsage = op.usage;
+        break;
+      case "merge_extra":
+        if (mergedExtra) {
+          Object.assign(mergedExtra, op.extra);
         } else {
-          updated.content = op.text;
+          mergedExtra = { ...op.extra };
         }
         break;
-
-      case "append_reasoning":
-        updated.reasoning_content = (updated.reasoning_content ?? "") + op.text;
-        break;
-
-      case "set_tool_calls":
-        updated.tool_calls = op.tool_calls;
-        break;
-
-      case "set_thinking_blocks":
-        updated.thinking_blocks = op.blocks;
-        break;
-
-      case "add_citation":
-        updated.citations = [...(updated.citations ?? []), op.citation];
-        break;
-
-      case "add_server_content_block":
-        updated.server_content_blocks = [
-          ...(updated.server_content_blocks ?? []),
-          op.block,
-        ];
-        break;
-
-      case "set_usage":
-        updated.usage = op.usage;
-        break;
-
-      case "merge_extra":
-        updated.extra = { ...(updated.extra ?? {}), ...op.extra };
-        break;
     }
+  }
+
+  if (contentChunks.length > 0) {
+    const appended = contentChunks.join("");
+    updated.content =
+      typeof updated.content === "string"
+        ? updated.content + appended
+        : appended;
+  }
+
+  if (reasoningChunks.length > 0) {
+    updated.reasoning_content =
+      (updated.reasoning_content ?? "") + reasoningChunks.join("");
+  }
+
+  if (lastToolCalls !== undefined) {
+    updated.tool_calls = lastToolCalls;
+  }
+
+  if (lastThinkingBlocks !== undefined) {
+    updated.thinking_blocks = lastThinkingBlocks;
+  }
+
+  if (newCitations.length > 0) {
+    const existing = updated.citations ?? [];
+    updated.citations = existing.concat(newCitations);
+  }
+
+  if (newServerBlocks.length > 0) {
+    const existing = updated.server_content_blocks ?? [];
+    updated.server_content_blocks = existing.concat(newServerBlocks);
+  }
+
+  if (lastUsage !== undefined) {
+    updated.usage = lastUsage;
+  }
+
+  if (mergedExtra) {
+    updated.extra = updated.extra
+      ? Object.assign({}, updated.extra, mergedExtra)
+      : mergedExtra;
   }
 
   return updated;

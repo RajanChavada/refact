@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo } from "react";
 import {
   CheckCircledIcon,
   CircleIcon,
@@ -7,6 +7,7 @@ import {
 } from "@radix-ui/react-icons";
 import { Flex, Text, Box } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { useAppSelector } from "../../../hooks";
 import { selectToolResultById } from "../../../features/Chat/Thread/selectors";
 import { ToolCall } from "../../../services/refact/types";
@@ -51,7 +52,8 @@ const TaskItem: React.FC<{ task: Task }> = ({ task }) => {
 };
 
 export const TasksTool: React.FC<TasksToolProps> = ({ toolCall }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
 
   const maybeResult = useAppSelector((state) =>
     selectToolResultById(state, toolCall.id),
@@ -77,10 +79,6 @@ export const TasksTool: React.FC<TasksToolProps> = ({ toolCall }) => {
     }
     return "success";
   }, [maybeResult]);
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const stats = useMemo(() => {
     const completed = tasks.filter((t) => t.status === "completed").length;

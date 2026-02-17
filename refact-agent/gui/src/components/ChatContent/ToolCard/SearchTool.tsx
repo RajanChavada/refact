@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo } from "react";
 import { MagnifyingGlassIcon } from "@radix-ui/react-icons";
 import { Box } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { ContextFileList } from "./ContextFileList";
 import { useAppSelector } from "../../../hooks";
 import { selectToolResultById } from "../../../features/Chat/Thread/selectors";
@@ -45,7 +46,8 @@ export const SearchTool: React.FC<SearchToolProps> = ({
   toolType,
   contextFiles,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
 
   const maybeResult = useAppSelector((state) =>
     selectToolResultById(state, toolCall.id),
@@ -76,10 +78,6 @@ export const SearchTool: React.FC<SearchToolProps> = ({
     }
     return "success";
   }, [maybeResult]);
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const content =
     maybeResult && typeof maybeResult.content === "string"

@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useMemo, useRef } from "react";
+import React, { forwardRef, useCallback, useEffect, useMemo, useRef } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { Container, Flex, Text, Box, Spinner } from "@radix-ui/themes";
 import {
@@ -28,6 +28,7 @@ import { DialogImage } from "../DialogImage";
 import { RootState } from "../../app/store";
 import { selectFeatures } from "../../features/Config/configSlice";
 import { isRawTextDocToolCall } from "../Tools/types";
+import { useCollapsibleStore } from "./useStoredOpen";
 import { ShikiCodeBlock } from "../Markdown/ShikiCodeBlock";
 import { Markdown } from "../Markdown";
 import classNames from "classnames";
@@ -74,6 +75,7 @@ type ResultProps = {
   children: string;
   isInsideScrollArea?: boolean;
   onClose?: () => void;
+  storeKey?: string;
 };
 
 function looksLikeMarkdown(text: string): boolean {
@@ -94,14 +96,14 @@ function looksLikeMarkdown(text: string): boolean {
 
 const MAX_MD_RENDER_CHARS = 50_000;
 
-const Result: React.FC<ResultProps> = ({ children, onClose }) => {
+const Result: React.FC<ResultProps> = ({ children, onClose, storeKey }) => {
   const lines = children.split("\n");
 
   const shouldRenderMarkdown =
     children.length <= MAX_MD_RENDER_CHARS && looksLikeMarkdown(children);
 
   return (
-    <Reveal defaultOpen={lines.length < 9} isRevealingCode onClose={onClose}>
+    <Reveal defaultOpen={lines.length < 9} isRevealingCode onClose={onClose} storeKey={storeKey}>
       {shouldRenderMarkdown ? (
         <Text size="2">
           <Box
@@ -167,7 +169,7 @@ const ToolMessage: React.FC<{
         </Box>
       </ScrollArea>
       {maybeResult?.content && (
-        <Result isInsideScrollArea onClose={onClose}>
+        <Result isInsideScrollArea onClose={onClose} storeKey={toolCall.id ? `rv:${toolCall.id}` : undefined}>
           {maybeResult.content}
         </Result>
       )}
@@ -191,11 +193,11 @@ const ToolUsageDisplay: React.FC<{
 export const SingleModelToolContent: React.FC<{
   toolCalls: ToolCall[];
 }> = ({ toolCalls }) => {
-  const [open, setOpen] = React.useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const handleHide = useHideScroll(ref);
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
+  const store = useCollapsibleStore();
 
   const toolCallsId = useMemo(() => {
     return toolCalls.reduce<string[]>((acc, toolCall) => {
@@ -205,6 +207,18 @@ export const SingleModelToolContent: React.FC<{
   }, [toolCalls]);
 
   const toolCallsIdKey = toolCallsId.join("|");
+  const storeKey = toolCallsId[0] ? `tg:${toolCallsId[0]}` : undefined;
+  const [open, setOpen] = React.useState(() => {
+    if (storeKey && store) {
+      const stored = store.get(storeKey);
+      if (stored !== undefined) return stored;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (storeKey && store) store.set(storeKey, open);
+  }, [storeKey, store, open]);
   const selectResults = useMemo(
     () => selectManyToolResultsByIds(toolCallsId),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -928,11 +942,11 @@ const MultiModalToolContent: React.FC<{
   toolCalls: ToolCall[];
   toolResults: MultiModalToolResult[];
 }> = ({ toolCalls, toolResults }) => {
-  const [open, setOpen] = React.useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const handleHide = useHideScroll(ref);
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
+  const store = useCollapsibleStore();
 
   const ids = useMemo(() => {
     return toolCalls
@@ -941,6 +955,19 @@ const MultiModalToolContent: React.FC<{
   }, [toolCalls]);
 
   const idsKey = ids.join("|");
+  const mmStoreKey = ids[0] ? `mm:${ids[0]}` : undefined;
+  const [open, setOpen] = React.useState(() => {
+    if (mmStoreKey && store) {
+      const stored = store.get(mmStoreKey);
+      if (stored !== undefined) return stored;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (mmStoreKey && store) store.set(mmStoreKey, open);
+  }, [mmStoreKey, store, open]);
+
   const selectDiffs = useMemo(
     () => selectManyDiffMessageByIds(ids),
     // eslint-disable-next-line react-hooks/exhaustive-deps

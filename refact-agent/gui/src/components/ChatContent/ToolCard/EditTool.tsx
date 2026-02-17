@@ -2,6 +2,7 @@ import React, { useMemo, useState, useCallback } from "react";
 import { Pencil1Icon, PlusIcon } from "@radix-ui/react-icons";
 import { Flex, Text, Box, Spinner, Button } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { useAppSelector, useEventsBusForIDE } from "../../../hooks";
 import {
   selectManyDiffMessageByIds,
@@ -152,7 +153,8 @@ const FileEditItem: React.FC<FileEditItemProps> = ({
 };
 
 export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
   const { queryPathThenOpenFile, diffPasteBack, sendToolCallToIde } =
     useEventsBusForIDE();
   const [requestDryRun, dryRunResult] = toolsApi.useDryRunForEditToolMutation();
@@ -239,10 +241,6 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
 
   const fileNames = Object.keys(filesByName);
   const isSingleFile = fileNames.length <= 1;
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const handleFileClick = useCallback(
     (e: React.MouseEvent, path: string) => {

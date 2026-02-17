@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useCallback } from "react";
 import { ArchiveIcon } from "@radix-ui/react-icons";
 import { Box } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { ContextFileList } from "./ContextFileList";
 import { useAppSelector, useEventsBusForIDE } from "../../../hooks";
 import { selectToolResultById } from "../../../features/Chat/Thread/selectors";
@@ -24,7 +25,8 @@ export const ListTool: React.FC<ListToolProps> = ({
   toolCall,
   contextFiles,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
 
   const maybeResult = useAppSelector((state) =>
@@ -50,10 +52,6 @@ export const ListTool: React.FC<ListToolProps> = ({
     }
     return "success";
   }, [maybeResult]);
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const handlePathClick = useCallback(
     (e: React.MouseEvent) => {

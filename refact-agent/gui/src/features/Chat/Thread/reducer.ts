@@ -213,7 +213,7 @@ function findMessageIndexById(
   const indexed = rt.message_index_by_id?.[messageId];
   if (indexed != null) {
     const maybeMsg = rt.thread.messages[indexed];
-    if (maybeMsg && "message_id" in maybeMsg && maybeMsg.message_id === messageId) {
+    if ("message_id" in maybeMsg && maybeMsg.message_id === messageId) {
       return indexed;
     }
   }
@@ -1260,9 +1260,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
           // tool_calls or other finish reasons: tools about to execute
           rt.session_state = "executing_tools";
         }
-        const msgIdx = rt.thread.messages.findIndex(
-          (m) => "message_id" in m && m.message_id === event.message_id,
-        );
+        const msgIdx = findMessageIndexById(rt, event.message_id);
         if (msgIdx >= 0 && isAssistantMessage(rt.thread.messages[msgIdx])) {
           const msg = rt.thread.messages[msgIdx] as AssistantMessage;
           if (event.finish_reason && !msg.finish_reason) {

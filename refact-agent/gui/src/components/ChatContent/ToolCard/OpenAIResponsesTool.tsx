@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import {
   CubeIcon,
   FileTextIcon,
@@ -11,6 +11,7 @@ import {
 } from "@radix-ui/react-icons";
 import { Box, Flex, Text } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { useAppSelector } from "../../../hooks";
 import {
   selectIsStreaming,
@@ -119,7 +120,8 @@ function extractToolSummary(toolName: string, args: unknown): React.ReactNode {
 export const OpenAIResponsesTool: React.FC<OpenAIResponsesToolProps> = ({
   toolCall,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
 
@@ -139,10 +141,6 @@ export const OpenAIResponsesTool: React.FC<OpenAIResponsesToolProps> = ({
     }
     return "success";
   }, [maybeResult, isStreaming, isWaiting]);
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const content =
     maybeResult && typeof maybeResult.content === "string"

@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useCallback } from "react";
 import { CheckCircledIcon } from "@radix-ui/react-icons";
 import { Box, Flex, Text } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { useAppSelector, useEventsBusForIDE } from "../../../hooks";
 import { selectToolResultById } from "../../../features/Chat/Thread/selectors";
 import { ToolCall } from "../../../services/refact/types";
@@ -22,7 +23,6 @@ interface TaskDoneToolProps {
 }
 
 export const TaskDoneTool: React.FC<TaskDoneToolProps> = ({ toolCall }) => {
-  const [isOpen, setIsOpen] = useState(true);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
 
   const maybeResult = useAppSelector((state) =>
@@ -52,9 +52,8 @@ export const TaskDoneTool: React.FC<TaskDoneToolProps> = ({ toolCall }) => {
     return "success";
   }, [maybeResult]);
 
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey, true);
 
   const summary = data?.summary ?? "Task completed";
 

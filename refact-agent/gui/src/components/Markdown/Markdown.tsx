@@ -24,7 +24,11 @@ import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import "katex/dist/katex.min.css";
+import type { PluggableList } from "unified";
 import { useLinksFromLsp } from "../../hooks";
+
+const REMARK_PLUGINS: PluggableList = [remarkBreaks, remarkMath, remarkGfm];
+const REHYPE_PLUGINS: PluggableList = [rehypeKatex];
 
 import { ChatLinkButton } from "../ChatLinks";
 import { extractLinkFromPuzzle } from "../../utils/extractLinkFromPuzzle";
@@ -225,8 +229,8 @@ const _Markdown: React.FC<MarkdownProps> = ({
   return (
     <ReactMarkdown
       className={styles.markdown}
-      remarkPlugins={[remarkBreaks, remarkMath, remarkGfm]}
-      rehypePlugins={[rehypeKatex]}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
       allowedElements={allowedElements}
       unwrapDisallowed={unwrapDisallowed}
       components={components}

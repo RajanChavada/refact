@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useCallback } from "react";
 import { MoveIcon, TrashIcon, PlusCircledIcon } from "@radix-ui/react-icons";
 import { Box } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { useAppSelector, useEventsBusForIDE } from "../../../hooks";
 import {
   selectToolResultById,
@@ -39,7 +40,8 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
   toolType,
   diffs = [],
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
 
   const maybeResult = useAppSelector((state) =>
@@ -84,10 +86,6 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
     }
     return "running";
   }, [maybeResult, toolDiffs]);
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const handleFileClick = useCallback(
     (e: React.MouseEvent, filePath: string) => {

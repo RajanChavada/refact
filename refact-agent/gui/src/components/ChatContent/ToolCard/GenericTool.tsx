@@ -1,7 +1,8 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo } from "react";
 import { GearIcon } from "@radix-ui/react-icons";
 import { Box } from "@radix-ui/themes";
 import { ToolCard, ToolStatus } from "./ToolCard";
+import { useStoredOpen } from "../useStoredOpen";
 import { useAppSelector } from "../../../hooks";
 import {
   selectToolResultById,
@@ -50,7 +51,8 @@ function looksLikeMarkdown(text: string): boolean {
 }
 
 export const GenericTool: React.FC<GenericToolProps> = ({ toolCall }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, handleToggle] = useStoredOpen(storeKey);
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
 
@@ -70,10 +72,6 @@ export const GenericTool: React.FC<GenericToolProps> = ({ toolCall }) => {
     }
     return "success";
   }, [maybeResult, isStreaming, isWaiting]);
-
-  const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const content =
     maybeResult && typeof maybeResult.content === "string"

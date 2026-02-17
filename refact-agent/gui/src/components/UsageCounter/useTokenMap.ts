@@ -17,7 +17,17 @@ import type {
   TokenMap,
   TokenMapSegment,
   TokenMapItem,
+  Usage,
 } from "../../services/refact/chat";
+
+function getTotalInputTokens(usage: Usage | null | undefined): number {
+  if (!usage) return 0;
+  return (
+    usage.prompt_tokens +
+    (usage.cache_creation_input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0)
+  );
+}
 
 const PROJECT_CONTEXT_MARKER = "project_context";
 const MEMORIES_CONTEXT_MARKER = "memories_context";
@@ -126,7 +136,7 @@ export function useTokenMap(enabled = true): TokenMap | null {
     const assistantIndices: number[] = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      if (isAssistantMessage(msg) && msg.usage?.prompt_tokens) {
+      if (isAssistantMessage(msg) && getTotalInputTokens(msg.usage) > 0) {
         assistantIndices.push(i);
       }
     }
@@ -145,13 +155,10 @@ export function useTokenMap(enabled = true): TokenMap | null {
 
     for (const assistantIndex of assistantIndices) {
       const assistantMsg = messages[assistantIndex];
-      if (
-        !isAssistantMessage(assistantMsg) ||
-        !assistantMsg.usage?.prompt_tokens
-      )
-        continue;
-
-      const currentPromptTokens = assistantMsg.usage.prompt_tokens;
+      const currentPromptTokens = isAssistantMessage(assistantMsg)
+        ? getTotalInputTokens(assistantMsg.usage)
+        : 0;
+      if (currentPromptTokens === 0) continue;
       const deltaTokens = currentPromptTokens - prevPromptTokens;
 
       const segmentMessages: ChatMessage[] = [];
@@ -213,13 +220,10 @@ export function useTokenMap(enabled = true): TokenMap | null {
 
     const lastAssistantIndex = assistantIndices[assistantIndices.length - 1];
     const lastAssistantMsg = messages[lastAssistantIndex];
-    if (
-      !isAssistantMessage(lastAssistantMsg) ||
-      !lastAssistantMsg.usage?.prompt_tokens
-    ) {
-      return null;
-    }
-    const totalPromptTokens = lastAssistantMsg.usage.prompt_tokens;
+    const totalPromptTokens = isAssistantMessage(lastAssistantMsg)
+      ? getTotalInputTokens(lastAssistantMsg.usage)
+      : 0;
+    if (totalPromptTokens === 0) return null;
 
     const totalUsedTokens = Object.values(categoryTokens).reduce(
       (a, b) => a + b,

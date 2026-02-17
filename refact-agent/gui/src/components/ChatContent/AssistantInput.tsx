@@ -137,6 +137,7 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
             onCopyClick={handleCopy}
             isStreaming={isStreaming}
             hasMessageContent={!!message}
+            stateKey={messageId ? `re:${messageId}` : undefined}
           />
         </Box>
       )}

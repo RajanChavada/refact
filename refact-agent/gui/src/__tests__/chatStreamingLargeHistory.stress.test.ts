@@ -45,11 +45,11 @@ function createSnapshotEvent(
 function createMockReader(chunks: Uint8Array[]) {
   let index = 0;
   return {
-    read: vi.fn(async () => {
+    read: vi.fn(() => {
       if (index >= chunks.length) {
-        return { done: true, value: undefined };
+        return Promise.resolve({ done: true, value: undefined });
       }
-      return { done: false, value: chunks[index++] };
+      return Promise.resolve({ done: false, value: chunks[index++] });
     }),
   };
 }
@@ -132,7 +132,8 @@ describe("Chat Streaming + Large History Stress", () => {
       }),
     );
 
-    const runtime = state.threads[chatId]!;
+    const runtime = state.threads[chatId];
+    if (!runtime) throw new Error(`Runtime not found for chat ${chatId}`);
     const finalMessage = runtime.thread.messages[runtime.thread.messages.length - 1];
 
     expect(runtime.thread.messages).toHaveLength(historySize + 1);
@@ -182,7 +183,8 @@ describe("Chat Streaming + Large History Stress", () => {
       );
     }
 
-    const runtime = state.threads[chatId]!;
+    const runtime = state.threads[chatId];
+    if (!runtime) throw new Error(`Runtime not found for chat ${chatId}`);
     const finalMessage = runtime.thread.messages[runtime.thread.messages.length - 1];
     expect(finalMessage.content).toBe("base");
     expect(runtime.last_applied_seq).toBe("3");
