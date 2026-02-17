@@ -95,7 +95,9 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     selectSnapshotReceivedById(s, renderChatId),
   );
   const thread = useAppSelector((s) => selectThreadById(s, renderChatId));
-  const sseStatus = useAppSelector((s) => selectSseStatusForChat(s, renderChatId));
+  const sseStatus = useAppSelector((s) =>
+    selectSseStatusForChat(s, renderChatId),
+  );
 
   const isConfig = thread !== null && thread.mode === "CONFIGURE";
   const isWaiting = useAppSelector((s) => selectIsWaitingById(s, renderChatId));

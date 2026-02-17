@@ -39,7 +39,9 @@ export function useAllChatsSubscription() {
   );
   const lastActivityDispatchRef = useRef<Map<string, number>>(new Map());
   const lastActivityAtRef = useRef<Map<string, number>>(new Map());
-  const streamDeltaFlushRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const streamDeltaFlushRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
   const pendingStreamDeltaRef = useRef<
     Map<string, Extract<ChatEventEnvelope, { type: "stream_delta" }>>
   >(new Map());
@@ -48,10 +50,18 @@ export function useAllChatsSubscription() {
   const apiKeyRef = useRef(apiKey);
   const subscribeRef = useRef<((chatId: string) => void) | null>(null);
   const enqueueStreamDeltaRef = useRef<
-    ((chatId: string, envelope: Extract<ChatEventEnvelope, { type: "stream_delta" }>) => void) | null
+    | ((
+        chatId: string,
+        envelope: Extract<ChatEventEnvelope, { type: "stream_delta" }>,
+      ) => void)
+    | null
   >(null);
-  const flushPendingStreamDeltaForChatRef = useRef<((chatId: string) => void) | null>(null);
-  const clearStreamDeltaFlushForChatRef = useRef<((chatId: string) => void) | null>(null);
+  const flushPendingStreamDeltaForChatRef = useRef<
+    ((chatId: string) => void) | null
+  >(null);
+  const clearStreamDeltaFlushForChatRef = useRef<
+    ((chatId: string) => void) | null
+  >(null);
 
   const STALE_THRESHOLD_MS = 45_000;
 
@@ -164,7 +174,11 @@ export function useAllChatsSubscription() {
 
       scheduleStreamDeltaFlushForChat(chatId);
     },
-    [flushPendingStreamDeltaForChat, scheduleStreamDeltaFlushForChat, clearStreamDeltaFlushForChat],
+    [
+      flushPendingStreamDeltaForChat,
+      scheduleStreamDeltaFlushForChat,
+      clearStreamDeltaFlushForChat,
+    ],
   );
 
   enqueueStreamDeltaRef.current = enqueueStreamDelta;

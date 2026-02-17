@@ -79,9 +79,13 @@ export function useChatSubscription(
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const streamDeltaFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingStreamDeltaRef =
-    useRef<Extract<ChatEventEnvelope, { type: "stream_delta" }> | null>(null);
+  const streamDeltaFlushRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const pendingStreamDeltaRef = useRef<Extract<
+    ChatEventEnvelope,
+    { type: "stream_delta" }
+  > | null>(null);
   const streamedBytesRef = useRef(0);
   const connectingRef = useRef(false);
   // eslint-disable-next-line @typescript-eslint/no-empty-function

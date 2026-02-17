@@ -1186,13 +1186,27 @@ describe("Chat Thread Reducer - Event-based (Stateless Trajectory UI)", () => {
       // Advance to seq 5 via ack
       state = chatReducer(
         state,
-        applyChatEvent({ chat_id: chatId, seq: "5", type: "ack", client_request_id: "req-1", accepted: true, result: null }),
+        applyChatEvent({
+          chat_id: chatId,
+          seq: "5",
+          type: "ack",
+          client_request_id: "req-1",
+          accepted: true,
+          result: null,
+        }),
       );
 
       // Replay old ack at seq 3 - should be ignored
       state = chatReducer(
         state,
-        applyChatEvent({ chat_id: chatId, seq: "3", type: "ack", client_request_id: "req-2", accepted: true, result: null }),
+        applyChatEvent({
+          chat_id: chatId,
+          seq: "3",
+          type: "ack",
+          client_request_id: "req-2",
+          accepted: true,
+          result: null,
+        }),
       );
 
       expect(state.threads[chatId]!.last_applied_seq).toBe("5");
@@ -1231,7 +1245,14 @@ describe("Chat Thread Reducer - Event-based (Stateless Trajectory UI)", () => {
       // ack advances watermark to seq 5
       state = chatReducer(
         state,
-        applyChatEvent({ chat_id: chatId, seq: "5", type: "ack", client_request_id: "req-1", accepted: true, result: null }),
+        applyChatEvent({
+          chat_id: chatId,
+          seq: "5",
+          type: "ack",
+          client_request_id: "req-1",
+          accepted: true,
+          result: null,
+        }),
       );
 
       // Old message_added at seq 4 should be rejected
@@ -1241,7 +1262,11 @@ describe("Chat Thread Reducer - Event-based (Stateless Trajectory UI)", () => {
           chat_id: chatId,
           seq: "4",
           type: "message_added",
-          message: { role: "assistant", content: "Should be rejected", message_id: "m-stale" },
+          message: {
+            role: "assistant",
+            content: "Should be rejected",
+            message_id: "m-stale",
+          },
           index: 1,
         }),
       );
@@ -1364,10 +1389,16 @@ describe("Chat Thread Reducer - Event-based (Stateless Trajectory UI)", () => {
           seq: "2",
           type: "message_updated",
           message_id: "__proto__",
-          message: { role: "user", content: "Updated", message_id: "__proto__" },
+          message: {
+            role: "user",
+            content: "Updated",
+            message_id: "__proto__",
+          },
         }),
       );
-      expect(updateState.threads[chatId]!.thread.messages[0].content).toBe("Updated");
+      expect(updateState.threads[chatId]!.thread.messages[0].content).toBe(
+        "Updated",
+      );
     });
   });
 

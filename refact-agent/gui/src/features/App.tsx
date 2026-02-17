@@ -111,9 +111,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
 
   const pageSwitching = desiredPage !== renderedPage;
 
-  const isLoggedIn =
-    isPageInHistory("history") ||
-    isPageInHistory("chat");
+  const isLoggedIn = isPageInHistory("history") || isPageInHistory("chat");
 
   const hasCloudSession =
     (config.apiKey ?? "").trim().length > 0 &&

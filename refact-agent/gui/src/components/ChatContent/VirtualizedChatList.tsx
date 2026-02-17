@@ -137,7 +137,7 @@ export function VirtualizedChatList<T extends { key: string }>({
     const ListComponent = React.forwardRef<
       HTMLDivElement,
       React.HTMLAttributes<HTMLDivElement>
-      >(function VirtuosoList({ children, style, ...props }, ref) {
+    >(function VirtuosoList({ children, style, ...props }, ref) {
       return (
         <Flex
           ref={ref}
@@ -172,9 +172,7 @@ export function VirtualizedChatList<T extends { key: string }>({
 
   const viewportPadding = useMemo(
     () =>
-      isStreaming
-        ? { top: 1600, bottom: 2400 }
-        : { top: 3200, bottom: 4400 },
+      isStreaming ? { top: 1600, bottom: 2400 } : { top: 3200, bottom: 4400 },
     [isStreaming],
   );
 

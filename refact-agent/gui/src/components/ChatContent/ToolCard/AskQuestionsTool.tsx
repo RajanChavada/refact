@@ -298,8 +298,6 @@ export const AskQuestionsTool: React.FC<AskQuestionsToolProps> = ({
     return "success";
   }, [maybeResult, nextUserMessage]);
 
-
-
   useEffect(() => {
     if (nextUserMessage && !answeredViaForm && !hasCollapsedManualRef.current) {
       hasCollapsedManualRef.current = true;

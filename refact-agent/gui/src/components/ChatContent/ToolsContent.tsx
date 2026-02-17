@@ -1,4 +1,10 @@
-import React, { forwardRef, useCallback, useEffect, useMemo, useRef } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { Container, Flex, Text, Box, Spinner } from "@radix-ui/themes";
 import {
@@ -103,7 +109,12 @@ const Result: React.FC<ResultProps> = ({ children, onClose, storeKey }) => {
     children.length <= MAX_MD_RENDER_CHARS && looksLikeMarkdown(children);
 
   return (
-    <Reveal defaultOpen={lines.length < 9} isRevealingCode onClose={onClose} storeKey={storeKey}>
+    <Reveal
+      defaultOpen={lines.length < 9}
+      isRevealingCode
+      onClose={onClose}
+      storeKey={storeKey}
+    >
       {shouldRenderMarkdown ? (
         <Text size="2">
           <Box
@@ -169,7 +180,11 @@ const ToolMessage: React.FC<{
         </Box>
       </ScrollArea>
       {maybeResult?.content && (
-        <Result isInsideScrollArea onClose={onClose} storeKey={toolCall.id ? `rv:${toolCall.id}` : undefined}>
+        <Result
+          isInsideScrollArea
+          onClose={onClose}
+          storeKey={toolCall.id ? `rv:${toolCall.id}` : undefined}
+        >
           {maybeResult.content}
         </Result>
       )}

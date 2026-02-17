@@ -79,18 +79,20 @@ describe("Chat Streaming + Large History Stress", () => {
     const chunkCount = 1500;
     const chunkText = "abcdefghijklmnopqrstuvwxyz";
 
-    const messages: ChatMessage[] = Array.from({ length: historySize }, (_, i) =>
-      i % 2 === 0
-        ? {
-            role: "user",
-            content: `user-${i}`,
-            message_id: `u-${i}`,
-          }
-        : {
-            role: "assistant",
-            content: `assistant-${i}`,
-            message_id: `a-${i}`,
-          },
+    const messages: ChatMessage[] = Array.from(
+      { length: historySize },
+      (_, i) =>
+        i % 2 === 0
+          ? {
+              role: "user",
+              content: `user-${i}`,
+              message_id: `u-${i}`,
+            }
+          : {
+              role: "assistant",
+              content: `assistant-${i}`,
+              message_id: `a-${i}`,
+            },
     );
 
     const snapshot = createSnapshotEvent(chatId, messages);
@@ -134,7 +136,8 @@ describe("Chat Streaming + Large History Stress", () => {
 
     const runtime = state.threads[chatId];
     if (!runtime) throw new Error(`Runtime not found for chat ${chatId}`);
-    const finalMessage = runtime.thread.messages[runtime.thread.messages.length - 1];
+    const finalMessage =
+      runtime.thread.messages[runtime.thread.messages.length - 1];
 
     expect(runtime.thread.messages).toHaveLength(historySize + 1);
     expect(finalMessage.role).toBe("assistant");
@@ -185,7 +188,8 @@ describe("Chat Streaming + Large History Stress", () => {
 
     const runtime = state.threads[chatId];
     if (!runtime) throw new Error(`Runtime not found for chat ${chatId}`);
-    const finalMessage = runtime.thread.messages[runtime.thread.messages.length - 1];
+    const finalMessage =
+      runtime.thread.messages[runtime.thread.messages.length - 1];
     expect(finalMessage.content).toBe("base");
     expect(runtime.last_applied_seq).toBe("3");
   });
@@ -218,4 +222,3 @@ describe("Chat Streaming + Large History Stress", () => {
     expect(events[eventCount - 1].seq).toBe(String(eventCount));
   });
 });
-

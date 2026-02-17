@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useRef } from "react";
 import type { CollapsibleStore } from "./CollapsibleStore";
 
-export function useCollapsibleStoreProvider(resetKey: string): CollapsibleStore {
+export function useCollapsibleStoreProvider(
+  resetKey: string,
+): CollapsibleStore {
   const storeRef = useRef(new Map<string, boolean>());
   const prevKeyRef = useRef(resetKey);
 

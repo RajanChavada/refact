@@ -23,7 +23,7 @@ export function useAutoExpandCollapse({
   const store = useCollapsibleStore();
   const initialOpen = storeKey && store ? store.get(storeKey) : undefined;
 
-  const [isOpen, setIsOpen] = useState(initialOpen ?? (status === "running"));
+  const [isOpen, setIsOpen] = useState(initialOpen ?? status === "running");
   const [animate, setAnimate] = useState(false);
   const userToggledRef = useRef(false);
   const prevStatusRef = useRef(status);

@@ -202,7 +202,10 @@ describe("Multi-Chat Streaming Stress Tests", () => {
                     {
                       id: `tc-${chatId}`,
                       type: "function",
-                      function: { name: "cat", arguments: '{"paths":"test.ts"}' },
+                      function: {
+                        name: "cat",
+                        arguments: '{"paths":"test.ts"}',
+                      },
                     },
                   ],
                 },
@@ -421,19 +424,23 @@ describe("Multi-Chat Streaming Stress Tests", () => {
       },
     ];
 
-    const reconnectSnapshot = createSnapshotEvent(reconnectChatId, freshMessages, "0");
+    const reconnectSnapshot = createSnapshotEvent(
+      reconnectChatId,
+      freshMessages,
+      "0",
+    );
     if (reconnectSnapshot.type === "snapshot") {
       reconnectSnapshot.runtime.state = "generating";
     }
     state = chatReducer(state, applyChatEvent(reconnectSnapshot));
 
     const reconnectedRt = state.threads[reconnectChatId];
-    if (!reconnectedRt) throw new Error(`Runtime not found for chat ${reconnectChatId}`);
+    if (!reconnectedRt)
+      throw new Error(`Runtime not found for chat ${reconnectChatId}`);
     expect(reconnectedRt.thread.messages).toHaveLength(51);
     expect(
-      reconnectedRt.thread.messages[
-        reconnectedRt.thread.messages.length - 1
-      ].content,
+      reconnectedRt.thread.messages[reconnectedRt.thread.messages.length - 1]
+        .content,
     ).toBe("full recovered content");
     expect(reconnectedRt.streaming).toBe(true);
 

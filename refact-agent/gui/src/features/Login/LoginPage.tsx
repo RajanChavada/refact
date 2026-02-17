@@ -130,7 +130,11 @@ export const LoginPage: React.FC = () => {
               {isRefactCloudLoggedIn ? (
                 <Flex direction="column" gap="3" align="center">
                   <Flex align="center" gap="2">
-                    <CheckCircledIcon width="16" height="16" color="var(--green-9)" />
+                    <CheckCircledIcon
+                      width="16"
+                      height="16"
+                      color="var(--green-9)"
+                    />
                     <Text size="2" weight="medium">
                       Logged in to Refact Cloud
                     </Text>
@@ -155,14 +159,16 @@ export const LoginPage: React.FC = () => {
                     <Text size="2">
                       <ul>
                         <li>
-                          Chat with your codebase powered by top models (e.g. Claude
-                          3.7 Sonnet, OpenAI GPT-4o and o3-mini).
+                          Chat with your codebase powered by top models (e.g.
+                          Claude 3.7 Sonnet, OpenAI GPT-4o and o3-mini).
                         </li>
-                        <li>Unlimited Code Completions (powered by Qwen2.5).</li>
+                        <li>
+                          Unlimited Code Completions (powered by Qwen2.5).
+                        </li>
                         <li>Codebase-aware vector database (RAG).</li>
                         <li>
-                          Agentic features: browser use, database connect, debugger,
-                          shell commands, etc.
+                          Agentic features: browser use, database connect,
+                          debugger, shell commands, etc.
                         </li>
                       </ul>
                     </Text>
@@ -185,7 +191,8 @@ export const LoginPage: React.FC = () => {
                       }}
                       disabled={isLoading}
                     >
-                      <GitHubLogoIcon width="15" height="15" /> Continue with GitHub
+                      <GitHubLogoIcon width="15" height="15" /> Continue with
+                      GitHub
                     </Button>
 
                     <Text>or</Text>
@@ -216,7 +223,9 @@ export const LoginPage: React.FC = () => {
                         >
                           Send magic link
                         </Button>{" "}
-                        {isLoading && <Button onClick={onCancel}>Cancel</Button>}
+                        {isLoading && (
+                          <Button onClick={onCancel}>Cancel</Button>
+                        )}
                         <Text size="1" align="center">
                           We will send you a one-time login link by email.
                         </Text>

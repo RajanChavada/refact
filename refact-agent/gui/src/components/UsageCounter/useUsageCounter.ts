@@ -14,22 +14,19 @@ export function useUsageCounter() {
   const messages = useAppSelector(selectMessages);
   const maxContextTokens = useAppSelector(selectEffectiveMaxContextTokens);
 
-  const {
-    assistantMessages,
-    currentThreadUsage,
-    lastAssistantMessage,
-  } = useMemo(() => {
-    const assistants = messages.filter(isAssistantMessage);
-    const mergedUsage = mergeUsages(assistants.map((msg) => msg.usage));
-    const lastAssistant =
-      assistants.length > 0 ? assistants[assistants.length - 1] : undefined;
+  const { assistantMessages, currentThreadUsage, lastAssistantMessage } =
+    useMemo(() => {
+      const assistants = messages.filter(isAssistantMessage);
+      const mergedUsage = mergeUsages(assistants.map((msg) => msg.usage));
+      const lastAssistant =
+        assistants.length > 0 ? assistants[assistants.length - 1] : undefined;
 
-    return {
-      assistantMessages: assistants,
-      currentThreadUsage: mergedUsage,
-      lastAssistantMessage: lastAssistant,
-    };
-  }, [messages]);
+      return {
+        assistantMessages: assistants,
+        currentThreadUsage: mergedUsage,
+        lastAssistantMessage: lastAssistant,
+      };
+    }, [messages]);
 
   // Check if the last message has server-executed tools (like web_search)
   // These can cause temporary inflated token counts during streaming.

@@ -998,7 +998,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1097,7 +1099,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1128,7 +1132,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
             } else {
               rt.thread.messages[existingIdx] = msg;
             }
-            rt.message_index_by_id = rebuildMessageIndexById(rt.thread.messages);
+            rt.message_index_by_id = rebuildMessageIndexById(
+              rt.thread.messages,
+            );
             rt.last_applied_seq = event.seq;
             break;
           }
@@ -1147,7 +1153,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1164,7 +1172,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1180,7 +1190,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1198,7 +1210,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1222,7 +1236,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1243,7 +1259,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1276,7 +1294,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1296,7 +1316,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1312,7 +1334,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1324,7 +1348,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1364,7 +1390,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1376,7 +1404,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }
@@ -1390,7 +1420,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);
         const lastSeq =
-          rt.last_applied_seq != null ? parseEventSeq(rt.last_applied_seq) : null;
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
         if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
           break;
         }

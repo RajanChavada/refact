@@ -1,4 +1,10 @@
-import { useCallback, useContext, useEffect, useState, createContext } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  createContext,
+} from "react";
 import type { CollapsibleStore } from "./CollapsibleStore";
 
 const CollapsibleStoreContext = createContext<CollapsibleStore | null>(null);

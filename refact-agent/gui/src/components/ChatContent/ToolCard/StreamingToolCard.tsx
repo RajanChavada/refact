@@ -48,7 +48,10 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
   }, [maybeResult]);
 
   const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
-  const { isOpen, onToggle, animate } = useAutoExpandCollapse({ status, storeKey });
+  const { isOpen, onToggle, animate } = useAutoExpandCollapse({
+    status,
+    storeKey,
+  });
 
   const content =
     maybeResult && typeof maybeResult.content === "string"
