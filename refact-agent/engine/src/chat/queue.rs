@@ -888,13 +888,14 @@ async fn handle_tool_decisions(
         .await;
 
         // Determine tool-requested final state before checking abort.
-        // Some tools (ask_questions/task_done) set abort_flag=true as part of
+        // Some tools (ask_questions/task_done/task_agent_finish) set abort_flag=true as part of
         // normal operation to stop further LLM generation.
         let mut final_state = SessionState::Idle;
         for tool_call in &tool_calls_to_execute {
             match tool_call.function.name.as_str() {
                 "ask_questions" => final_state = SessionState::WaitingUserInput,
                 "task_done" => final_state = SessionState::Completed,
+                "task_agent_finish" => final_state = SessionState::Completed,
                 _ => {}
             }
         }

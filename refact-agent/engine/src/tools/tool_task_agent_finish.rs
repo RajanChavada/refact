@@ -405,6 +405,11 @@ impl Tool for ToolTaskAgentFinish {
             }
         }
 
+        {
+            let ccx_lock = ccx.lock().await;
+            ccx_lock.abort_flag.store(true, Ordering::SeqCst);
+        }
+
         Ok((
             false,
             vec![ContextEnum::ChatMessage(ChatMessage {
