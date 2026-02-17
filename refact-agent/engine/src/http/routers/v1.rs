@@ -134,6 +134,7 @@ mod project_configs;
 mod chat_modes;
 mod customization_editor;
 pub mod project_information;
+mod v1_browser;
 
 use crate::http::routers::v1::chat_modes::handle_v1_chat_modes;
 use crate::http::routers::v1::customization_editor::{
@@ -144,6 +145,15 @@ use crate::http::routers::v1::customization_editor::{
 use crate::http::routers::v1::project_information::{
     handle_v1_project_information_get, handle_v1_project_information_save,
     handle_v1_project_information_preview,
+};
+use crate::http::routers::v1::v1_browser::{
+    handle_browser_start, handle_browser_stop, handle_browser_screenshot,
+    handle_browser_context, handle_browser_context_commit,
+    handle_browser_element_pick, handle_browser_element_pick_result,
+    handle_browser_curl, handle_browser_eval,
+    handle_browser_inject_css, handle_browser_remove_css,
+    handle_browser_dom_snapshot, handle_browser_accessibility,
+    handle_browser_record_animation, handle_browser_handoff,
 };
 
 pub fn make_v1_router() -> Router {
@@ -363,7 +373,22 @@ pub fn make_v1_router() -> Router {
         )
         .route("/project-information", get(handle_v1_project_information_get))
         .route("/project-information", post(handle_v1_project_information_save))
-        .route("/project-information/preview", post(handle_v1_project_information_preview));
+        .route("/project-information/preview", post(handle_v1_project_information_preview))
+        .route("/browser/start", post(handle_browser_start))
+        .route("/browser/stop", post(handle_browser_stop))
+        .route("/browser/screenshot", post(handle_browser_screenshot))
+        .route("/browser/context", post(handle_browser_context))
+        .route("/browser/context/commit", post(handle_browser_context_commit))
+        .route("/browser/element-pick", post(handle_browser_element_pick))
+        .route("/browser/element-pick/result", post(handle_browser_element_pick_result))
+        .route("/browser/curl", post(handle_browser_curl))
+        .route("/browser/eval", post(handle_browser_eval))
+        .route("/browser/inject-css", post(handle_browser_inject_css))
+        .route("/browser/remove-css", post(handle_browser_remove_css))
+        .route("/browser/dom-snapshot", post(handle_browser_dom_snapshot))
+        .route("/browser/accessibility", post(handle_browser_accessibility))
+        .route("/browser/record-animation", post(handle_browser_record_animation))
+        .route("/browser/handoff", post(handle_browser_handoff));
 
     builder.layer(axum::middleware::from_fn(telemetry_middleware))
 }
