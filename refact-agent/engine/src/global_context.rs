@@ -21,6 +21,7 @@ use crate::providers::{ProviderRegistry, load_providers_from_config};
 use crate::completion_cache::CompletionCache;
 use crate::custom_error::ScratchError;
 use crate::files_in_workspace::DocumentsState;
+use crate::integrations::browser_runtime::BrowserRuntime;
 use crate::integrations::docker::docker_ssh_tunnel_utils::SshTunnel;
 use crate::integrations::sessions::IntegrationSession;
 use crate::privacy::PrivacySettings;
@@ -285,6 +286,7 @@ pub struct GlobalContext {
     pub privacy_settings: Arc<PrivacySettings>,
     pub indexing_everywhere: Arc<crate::files_blocklist::IndexingEverywhere>,
     pub integration_sessions: HashMap<String, Arc<AMutex<Box<dyn IntegrationSession>>>>,
+    pub browser_runtimes: HashMap<String, Arc<AMutex<BrowserRuntime>>>,
     pub codelens_cache: Arc<AMutex<crate::http::routers::v1::code_lens::CodeLensCache>>,
     pub docker_ssh_tunnel: Arc<AMutex<Option<SshTunnel>>>,
     pub active_group_id: Option<String>,
@@ -579,6 +581,7 @@ pub async fn create_global_context(
         privacy_settings: Arc::new(PrivacySettings::default()),
         indexing_everywhere: Arc::new(crate::files_blocklist::IndexingEverywhere::default()),
         integration_sessions: HashMap::new(),
+        browser_runtimes: HashMap::new(),
         codelens_cache: Arc::new(AMutex::new(
             crate::http::routers::v1::code_lens::CodeLensCache::default(),
         )),
@@ -685,6 +688,7 @@ pub mod tests {
             privacy_settings: Arc::new(PrivacySettings::default()),
             indexing_everywhere: Arc::new(crate::files_blocklist::IndexingEverywhere::default()),
             integration_sessions: HashMap::new(),
+            browser_runtimes: HashMap::new(),
             codelens_cache: Arc::new(AMutex::new(
                 crate::http::routers::v1::code_lens::CodeLensCache::default(),
             )),

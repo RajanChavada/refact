@@ -2653,6 +2653,7 @@ mod tests {
                 link_type: Some("subagent".to_string()),
                 root_chat_id: Some("root-chat-id".to_string()),
                 previous_response_id: None,
+                browser_meta: None,
             },
             messages: vec![ChatMessage::new("user".to_string(), "Hello".to_string())],
             runtime: super::super::types::RuntimeState::default(),
