@@ -23,3 +23,4 @@ export * from "./chatSubscription";
 export * from "./chatCommands";
 export * from "./tasks";
 export * from "./sidebarSubscription";
+export * from "./browser";

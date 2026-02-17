@@ -61,3 +61,12 @@ export const MODELS_URL = "/v1/models";
 export const MODEL_URL = "/v1/model";
 export const MODEL_DEFAULTS_URL = "/v1/model-defaults";
 export const COMPLETION_MODEL_FAMILIES_URL = "/v1/completion-model-families";
+
+// Browser endpoints
+export const BROWSER_START = "/v1/browser/start";
+export const BROWSER_STOP = "/v1/browser/stop";
+export const BROWSER_SCREENSHOT = "/v1/browser/screenshot";
+export const BROWSER_CONTEXT = "/v1/browser/context";
+export const BROWSER_CURL = "/v1/browser/curl";
+export const BROWSER_ELEMENT_PICK = "/v1/browser/element-pick";
+export const BROWSER_RECORD_ANIMATION = "/v1/browser/record-animation";

@@ -14,6 +14,8 @@ import { DropzoneProvider } from "../Dropzone";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
 import { Checkpoints } from "../../features/Checkpoints";
 import { TaskProgressWidget } from "../TaskProgressWidget";
+import { BrowserPanel } from "../../features/Browser/BrowserPanel";
+import { selectThreadById } from "../../features/Chat/Thread/selectors";
 
 export type ChatProps = {
   host: Config["host"];
@@ -35,6 +37,8 @@ export const Chat: React.FC<ChatProps> = ({
   const isStreaming = useAppSelector(selectIsStreaming);
 
   const chatId = useAppSelector(selectChatId);
+  const thread = useAppSelector((state) => selectThreadById(state, chatId));
+  const isBrowserMode = thread?.mode === "browser";
 
   const { submit, abort, retryFromIndex } = useChatActions();
 
@@ -74,6 +78,7 @@ export const Chat: React.FC<ChatProps> = ({
         width="100%"
         px="1"
       >
+        {isBrowserMode && <BrowserPanel chatId={chatId} />}
         <Flex
           direction="column"
           style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}

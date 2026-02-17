@@ -1,6 +1,11 @@
 import { TextField, HoverCard, Text, Badge } from "@radix-ui/themes";
 import { Dropdown, DropdownNavigationOptions } from "./Dropdown";
-import { Cross1Icon, PlusIcon, CheckboxIcon } from "@radix-ui/react-icons";
+import {
+  Cross1Icon,
+  PlusIcon,
+  CheckboxIcon,
+  GlobeIcon,
+} from "@radix-ui/react-icons";
 import classNames from "classnames";
 import { RefactIcon } from "../../images";
 import { newChatAction } from "../../events";
@@ -35,6 +40,7 @@ import {
   selectChatId,
   clearThreadPauseReasons,
   setThreadConfirmationStatus,
+  setThreadMode,
 } from "../../features/Chat";
 import { StatusDot } from "../StatusDot";
 import {
@@ -45,6 +51,7 @@ import {
 import { telemetryApi } from "../../services/refact/telemetry";
 import { useGetChatModesQuery } from "../../services/refact/chatModes";
 
+import { store } from "../../app/store";
 import styles from "./Toolbar.module.css";
 import { useActiveTeamsGroup } from "../../hooks/useActiveTeamsGroup";
 import { ConnectionStatusIndicator } from "../ConnectionStatus";
@@ -229,6 +236,57 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
         /* handled by RTK Query */
       });
   }, [createTask, dispatch, sendTelemetryEvent]);
+
+  const onCreateNewBrowser = useCallback(() => {
+    setRenameState(null);
+
+    const currentThread = allThreads[currentChatId] as
+      | { thread: { messages: unknown[] } }
+      | undefined;
+
+    dispatch(clearThreadPauseReasons({ id: currentChatId }));
+    dispatch(
+      setThreadConfirmationStatus({
+        id: currentChatId,
+        wasInteracted: false,
+        confirmationStatus: true,
+      }),
+    );
+
+    if (currentThread && currentThread.thread.messages.length === 0) {
+      dispatch(closeThread({ id: currentChatId }));
+    }
+
+    dispatch(newChatAction({ title: "Browser" }));
+
+    const newChatId = store.getState().chat.current_thread_id;
+    dispatch(
+      setThreadMode({
+        chatId: newChatId,
+        mode: "browser",
+        threadDefaults: {
+          include_project_info: false,
+          checkpoints_enabled: false,
+          auto_approve_editing_tools: true,
+          auto_approve_dangerous_commands: true,
+        },
+      }),
+    );
+
+    handleNavigation("chat");
+
+    void sendTelemetryEvent({
+      scope: `openNewBrowser`,
+      success: true,
+      error_message: "",
+    });
+  }, [
+    dispatch,
+    currentChatId,
+    allThreads,
+    sendTelemetryEvent,
+    handleNavigation,
+  ]);
 
   const goToTab = useCallback(
     (tab: Tab) => {
@@ -561,6 +619,25 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
           <HoverCard.Content size="1" side="bottom">
             <Text as="p" size="2">
               New Task
+            </Text>
+          </HoverCard.Content>
+        </HoverCard.Root>
+
+        <HoverCard.Root>
+          <HoverCard.Trigger>
+            <button
+              type="button"
+              className={styles.iconButton}
+              onClick={onCreateNewBrowser}
+              disabled={!newChatEnabled}
+              aria-label="New Browser"
+            >
+              <GlobeIcon />
+            </button>
+          </HoverCard.Trigger>
+          <HoverCard.Content size="1" side="bottom">
+            <Text as="p" size="2">
+              New Browser
             </Text>
           </HoverCard.Content>
         </HoverCard.Root>

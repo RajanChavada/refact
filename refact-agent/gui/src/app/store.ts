@@ -30,6 +30,7 @@ import {
   trajectoriesApi,
   trajectoryApi,
   tasksApi,
+  browserApi,
 } from "../services/refact";
 import { chatModesApi } from "../services/refact/chatModes";
 import { customizationApi } from "../services/refact/customization";
@@ -62,6 +63,7 @@ import { patchesAndDiffsTrackerSlice } from "../features/PatchesAndDiffsTracker/
 import { coinBallanceSlice } from "../features/CoinBalance";
 import { tasksSlice } from "../features/Tasks";
 import { connectionSlice } from "../features/Connection";
+import { browserSlice } from "../features/Browser";
 
 const tipOfTheDayPersistConfig = {
   key: "totd",
@@ -105,6 +107,7 @@ const rootReducer = combineSlices(
     [trajectoriesApi.reducerPath]: trajectoriesApi.reducer,
     [trajectoryApi.reducerPath]: trajectoryApi.reducer,
     [tasksApi.reducerPath]: tasksApi.reducer,
+    [browserApi.reducerPath]: browserApi.reducer,
     [chatModesApi.reducerPath]: chatModesApi.reducer,
     [customizationApi.reducerPath]: customizationApi.reducer,
     [projectInformationApi.reducerPath]: projectInformationApi.reducer,
@@ -123,6 +126,7 @@ const rootReducer = combineSlices(
   coinBallanceSlice,
   tasksSlice,
   connectionSlice,
+  browserSlice,
 );
 
 const rootPersistConfig = {
@@ -195,6 +199,7 @@ export function setUpStore(preloadedState?: Partial<RootState>) {
           trajectoriesApi.middleware,
           trajectoryApi.middleware,
           tasksApi.middleware,
+          browserApi.middleware,
           chatModesApi.middleware,
           customizationApi.middleware,
           projectInformationApi.middleware,
