@@ -7,7 +7,7 @@
   border-radius: 6px;
   flex-shrink: 0;
   overflow: hidden;
-  background-color: var(--color-surface);
+  background-color: transparent;
 }
 
 /* Main chat input - transparent/subtle appearance */

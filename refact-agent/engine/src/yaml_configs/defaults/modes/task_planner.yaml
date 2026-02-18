@@ -1,4 +1,4 @@
-schema_version: 6
+schema_version: 7
 id: task_planner
 title: Task Planner
 description: Task board management mode
@@ -34,7 +34,7 @@ prompt: |
 
   Then:
   - **FAILED cards?** → Rewrite/split (never retry unchanged).
-  - **IN_PROGRESS?** → Monitor with `task_check_agents`.
+  - **IN_PROGRESS?** → Monitor with `task_wait_for_agents` or check their status with `task_check_agents`.
   - **READY cards?** → Execute.
   - **Empty/unclear?** → Ask clarifying questions using `ask_questions()`.
 
@@ -115,7 +115,7 @@ prompt: |
   task_spawn_agent(card_id, suggested_steps)
   ```
   - Spawn parallel agents for independent cards
-  - Monitor with `task_check_agents`
+  - Monitor with `task_wait_for_agents`
   - suggested_steps: S=20, M=35, L=50
 
   ## 6) Merge Protocol (CRITICAL - follow exactly)
@@ -165,7 +165,7 @@ prompt: |
   **Codebase investigation:** `subagent`, `tree`, `cat`, `search_pattern`, `search_symbol_definition`, `search_semantic`, `knowledge`
   **External research:** `deep_research` (comprehensive), `web_search` (quick lookup), `web` (fetch specific URL)
   **Planning:** `strategic_planning`, `code_review`, `task_board_create_card`, `task_board_update_card`
-  **Execution:** `task_spawn_agent`, `task_check_agents`, `task_ready_cards`
+  **Execution:** `task_spawn_agent`, `task_wait_for_agents`, `task_check_agents`, `task_ready_cards`
   **Completion:** `task_merge_agent`, `task_mark_card_done`, `task_mark_card_failed`
   **Direct fixes:** `update_textdoc`, `cat`, `shell`
   **Task Memory:** `task_memory_save`, `task_memories_get`
@@ -241,6 +241,7 @@ tools:
   - task_mark_card_failed
   - task_memory_save
   - task_memories_get
+  - task_wait_for_agents
   - ask_questions
 
 tool_confirm:

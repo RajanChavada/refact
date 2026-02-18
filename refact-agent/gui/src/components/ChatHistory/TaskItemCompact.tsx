@@ -7,7 +7,8 @@ import {
   Badge,
 } from "@radix-ui/themes";
 import { Cross1Icon, Pencil1Icon, CheckIcon } from "@radix-ui/react-icons";
-import { StatusDot, StatusDotState } from "../StatusDot";
+import { StatusDot } from "../StatusDot";
+import { getTaskStatusDotState } from "../../utils/sessionStatus";
 import { CircularProgress } from "./CircularProgress";
 import type { TaskMeta } from "../../services/refact/tasks";
 import styles from "./HistoryItemCompact.module.css";
@@ -20,26 +21,6 @@ export interface TaskItemCompactProps {
   badge?: string;
 }
 
-function getTaskStatusDotState(task: TaskMeta): StatusDotState {
-  const plannerState = task.planner_session_state;
-
-  if (plannerState === "generating" || plannerState === "executing_tools") {
-    return "in_progress";
-  }
-  if (plannerState === "paused" || plannerState === "waiting_ide") {
-    return "needs_attention";
-  }
-  if (plannerState === "error" || task.status === "abandoned") {
-    return "error";
-  }
-  if (task.status === "completed") {
-    return "completed";
-  }
-  if (task.agents_active > 0) {
-    return "in_progress";
-  }
-  return "idle";
-}
 
 function getTaskTooltip(task: TaskMeta): string {
   const plannerState = task.planner_session_state;

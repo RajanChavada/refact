@@ -29,7 +29,7 @@ import {
   useCreatePlannerChatMutation,
   BoardCard,
 } from "../../services/refact/tasks";
-import { ModelSelector } from "../../components/Chat/ModelSelector";
+import { ModelPickerPopover } from "../../components/ChatForm/ModelPickerPopover";
 import styles from "./Tasks.module.css";
 import { Chat } from "../Chat";
 import { selectConfig } from "../Config/configSlice";
@@ -273,24 +273,17 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
           </ScrollArea>
         )}
       </Box>
-      <Flex
-        p="2"
-        align="center"
-        justify="between"
-        gap="2"
-        style={{ borderTop: "1px solid var(--gray-4)" }}
-      >
-        <Text size="1" color="gray">
-          Agent model
-        </Text>
-        {onModelChange && (
-          <ModelSelector
-            value={defaultAgentModel}
+      {onModelChange && (
+        <Flex
+          p="2"
+          style={{ borderTop: "1px solid var(--gray-4)" }}
+        >
+          <ModelPickerPopover
+            value={defaultAgentModel ?? ""}
             onValueChange={onModelChange}
-            showLabel={false}
           />
-        )}
-      </Flex>
+        </Flex>
+      )}
     </Box>
   );
 };

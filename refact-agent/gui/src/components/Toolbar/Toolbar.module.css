@@ -126,12 +126,12 @@
 }
 
 .tabButtonActive {
-  background: var(--color-background);
+  background: transparent;
   color: var(--gray-12);
 }
 
 .tabButtonActive:hover {
-  background: var(--color-background);
+  background: transparent;
 }
 
 .tabStatus {

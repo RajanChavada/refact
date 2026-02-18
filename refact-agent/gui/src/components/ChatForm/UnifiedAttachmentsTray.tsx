@@ -72,7 +72,8 @@ export const UnifiedAttachmentsTray: React.FC<UnifiedAttachmentsTrayProps> = ({
 
     attachedFiles.files.forEach((file, index) => {
       const lineRange = formatLineRange(file.line1, file.line2);
-      addedFilePaths.add(file.path);
+      // Strip line range suffix (e.g. "/path/file.py:10-20" → "/path/file.py") before dedup
+      addedFilePaths.add(file.path.replace(/:\d+(-\d+)?$/, ""));
       result.push({
         kind: "file",
         id: `attached-${file.path}-${index}`,
@@ -101,8 +102,8 @@ export const UnifiedAttachmentsTray: React.FC<UnifiedAttachmentsTrayProps> = ({
             copyText: file,
           });
         } else {
-          // Skip if this file was already added from attachedFiles
-          if (addedFilePaths.has(file.file_name)) {
+          // Skip if this file was already added from attachedFiles (normalize away line range suffix)
+          if (addedFilePaths.has(file.file_name.replace(/:\d+(-\d+)?$/, ""))) {
             return;
           }
           const lineRange = formatLineRange(file.line1, file.line2);

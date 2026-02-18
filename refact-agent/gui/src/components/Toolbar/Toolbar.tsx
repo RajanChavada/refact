@@ -8,7 +8,10 @@ import {
 import classNames from "classnames";
 import { RefactIcon } from "../../images";
 import { newChatAction } from "../../events";
-import { getStatusFromSessionState } from "../../utils/sessionStatus";
+import {
+  getStatusFromSessionState,
+  getTaskStatusDotState,
+} from "../../utils/sessionStatus";
 import { popBackTo, push } from "../../features/Pages/pagesSlice";
 import {
   useCreateTaskMutation,
@@ -455,7 +458,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
                   title={taskName}
                 >
                   <span className={styles.tabStatus}>
-                    <StatusDot state={getStatusFromSessionState(taskMeta?.planner_session_state)} size="small" />
+                    <StatusDot state={taskMeta ? getTaskStatusDotState(taskMeta) : "idle"} size="small" />
                   </span>
                   <span className={styles.tabTitle}>{taskName}</span>
                 </button>

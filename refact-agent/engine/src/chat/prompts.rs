@@ -465,7 +465,9 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
 
     let canonical_chat_mode = canonical_mode_id(&chat_meta.chat_mode).unwrap_or_else(|_| "agent".to_string());
     if matches!(canonical_chat_mode.as_str(), "task_planner" | "task_agent") {
-        match inject_task_memories(&gcx, &mut messages, stream_back_to_user, &chat_meta.chat_id)
+        let task_id_opt = task_meta.as_ref().map(|m| m.task_id.clone())
+            .or_else(|| infer_task_id_from_chat_id(&chat_meta.chat_id));
+        match inject_task_memories(&gcx, &mut messages, stream_back_to_user, task_id_opt)
             .await
         {
             Ok(()) => {}
@@ -555,9 +557,9 @@ pub async fn inject_task_memories(
     gcx: &Arc<ARwLock<GlobalContext>>,
     messages: &mut Vec<ChatMessage>,
     stream_back_to_user: &mut HasRagResults,
-    chat_id: &str,
+    task_id_opt: Option<String>,
 ) -> Result<(), String> {
-    let task_id = match infer_task_id_from_chat_id(chat_id) {
+    let task_id = match task_id_opt {
         Some(id) => id,
         None => return Ok(()),
     };

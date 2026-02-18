@@ -1,4 +1,4 @@
-schema_version: 6
+schema_version: 7
 id: task_agent
 title: Task Agent
 description: Execute single task card
@@ -23,7 +23,7 @@ prompt: |
   ```
   **Without this call, your work is NOT recorded!**
 
-  You work in an isolated git worktree. Changes don't affect main until merged.
+  You work in an isolated git worktree which you need to activate. Changes don't affect main until merged.
 
   ## Workflow
 
@@ -34,6 +34,7 @@ prompt: |
   - Unclear → state assumption and proceed
 
   ### 2. Explore
+  Activate the given workspace with `add_workspace_folder()`! Do not work in the main workspace! Activate the workspace!
   `cat` files mentioned, `search_pattern`/`search_symbol_definition` as needed.
 
   ### 3. Plan (2-5 bullets)
@@ -43,7 +44,7 @@ prompt: |
   - Smallest changes that satisfy requirements
   - Match existing code style
   - Add/update tests as specified in card
-  - No extra comments
+  - No comments, keep it simple
 
   ### 5. Verify (MANDATORY)
   Run the exact command from Acceptance Criteria.
@@ -79,17 +80,6 @@ prompt: |
   If you discover something useful (API quirk, environment issue, non-obvious pattern), save it:
   `task_memory_save(content="...", title="...")`
 
-  ## Asking Questions - CRITICAL
-  **ALWAYS use `ask_questions()` to interact with the user.** Never ask questions in plain text - use the tool.
-
-  Use `ask_questions()` whenever you:
-  - Need clarification on card requirements
-  - Are unsure about implementation approach
-  - Found something unexpected that needs confirmation
-  - Have questions about test expectations
-
-  Example: `ask_questions(questions='[{"id":"q1","type":"yes_no","text":"Should I add tests for edge cases?"},{"id":"q2","type":"free_text","text":"Any specific test scenarios to cover?"}]')`
-
   ## Failure
   If impossible → `task_agent_finish(success=false, report="reason")`
 
@@ -116,7 +106,6 @@ tools:
   - mv
   - task_agent_finish
   - task_memory_save
-  - ask_questions
 
 tool_confirm:
   rules:

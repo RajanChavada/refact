@@ -123,7 +123,7 @@ export const HistoryItemCompact: React.FC<HistoryItemCompactProps> = ({
 
   const modeId = historyItem.mode;
   const modeInfo = modesData?.modes.find((m) => m.id === modeId);
-  const modeTitle = modeInfo?.title ?? modeId;
+  const modeTitle = modeInfo?.title;
   const dateTimeString = formatDateTime(historyItem.updatedAt);
   const messageCount = historyItem.message_count ?? historyItem.messages.length;
   const totalCoins = historyItem.total_coins;
