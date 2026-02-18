@@ -153,7 +153,9 @@ const FileItem: React.FC<{
   onOpenFile: (file: { file_path: string; line?: number }) => Promise<void>;
   variant: ContextVariant;
 }> = ({ file, onOpenFile, variant }) => {
-  const storeKey = `ctxfile:${file.file_name}:${file.line1 || 0}-${file.line2 || 0}`;
+  const storeKey = `ctxfile:${file.file_name}:${file.line1 || 0}-${
+    file.line2 || 0
+  }`;
   const [isOpen, toggleOpen] = useStoredOpen(storeKey, false);
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(isOpen, 200);
   const extension = getExtensionFromName(file.file_name);

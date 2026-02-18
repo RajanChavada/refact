@@ -185,7 +185,10 @@ export const ActionTimeline = ({ chatId }: ActionTimelineProps) => {
           <div className={styles.emptyTimeline}>No timeline events</div>
         ) : (
           filtered.map((entry, idx) => (
-            <TimelineEntryItem key={`${entry.timestamp}-${idx}`} entry={entry} />
+            <TimelineEntryItem
+              key={`${entry.timestamp}-${idx}`}
+              entry={entry}
+            />
           ))
         )}
       </div>

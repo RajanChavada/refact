@@ -48,7 +48,6 @@ export type BrowserContextOversizeInfo = {
   mutation_bytes: number;
 };
 
-
 export type BrowserToolbarActionType =
   | "screenshot"
   | "screenshot_full"
@@ -92,9 +91,15 @@ const initialState: BrowserState = {
 const TIMELINE_MAX = 2000;
 
 const VALID_TOOLBAR_ACTIONS = [
-  "screenshot", "screenshot_full", "pick_element",
-  "paste_actions", "paste_console", "paste_network",
-  "curl", "summarize", "extract_json",
+  "screenshot",
+  "screenshot_full",
+  "pick_element",
+  "paste_actions",
+  "paste_console",
+  "paste_network",
+  "curl",
+  "summarize",
+  "extract_json",
 ] as const;
 
 export function makeBrowserRuntime(runtime_id: string): BrowserRuntime {
@@ -141,8 +146,7 @@ export const browserSlice = createSlice({
       if (rt) {
         rt.connected = action.payload.connected;
         if (action.payload.url !== undefined) rt.url = action.payload.url;
-        if (action.payload.title !== undefined)
-          rt.title = action.payload.title;
+        if (action.payload.title !== undefined) rt.title = action.payload.title;
       }
     },
     updateBrowserFrame(
@@ -235,10 +239,7 @@ export const browserSlice = createSlice({
         rt.notification = action.payload.notification;
       }
     },
-    markBrowserDetached(
-      state,
-      action: PayloadAction<{ chatId: string }>,
-    ) {
+    markBrowserDetached(state, action: PayloadAction<{ chatId: string }>) {
       const rt = state.runtimes[action.payload.chatId];
       if (rt) {
         rt.connected = false;
@@ -340,7 +341,9 @@ export const browserSlice = createSlice({
       } else if (event.type === "browser_status") {
         if (!state.runtimes[event.chat_id]) {
           if (event.connected && event.runtime_id) {
-            state.runtimes[event.chat_id] = makeBrowserRuntime(event.runtime_id);
+            state.runtimes[event.chat_id] = makeBrowserRuntime(
+              event.runtime_id,
+            );
           } else {
             return;
           }
@@ -350,16 +353,28 @@ export const browserSlice = createSlice({
         if (rt.runtime_id && event.runtime_id !== rt.runtime_id) return;
         rt.connected = event.connected;
         if (!event.connected) {
-          rt.url = event.url !== undefined ? (event.url ?? null) : null;
-          rt.title = event.title !== undefined ? (event.title ?? null) : null;
-          rt.active_tab = event.active_tab !== undefined ? (event.active_tab ?? null) : null;
-          rt.tabs = event.tabs ? event.tabs.map((t) => ({ tab_id: t.tab_id, url: t.url, title: t.title })) : [];
+          rt.url = event.url !== undefined ? event.url ?? null : null;
+          rt.title = event.title !== undefined ? event.title ?? null : null;
+          rt.active_tab =
+            event.active_tab !== undefined ? event.active_tab ?? null : null;
+          rt.tabs = event.tabs
+            ? event.tabs.map((t) => ({
+                tab_id: t.tab_id,
+                url: t.url,
+                title: t.title,
+              }))
+            : [];
         } else {
           if (event.url !== undefined) rt.url = event.url ?? null;
           if (event.title !== undefined) rt.title = event.title ?? null;
-          if (event.active_tab !== undefined) rt.active_tab = event.active_tab ?? null;
+          if (event.active_tab !== undefined)
+            rt.active_tab = event.active_tab ?? null;
           if (event.tabs !== undefined) {
-            rt.tabs = event.tabs.map((t) => ({ tab_id: t.tab_id, url: t.url, title: t.title }));
+            rt.tabs = event.tabs.map((t) => ({
+              tab_id: t.tab_id,
+              url: t.url,
+              title: t.title,
+            }));
           }
         }
       } else if (event.type === "browser_timeline") {
@@ -379,7 +394,8 @@ export const browserSlice = createSlice({
       } else if (event.type === "browser_toolbar_action") {
         const rt = state.runtimes[event.chat_id];
         if (!rt) return;
-        const toolbarAction = event.action as typeof VALID_TOOLBAR_ACTIONS[number];
+        const toolbarAction =
+          event.action as (typeof VALID_TOOLBAR_ACTIONS)[number];
         if (VALID_TOOLBAR_ACTIONS.includes(toolbarAction)) {
           rt.pending_toolbar_actions.push(toolbarAction);
         }
@@ -423,10 +439,8 @@ export const selectTimeline = (
   chatId: string,
 ): TimelineEntry[] => state.browser.runtimes[chatId]?.timeline ?? [];
 
-export const selectTimelineOpen = (
-  state: RootState,
-  chatId: string,
-): boolean => state.browser.runtimes[chatId]?.timeline_open ?? false;
+export const selectTimelineOpen = (state: RootState, chatId: string): boolean =>
+  state.browser.runtimes[chatId]?.timeline_open ?? false;
 
 export const selectTimelineFilterSource = (
   state: RootState,

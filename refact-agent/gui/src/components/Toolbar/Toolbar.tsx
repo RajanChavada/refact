@@ -1,10 +1,6 @@
 import { TextField, HoverCard, Text, Badge } from "@radix-ui/themes";
 import { Dropdown, DropdownNavigationOptions } from "./Dropdown";
-import {
-  Cross1Icon,
-  PlusIcon,
-  CheckboxIcon,
-} from "@radix-ui/react-icons";
+import { Cross1Icon, PlusIcon, CheckboxIcon } from "@radix-ui/react-icons";
 import classNames from "classnames";
 import { RefactIcon } from "../../images";
 import { newChatAction } from "../../events";
@@ -458,7 +454,12 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
                   title={taskName}
                 >
                   <span className={styles.tabStatus}>
-                    <StatusDot state={taskMeta ? getTaskStatusDotState(taskMeta) : "idle"} size="small" />
+                    <StatusDot
+                      state={
+                        taskMeta ? getTaskStatusDotState(taskMeta) : "idle"
+                      }
+                      size="small"
+                    />
                   </span>
                   <span className={styles.tabTitle}>{taskName}</span>
                 </button>

@@ -274,10 +274,7 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
         )}
       </Box>
       {onModelChange && (
-        <Flex
-          p="2"
-          style={{ borderTop: "1px solid var(--gray-4)" }}
-        >
+        <Flex p="2" style={{ borderTop: "1px solid var(--gray-4)" }}>
           <ModelPickerPopover
             value={defaultAgentModel ?? ""}
             onValueChange={onModelChange}

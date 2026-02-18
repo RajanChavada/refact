@@ -69,7 +69,10 @@ export const BrowserToggleButton = forwardRef<
         if (requestIdRef.current !== requestId) return;
         // Only reset runtime if this is a new session or runtime_id changed; preserve
         // existing timeline/flags set by SSE if we're reconnecting to the same session.
-        if (result.status !== "already_running" || runtimeIdRef.current !== result.runtime_id) {
+        if (
+          result.status !== "already_running" ||
+          runtimeIdRef.current !== result.runtime_id
+        ) {
           dispatch(
             setBrowserRuntime({
               chatId,

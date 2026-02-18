@@ -1,4 +1,10 @@
-import React, { useCallback, useMemo, useState, useRef, useEffect } from "react";
+import React, {
+  useCallback,
+  useMemo,
+  useState,
+  useRef,
+  useEffect,
+} from "react";
 import { Flex, Text, Popover, Separator, Badge } from "@radix-ui/themes";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
 import { useAppDispatch, useCapsForToolUse } from "../../hooks";

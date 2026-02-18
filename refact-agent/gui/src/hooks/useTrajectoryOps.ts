@@ -127,14 +127,19 @@ export function useTrajectoryOps() {
 
       // Transfer browser runtime state to the new chat if one was active
       if (browserRuntime && result.browser_runtime_id) {
-        dispatch(setBrowserRuntime({
-          chatId: result.new_chat_id,
-          runtime: {
-            ...browserRuntime,
-            runtime_id: result.browser_runtime_id,
-            notification: { type: "attached", message: "Browser session transferred via handoff" },
-          },
-        }));
+        dispatch(
+          setBrowserRuntime({
+            chatId: result.new_chat_id,
+            runtime: {
+              ...browserRuntime,
+              runtime_id: result.browser_runtime_id,
+              notification: {
+                type: "attached",
+                message: "Browser session transferred via handoff",
+              },
+            },
+          }),
+        );
         dispatch(removeBrowserRuntime({ chatId: oldChatId }));
       }
 
@@ -195,7 +200,16 @@ export function useTrajectoryOps() {
       console.error("[handleApplyHandoff]", error);
       return false;
     }
-  }, [chatId, thread, browserRuntime, handoffOptions, applyHandoff, dispatch, port, apiKey]);
+  }, [
+    chatId,
+    thread,
+    browserRuntime,
+    handoffOptions,
+    applyHandoff,
+    dispatch,
+    port,
+    apiKey,
+  ]);
 
   const clearPreviews = useCallback(() => {
     setTransformPreview(null);

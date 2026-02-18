@@ -48,7 +48,12 @@ export const BrowserPanel = ({ chatId }: BrowserPanelProps) => {
       try {
         dispatch(setBrowserNotification({ chatId, notification: null }));
         const result = await browserStart({ chat_id: chatId }).unwrap();
-        dispatch(setBrowserRuntime({ chatId, runtime: makeBrowserRuntime(result.runtime_id) }));
+        dispatch(
+          setBrowserRuntime({
+            chatId,
+            runtime: makeBrowserRuntime(result.runtime_id),
+          }),
+        );
         const screenshotResult = await browserScreenshot({
           chat_id: chatId,
           full_page: false,

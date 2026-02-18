@@ -118,7 +118,7 @@ export const sendIdeMessagesToCurrentChat = createAsyncThunk(
     if (!runtime) return;
 
     const isNewChat = runtime.thread.messages.length === 0;
-    
+
     if (isNewChat) {
       const patch = buildThreadParamsPatch(runtime.thread, isNewChat);
       if (Object.keys(patch).length > 0) {

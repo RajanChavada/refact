@@ -69,13 +69,10 @@ export function useBrowserToolbarActions(chatId: string) {
                 continue;
               }
               if ("selector" in pickResult) {
-                const text = `Selector: ${pickResult.selector}\nText: ${pickResult.innerText}\nBbox: ${JSON.stringify(pickResult.bbox)}`;
-                await sendUserMessage(
-                  chatId,
-                  text,
-                  port,
-                  apiKey ?? undefined,
-                );
+                const text = `Selector: ${pickResult.selector}\nText: ${
+                  pickResult.innerText
+                }\nBbox: ${JSON.stringify(pickResult.bbox)}`;
+                await sendUserMessage(chatId, text, port, apiKey ?? undefined);
               }
               break;
             }
@@ -109,12 +106,7 @@ export function useBrowserToolbarActions(chatId: string) {
 
         case "curl": {
           const result = await browserCurl({ chat_id: chatId }).unwrap();
-          await sendUserMessage(
-            chatId,
-            result.curl,
-            port,
-            apiKey ?? undefined,
-          );
+          await sendUserMessage(chatId, result.curl, port, apiKey ?? undefined);
           break;
         }
 

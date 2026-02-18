@@ -105,8 +105,16 @@ export const BrowserToolbar = ({ chatId }: BrowserToolbarProps) => {
       const result = await browserStart({ chat_id: chatId }).unwrap();
       // Only reset runtime state if this is a genuinely new session or the runtime_id changed.
       // If already_running with the same id, preserve existing timeline/flags set by SSE.
-      if (result.status !== "already_running" || runtime?.runtime_id !== result.runtime_id) {
-        dispatch(setBrowserRuntime({ chatId, runtime: makeBrowserRuntime(result.runtime_id) }));
+      if (
+        result.status !== "already_running" ||
+        runtime?.runtime_id !== result.runtime_id
+      ) {
+        dispatch(
+          setBrowserRuntime({
+            chatId,
+            runtime: makeBrowserRuntime(result.runtime_id),
+          }),
+        );
       }
     });
   }, [browserStart, chatId, dispatch, runtime, withLoading]);
@@ -152,12 +160,7 @@ export const BrowserToolbar = ({ chatId }: BrowserToolbarProps) => {
         }).unwrap();
         const content = JSON.stringify(result[field], null, 2);
         if (port) {
-          await sendUserMessage(
-            chatId,
-            content,
-            port,
-            apiKey ?? undefined,
-          );
+          await sendUserMessage(chatId, content, port, apiKey ?? undefined);
         }
       });
     },
@@ -168,12 +171,7 @@ export const BrowserToolbar = ({ chatId }: BrowserToolbarProps) => {
     void withLoading("curl", async () => {
       const result = await browserCurl({ chat_id: chatId }).unwrap();
       if (port) {
-        await sendUserMessage(
-          chatId,
-          result.curl,
-          port,
-          apiKey ?? undefined,
-        );
+        await sendUserMessage(chatId, result.curl, port, apiKey ?? undefined);
       }
     });
   }, [browserCurl, chatId, port, apiKey, withLoading]);
@@ -194,7 +192,9 @@ export const BrowserToolbar = ({ chatId }: BrowserToolbarProps) => {
             continue;
           }
           if ("selector" in pickResult) {
-            const text = `Selector: ${pickResult.selector}\nText: ${pickResult.innerText}\nBbox: ${JSON.stringify(pickResult.bbox)}`;
+            const text = `Selector: ${pickResult.selector}\nText: ${
+              pickResult.innerText
+            }\nBbox: ${JSON.stringify(pickResult.bbox)}`;
             if (port) {
               await sendUserMessage(chatId, text, port, apiKey ?? undefined);
             }
@@ -325,7 +325,10 @@ export const BrowserToolbar = ({ chatId }: BrowserToolbarProps) => {
         <Tooltip content="Stop browser">
           <button
             type="button"
-            className={classNames(styles.toolbarIconButton, styles.toolbarIconButtonDanger)}
+            className={classNames(
+              styles.toolbarIconButton,
+              styles.toolbarIconButtonDanger,
+            )}
             onClick={handleStop}
             disabled={loading.stop}
             aria-label="Stop browser"
@@ -425,7 +428,13 @@ export const BrowserToolbar = ({ chatId }: BrowserToolbarProps) => {
         </button>
       </Tooltip>
 
-      <Tooltip content={runtime?.attach_screenshot_on_send ? "Auto-screenshot on send: ON" : "Auto-screenshot on send: OFF"}>
+      <Tooltip
+        content={
+          runtime?.attach_screenshot_on_send
+            ? "Auto-screenshot on send: ON"
+            : "Auto-screenshot on send: OFF"
+        }
+      >
         <button
           type="button"
           className={classNames(styles.toolbarIconButton, {

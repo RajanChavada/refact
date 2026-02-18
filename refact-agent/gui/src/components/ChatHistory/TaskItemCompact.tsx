@@ -21,7 +21,6 @@ export interface TaskItemCompactProps {
   badge?: string;
 }
 
-
 function getTaskTooltip(task: TaskMeta): string {
   const plannerState = task.planner_session_state;
 

@@ -42,10 +42,7 @@ function makeRuntime(overrides?: Partial<BrowserRuntime>): BrowserRuntime {
   };
 }
 
-function stateWith(
-  chatId: string,
-  runtime: BrowserRuntime,
-): BrowserState {
+function stateWith(chatId: string, runtime: BrowserRuntime): BrowserState {
   return { runtimes: { [chatId]: runtime }, browserUiOpen: {} };
 }
 
@@ -222,10 +219,7 @@ describe("browserSlice timeline reducers", () => {
         summary: "Existing",
       },
     ];
-    const initial = stateWith(
-      "chat-1",
-      makeRuntime({ timeline: existing }),
-    );
+    const initial = stateWith("chat-1", makeRuntime({ timeline: existing }));
     const newEntries: TimelineEntry[] = [
       {
         timestamp: "2025-01-01T10:00:00Z",
@@ -281,19 +275,10 @@ describe("browserSlice timeline reducers", () => {
   });
 
   test("toggleTimelineOpen toggles the flag", () => {
-    const initial = stateWith(
-      "chat-1",
-      makeRuntime({ timeline_open: false }),
-    );
-    const state1 = reducer(
-      initial,
-      toggleTimelineOpen({ chatId: "chat-1" }),
-    );
+    const initial = stateWith("chat-1", makeRuntime({ timeline_open: false }));
+    const state1 = reducer(initial, toggleTimelineOpen({ chatId: "chat-1" }));
     expect(state1.runtimes["chat-1"]!.timeline_open).toBe(true);
-    const state2 = reducer(
-      state1,
-      toggleTimelineOpen({ chatId: "chat-1" }),
-    );
+    const state2 = reducer(state1, toggleTimelineOpen({ chatId: "chat-1" }));
     expect(state2.runtimes["chat-1"]!.timeline_open).toBe(false);
   });
 

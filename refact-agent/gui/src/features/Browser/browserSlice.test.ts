@@ -127,10 +127,7 @@ describe("browserSlice", () => {
 
   test("removeBrowserRuntime removes a runtime", () => {
     const initial = stateWith("chat-1", makeRuntime());
-    const state = reducer(
-      initial,
-      removeBrowserRuntime({ chatId: "chat-1" }),
-    );
+    const state = reducer(initial, removeBrowserRuntime({ chatId: "chat-1" }));
     expect(state.runtimes["chat-1"]).toBeUndefined();
   });
 
@@ -142,10 +139,7 @@ describe("browserSlice", () => {
       },
       browserUiOpen: {},
     };
-    const state = reducer(
-      initial,
-      removeBrowserRuntime({ chatId: "chat-1" }),
-    );
+    const state = reducer(initial, removeBrowserRuntime({ chatId: "chat-1" }));
     expect(state.runtimes["chat-1"]).toBeUndefined();
     const rt2 = state.runtimes["chat-2"];
     expect(rt2).toBeDefined();
@@ -219,14 +213,8 @@ describe("browserSlice", () => {
   });
 
   test("markBrowserDetached sets disconnected and notification", () => {
-    const initial = stateWith(
-      "chat-1",
-      makeRuntime({ connected: true }),
-    );
-    const state = reducer(
-      initial,
-      markBrowserDetached({ chatId: "chat-1" }),
-    );
+    const initial = stateWith("chat-1", makeRuntime({ connected: true }));
+    const state = reducer(initial, markBrowserDetached({ chatId: "chat-1" }));
     const rt = state.runtimes["chat-1"];
     expect(rt).toBeDefined();
     expect(rt!.connected).toBe(false);
@@ -237,10 +225,7 @@ describe("browserSlice", () => {
   });
 
   test("markBrowserClosed sets disconnected with reason", () => {
-    const initial = stateWith(
-      "chat-1",
-      makeRuntime({ connected: true }),
-    );
+    const initial = stateWith("chat-1", makeRuntime({ connected: true }));
     const state = reducer(
       initial,
       markBrowserClosed({ chatId: "chat-1", reason: "timeout" }),
@@ -256,10 +241,7 @@ describe("browserSlice", () => {
 
   test("markBrowserDetached does nothing for missing chatId", () => {
     const initial: BrowserState = { runtimes: {}, browserUiOpen: {} };
-    const state = reducer(
-      initial,
-      markBrowserDetached({ chatId: "missing" }),
-    );
+    const state = reducer(initial, markBrowserDetached({ chatId: "missing" }));
     expect(state.runtimes).toEqual({});
   });
 
@@ -337,7 +319,9 @@ describe("browserSlice", () => {
   test("shiftPendingToolbarAction removes first item from queue", () => {
     const initial = stateWith(
       "chat-1",
-      makeRuntime({ pending_toolbar_actions: ["screenshot", "summarize", "curl"] }),
+      makeRuntime({
+        pending_toolbar_actions: ["screenshot", "summarize", "curl"],
+      }),
     );
     const state = reducer(
       initial,

@@ -26,7 +26,9 @@ export const BrowserContextGuard: React.FC<BrowserContextGuardProps> = ({
   );
 
   const currentChatId = useAppSelector(selectChatId);
-  const port = useAppSelector((state) => state.config.lspPort) as unknown as number;
+  const port = useAppSelector(
+    (state) => state.config.lspPort,
+  ) as unknown as number;
   const apiKey = useAppSelector((state) => state.config.apiKey);
 
   const [includeActions, setIncludeActions] = useState(true);
@@ -37,12 +39,8 @@ export const BrowserContextGuard: React.FC<BrowserContextGuardProps> = ({
   const [lastNActions, setLastNActions] = useState(
     oversizeInfo?.action_count ?? 50,
   );
-  const [lastNConsole] = useState(
-    oversizeInfo?.console_count ?? 100,
-  );
-  const [lastNNetwork] = useState(
-    oversizeInfo?.network_count ?? 100,
-  );
+  const [lastNConsole] = useState(oversizeInfo?.console_count ?? 100);
+  const [lastNNetwork] = useState(oversizeInfo?.network_count ?? 100);
 
   const info = oversizeInfo;
 
@@ -166,19 +164,27 @@ export const BrowserContextGuard: React.FC<BrowserContextGuardProps> = ({
         <div className={styles.breakdownGrid}>
           <span className={styles.breakdownLabel}>Actions:</span>
           <span className={styles.breakdownCount}>{info.action_count}</span>
-          <span className={styles.breakdownSize}>{formatKB(info.action_bytes)}</span>
+          <span className={styles.breakdownSize}>
+            {formatKB(info.action_bytes)}
+          </span>
 
           <span className={styles.breakdownLabel}>Console:</span>
           <span className={styles.breakdownCount}>{info.console_count}</span>
-          <span className={styles.breakdownSize}>{formatKB(info.console_bytes)}</span>
+          <span className={styles.breakdownSize}>
+            {formatKB(info.console_bytes)}
+          </span>
 
           <span className={styles.breakdownLabel}>Network:</span>
           <span className={styles.breakdownCount}>{info.network_count}</span>
-          <span className={styles.breakdownSize}>{formatKB(info.network_bytes)}</span>
+          <span className={styles.breakdownSize}>
+            {formatKB(info.network_bytes)}
+          </span>
 
           <span className={styles.breakdownLabel}>Mutations:</span>
           <span className={styles.breakdownCount}>—</span>
-          <span className={styles.breakdownSize}>{formatKB(info.mutation_bytes)}</span>
+          <span className={styles.breakdownSize}>
+            {formatKB(info.mutation_bytes)}
+          </span>
         </div>
 
         <div className={styles.sliderContainer}>

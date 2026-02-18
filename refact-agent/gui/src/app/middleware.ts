@@ -1161,13 +1161,11 @@ startListening({
       patch.temperature = runtime.thread.temperature ?? undefined;
     }
     if (setReasoningEffort.match(_action)) {
-
       patch.reasoning_effort = runtime.thread.reasoning_effort ?? undefined;
 
       patch.temperature = runtime.thread.temperature ?? undefined;
     }
     if (setThinkingBudget.match(_action)) {
-
       patch.thinking_budget = runtime.thread.thinking_budget ?? undefined;
 
       patch.temperature = runtime.thread.temperature ?? undefined;

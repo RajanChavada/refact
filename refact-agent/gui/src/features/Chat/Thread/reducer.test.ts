@@ -1535,15 +1535,18 @@ describe("Model Priority Order", () => {
     const emptyState = chatReducer(undefined, { type: "@@INIT" });
     const newState = chatReducer(emptyState, newChatAction(undefined));
     const chatId = newState.current_thread_id;
-    
+
     expect(newState.threads[chatId]!.thread.model).toBe("");
   });
-  
+
   test("newChatAction respects payload title", () => {
     const emptyState = chatReducer(undefined, { type: "@@INIT" });
-    const newState = chatReducer(emptyState, newChatAction({ title: "Custom Title" }));
+    const newState = chatReducer(
+      emptyState,
+      newChatAction({ title: "Custom Title" }),
+    );
     const chatId = newState.current_thread_id;
-    
+
     expect(newState.threads[chatId]!.thread.title).toBe("Custom Title");
   });
 });
