@@ -350,9 +350,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
     }
 
     const currentRt = getCurrentRuntime(state);
-    const effectiveMode = mode ?? getThreadMode({});
+    const effectiveMode = normalizeLegacyMode(mode ?? getThreadMode({}));
     const lastParams = getLastThreadParams(effectiveMode);
-    const newRuntime = createThreadRuntime("agent", null, effectiveMode);
+    const newRuntime = createThreadRuntime(state.tool_use, null, effectiveMode);
 
     newRuntime.thread.id = id;
     newRuntime.thread.model =
@@ -444,10 +444,9 @@ export const chatReducer = createReducer(initialState, (builder) => {
   builder.addCase(setReasoningEffort, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
     if (rt) {
-      rt.thread.reasoning_effort = action.payload.value ?? undefined;
-      // Any explicit reasoning effort implies reasoning mode: unset temperature.
+      rt.thread.reasoning_effort = action.payload.value;
       if (action.payload.value != null) {
-        rt.thread.temperature = undefined;
+        rt.thread.temperature = null;
       }
     }
   });
@@ -455,32 +454,31 @@ export const chatReducer = createReducer(initialState, (builder) => {
   builder.addCase(setThinkingBudget, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
     if (rt) {
-      rt.thread.thinking_budget = action.payload.value ?? undefined;
-      // Any explicit thinking budget implies reasoning mode: unset temperature.
+      rt.thread.thinking_budget = action.payload.value;
       if (action.payload.value != null) {
-        rt.thread.temperature = undefined;
+        rt.thread.temperature = null;
       }
     }
   });
 
   builder.addCase(setTemperature, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
-    if (rt) rt.thread.temperature = action.payload.value ?? undefined;
+    if (rt) rt.thread.temperature = action.payload.value;
   });
 
   builder.addCase(setFrequencyPenalty, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
-    if (rt) rt.thread.frequency_penalty = action.payload.value ?? undefined;
+    if (rt) rt.thread.frequency_penalty = action.payload.value;
   });
 
   builder.addCase(setMaxTokens, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
-    if (rt) rt.thread.max_tokens = action.payload.value ?? undefined;
+    if (rt) rt.thread.max_tokens = action.payload.value;
   });
 
   builder.addCase(setParallelToolCalls, (state, action) => {
     const rt = getRuntime(state, action.payload.chatId);
-    if (rt) rt.thread.parallel_tool_calls = action.payload.value ?? undefined;
+    if (rt) rt.thread.parallel_tool_calls = action.payload.value;
   });
 
   builder.addCase(setTaskWidgetExpanded, (state, action) => {

@@ -402,18 +402,16 @@ pub async fn load_caps_value_from_url(
     let mut headers = reqwest::header::HeaderMap::new();
 
     if !cmdline.api_key.is_empty() {
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", cmdline.api_key)).unwrap(),
-        );
-        headers.insert(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_str(&format!(
-                "refact-lsp {}",
-                crate::version::build::PKG_VERSION
-            ))
-            .unwrap(),
-        );
+        let auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", cmdline.api_key))
+            .map_err(|e| format!("Invalid API key format: {}", e))?;
+        headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+
+        let user_agent = reqwest::header::HeaderValue::from_str(&format!(
+            "refact-lsp {}",
+            crate::version::build::PKG_VERSION
+        ))
+        .map_err(|e| format!("Invalid user agent format: {}", e))?;
+        headers.insert(reqwest::header::USER_AGENT, user_agent);
     }
 
     let mut last_status = 0;
@@ -699,9 +697,11 @@ pub async fn populate_chat_models_from_providers(
                 .contains_key(&caps.defaults.chat_default_model);
 
         if need_new_default {
-            if let Some((first_model_id, _)) = caps.chat_models.first() {
+            let mut sorted_model_ids: Vec<&String> = caps.chat_models.keys().collect();
+            sorted_model_ids.sort();
+            if let Some(first_model_id) = sorted_model_ids.first() {
                 info!("Auto-selecting default chat model: {}", first_model_id);
-                caps.defaults.chat_default_model = first_model_id.clone();
+                caps.defaults.chat_default_model = (*first_model_id).clone();
             }
         }
 
@@ -1262,4 +1262,111 @@ pub fn resolve_completion_model<'a>(
 #[allow(dead_code)]
 pub fn is_cloud_model(model_id: &str) -> bool {
     model_id.starts_with("refact/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    fn create_test_caps() -> CodeAssistantCaps {
+        let mut caps = CodeAssistantCaps::default();
+        
+        let test_model = ChatModelRecord {
+            base: BaseModelRecord {
+                id: "test-provider/test-model".to_string(),
+                n_ctx: 8192,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        
+        caps.chat_models.insert(
+            "test-provider/test-model".to_string(),
+            Arc::new(test_model),
+        );
+        
+        caps.defaults.chat_default_model = "test-provider/test-model".to_string();
+        
+        caps
+    }
+
+    #[test]
+    fn test_resolve_chat_model_with_explicit_model() {
+        let caps = Arc::new(create_test_caps());
+        let result = resolve_chat_model(caps, "test-provider/test-model");
+        
+        assert!(result.is_ok());
+        let model = result.unwrap();
+        assert_eq!(model.base.id, "test-provider/test-model");
+    }
+
+    #[test]
+    fn test_resolve_chat_model_with_empty_string_uses_default() {
+        let caps = Arc::new(create_test_caps());
+        let result = resolve_chat_model(caps, "");
+        
+        assert!(result.is_ok());
+        let model = result.unwrap();
+        assert_eq!(model.base.id, "test-provider/test-model");
+    }
+
+    #[test]
+    fn test_resolve_chat_model_with_nonexistent_model() {
+        let caps = Arc::new(create_test_caps());
+        let result = resolve_chat_model(caps, "nonexistent-provider/nonexistent-model");
+        
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Model"));
+    }
+
+    #[test]
+    fn test_sorted_model_selection_is_deterministic() {
+        let mut caps = CodeAssistantCaps::default();
+        
+        let model_z = ChatModelRecord {
+            base: BaseModelRecord {
+                id: "provider/zzz-model".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        
+        let model_a = ChatModelRecord {
+            base: BaseModelRecord {
+                id: "provider/aaa-model".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        
+        caps.chat_models.insert("provider/zzz-model".to_string(), Arc::new(model_z));
+        caps.chat_models.insert("provider/aaa-model".to_string(), Arc::new(model_a));
+        
+        let mut sorted_model_ids: Vec<&String> = caps.chat_models.keys().collect();
+        sorted_model_ids.sort();
+        
+        assert_eq!(sorted_model_ids[0], "provider/aaa-model");
+        assert_eq!(sorted_model_ids[1], "provider/zzz-model");
+    }
+
+    #[test]
+    fn test_resolve_model_generic() {
+        let mut models = IndexMap::new();
+        let test_model = ChatModelRecord {
+            base: BaseModelRecord {
+                id: "test/model".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        models.insert("test/model".to_string(), Arc::new(test_model));
+        
+        let result = resolve_model(&models, "test/model");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().base.id, "test/model");
+        
+        let result = resolve_model(&models, "nonexistent");
+        assert!(result.is_err());
+    }
 }

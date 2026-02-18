@@ -40,22 +40,22 @@ function buildThreadParamsPatch(
     if (thread.tool_use) patch.tool_use = thread.tool_use;
     if (thread.mode) patch.mode = thread.mode;
   }
-  if (thread.model) patch.model = thread.model;
-  if (thread.boost_reasoning !== undefined)
+  if ("model" in thread) patch.model = thread.model;
+  if ("boost_reasoning" in thread)
     patch.boost_reasoning = thread.boost_reasoning;
-  if (thread.include_project_info !== undefined)
+  if ("include_project_info" in thread)
     patch.include_project_info = thread.include_project_info;
-  if (thread.context_tokens_cap !== undefined)
+  if ("context_tokens_cap" in thread)
     patch.context_tokens_cap = thread.context_tokens_cap;
-  if (thread.temperature != null) patch.temperature = thread.temperature;
-  if (thread.frequency_penalty != null)
+  if ("temperature" in thread) patch.temperature = thread.temperature;
+  if ("frequency_penalty" in thread)
     patch.frequency_penalty = thread.frequency_penalty;
-  if (thread.max_tokens != null) patch.max_tokens = thread.max_tokens;
-  if (thread.reasoning_effort != null)
+  if ("max_tokens" in thread) patch.max_tokens = thread.max_tokens;
+  if ("reasoning_effort" in thread)
     patch.reasoning_effort = thread.reasoning_effort;
-  if (thread.thinking_budget != null)
+  if ("thinking_budget" in thread)
     patch.thinking_budget = thread.thinking_budget;
-  if (thread.parallel_tool_calls != null)
+  if ("parallel_tool_calls" in thread)
     patch.parallel_tool_calls = thread.parallel_tool_calls;
   return patch;
 }
@@ -80,7 +80,10 @@ function toMessageContent(
       const { m_type, m_content } = item;
       if (m_type === "text") {
         out.push({ type: "text", text: String(m_content) });
-      } else if (String(m_type).startsWith("image/")) {
+      } else if (
+        String(m_type).startsWith("image/") &&
+        !String(m_type).includes("svg")
+      ) {
         out.push({
           type: "image_url",
           image_url: { url: `data:${m_type};base64,${String(m_content)}` },
@@ -115,13 +118,15 @@ export const sendIdeMessagesToCurrentChat = createAsyncThunk(
     if (!runtime) return;
 
     const isNewChat = runtime.thread.messages.length === 0;
-    const patch = buildThreadParamsPatch(runtime.thread, isNewChat);
-
-    if (Object.keys(patch).length > 0) {
-      await sendChatCommand(chatId, port, apiKey, {
-        type: "set_params",
-        patch,
-      });
+    
+    if (isNewChat) {
+      const patch = buildThreadParamsPatch(runtime.thread, isNewChat);
+      if (Object.keys(patch).length > 0) {
+        await sendChatCommand(chatId, port, apiKey, {
+          type: "set_params",
+          patch,
+        });
+      }
     }
 
     for (const m of arg.messages) {

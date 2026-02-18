@@ -61,18 +61,18 @@ export type ChatThread = {
   tool_use?: ToolUse;
   isTitleGenerated?: boolean;
   boost_reasoning?: boolean;
-  /** Reasoning effort level: "low", "medium", "high", "xhigh", or "max" */
-  reasoning_effort?: ReasoningEffort;
-  /** Thinking budget in tokens (for Anthropic, Qwen, Gemini 2.5) */
-  thinking_budget?: number;
-  /** Temperature for sampling (0-2) */
-  temperature?: number;
-  /** Frequency penalty for sampling (-2 to 2) */
-  frequency_penalty?: number;
-  /** Maximum tokens for response */
-  max_tokens?: number;
-  /** Whether to allow parallel tool calls */
-  parallel_tool_calls?: boolean;
+  /** Reasoning effort level: "low", "medium", "high", "xhigh", or "max". null = use backend default */
+  reasoning_effort?: ReasoningEffort | null;
+  /** Thinking budget in tokens (for Anthropic, Qwen, Gemini 2.5). null = use backend default */
+  thinking_budget?: number | null;
+  /** Temperature for sampling (0-2). null = use backend default */
+  temperature?: number | null;
+  /** Frequency penalty for sampling (-2 to 2). null = use backend default */
+  frequency_penalty?: number | null;
+  /** Maximum tokens for response. null = use backend default */
+  max_tokens?: number | null;
+  /** Whether to allow parallel tool calls. null = use backend default */
+  parallel_tool_calls?: boolean | null;
   integration?: IntegrationMeta | null;
   mode?: ChatModeId;
   project_name?: string;

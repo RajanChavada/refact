@@ -44,8 +44,23 @@ pub async fn prepare_session_preamble_and_knowledge(
     let needs_preamble = !has_system || (!has_project_context && thread.include_project_info);
 
     if needs_preamble {
+        let caps = match crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0).await {
+            Ok(caps) => caps,
+            Err(e) => {
+                warn!("Failed to load caps for preamble: {}", e.message);
+                return;
+            }
+        };
+        let model_rec = match crate::caps::resolve_chat_model(caps.clone(), &thread.model) {
+            Ok(rec) => rec,
+            Err(e) => {
+                warn!("Failed to resolve model for preamble: {}", e);
+                return;
+            }
+        };
+
         let tools: Vec<crate::tools::tools_description::ToolDesc> =
-            crate::tools::tools_list::get_tools_for_mode(gcx.clone(), &thread.mode, Some(&thread.model))
+            crate::tools::tools_list::get_tools_for_mode(gcx.clone(), &thread.mode, Some(&model_rec.base.id))
                 .await
                 .into_iter()
                 .map(|tool| tool.tool_description())
@@ -297,7 +312,13 @@ pub fn start_generation(
                 (session.thread.mode.clone(), session.thread.model.clone())
             };
 
-            match process_tool_calls_once(gcx.clone(), session_arc.clone(), &mode_id, Some(&model_id)).await {
+            let model_id_opt = if model_id.is_empty() {
+                None
+            } else {
+                Some(model_id.as_str())
+            };
+
+            match process_tool_calls_once(gcx.clone(), session_arc.clone(), &mode_id, model_id_opt).await {
                 ToolStepOutcome::NoToolCalls => {
                     if inject_priority_messages_if_any(gcx.clone(), session_arc.clone()).await {
                         continue;
@@ -336,19 +357,19 @@ pub async fn run_llm_generation(
     chat_id: String,
     abort_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0)
+        .await
+        .map_err(|e| e.message)?;
+    let model_rec = crate::caps::resolve_chat_model(caps.clone(), &thread.model)?;
+
     let tools: Vec<crate::tools::tools_description::ToolDesc> =
-        crate::tools::tools_list::get_tools_for_mode(gcx.clone(), &thread.mode, Some(&thread.model))
+        crate::tools::tools_list::get_tools_for_mode(gcx.clone(), &thread.mode, Some(&model_rec.base.id))
             .await
             .into_iter()
             .map(|tool| tool.tool_description())
             .collect();
 
-    info!("session generation: tools count = {}", tools.len());
-
-    let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0)
-        .await
-        .map_err(|e| e.message)?;
-    let model_rec = crate::caps::resolve_chat_model(caps.clone(), &thread.model)?;
+    info!("session generation: model={}, tools count = {}", model_rec.base.id, tools.len());
 
     let model_n_ctx = if model_rec.base.n_ctx > 0 {
         model_rec.base.n_ctx
@@ -704,6 +725,34 @@ async fn run_streaming_generation(
                     session.draft_usage = Some(usage);
                 }
             }
+
+            let mut final_ops = Vec::new();
+            let mut final_usage: Option<ChatUsage> = None;
+            if let Ok(mut guard) = overflow_ops.lock() {
+                if !guard.is_empty() {
+                    final_ops = std::mem::take(&mut *guard);
+                }
+            }
+            if let Ok(mut guard) = overflow_usage.lock() {
+                if let Some(usage) = guard.take() {
+                    final_usage = Some(usage);
+                }
+            }
+
+            if !final_ops.is_empty() || final_usage.is_some() {
+                let final_ops = coalesce_text_ops(final_ops);
+                let final_ops = split_large_text_ops(final_ops, MAX_DELTA_TEXT_BYTES);
+
+                let mut session = session_arc_emitter.lock().await;
+                if !final_ops.is_empty() {
+                    for chunk in final_ops.chunks(MAX_DELTA_OPS_PER_EMIT) {
+                        session.emit_stream_delta(chunk.to_vec());
+                    }
+                }
+                if let Some(usage) = final_usage {
+                    session.draft_usage = Some(usage);
+                }
+            }
         });
 
         let results = run_llm_stream(gcx.clone(), params, &mut collector).await;
@@ -813,7 +862,7 @@ async fn run_streaming_generation(
 
     let (model_id, usage_for_pricing) = {
         let session = session_arc.lock().await;
-        (session.thread.model.clone(), session.draft_usage.clone())
+        (model_rec.base.id.clone(), session.draft_usage.clone())
     };
     let metering_usd = if let Some(ref usage) = usage_for_pricing {
         if let Some(pricing) = get_model_pricing(&gcx, &model_id).await {
