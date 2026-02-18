@@ -490,13 +490,34 @@ pub async fn process_command_queue(
                 let is_oversize = browser_ctx_result.as_ref().map_or(false, |(_, oversize)| oversize.is_some());
 
                 if is_oversize {
-                    if let Some((_, Some(ref info))) = browser_ctx_result {
-                        let mut session = session_arc.lock().await;
-                        tracing::warn!(
-                            "Browser context oversize for chat {}: {} bytes ({} actions, {} console, {} network)",
-                            browser_chat_id, info.total_bytes, info.action_count, info.console_count, info.network_count
-                        );
-                        session.set_runtime_state(SessionState::Idle, None);
+                    if let Some((_, Some(ref _info))) = browser_ctx_result {
+                        let snapshot = browser_context::get_browser_context_for_chat(
+                            gcx.clone(),
+                            &browser_chat_id,
+                        ).await;
+                        if let Some(ref snap) = snapshot {
+                            let breakdown = browser_context::compute_context_breakdown(snap);
+                            let pending_message_id = Uuid::new_v4().to_string();
+                            let mut session = session_arc.lock().await;
+                            session.pending_browser_message = Some(PendingBrowserMessage {
+                                pending_message_id: pending_message_id.clone(),
+                                content: content.clone(),
+                                attachments: attachments.clone(),
+                                checkpoints: checkpoints.clone(),
+                            });
+                            session.emit(ChatEvent::BrowserContextOversize {
+                                total_bytes: breakdown.total_bytes,
+                                action_count: breakdown.action_count,
+                                action_bytes: breakdown.action_bytes,
+                                console_count: breakdown.console_count,
+                                console_bytes: breakdown.console_bytes,
+                                network_count: breakdown.network_count,
+                                network_bytes: breakdown.network_bytes,
+                                mutation_bytes: breakdown.mutation_bytes,
+                                pending_message_id: pending_message_id.clone(),
+                            });
+                            session.set_runtime_state(SessionState::WaitingUserInput, None);
+                        }
                     }
                     continue;
                 }
@@ -746,6 +767,78 @@ pub async fn process_command_queue(
                 }
                 drop(session);
                 maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
+            }
+            ChatCommand::BrowserContextDecision {
+                pending_message_id,
+                include_actions,
+                include_console,
+                include_network,
+                include_mutations,
+                include_screenshot,
+                last_n_actions,
+                last_n_console,
+                last_n_network,
+            } => {
+                let pending = {
+                    let mut session = session_arc.lock().await;
+                    session.pending_browser_message.take()
+                };
+                let Some(pending) = pending else {
+                    warn!("BrowserContextDecision: no pending message found");
+                    let mut session = session_arc.lock().await;
+                    session.set_runtime_state(SessionState::Idle, None);
+                    continue;
+                };
+                if pending.pending_message_id != pending_message_id {
+                    warn!("BrowserContextDecision: pending_message_id mismatch");
+                    let mut session = session_arc.lock().await;
+                    session.set_runtime_state(SessionState::Idle, None);
+                    continue;
+                }
+
+                let browser_chat_id = {
+                    let session = session_arc.lock().await;
+                    session.chat_id.clone()
+                };
+
+                let snapshot = browser_context::get_browser_context_for_chat(
+                    gcx.clone(),
+                    &browser_chat_id,
+                ).await;
+
+                {
+                    let mut session = session_arc.lock().await;
+
+                    if let Some(mut snap) = snapshot {
+                        browser_context::apply_decision_to_snapshot(
+                            &mut snap,
+                            include_actions,
+                            include_console,
+                            include_network,
+                            include_mutations,
+                            last_n_actions,
+                            last_n_console,
+                            last_n_network,
+                        );
+                        let ctx_msg = browser_context::make_context_message(&snap, include_screenshot);
+                        session.add_message(ctx_msg);
+                    }
+
+                    let parsed_content = parse_content_with_attachments(&pending.content, &pending.attachments);
+                    let user_message = ChatMessage {
+                        message_id: Uuid::new_v4().to_string(),
+                        role: "user".to_string(),
+                        content: parsed_content,
+                        checkpoints: pending.checkpoints,
+                        ..Default::default()
+                    };
+                    session.add_message(user_message);
+                }
+
+                browser_context::commit_browser_cursors(gcx.clone(), &browser_chat_id).await;
+                maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
+                prepare_session_preamble_and_knowledge(gcx.clone(), session_arc.clone()).await;
+                start_generation(gcx.clone(), session_arc.clone()).await;
             }
         }
     }

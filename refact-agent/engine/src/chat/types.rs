@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, Notify};
 use uuid::Uuid;
 
 use crate::call_validation::{ChatMessage, ChatUsage};
+use crate::git::checkpoints::Checkpoint;
 use super::config::{limits, timeouts, presentation};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -346,6 +347,17 @@ pub enum ChatEvent {
     BrowserTimeline {
         events: Vec<TimelineEntry>,
     },
+    BrowserContextOversize {
+        total_bytes: usize,
+        action_count: usize,
+        action_bytes: usize,
+        console_count: usize,
+        console_bytes: usize,
+        network_count: usize,
+        network_bytes: usize,
+        mutation_bytes: usize,
+        pending_message_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,6 +469,25 @@ pub enum ChatCommand {
         source_chat_id: String,
         up_to_message_id: String,
     },
+    BrowserContextDecision {
+        pending_message_id: String,
+        #[serde(default = "default_true")]
+        include_actions: bool,
+        #[serde(default = "default_true")]
+        include_console: bool,
+        #[serde(default = "default_true")]
+        include_network: bool,
+        #[serde(default = "default_true")]
+        include_mutations: bool,
+        #[serde(default = "default_true")]
+        include_screenshot: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_n_actions: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_n_console: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_n_network: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,6 +546,9 @@ impl CommandRequest {
             }
             ChatCommand::BranchFromChat { source_chat_id, .. } => {
                 ("branch_from_chat".to_string(), source_chat_id.clone())
+            }
+            ChatCommand::BrowserContextDecision { pending_message_id, .. } => {
+                ("browser_context_decision".to_string(), pending_message_id.clone())
             }
         };
         QueuedItem {
@@ -575,6 +609,15 @@ pub struct ChatSession {
     pub cache_guard_snapshot: Option<serde_json::Value>,
     pub cache_guard_force_next: bool,
     pub task_agent_error: Option<String>,
+    pub pending_browser_message: Option<PendingBrowserMessage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingBrowserMessage {
+    pub pending_message_id: String,
+    pub content: serde_json::Value,
+    pub attachments: Vec<serde_json::Value>,
+    pub checkpoints: Vec<Checkpoint>,
 }
 
 #[cfg(test)]

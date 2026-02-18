@@ -27,6 +27,34 @@ pub struct OversizeInfo {
     pub network_count: usize,
 }
 
+pub struct BrowserContextBreakdown {
+    pub total_bytes: usize,
+    pub action_count: usize,
+    pub action_bytes: usize,
+    pub console_count: usize,
+    pub console_bytes: usize,
+    pub network_count: usize,
+    pub network_bytes: usize,
+    pub mutation_bytes: usize,
+}
+
+pub fn compute_context_breakdown(snapshot: &BrowserContextSnapshot) -> BrowserContextBreakdown {
+    let action_bytes = serde_json::to_string(&snapshot.actions).unwrap_or_default().len();
+    let console_bytes = serde_json::to_string(&snapshot.console).unwrap_or_default().len();
+    let network_bytes = serde_json::to_string(&snapshot.network).unwrap_or_default().len();
+    let mutation_bytes = serde_json::to_string(&snapshot.mutations).unwrap_or_default().len();
+    BrowserContextBreakdown {
+        total_bytes: action_bytes + console_bytes + network_bytes + mutation_bytes,
+        action_count: snapshot.actions.len(),
+        action_bytes,
+        console_count: snapshot.console.len(),
+        console_bytes,
+        network_count: snapshot.network.len(),
+        network_bytes,
+        mutation_bytes,
+    }
+}
+
 pub fn format_browser_context(snapshot: &BrowserContextSnapshot) -> String {
     let mut parts = Vec::new();
 
@@ -234,7 +262,52 @@ pub async fn maybe_insert_browser_context(
     Some((make_context_message(&snapshot, attach_screenshot_on_send && snapshot.page_changed), None))
 }
 
-fn make_context_message(snapshot: &BrowserContextSnapshot, _attach_screenshot: bool) -> ChatMessage {
+pub fn apply_decision_to_snapshot(
+    snapshot: &mut BrowserContextSnapshot,
+    include_actions: bool,
+    include_console: bool,
+    include_network: bool,
+    include_mutations: bool,
+    last_n_actions: Option<usize>,
+    last_n_console: Option<usize>,
+    last_n_network: Option<usize>,
+) {
+    if !include_actions {
+        snapshot.actions.clear();
+    } else if let Some(n) = last_n_actions {
+        if snapshot.actions.len() > n {
+            let start = snapshot.actions.len() - n;
+            snapshot.actions = snapshot.actions[start..].to_vec();
+        }
+    }
+    if !include_console {
+        snapshot.console.clear();
+    } else if let Some(n) = last_n_console {
+        if snapshot.console.len() > n {
+            let start = snapshot.console.len() - n;
+            snapshot.console = snapshot.console[start..].to_vec();
+        }
+    }
+    if !include_network {
+        snapshot.network.clear();
+    } else if let Some(n) = last_n_network {
+        if snapshot.network.len() > n {
+            let start = snapshot.network.len() - n;
+            snapshot.network = snapshot.network[start..].to_vec();
+        }
+    }
+    if !include_mutations {
+        snapshot.mutations.clear();
+    }
+    snapshot.total_bytes = compute_context_size(
+        &snapshot.actions,
+        &snapshot.console,
+        &snapshot.network,
+        &snapshot.mutations,
+    );
+}
+
+pub fn make_context_message(snapshot: &BrowserContextSnapshot, _attach_screenshot: bool) -> ChatMessage {
     let text = format_browser_context(snapshot);
     ChatMessage {
         message_id: uuid::Uuid::new_v4().to_string(),

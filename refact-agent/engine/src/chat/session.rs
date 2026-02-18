@@ -52,6 +52,7 @@ impl ChatSession {
             cache_guard_snapshot: None,
             cache_guard_force_next: false,
             task_agent_error: None,
+            pending_browser_message: None,
         }
     }
 
@@ -87,6 +88,7 @@ impl ChatSession {
             cache_guard_snapshot: None,
             cache_guard_force_next: false,
             task_agent_error: None,
+            pending_browser_message: None,
         }
     }
 
