@@ -29,6 +29,7 @@ const makeRuntime = (overrides?: Partial<BrowserRuntime>): BrowserRuntime => ({
 });
 
 const sampleInfo: BrowserContextOversizeInfo = {
+  pending_message_id: "msg-123",
   total_bytes: 150_000,
   action_count: 200,
   action_bytes: 60_000,
@@ -134,6 +135,7 @@ describe("estimateSize", () => {
 
   it("handles zero counts gracefully", () => {
     const emptyInfo: BrowserContextOversizeInfo = {
+      pending_message_id: "msg-empty",
       total_bytes: 0,
       action_count: 0,
       action_bytes: 0,
@@ -236,5 +238,63 @@ describe("browserSlice oversize reducers", () => {
       setBrowserContextOversize({ chatId: "missing", info: sampleInfo }),
     );
     expect(nextState.runtimes.missing).toBeUndefined();
+  });
+
+  it("preserves pending_message_id in oversize info", () => {
+    let state = browserSlice.reducer(undefined, { type: "init" });
+    state = browserSlice.reducer(
+      state,
+      setBrowserRuntime({ chatId: "chat-1", runtime: makeRuntime() }),
+    );
+    state = browserSlice.reducer(
+      state,
+      setBrowserContextOversize({ chatId: "chat-1", info: sampleInfo }),
+    );
+    expect(state.runtimes["chat-1"]?.oversize_info?.pending_message_id).toBe(
+      "msg-123",
+    );
+  });
+});
+
+describe("browser_context_decision command shape", () => {
+  it("decision payload includes all required fields", () => {
+    const decision = {
+      type: "browser_context_decision" as const,
+      pending_message_id: "msg-123",
+      include_actions: true,
+      include_console: true,
+      include_network: false,
+      include_mutations: true,
+      include_screenshot: false,
+      last_n_actions: 50,
+      last_n_console: 100,
+      last_n_network: null,
+    };
+    expect(decision.type).toBe("browser_context_decision");
+    expect(decision.pending_message_id).toBe("msg-123");
+    expect(decision.include_actions).toBe(true);
+    expect(decision.include_network).toBe(false);
+    expect(decision.last_n_actions).toBe(50);
+    expect(decision.last_n_network).toBeNull();
+  });
+
+  it("skip context decision has all includes false", () => {
+    const decision = {
+      type: "browser_context_decision" as const,
+      pending_message_id: "msg-456",
+      include_actions: false,
+      include_console: false,
+      include_network: false,
+      include_mutations: false,
+      include_screenshot: false,
+      last_n_actions: 0,
+      last_n_console: 0,
+      last_n_network: 0,
+    };
+    expect(decision.include_actions).toBe(false);
+    expect(decision.include_console).toBe(false);
+    expect(decision.include_network).toBe(false);
+    expect(decision.include_mutations).toBe(false);
+    expect(decision.include_screenshot).toBe(false);
   });
 });

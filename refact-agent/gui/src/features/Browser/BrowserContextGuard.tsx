@@ -7,7 +7,10 @@ import {
 } from "./browserSlice";
 import type { BrowserContextOversizeInfo } from "./browserSlice";
 import { selectChatId } from "../Chat/Thread";
-import { abortGeneration, sendChatCommand } from "../../services/refact/chatCommands";
+import {
+  abortGeneration,
+  sendBrowserContextDecision,
+} from "../../services/refact/chatCommands";
 import styles from "./BrowserContextGuard.module.css";
 
 export function formatKB(bytes: number): string {
@@ -106,56 +109,49 @@ export const BrowserContextGuard: React.FC<BrowserContextGuardProps> = ({
 
   const handleIncludeAll = useCallback(async () => {
     if (!info || !port) return;
-    await sendChatCommand(
+    await sendBrowserContextDecision(
       chatId,
       port,
-      apiKey ?? undefined,
       {
-        type: "set_params",
-        patch: {
-          browser_context_decision: {
-            include_actions: true,
-            include_console: true,
-            include_network: true,
-            include_mutations: true,
-            include_screenshot: false,
-            last_n_actions: info.action_count,
-            last_n_console: info.console_count,
-            last_n_network: info.network_count,
-          },
-        },
+        pending_message_id: info.pending_message_id,
+        include_actions: true,
+        include_console: true,
+        include_network: true,
+        include_mutations: true,
+        include_screenshot: false,
+        last_n_actions: info.action_count,
+        last_n_console: info.console_count,
+        last_n_network: info.network_count,
       },
+      apiKey ?? undefined,
     );
     dispatch(clearBrowserContextOversize({ chatId }));
   }, [chatId, port, apiKey, info, dispatch]);
 
   const handleIncludeSelected = useCallback(async () => {
-    if (!port) return;
-    await sendChatCommand(
+    if (!info || !port) return;
+    await sendBrowserContextDecision(
       chatId,
       port,
-      apiKey ?? undefined,
       {
-        type: "set_params",
-        patch: {
-          browser_context_decision: {
-            include_actions: includeActions,
-            include_console: includeConsole,
-            include_network: includeNetwork,
-            include_mutations: includeMutations,
-            include_screenshot: includeScreenshot,
-            last_n_actions: lastNActions,
-            last_n_console: lastNConsole,
-            last_n_network: lastNNetwork,
-          },
-        },
+        pending_message_id: info.pending_message_id,
+        include_actions: includeActions,
+        include_console: includeConsole,
+        include_network: includeNetwork,
+        include_mutations: includeMutations,
+        include_screenshot: includeScreenshot,
+        last_n_actions: lastNActions,
+        last_n_console: lastNConsole,
+        last_n_network: lastNNetwork,
       },
+      apiKey ?? undefined,
     );
     dispatch(clearBrowserContextOversize({ chatId }));
   }, [
     chatId,
     port,
     apiKey,
+    info,
     includeActions,
     includeConsole,
     includeNetwork,
@@ -168,29 +164,25 @@ export const BrowserContextGuard: React.FC<BrowserContextGuardProps> = ({
   ]);
 
   const handleSkipContext = useCallback(async () => {
-    if (!port) return;
-    await sendChatCommand(
+    if (!info || !port) return;
+    await sendBrowserContextDecision(
       chatId,
       port,
-      apiKey ?? undefined,
       {
-        type: "set_params",
-        patch: {
-          browser_context_decision: {
-            include_actions: false,
-            include_console: false,
-            include_network: false,
-            include_mutations: false,
-            include_screenshot: false,
-            last_n_actions: 0,
-            last_n_console: 0,
-            last_n_network: 0,
-          },
-        },
+        pending_message_id: info.pending_message_id,
+        include_actions: false,
+        include_console: false,
+        include_network: false,
+        include_mutations: false,
+        include_screenshot: false,
+        last_n_actions: 0,
+        last_n_console: 0,
+        last_n_network: 0,
       },
+      apiKey ?? undefined,
     );
     dispatch(clearBrowserContextOversize({ chatId }));
-  }, [chatId, port, apiKey, dispatch]);
+  }, [chatId, port, apiKey, info, dispatch]);
 
   const handleCancelSend = useCallback(async () => {
     if (!port) return;

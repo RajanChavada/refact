@@ -37,6 +37,7 @@ export type BrowserNotification = {
 };
 
 export type BrowserContextOversizeInfo = {
+  pending_message_id: string;
   total_bytes: number;
   action_count: number;
   action_bytes: number;
@@ -244,6 +245,7 @@ export const browserSlice = createSlice({
       const rt = state.runtimes[event.chat_id];
       if (!rt) return;
       rt.oversize_info = {
+        pending_message_id: event.pending_message_id,
         total_bytes: event.total_bytes,
         action_count: event.action_count,
         action_bytes: event.action_bytes,

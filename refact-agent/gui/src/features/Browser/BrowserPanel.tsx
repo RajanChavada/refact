@@ -3,6 +3,7 @@ import classNames from "classnames";
 import { useAppDispatch, useAppSelector } from "../../hooks";
 import {
   selectBrowserRuntime,
+  selectBrowserContextOversize,
   selectTimelineOpen,
   toggleTimelineOpen,
   setBrowserRuntime,
@@ -10,6 +11,7 @@ import {
 } from "./browserSlice";
 import { browserApi } from "../../services/refact/browser";
 import { BrowserToolbar } from "./BrowserToolbar";
+import { BrowserContextGuard } from "./BrowserContextGuard";
 import { ActionTimeline } from "./ActionTimeline";
 import styles from "./Browser.module.css";
 
@@ -24,6 +26,9 @@ export const BrowserPanel = ({ chatId }: BrowserPanelProps) => {
   );
   const timelineOpen = useAppSelector((state) =>
     selectTimelineOpen(state, chatId),
+  );
+  const oversizeInfo = useAppSelector((state) =>
+    selectBrowserContextOversize(state, chatId),
   );
   const [browserStart] = browserApi.useBrowserStartMutation();
 
@@ -138,6 +143,7 @@ export const BrowserPanel = ({ chatId }: BrowserPanelProps) => {
         </div>
       )}
       {timelineOpen && <ActionTimeline chatId={chatId} />}
+      {oversizeInfo && <BrowserContextGuard chatId={chatId} />}
     </div>
   );
 };

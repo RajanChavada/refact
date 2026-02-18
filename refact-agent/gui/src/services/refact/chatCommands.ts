@@ -60,6 +60,18 @@ export type ChatCommandBase =
       type: "branch_from_chat";
       source_chat_id: string;
       up_to_message_id: string;
+    }
+  | {
+      type: "browser_context_decision";
+      pending_message_id: string;
+      include_actions: boolean;
+      include_console: boolean;
+      include_network: boolean;
+      include_mutations: boolean;
+      include_screenshot: boolean;
+      last_n_actions?: number | null;
+      last_n_console?: number | null;
+      last_n_network?: number | null;
     };
 
 export type ChatCommand = ChatCommandBase & {
@@ -236,6 +248,28 @@ export async function branchFromChat(
     source_chat_id: sourceChatId,
     up_to_message_id: upToMessageId,
   } as ChatCommandBase);
+}
+
+export async function sendBrowserContextDecision(
+  chatId: string,
+  port: number,
+  decision: {
+    pending_message_id: string;
+    include_actions: boolean;
+    include_console: boolean;
+    include_network: boolean;
+    include_mutations: boolean;
+    include_screenshot: boolean;
+    last_n_actions?: number | null;
+    last_n_console?: number | null;
+    last_n_network?: number | null;
+  },
+  apiKey?: string,
+): Promise<void> {
+  await sendChatCommand(chatId, port, apiKey, {
+    type: "browser_context_decision",
+    ...decision,
+  });
 }
 
 export async function cancelQueuedItem(

@@ -198,6 +198,7 @@ export type EventEnvelope =
       network_count: number;
       network_bytes: number;
       mutation_bytes: number;
+      pending_message_id: string;
     };
 
 export type ChatEventEnvelope = EventEnvelope;
