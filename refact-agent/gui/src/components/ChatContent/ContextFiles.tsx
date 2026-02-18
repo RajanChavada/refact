@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { useStoredOpen } from "./useStoredOpen";
 import { Flex, Box, Text } from "@radix-ui/themes";
 import classNames from "classnames";
 import ReactMarkDown from "react-markdown";
@@ -152,7 +153,8 @@ const FileItem: React.FC<{
   onOpenFile: (file: { file_path: string; line?: number }) => Promise<void>;
   variant: ContextVariant;
 }> = ({ file, onOpenFile, variant }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = `ctxfile:${file.file_name}:${file.line1 || 0}-${file.line2 || 0}`;
+  const [isOpen, toggleOpen] = useStoredOpen(storeKey, false);
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(isOpen, 200);
   const extension = getExtensionFromName(file.file_name);
 
@@ -166,8 +168,8 @@ const FileItem: React.FC<{
   const relevance = file.usefulness ? Math.round(file.usefulness) : null;
 
   const handleToggle = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
+    toggleOpen();
+  }, [toggleOpen]);
 
   const handleFileClick = useCallback(
     (e: React.MouseEvent) => {

@@ -61,9 +61,10 @@ export function VirtualizedChatList<T extends { key: string }>({
 
   const followOutput = useCallback(
     (isAtBottom: boolean) => {
+      if (!isStreaming) return false;
       if (userScrolledUpRef.current) return false;
       if (isAtBottom && autoFollowRef.current) {
-        return isStreaming ? "auto" : "smooth";
+        return "auto";
       }
       return false;
     },

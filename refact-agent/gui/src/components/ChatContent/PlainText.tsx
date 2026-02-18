@@ -1,4 +1,5 @@
 import React from "react";
+import { useStoredOpen } from "./useStoredOpen";
 import { Container, Box, Flex, Text } from "@radix-ui/themes";
 import { Markdown } from "./ContextFiles";
 import styles from "./ChatContent.module.css";
@@ -21,7 +22,8 @@ export const PlainText: React.FC<PlainTextProps> = ({
   id,
   defaultOpen = false,
 }) => {
-  const [open, setOpen] = React.useState(defaultOpen);
+  const storeKey = id ? `plaintext:${id}` : undefined;
+  const [open, _toggleOpen, setOpen] = useStoredOpen(storeKey, defaultOpen);
   const text = "```text\n" + children + "\n```";
   const preview =
     children.slice(0, 100).replace(/\n/g, " ") +

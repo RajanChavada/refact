@@ -1068,7 +1068,6 @@ const MultiModalToolContent: React.FC<{
                   direction="column"
                   key={`tool-call-command-${toolCall.id}-${i}`}
                   py="2"
-                  ref={ref}
                 >
                   <ScrollArea scrollbars="horizontal" style={{ width: "100%" }}>
                     <Box>

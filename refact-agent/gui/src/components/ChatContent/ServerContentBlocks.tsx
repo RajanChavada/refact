@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
+import { useStoredOpen } from "./useStoredOpen";
 import { MagnifyingGlassIcon } from "@radix-ui/react-icons";
 import { Box, Flex, Link, Text } from "@radix-ui/themes";
 import { ToolCard } from "./ToolCard";
@@ -85,7 +86,8 @@ function groupServerBlocks(blocks: unknown[]): {
 }
 
 const WebSearchBlock: React.FC<{ group: WebSearchGroup }> = ({ group }) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = group.toolUse.id ? `srvweb:${group.toolUse.id}` : undefined;
+  const [isOpen, toggleOpen] = useStoredOpen(storeKey, false);
 
   const query =
     typeof group.toolUse.input?.query === "string"
@@ -111,7 +113,7 @@ const WebSearchBlock: React.FC<{ group: WebSearchGroup }> = ({ group }) => {
       summary={summary}
       status="success"
       isOpen={isOpen}
-      onToggle={() => setIsOpen((prev) => !prev)}
+      onToggle={toggleOpen}
     >
       {results.length > 0 && (
         <Box>

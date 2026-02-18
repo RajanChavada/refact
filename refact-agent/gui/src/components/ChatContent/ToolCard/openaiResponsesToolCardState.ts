@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useStoredOpen } from "../useStoredOpen";
 
 import { useAppSelector } from "../../../hooks";
 import {
@@ -39,7 +40,9 @@ export type OpenAiResponsesToolCardState = {
 export function useOpenAiResponsesToolCardState(
   toolCall: ToolCall,
 ): OpenAiResponsesToolCardState {
-  const [isOpen, setIsOpen] = useState(false);
+  const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
+  const [isOpen, toggleOpen] = useStoredOpen(storeKey, false);
+
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
 
@@ -62,10 +65,6 @@ export function useOpenAiResponsesToolCardState(
     }
     return "success";
   }, [maybeResult, isStreaming, isWaiting]);
-
-  const toggleOpen = useCallback(() => {
-    setIsOpen((prev) => !prev);
-  }, []);
 
   const parsedArgs = useMemo(
     () => parseJsonOrNull(toolCall.function.arguments),
