@@ -120,10 +120,16 @@ export const UsageTab: React.FC<Props> = ({ dateRange }) => {
   );
 
   const barOption = {
+    textStyle: { color: axisColor },
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "shadow" },
       textStyle: { color: getCssVar("--gray-12", axisColor) },
+      backgroundColor: getCssVar(
+        "--color-panel-solid",
+        isDarkMode ? "#1a1a1a" : "#fff",
+      ),
+      borderColor: getCssVar("--gray-6", "#333"),
     },
     legend: {
       data: ["Prompt Tokens", "Completion Tokens"],
@@ -141,12 +147,14 @@ export const UsageTab: React.FC<Props> = ({ dateRange }) => {
         type: "category",
         data: dayLabels,
         axisLine: { lineStyle: { color: axisColor } },
+        axisLabel: { color: axisColor },
       },
     ],
     yAxis: [
       {
         type: "value",
         axisLine: { lineStyle: { color: axisColor } },
+        axisLabel: { color: axisColor },
         splitLine: {
           lineStyle: { color: getCssVar("--gray-5", "#333") },
         },
@@ -176,10 +184,16 @@ export const UsageTab: React.FC<Props> = ({ dateRange }) => {
   }));
 
   const pieOption = {
+    textStyle: { color: axisColor },
     tooltip: {
       trigger: "item",
       formatter: "{b}: {c} ({d}%)",
       textStyle: { color: getCssVar("--gray-12", axisColor) },
+      backgroundColor: getCssVar(
+        "--color-panel-solid",
+        isDarkMode ? "#1a1a1a" : "#fff",
+      ),
+      borderColor: getCssVar("--gray-6", "#333"),
     },
     legend: {
       textStyle: { color: getCssVar("--gray-12", axisColor) },
