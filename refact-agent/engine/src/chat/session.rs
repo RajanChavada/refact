@@ -54,6 +54,9 @@ impl ChatSession {
             cache_guard_force_next: false,
             task_agent_error: None,
             pending_browser_message: None,
+            slash_allowed_tools: Vec::new(),
+            slash_model_override: None,
+            slash_source_command: String::new(),
         }
     }
 
@@ -91,6 +94,9 @@ impl ChatSession {
             cache_guard_force_next: false,
             task_agent_error: None,
             pending_browser_message: None,
+            slash_allowed_tools: Vec::new(),
+            slash_model_override: None,
+            slash_source_command: String::new(),
         }
     }
 

@@ -447,7 +447,7 @@ pub async fn process_tool_calls_once(
     mode_id: &str,
     model_id: Option<&str>,
 ) -> ToolStepOutcome {
-    let (tool_calls, server_tool_calls, messages, thread, tool_message_index) = {
+    let (tool_calls, server_tool_calls, messages, thread, tool_message_index, slash_allowed_tools, slash_source_command) = {
         let session = session_arc.lock().await;
         let msg_count = session.messages.len();
         let last_msg = session.messages.last();
@@ -463,6 +463,8 @@ pub async fn process_tool_calls_once(
                     session.messages.clone(),
                     session.thread.clone(),
                     msg_count.saturating_sub(1),
+                    session.slash_allowed_tools.clone(),
+                    session.slash_source_command.clone(),
                 )
             }
             _ => return ToolStepOutcome::NoToolCalls,
@@ -515,7 +517,7 @@ pub async fn process_tool_calls_once(
     );
 
     let (confirmations, denials) =
-        check_tools_confirmation(gcx.clone(), &tool_calls, &messages, mode_id, model_id).await;
+        check_tools_confirmation(gcx.clone(), &tool_calls, &messages, mode_id, model_id, &slash_allowed_tools, &slash_source_command).await;
 
     let denied_ids: std::collections::HashSet<String> = denials.iter().map(|d| d.tool_call_id.clone()).collect();
     if !denials.is_empty() {
@@ -652,6 +654,8 @@ pub async fn check_tools_confirmation(
     messages: &[ChatMessage],
     mode_id: &str,
     model_id: Option<&str>,
+    allowed_tools: &[String],
+    source_command: &str,
 ) -> (Vec<PauseReason>, Vec<PauseReason>) {
     use crate::tools::tools_description::MatchConfirmDenyResult;
 
@@ -691,6 +695,18 @@ pub async fn check_tools_confirmation(
             .collect::<indexmap::IndexMap<_, _>>();
 
     for tool_call in tool_calls {
+        if !allowed_tools.is_empty() && !allowed_tools.contains(&tool_call.function.name) {
+            denials.push(PauseReason {
+                reason_type: "denial".to_string(),
+                tool_name: tool_call.function.name.clone(),
+                command: tool_call.function.name.clone(),
+                rule: format!("Not in allowed-tools for /{}", source_command),
+                tool_call_id: tool_call.id.clone(),
+                integr_config_path: None,
+            });
+            continue;
+        }
+
         let tool = match all_tools.get(&tool_call.function.name) {
             Some(t) => t,
             None => {

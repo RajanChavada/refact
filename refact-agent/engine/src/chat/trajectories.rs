@@ -3009,6 +3009,9 @@ mod tests {
             task_agent_error: None,
             trajectory_events_tx: None,
             pending_browser_message: None,
+            slash_allowed_tools: Vec::new(),
+            slash_model_override: None,
+            slash_source_command: String::new(),
         };
 
         let snapshot = TrajectorySnapshot::from_session(&session);

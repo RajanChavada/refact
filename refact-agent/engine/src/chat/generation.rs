@@ -245,13 +245,21 @@ pub fn start_generation(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
     Box::pin(async move {
         loop {
-            let (thread, chat_id) = {
+            let (mut thread, chat_id) = {
                 let session = session_arc.lock().await;
                 (
                     session.thread.clone(),
                     session.chat_id.clone(),
                 )
             };
+            {
+                let session = session_arc.lock().await;
+                if let Some(ref m) = session.slash_model_override {
+                    if !m.is_empty() {
+                        thread.model = m.clone();
+                    }
+                }
+            }
 
             let abort_flag = {
                 let mut session = session_arc.lock().await;

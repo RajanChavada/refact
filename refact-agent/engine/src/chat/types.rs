@@ -660,6 +660,9 @@ pub struct ChatSession {
     pub cache_guard_force_next: bool,
     pub task_agent_error: Option<String>,
     pub pending_browser_message: Option<PendingBrowserMessage>,
+    pub slash_allowed_tools: Vec<String>,
+    pub slash_model_override: Option<String>,
+    pub slash_source_command: String,
 }
 
 #[derive(Debug, Clone)]

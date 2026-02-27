@@ -14,6 +14,7 @@ use super::content::parse_content_with_attachments;
 use super::generation::{start_generation, prepare_session_preamble_and_knowledge};
 use super::tools::execute_tools_with_session;
 use super::trajectories::maybe_save_trajectory;
+use crate::ext::slash_expand::expand_slash_command;
 
 fn command_triggers_generation(cmd: &ChatCommand) -> bool {
     matches!(
@@ -439,9 +440,30 @@ pub async fn process_command_queue(
 
         match request.command {
             ChatCommand::UserMessage {
-                content,
+                mut content,
                 attachments,
             } => {
+                if let Some(text) = content.as_str() {
+                    match expand_slash_command(gcx.clone(), text).await {
+                        Ok(Some(expanded)) => {
+                            content = serde_json::Value::String(expanded.expanded_text);
+                            let mut session = session_arc.lock().await;
+                            session.slash_allowed_tools = expanded.allowed_tools;
+                            session.slash_model_override = expanded.model_override;
+                            session.slash_source_command = expanded.source_command;
+                        }
+                        Ok(None) => {
+                            let mut session = session_arc.lock().await;
+                            session.slash_allowed_tools = Vec::new();
+                            session.slash_model_override = None;
+                            session.slash_source_command = String::new();
+                        }
+                        Err(e) => {
+                            warn!("slash command expansion error: {}", e);
+                        }
+                    }
+                }
+
                 let additional_messages = if !request.priority {
                     let mut session = session_arc.lock().await;
                     let msgs = drain_non_priority_user_messages(&mut session.command_queue);
