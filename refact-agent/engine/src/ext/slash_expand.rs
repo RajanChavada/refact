@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 
 use crate::ext::config_dirs::{get_ext_dirs, ExtDirs};
+use crate::ext::skills::load_skill_full;
 use crate::ext::slash_commands::load_slash_commands;
 use crate::global_context::GlobalContext;
 
@@ -10,6 +11,7 @@ pub struct ExpandedCommand {
     pub model_override: Option<String>,
     pub allowed_tools: Vec<String>,
     pub source_command: String,
+    pub context_fork: Option<String>,
 }
 
 fn shell_split(s: &str) -> Vec<String> {
@@ -84,22 +86,42 @@ async fn expand_with_dirs(ext_dirs: &ExtDirs, raw_input: &str) -> Result<Option<
         return Ok(None);
     }
 
-    let commands = load_slash_commands(ext_dirs).await;
-    let command = match commands.into_iter().find(|c| c.name == cmd_name) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
-
     let args_str = after_slash[cmd_name_end..].trim().to_string();
     let positional = shell_split(&args_str);
-    let expanded_text = expand_template(&command.body, &args_str, &positional);
 
-    Ok(Some(ExpandedCommand {
-        expanded_text,
-        model_override: command.model,
-        allowed_tools: command.allowed_tools,
-        source_command: cmd_name.to_string(),
-    }))
+    let commands = load_slash_commands(ext_dirs).await;
+    if let Some(command) = commands.into_iter().find(|c| c.name == cmd_name) {
+        let expanded_text = expand_template(&command.body, &args_str, &positional);
+        return Ok(Some(ExpandedCommand {
+            expanded_text,
+            model_override: command.model,
+            allowed_tools: command.allowed_tools,
+            source_command: cmd_name.to_string(),
+            context_fork: None,
+        }));
+    }
+
+    if let Some(skill) = load_skill_full(ext_dirs, cmd_name).await {
+        if !skill.index.user_invocable {
+            return Ok(None);
+        }
+        let agent_name = skill.agent.clone().unwrap_or_else(|| "subagent".to_string());
+        let context_fork = if skill.context.as_deref() == Some("fork") {
+            Some(agent_name)
+        } else {
+            None
+        };
+        let expanded_text = expand_template(&skill.body, &args_str, &positional);
+        return Ok(Some(ExpandedCommand {
+            expanded_text,
+            model_override: skill.model.clone(),
+            allowed_tools: skill.allowed_tools.clone(),
+            source_command: cmd_name.to_string(),
+            context_fork,
+        }));
+    }
+
+    Ok(None)
 }
 
 pub async fn expand_slash_command(
@@ -256,5 +278,94 @@ mod tests {
         let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
         let result = expand_with_dirs(&ext_dirs, "/cmd").await.unwrap().unwrap();
         assert_eq!(result.expanded_text, "Do: ");
+    }
+
+    #[tokio::test]
+    async fn test_skills_slash_invocation_loads_full_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A useful skill\nallowed-tools:\n  - cat\nmodel: gpt-4o\nuser-invocable: true\n---\nDo something with $ARGUMENTS",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/my-skill some args").await.unwrap().unwrap();
+        assert_eq!(result.expanded_text, "Do something with some args");
+        assert_eq!(result.model_override, Some("gpt-4o".to_string()));
+        assert_eq!(result.allowed_tools, vec!["cat"]);
+        assert_eq!(result.source_command, "my-skill");
+        assert!(result.context_fork.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_skills_slash_invocation_non_user_invocable_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("hidden-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: hidden-skill\ndescription: Hidden skill\nuser-invocable: false\n---\nBody",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/hidden-skill args").await.unwrap();
+        assert!(result.is_none(), "Non-user-invocable skill should not be invocable via /skill-name");
+    }
+
+    #[tokio::test]
+    async fn test_skills_fork_creates_subchat() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("fork-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: fork-skill\ndescription: A forking skill\ncontext: fork\nagent: my-agent\nuser-invocable: true\n---\nDo the fork task: $ARGUMENTS",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/fork-skill some work").await.unwrap().unwrap();
+        assert_eq!(result.context_fork, Some("my-agent".to_string()), "Fork skill should set context_fork to agent name");
+        assert_eq!(result.source_command, "fork-skill");
+        assert!(result.expanded_text.contains("some work"), "Expanded text should contain args");
+    }
+
+    #[tokio::test]
+    async fn test_skills_fork_default_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("default-fork");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: default-fork\ndescription: Fork skill with default agent\ncontext: fork\nuser-invocable: true\n---\nBody",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/default-fork").await.unwrap().unwrap();
+        assert_eq!(result.context_fork, Some("subagent".to_string()), "Default fork agent should be 'subagent'");
+    }
+
+    #[tokio::test]
+    async fn test_skills_command_takes_precedence_over_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let commands_dir = tmp.path().join("commands");
+        tokio::fs::create_dir_all(&commands_dir).await.unwrap();
+        tokio::fs::write(
+            commands_dir.join("same-name.md"),
+            "---\ndescription: Command version\n---\nCommand body: $ARGUMENTS",
+        ).await.unwrap();
+
+        let skill_dir = tmp.path().join("skills").join("same-name");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: same-name\ndescription: Skill version\nuser-invocable: true\n---\nSkill body: $ARGUMENTS",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/same-name arg").await.unwrap().unwrap();
+        assert!(result.expanded_text.contains("Command body"), "Slash command should take precedence over skill");
+        assert!(result.context_fork.is_none());
     }
 }

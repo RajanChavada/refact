@@ -12,6 +12,7 @@ use super::system_context::{
     self, create_instruction_files_message, create_memories_message, gather_system_context,
     generate_git_info_prompt, gather_git_info, PROJECT_CONTEXT_MARKER,
 };
+use crate::ext::skills_context::{build_skills_context_messages, SKILLS_CONTEXT_MARKER};
 use crate::yaml_configs::project_information::load_project_information_config;
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile, canonical_mode_id};
 use crate::tasks::storage::infer_task_id_from_chat_id;
@@ -533,6 +534,30 @@ async fn gather_and_inject_system_context(
                 .map(|e| &e.env_type)
                 .collect::<Vec<_>>()
         );
+    }
+
+    let have_skills_context = messages
+        .iter()
+        .any(|m| m.role == "context_file" && m.tool_call_id == SKILLS_CONTEXT_MARKER);
+    if !have_skills_context {
+        let last_user_text = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .and_then(|m| match &m.content {
+                crate::call_validation::ChatContent::SimpleText(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let skills_msgs = build_skills_context_messages(gcx.clone(), &last_user_text, None).await;
+        for skills_msg in skills_msgs {
+            let insert_pos = messages
+                .iter()
+                .position(|m| m.role == "user" || m.role == "assistant")
+                .unwrap_or(messages.len());
+            stream_back_to_user.push_in_json(serde_json::json!(skills_msg));
+            messages.insert(insert_pos, skills_msg);
+        }
     }
 
     Ok(())

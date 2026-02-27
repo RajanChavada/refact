@@ -2,5 +2,7 @@ pub mod config_dirs;
 pub mod hooks;
 pub mod hooks_runner;
 pub mod skills;
+pub mod skills_context;
+pub mod skills_matcher;
 pub mod slash_commands;
 pub mod slash_expand;
