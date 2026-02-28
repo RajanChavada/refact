@@ -14,6 +14,7 @@ pub enum HookEvent {
     Stop,
     SubagentStop,
     Notification,
+    PreCompact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +36,7 @@ fn event_from_str(s: &str) -> Option<HookEvent> {
         "Stop" => Some(HookEvent::Stop),
         "SubagentStop" => Some(HookEvent::SubagentStop),
         "Notification" => Some(HookEvent::Notification),
+        "PreCompact" => Some(HookEvent::PreCompact),
         _ => None,
     }
 }
@@ -139,8 +141,11 @@ pub async fn load_hooks(ext_dirs: &ExtDirs) -> Vec<HookConfig> {
         let source = source_for_dir(dir, &ext_dirs.global_dirs);
         if is_claude_dir(dir) {
             let settings_path = dir.join("settings.json");
-            let hooks = load_hooks_from_claude_settings(&settings_path, source).await;
+            let hooks = load_hooks_from_claude_settings(&settings_path, source.clone()).await;
             result.extend(hooks);
+            let local_settings_path = dir.join("settings.local.json");
+            let local_hooks = load_hooks_from_claude_settings(&local_settings_path, source).await;
+            result.extend(local_hooks);
         } else {
             let hooks_path = dir.join("hooks.yaml");
             let hooks = load_hooks_from_refact_yaml(&hooks_path, source).await;
@@ -342,6 +347,10 @@ hooks:
     - hooks:
         - type: command
           command: "cmd8"
+  PreCompact:
+    - hooks:
+        - type: command
+          command: "cmd9"
 "#;
         tokio::fs::write(tmp.path().join("hooks.yaml"), hooks_yaml).await.unwrap();
 
@@ -350,7 +359,163 @@ hooks:
             project_dirs: vec![],
         };
         let hooks = load_hooks(&ext_dirs).await;
-        assert_eq!(hooks.len(), 8);
+        assert_eq!(hooks.len(), 9);
+    }
+
+    #[tokio::test]
+    async fn test_precompact_event_parsing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hooks_yaml = r#"
+hooks:
+  PreCompact:
+    - hooks:
+        - type: command
+          command: "./compact_hook.sh"
+          timeout: 60
+"#;
+        tokio::fs::write(tmp.path().join("hooks.yaml"), hooks_yaml).await.unwrap();
+
+        let ext_dirs = ExtDirs {
+            global_dirs: vec![tmp.path().to_path_buf()],
+            project_dirs: vec![],
+        };
+        let hooks = load_hooks(&ext_dirs).await;
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].event, HookEvent::PreCompact);
+        assert_eq!(hooks[0].command, "./compact_hook.sh");
+        assert_eq!(hooks[0].timeout, Some(60));
+    }
+
+    #[tokio::test]
+    async fn test_precompact_event_parsing_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        tokio::fs::create_dir_all(&claude_dir).await.unwrap();
+
+        let settings_json = r#"{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo compacting"
+          }
+        ]
+      }
+    ]
+  }
+}"#;
+        tokio::fs::write(claude_dir.join("settings.json"), settings_json).await.unwrap();
+
+        let ext_dirs = ExtDirs {
+            global_dirs: vec![claude_dir.clone()],
+            project_dirs: vec![],
+        };
+        let hooks = load_hooks(&ext_dirs).await;
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].event, HookEvent::PreCompact);
+        assert_eq!(hooks[0].command, "echo compacting");
+    }
+
+    #[tokio::test]
+    async fn test_settings_local_json_loaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        tokio::fs::create_dir_all(&claude_dir).await.unwrap();
+
+        let settings_json = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo from_settings"
+          }
+        ]
+      }
+    ]
+  }
+}"#;
+        let local_settings_json = r#"{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo from_local_settings"
+          }
+        ]
+      }
+    ]
+  }
+}"#;
+        tokio::fs::write(claude_dir.join("settings.json"), settings_json).await.unwrap();
+        tokio::fs::write(claude_dir.join("settings.local.json"), local_settings_json).await.unwrap();
+
+        let ext_dirs = ExtDirs {
+            global_dirs: vec![claude_dir.clone()],
+            project_dirs: vec![],
+        };
+        let hooks = load_hooks(&ext_dirs).await;
+        assert_eq!(hooks.len(), 2);
+        assert!(hooks.iter().any(|h| h.event == HookEvent::SessionStart && h.command == "echo from_settings"));
+        assert!(hooks.iter().any(|h| h.event == HookEvent::SessionEnd && h.command == "echo from_local_settings"));
+    }
+
+    #[tokio::test]
+    async fn test_settings_local_overrides_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        tokio::fs::create_dir_all(&claude_dir).await.unwrap();
+
+        let settings_json = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo base_command"
+          }
+        ]
+      }
+    ]
+  }
+}"#;
+        let local_settings_json = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo local_override"
+          }
+        ]
+      }
+    ]
+  }
+}"#;
+        tokio::fs::write(claude_dir.join("settings.json"), settings_json).await.unwrap();
+        tokio::fs::write(claude_dir.join("settings.local.json"), local_settings_json).await.unwrap();
+
+        let ext_dirs = ExtDirs {
+            global_dirs: vec![claude_dir.clone()],
+            project_dirs: vec![],
+        };
+        let hooks = load_hooks(&ext_dirs).await;
+        assert_eq!(hooks.len(), 2);
+        assert!(hooks.iter().any(|h| h.command == "echo base_command"));
+        assert!(hooks.iter().any(|h| h.command == "echo local_override"));
+        let local_hook = hooks.iter().find(|h| h.command == "echo local_override").unwrap();
+        let base_hook = hooks.iter().find(|h| h.command == "echo base_command").unwrap();
+        let local_pos = hooks.iter().position(|h| h.command == "echo local_override").unwrap();
+        let base_pos = hooks.iter().position(|h| h.command == "echo base_command").unwrap();
+        assert!(local_pos > base_pos, "local settings hooks should come after base settings hooks");
+        let _ = (local_hook, base_hook);
     }
 
     #[tokio::test]
@@ -414,6 +579,7 @@ hooks:
         assert_eq!(event_from_str("Stop"), Some(HookEvent::Stop));
         assert_eq!(event_from_str("SubagentStop"), Some(HookEvent::SubagentStop));
         assert_eq!(event_from_str("Notification"), Some(HookEvent::Notification));
+        assert_eq!(event_from_str("PreCompact"), Some(HookEvent::PreCompact));
         assert_eq!(event_from_str("Unknown"), None);
         assert_eq!(event_from_str(""), None);
     }
