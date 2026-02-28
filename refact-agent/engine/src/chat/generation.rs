@@ -106,11 +106,8 @@ pub async fn prepare_session_preamble_and_knowledge(
 
         {
             let mut session = session_arc.lock().await;
-            session.skills_included = Vec::new();
-            if skills_info.available_count > 0 {
-                session.skills_available_count = skills_info.available_count;
-                session.skills_included = skills_info.included_names.clone();
-            }
+            session.skills_available_count = skills_info.available_count;
+            session.skills_included = skills_info.included_names.clone();
         }
 
         if first_conv_idx > 0 {

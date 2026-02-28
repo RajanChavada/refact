@@ -65,6 +65,35 @@ pub struct PluginsDb {
     pub installed: Vec<InstalledPluginEntry>,
 }
 
+pub fn validate_plugin_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("plugin name cannot be empty".to_string());
+    }
+    if name.starts_with('.') {
+        return Err("plugin name cannot start with '.'".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("plugin name contains invalid path characters".to_string());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+        return Err("plugin name must match [a-zA-Z0-9._-]+".to_string());
+    }
+    Ok(())
+}
+
+fn validate_github_source(source: &str) -> Result<(), String> {
+    let valid = source.split('/').count() == 2
+        && source.split('/').all(|part| {
+            !part.is_empty()
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("invalid GitHub source format '{}': must be 'owner/repo'", source))
+    }
+}
+
 pub fn plugins_db_path(config_dir: &Path) -> PathBuf {
     config_dir.join("plugins.json")
 }
@@ -107,7 +136,13 @@ pub fn parse_marketplace_json(content: &str) -> Result<MarketplaceJson, String> 
 }
 
 pub async fn load_marketplace_json(dir: &Path) -> Result<MarketplaceJson, String> {
-    let path = dir.join("marketplace.json");
+    let claude_plugin_path = dir.join(".claude-plugin").join("marketplace.json");
+    let root_path = dir.join("marketplace.json");
+    let path = if claude_plugin_path.exists() {
+        claude_plugin_path
+    } else {
+        root_path
+    };
     let content = tokio::fs::read_to_string(&path).await
         .map_err(|e| format!("read {:?}: {}", path, e))?;
     parse_marketplace_json(&content)
@@ -121,17 +156,21 @@ async fn copy_dir_recursive(src: &Path, dst: &Path, size_acc: &mut u64) -> Resul
     while let Ok(Some(entry)) = entries.next_entry().await {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        let meta = match entry.metadata().await {
-            Ok(m) => m,
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
             Err(_) => continue,
         };
-        if meta.file_type().is_symlink() {
+        if file_type.is_symlink() {
+            tracing::warn!("skipping symlink {:?} during plugin copy", src_path);
             continue;
         }
-        if meta.is_dir() {
+        if file_type.is_dir() {
             Box::pin(copy_dir_recursive(&src_path, &dst_path, size_acc)).await?;
-        } else if meta.is_file() {
-            *size_acc += meta.len();
+        } else if file_type.is_file() {
+            let file_len = tokio::fs::metadata(&src_path).await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            *size_acc += file_len;
             if *size_acc > PLUGIN_SIZE_LIMIT {
                 return Err("Plugin directory exceeds 50MB size limit".to_string());
             }
@@ -149,9 +188,9 @@ fn is_local_source(source: &str) -> bool {
 async fn fetch_marketplace_to_cache(
     source: &str,
     cache_dir: &Path,
-    marketplace_name: &str,
+    tmp_name: &str,
 ) -> Result<PathBuf, String> {
-    let target_dir = marketplace_cache_dir(cache_dir, marketplace_name);
+    let target_dir = marketplace_cache_dir(cache_dir, tmp_name);
     if is_local_source(source) {
         return Ok(PathBuf::from(source));
     }
@@ -181,19 +220,41 @@ pub async fn add_marketplace(
         let g = gcx.read().await;
         (g.config_dir.clone(), g.cache_dir.clone())
     };
-    let tmp_name = "tmp_marketplace";
-    let marketplace_dir = fetch_marketplace_to_cache(source, &cache_dir, tmp_name).await?;
+    if !is_local_source(source) {
+        validate_github_source(source)?;
+    }
+    let tmp_name = format!("tmp_marketplace_{}", uuid::Uuid::new_v4().simple());
+    let marketplace_dir = fetch_marketplace_to_cache(source, &cache_dir, &tmp_name).await
+        .map_err(|e| {
+            let tmp_dir = marketplace_cache_dir(&cache_dir, &tmp_name);
+            if tmp_dir.exists() {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+            }
+            e
+        })?;
     let mj = load_marketplace_json(&marketplace_dir).await
-        .map_err(|e| format!("marketplace.json: {}", e))?;
+        .map_err(|e| {
+            let tmp_dir = marketplace_cache_dir(&cache_dir, &tmp_name);
+            if tmp_dir.exists() {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+            }
+            format!("marketplace.json: {}", e)
+        })?;
     let name = if mj.name.is_empty() {
         source.trim_matches('/').replace('/', "_")
     } else {
         mj.name.clone()
     };
+    validate_plugin_name(&name)
+        .map_err(|e| format!("invalid marketplace name '{}': {}", name, e))?;
+    for plugin in &mj.plugins {
+        validate_plugin_name(&plugin.name)
+            .map_err(|e| format!("invalid plugin name '{}': {}", plugin.name, e))?;
+    }
     if !is_local_source(source) {
         let final_dir = marketplace_cache_dir(&cache_dir, &name);
         if final_dir != marketplace_dir {
-            let tmp_dir = marketplace_cache_dir(&cache_dir, tmp_name);
+            let tmp_dir = marketplace_cache_dir(&cache_dir, &tmp_name);
             if tmp_dir.exists() {
                 tokio::fs::rename(&tmp_dir, &final_dir).await
                     .map_err(|e| format!("rename marketplace dir: {}", e))?;
@@ -215,6 +276,7 @@ pub async fn remove_marketplace(
     gcx: Arc<ARwLock<GlobalContext>>,
     name: &str,
 ) -> Result<(), String> {
+    validate_plugin_name(name)?;
     let config_dir = gcx.read().await.config_dir.clone();
     let mut db = load_plugins_db(&config_dir).await;
     db.marketplaces.retain(|m| m.name != name);
@@ -225,6 +287,7 @@ pub async fn list_marketplace_plugins(
     gcx: Arc<ARwLock<GlobalContext>>,
     name: &str,
 ) -> Result<Vec<MarketplacePluginEntry>, String> {
+    validate_plugin_name(name)?;
     let (config_dir, cache_dir) = {
         let g = gcx.read().await;
         (g.config_dir.clone(), g.cache_dir.clone())
@@ -246,6 +309,8 @@ pub async fn install_plugin(
     plugin_name: &str,
     marketplace_name: &str,
 ) -> Result<InstalledPluginEntry, String> {
+    validate_plugin_name(plugin_name)?;
+    validate_plugin_name(marketplace_name)?;
     let (config_dir, cache_dir) = {
         let g = gcx.read().await;
         (g.config_dir.clone(), g.cache_dir.clone())
@@ -264,8 +329,7 @@ pub async fn install_plugin(
     let plugin_source_dir = resolve_plugin_source_dir(&marketplace_dir, &plugin_entry.source)?;
     let install_dir = plugin_install_dir(&config_dir, plugin_name);
     if install_dir.exists() {
-        tokio::fs::remove_dir_all(&install_dir).await
-            .map_err(|e| format!("remove existing install dir: {}", e))?;
+        return Err(format!("plugin '{}' is already installed", plugin_name));
     }
     let mut size_acc = 0u64;
     copy_dir_recursive(&plugin_source_dir, &install_dir, &mut size_acc).await?;
@@ -315,6 +379,7 @@ pub async fn uninstall_plugin(
     gcx: Arc<ARwLock<GlobalContext>>,
     plugin_name: &str,
 ) -> Result<(), String> {
+    validate_plugin_name(plugin_name)?;
     let config_dir = gcx.read().await.config_dir.clone();
     let mut db = load_plugins_db(&config_dir).await;
     let was_installed = db.installed.iter().any(|i| i.name == plugin_name);
@@ -335,6 +400,90 @@ pub async fn uninstall_plugin(
 mod tests {
     use super::*;
     use crate::ext::config_dirs::CommandSource;
+
+    #[test]
+    fn test_validate_plugin_name_accepts_valid() {
+        assert!(validate_plugin_name("my-plugin").is_ok());
+        assert!(validate_plugin_name("plugin_v2").is_ok());
+        assert!(validate_plugin_name("plugin.1.0").is_ok());
+        assert!(validate_plugin_name("abc").is_ok());
+        assert!(validate_plugin_name("Plugin-123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_plugin_name_rejects_traversal() {
+        assert!(validate_plugin_name("../../etc").is_err());
+        assert!(validate_plugin_name("/absolute").is_err());
+        assert!(validate_plugin_name("a/b").is_err());
+        assert!(validate_plugin_name("..").is_err());
+        assert!(validate_plugin_name(".hidden").is_err());
+        assert!(validate_plugin_name("").is_err());
+        assert!(validate_plugin_name("path\\traversal").is_err());
+        assert!(validate_plugin_name("name with spaces").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_copy_dir_recursive_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        tokio::fs::create_dir_all(&src).await.unwrap();
+
+        tokio::fs::write(src.join("regular.txt"), "content").await.unwrap();
+
+        #[cfg(unix)]
+        {
+            let target = tmp.path().join("target_file.txt");
+            tokio::fs::write(&target, "secret").await.unwrap();
+            std::os::unix::fs::symlink(&target, src.join("symlink.txt")).unwrap();
+
+            let mut size_acc = 0u64;
+            copy_dir_recursive(&src, &dst, &mut size_acc).await.unwrap();
+
+            assert!(dst.join("regular.txt").exists());
+            assert!(!dst.join("symlink.txt").exists(), "symlink should not be copied");
+        }
+        #[cfg(not(unix))]
+        {
+            let mut size_acc = 0u64;
+            copy_dir_recursive(&src, &dst, &mut size_acc).await.unwrap();
+            assert!(dst.join("regular.txt").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_marketplace_json_claude_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_plugin_dir = tmp.path().join(".claude-plugin");
+        tokio::fs::create_dir_all(&claude_plugin_dir).await.unwrap();
+        let mj_content = r#"{"name": "test-market", "plugins": []}"#;
+        tokio::fs::write(claude_plugin_dir.join("marketplace.json"), mj_content).await.unwrap();
+
+        let mj = load_marketplace_json(tmp.path()).await.unwrap();
+        assert_eq!(mj.name, "test-market");
+    }
+
+    #[tokio::test]
+    async fn test_marketplace_json_fallback_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mj_content = r#"{"name": "root-market", "plugins": []}"#;
+        tokio::fs::write(tmp.path().join("marketplace.json"), mj_content).await.unwrap();
+
+        let mj = load_marketplace_json(tmp.path()).await.unwrap();
+        assert_eq!(mj.name, "root-market");
+    }
+
+    #[tokio::test]
+    async fn test_marketplace_json_claude_path_preferred_over_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_plugin_dir = tmp.path().join(".claude-plugin");
+        tokio::fs::create_dir_all(&claude_plugin_dir).await.unwrap();
+        tokio::fs::write(claude_plugin_dir.join("marketplace.json"), r#"{"name": "claude-market"}"#).await.unwrap();
+        tokio::fs::write(tmp.path().join("marketplace.json"), r#"{"name": "root-market"}"#).await.unwrap();
+
+        let mj = load_marketplace_json(tmp.path()).await.unwrap();
+        assert_eq!(mj.name, "claude-market");
+    }
 
     #[test]
     fn test_parse_marketplace_json_valid() {

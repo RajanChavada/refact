@@ -10,7 +10,7 @@ use tokio::sync::RwLock as ARwLock;
 use crate::custom_error::ScratchError;
 use crate::ext::plugins::{
     add_marketplace, install_plugin, list_marketplace_plugins, load_plugins_db,
-    remove_marketplace, uninstall_plugin,
+    remove_marketplace, uninstall_plugin, validate_plugin_name,
 };
 use crate::global_context::GlobalContext;
 
@@ -55,7 +55,13 @@ pub async fn handle_add_marketplace(
     let req = serde_json::from_slice::<AddMarketplaceRequest>(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("JSON: {}", e)))?;
     let mj = add_marketplace(gcx, &req.source).await
-        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| {
+            if e.contains("invalid") || e.contains("cannot") || e.contains("must match") {
+                ScratchError::new(StatusCode::BAD_REQUEST, e)
+            } else {
+                ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
     Ok(Json(json!({
         "name": mj.name,
         "plugin_count": mj.plugins.len(),
@@ -66,6 +72,9 @@ pub async fn handle_delete_marketplace(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    if let Err(e) = validate_plugin_name(&name) {
+        return Err((StatusCode::BAD_REQUEST, e));
+    }
     remove_marketplace(gcx, &name).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!({ "deleted": true })))
@@ -75,8 +84,17 @@ pub async fn handle_list_marketplace_plugins(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    if let Err(e) = validate_plugin_name(&name) {
+        return Err((StatusCode::BAD_REQUEST, e));
+    }
     let plugins = list_marketplace_plugins(gcx, &name).await
-        .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+        .map_err(|e| {
+            if e.contains("not found") {
+                (StatusCode::NOT_FOUND, e)
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
     Ok(Json(json!({ "plugins": plugins })))
 }
 
@@ -86,8 +104,24 @@ pub async fn handle_install_plugin(
 ) -> Result<Json<Value>, ScratchError> {
     let req = serde_json::from_slice::<InstallPluginRequest>(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("JSON: {}", e)))?;
+    if let Err(e) = validate_plugin_name(&req.plugin) {
+        return Err(ScratchError::new(StatusCode::BAD_REQUEST, e));
+    }
+    if let Err(e) = validate_plugin_name(&req.marketplace) {
+        return Err(ScratchError::new(StatusCode::BAD_REQUEST, e));
+    }
     let entry = install_plugin(gcx, &req.plugin, &req.marketplace).await
-        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| {
+            if e.contains("not found") {
+                ScratchError::new(StatusCode::NOT_FOUND, e)
+            } else if e.contains("already installed") {
+                ScratchError::new(StatusCode::CONFLICT, e)
+            } else if e.contains("invalid") || e.contains("cannot") || e.contains("must match") {
+                ScratchError::new(StatusCode::BAD_REQUEST, e)
+            } else {
+                ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
     Ok(Json(json!({
         "name": entry.name,
         "marketplace": entry.marketplace,
@@ -109,6 +143,9 @@ pub async fn handle_uninstall_plugin(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    if let Err(e) = validate_plugin_name(&name) {
+        return Err((StatusCode::BAD_REQUEST, e));
+    }
     uninstall_plugin(gcx, &name).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!({ "deleted": true })))

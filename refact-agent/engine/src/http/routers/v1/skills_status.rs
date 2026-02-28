@@ -103,4 +103,21 @@ mod tests {
         let skills_enabled = session.skills_available_count > 0;
         assert!(!skills_enabled);
     }
+
+    #[test]
+    fn test_skills_status_resets_to_zero() {
+        let mut session = ChatSession::new("test-chat".to_string());
+
+        session.skills_available_count = 3;
+        session.skills_included = vec!["skill1".to_string(), "skill2".to_string()];
+        assert_eq!(session.skills_available_count, 3);
+
+        session.skills_available_count = 0;
+        session.skills_included = Vec::new();
+
+        assert_eq!(session.skills_available_count, 0);
+        assert!(session.skills_included.is_empty());
+        let skills_enabled = session.skills_available_count > 0;
+        assert!(!skills_enabled);
+    }
 }

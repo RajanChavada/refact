@@ -133,7 +133,8 @@ async fn resolve_scope_dir(
             Some(root) => Ok((root.join(".refact"), "local".to_string())),
             None => Err("no project root for local scope".to_string()),
         },
-        _ => {
+        Some(other) => Err(format!("invalid scope: '{}'; expected 'global' or 'local'", other)),
+        None => {
             if require_local {
                 match project_root {
                     Some(root) => Ok((root.join(".refact"), "local".to_string())),

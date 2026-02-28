@@ -25,8 +25,8 @@ pub struct ExtDirs {
 
 impl ExtDirs {
     pub fn all_dirs_in_order(&self) -> Vec<&PathBuf> {
-        self.global_dirs.iter()
-            .chain(self.installed_dirs.iter())
+        self.installed_dirs.iter()
+            .chain(self.global_dirs.iter())
             .chain(self.project_dirs.iter())
             .collect()
     }
@@ -207,9 +207,9 @@ mod tests {
         };
         let all = ext_dirs.all_dirs_in_order();
         assert_eq!(all.len(), 5);
-        assert_eq!(all[0], &PathBuf::from("/home/.claude"));
-        assert_eq!(all[1], &PathBuf::from("/home/.config/refact"));
-        assert_eq!(all[2], &PathBuf::from("/home/.config/refact/plugins/installed/plugin-a"));
+        assert_eq!(all[0], &PathBuf::from("/home/.config/refact/plugins/installed/plugin-a"));
+        assert_eq!(all[1], &PathBuf::from("/home/.claude"));
+        assert_eq!(all[2], &PathBuf::from("/home/.config/refact"));
         assert_eq!(all[3], &PathBuf::from("/proj/.claude"));
         assert_eq!(all[4], &PathBuf::from("/proj/.refact"));
     }
