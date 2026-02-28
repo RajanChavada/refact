@@ -97,6 +97,7 @@ use crate::http::routers::v1::project_configs::{
 
 mod ast;
 pub mod at_commands;
+pub mod ext_management;
 pub mod at_tools;
 pub mod caps;
 pub mod chat_based_handlers;
@@ -134,6 +135,12 @@ pub mod project_information;
 mod v1_browser;
 mod stats;
 
+use crate::http::routers::v1::ext_management::{
+    handle_v1_ext_registry,
+    handle_v1_ext_skill_get, handle_v1_ext_skill_put, handle_v1_ext_skill_post, handle_v1_ext_skill_delete,
+    handle_v1_ext_command_get, handle_v1_ext_command_put, handle_v1_ext_command_post, handle_v1_ext_command_delete,
+    handle_v1_ext_hooks_get, handle_v1_ext_hooks_put, handle_v1_ext_hooks_delete_by_index,
+};
 use crate::http::routers::v1::chat_modes::handle_v1_chat_modes;
 use crate::http::routers::v1::customization_editor::{
     handle_v1_customization_registry, handle_v1_customization_get,
@@ -391,7 +398,19 @@ pub fn make_v1_router() -> Router {
         .route("/browser/annotate/result", post(handle_browser_annotate_result))
         .route("/browser/annotate/clear", post(handle_browser_annotate_clear))
         .route("/stats/llm/summary", get(handle_v1_stats_llm_summary))
-        .route("/stats/llm/events", get(handle_v1_stats_llm_events));
+        .route("/stats/llm/events", get(handle_v1_stats_llm_events))
+        .route("/ext/registry", get(handle_v1_ext_registry))
+        .route("/ext/skills", post(handle_v1_ext_skill_post))
+        .route("/ext/skills/:name", get(handle_v1_ext_skill_get))
+        .route("/ext/skills/:name", put(handle_v1_ext_skill_put))
+        .route("/ext/skills/:name", delete(handle_v1_ext_skill_delete))
+        .route("/ext/commands", post(handle_v1_ext_command_post))
+        .route("/ext/commands/:name", get(handle_v1_ext_command_get))
+        .route("/ext/commands/:name", put(handle_v1_ext_command_put))
+        .route("/ext/commands/:name", delete(handle_v1_ext_command_delete))
+        .route("/ext/hooks", get(handle_v1_ext_hooks_get))
+        .route("/ext/hooks", put(handle_v1_ext_hooks_put))
+        .route("/ext/hooks/:index", delete(handle_v1_ext_hooks_delete_by_index));
 
     builder.layer(axum::middleware::from_fn(telemetry_middleware))
 }

@@ -90,6 +90,12 @@ struct SlashCacheEntry {
 
 static SLASH_CACHE: OnceLock<tokio::sync::RwLock<Option<SlashCacheEntry>>> = OnceLock::new();
 
+pub async fn invalidate_slash_cache() {
+    if let Some(lock) = SLASH_CACHE.get() {
+        *lock.write().await = None;
+    }
+}
+
 async fn load_slash_commands_and_skills(
     gcx: Arc<ARwLock<GlobalContext>>,
 ) -> (Vec<SlashCommand>, Vec<SkillIndex>) {
