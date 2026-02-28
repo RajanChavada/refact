@@ -1,9 +1,23 @@
 import React, { useState, useCallback } from "react";
-import { Flex, Button, Tabs, Text } from "@radix-ui/themes";
+import { Flex, Button, Tabs } from "@radix-ui/themes";
 import { ArrowLeftIcon } from "@radix-ui/react-icons";
 
 import { PageWrapper } from "../../components/PageWrapper";
+import { ScrollArea } from "../../components/ScrollArea";
+import { Spinner } from "../../components/Spinner";
 import type { Config } from "../Config/configSlice";
+import {
+  useGetExtRegistryQuery,
+  useDeleteSkillMutation,
+  useDeleteCommandMutation,
+} from "../../services/refact/extensions";
+import {
+  ExtItemList,
+  SkillEditor,
+  CommandEditor,
+  HooksEditor,
+  CreateItemDialog,
+} from "./components";
 
 import styles from "./Extensions.module.css";
 
@@ -22,12 +36,55 @@ export const Extensions: React.FC<ExtensionsProps> = ({
   host,
   tabbed,
   initialTab = "skills",
+  initialItemId,
 }) => {
   const [activeTab, setActiveTab] = useState<ExtensionsTab>(initialTab);
+  const [selectedSkill, setSelectedSkill] = useState<string | null>(initialItemId ?? null);
+  const [selectedCommand, setSelectedCommand] = useState<string | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createDialogType, setCreateDialogType] = useState<"skill" | "command">("skill");
+
+  const { data: registry, isLoading, refetch } = useGetExtRegistryQuery(undefined);
+  const [deleteSkill] = useDeleteSkillMutation();
+  const [deleteCommand] = useDeleteCommandMutation();
 
   const handleTabChange = useCallback((value: string) => {
     setActiveTab(value as ExtensionsTab);
+    setSelectedSkill(null);
+    setSelectedCommand(null);
   }, []);
+
+  const handleDeleteSkill = useCallback(
+    async (name: string) => {
+      if (!confirm(`Delete skill "${name}"?`)) return;
+      await deleteSkill({ name });
+      if (selectedSkill === name) setSelectedSkill(null);
+      await refetch();
+    },
+    [selectedSkill, deleteSkill, refetch],
+  );
+
+  const handleDeleteCommand = useCallback(
+    async (name: string) => {
+      if (!confirm(`Delete command "${name}"?`)) return;
+      await deleteCommand({ name });
+      if (selectedCommand === name) setSelectedCommand(null);
+      await refetch();
+    },
+    [selectedCommand, deleteCommand, refetch],
+  );
+
+  const openCreateDialog = useCallback((type: "skill" | "command") => {
+    setCreateDialogType(type);
+    setCreateDialogOpen(true);
+  }, []);
+
+  const hasProjectRoot =
+    registry !== undefined &&
+    (registry.skills.some((s) => s.scope === "local") ||
+      registry.slash_commands.some((c) => c.scope === "local"));
+
+  if (isLoading) return <Spinner spinning />;
 
   return (
     <PageWrapper host={host} noPadding>
@@ -51,46 +108,82 @@ export const Extensions: React.FC<ExtensionsProps> = ({
 
       <Tabs.Root value={activeTab} onValueChange={handleTabChange}>
         <Tabs.List size="1">
-          <Tabs.Trigger value="skills">Skills</Tabs.Trigger>
-          <Tabs.Trigger value="commands">Commands</Tabs.Trigger>
+          <Tabs.Trigger value="skills">
+            Skills ({registry?.skills.length ?? 0})
+          </Tabs.Trigger>
+          <Tabs.Trigger value="commands">
+            Commands ({registry?.slash_commands.length ?? 0})
+          </Tabs.Trigger>
           <Tabs.Trigger value="hooks">Hooks</Tabs.Trigger>
           <Tabs.Trigger value="marketplace">Marketplace</Tabs.Trigger>
         </Tabs.List>
 
         <div className={styles.panelContainer}>
-          <Tabs.Content value="skills">
-            <Flex direction="column" className={styles.listPanel}>
-              <Text size="2" className={styles.placeholder}>
-                Skills editor coming soon.
-              </Text>
-            </Flex>
+          <Tabs.Content value="skills" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+            {selectedSkill ? (
+              <div className={styles.editorPanel}>
+                <SkillEditor
+                  name={selectedSkill}
+                  onBack={() => setSelectedSkill(null)}
+                />
+              </div>
+            ) : (
+              <ScrollArea scrollbars="vertical" className={styles.listPanel}>
+                <ExtItemList
+                  items={registry?.skills ?? []}
+                  selectedId={selectedSkill}
+                  onSelect={setSelectedSkill}
+                  onCreate={() => openCreateDialog("skill")}
+                  onDelete={(name) => void handleDeleteSkill(name)}
+                />
+              </ScrollArea>
+            )}
           </Tabs.Content>
 
-          <Tabs.Content value="commands">
-            <Flex direction="column" className={styles.listPanel}>
-              <Text size="2" className={styles.placeholder}>
-                Commands editor coming soon.
-              </Text>
-            </Flex>
+          <Tabs.Content value="commands" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+            {selectedCommand ? (
+              <div className={styles.editorPanel}>
+                <CommandEditor
+                  name={selectedCommand}
+                  onBack={() => setSelectedCommand(null)}
+                />
+              </div>
+            ) : (
+              <ScrollArea scrollbars="vertical" className={styles.listPanel}>
+                <ExtItemList
+                  items={registry?.slash_commands ?? []}
+                  selectedId={selectedCommand}
+                  onSelect={setSelectedCommand}
+                  onCreate={() => openCreateDialog("command")}
+                  onDelete={(name) => void handleDeleteCommand(name)}
+                />
+              </ScrollArea>
+            )}
           </Tabs.Content>
 
-          <Tabs.Content value="hooks">
-            <Flex direction="column" className={styles.listPanel}>
-              <Text size="2" className={styles.placeholder}>
-                Hooks editor coming soon.
-              </Text>
-            </Flex>
+          <Tabs.Content value="hooks" style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "auto" }}>
+            <HooksEditor />
           </Tabs.Content>
 
-          <Tabs.Content value="marketplace">
+          <Tabs.Content value="marketplace" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
             <Flex direction="column" className={styles.listPanel}>
-              <Text size="2" className={styles.placeholder}>
-                Marketplace coming soon.
-              </Text>
+              <div className={styles.placeholder}>Marketplace coming soon.</div>
             </Flex>
           </Tabs.Content>
         </div>
       </Tabs.Root>
+
+      <CreateItemDialog
+        type={createDialogType}
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        onCreated={(name) => {
+          if (createDialogType === "skill") setSelectedSkill(name);
+          else setSelectedCommand(name);
+          void refetch();
+        }}
+        hasProjectRoot={hasProjectRoot}
+      />
     </PageWrapper>
   );
 };
