@@ -1,8 +1,22 @@
+.tabsRoot {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .panelContainer {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 120px);
-  min-height: 300px;
+  flex: 1;
+  min-height: 0;
+}
+
+.tabContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .listPanel {

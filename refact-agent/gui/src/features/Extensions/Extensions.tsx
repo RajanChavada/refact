@@ -111,7 +111,7 @@ export const Extensions: React.FC<ExtensionsProps> = ({
         </Button>
       )}
 
-      <Tabs.Root value={activeTab} onValueChange={handleTabChange}>
+      <Tabs.Root value={activeTab} onValueChange={handleTabChange} className={styles.tabsRoot}>
         <Tabs.List size="1">
           <Tabs.Trigger value="skills">
             Skills ({registry?.skills.length ?? 0})
@@ -124,7 +124,7 @@ export const Extensions: React.FC<ExtensionsProps> = ({
         </Tabs.List>
 
         <div className={styles.panelContainer}>
-          <Tabs.Content value="skills" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+          <Tabs.Content value="skills" className={styles.tabContent}>
             {selectedSkill ? (
               <div className={styles.editorPanel}>
                 <SkillEditor
@@ -145,7 +145,7 @@ export const Extensions: React.FC<ExtensionsProps> = ({
             )}
           </Tabs.Content>
 
-          <Tabs.Content value="commands" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+          <Tabs.Content value="commands" className={styles.tabContent}>
             {selectedCommand ? (
               <div className={styles.editorPanel}>
                 <CommandEditor
@@ -166,11 +166,11 @@ export const Extensions: React.FC<ExtensionsProps> = ({
             )}
           </Tabs.Content>
 
-          <Tabs.Content value="hooks" style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "auto" }}>
+          <Tabs.Content value="hooks" className={styles.tabContent}>
             <HooksEditor />
           </Tabs.Content>
 
-          <Tabs.Content value="marketplace" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+          <Tabs.Content value="marketplace" className={styles.tabContent}>
             <MarketplacePanel />
           </Tabs.Content>
         </div>
