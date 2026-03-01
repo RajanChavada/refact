@@ -70,8 +70,9 @@
   background: var(--gray-2);
 }
 
-.emptyState {
+.onboarding {
   padding: var(--space-6) var(--space-4);
-  text-align: center;
-  color: var(--gray-10);
+  margin-top: var(--space-6);
+  max-width: 400px;
+  align-self: center;
 }

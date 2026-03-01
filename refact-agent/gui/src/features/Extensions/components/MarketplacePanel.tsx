@@ -145,20 +145,41 @@ export const MarketplacePanel: React.FC = () => {
   const marketplaces = marketplacesData?.marketplaces ?? [];
   const installed = installedData?.installed ?? [];
 
+  if (!loadingMarketplaces && marketplaces.length === 0) {
+    return (
+      <div className={styles.panel}>
+        <Flex direction="column" align="center" gap="3" className={styles.onboarding}>
+          <Text size="3" weight="bold">Plugin Marketplace</Text>
+          <Text size="2" color="gray" align="center">
+            Add a marketplace source to discover and install plugins.
+            A marketplace is a Git repository containing plugin definitions.
+          </Text>
+          <Text size="1" color="gray" align="center">
+            Example: https://github.com/smallcloudai/refact-plugins
+          </Text>
+          <Button size="2" onClick={() => setDialogOpen(true)}>
+            + Add Marketplace
+          </Button>
+        </Flex>
+
+        <AddMarketplaceDialog
+          open={dialogOpen}
+          onClose={() => setDialogOpen(false)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={styles.panel}>
-      <div className={styles.toolbar}>
-        <Button size="2" onClick={() => setDialogOpen(true)}>
-          + Add Marketplace
-        </Button>
-        <div className={styles.searchInput}>
-          <TextField.Root
-            placeholder="Search plugins…"
-            value={search}
-            onChange={handleSearchChange}
-          />
-        </div>
-      </div>
+      {loadingMarketplaces && (
+        <Flex align="center" gap="2" py="4">
+          <Spinner size="2" />
+          <Text size="2" color="gray">
+            Loading marketplaces…
+          </Text>
+        </Flex>
+      )}
 
       {installed.length > 0 && (
         <div className={styles.installedSection}>
@@ -210,24 +231,6 @@ export const MarketplacePanel: React.FC = () => {
         </div>
       )}
 
-      {loadingMarketplaces && (
-        <Flex align="center" gap="2" py="4">
-          <Spinner size="2" />
-          <Text size="2" color="gray">
-            Loading marketplaces…
-          </Text>
-        </Flex>
-      )}
-
-      {!loadingMarketplaces && marketplaces.length === 0 && (
-        <div className={styles.emptyState}>
-          <Text size="2">
-            No marketplaces configured. Add a marketplace source to discover
-            plugins.
-          </Text>
-        </div>
-      )}
-
       {marketplaces.map((marketplace) => (
         <MarketplaceSection
           key={marketplace.name}
@@ -236,6 +239,19 @@ export const MarketplacePanel: React.FC = () => {
           installedIds={installedIds}
         />
       ))}
+
+      <div className={styles.toolbar}>
+        <Button size="2" onClick={() => setDialogOpen(true)}>
+          + Add Marketplace
+        </Button>
+        <div className={styles.searchInput}>
+          <TextField.Root
+            placeholder="Search plugins…"
+            value={search}
+            onChange={handleSearchChange}
+          />
+        </div>
+      </div>
 
       <AddMarketplaceDialog
         open={dialogOpen}
