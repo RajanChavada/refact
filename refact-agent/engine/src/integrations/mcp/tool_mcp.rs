@@ -139,15 +139,39 @@ impl Tool for ToolMCP {
                                 })
                             }
                         }
-                        RawContent::Audio(_) => elements.push(MultimodalElement {
+                        RawContent::Audio(audio_content) => elements.push(MultimodalElement {
                             m_type: "text".to_string(),
-                            m_content: "Server returned audio, which is not supported".to_string(),
+                            m_content: format!(
+                                "[Audio content: {}, {} bytes - audio playback not supported]",
+                                audio_content.raw.mime_type,
+                                audio_content.raw.data.len(),
+                            ),
                         }),
-                        RawContent::Resource(_) => elements.push(MultimodalElement {
-                            m_type: "text".to_string(),
-                            m_content: "Server returned resource, which is not supported"
-                                .to_string(),
-                        }),
+                        RawContent::Resource(embedded) => {
+                            let text = match &embedded.resource {
+                                rmcp::model::ResourceContents::TextResourceContents { uri, mime_type, text } => {
+                                    format!(
+                                        "[Resource: {} ({}) - {}]\n{}",
+                                        uri,
+                                        mime_type.as_deref().unwrap_or("unknown"),
+                                        uri,
+                                        text,
+                                    )
+                                }
+                                rmcp::model::ResourceContents::BlobResourceContents { uri, mime_type, blob } => {
+                                    format!(
+                                        "[Resource: {} ({}) - {} bytes blob]",
+                                        uri,
+                                        mime_type.as_deref().unwrap_or("unknown"),
+                                        blob.len(),
+                                    )
+                                }
+                            };
+                            elements.push(MultimodalElement {
+                                m_type: "text".to_string(),
+                                m_content: text,
+                            });
+                        }
                     }
                 }
 
@@ -213,6 +237,9 @@ impl Tool for ToolMCP {
                 .collect::<String>()
         };
 
+        let annotations = self.mcp_tool.annotations.as_ref()
+            .and_then(|a| serde_json::to_value(a).ok());
+
         ToolDesc {
             name: tool_name,
             display_name: self.mcp_tool.name.to_string(),
@@ -225,7 +252,7 @@ impl Tool for ToolMCP {
             description: self.mcp_tool.description.to_owned().unwrap_or_default().to_string(),
             input_schema,
             output_schema: None,
-            annotations: None,
+            annotations,
         }
     }
 
@@ -261,6 +288,22 @@ mod tests {
             "name": "test_tool",
             "description": "A test tool",
             "inputSchema": schema
+        })).expect("failed to deserialize McpTool");
+        ToolMCP {
+            common: crate::integrations::integr_abstract::IntegrationCommon::default(),
+            config_path: "mcp_stdio_server.yaml".to_string(),
+            mcp_client: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            mcp_tool,
+            request_timeout: 30,
+        }
+    }
+
+    fn make_tool_mcp_with_annotations(schema: serde_json::Value, annotations: serde_json::Value) -> ToolMCP {
+        let mcp_tool: McpTool = serde_json::from_value(json!({
+            "name": "test_tool",
+            "description": "A test tool",
+            "inputSchema": schema,
+            "annotations": annotations
         })).expect("failed to deserialize McpTool");
         ToolMCP {
             common: crate::integrations::integr_abstract::IntegrationCommon::default(),
@@ -323,5 +366,115 @@ mod tests {
 
         assert_eq!(desc.input_schema["type"], json!("object"));
         assert_eq!(desc.input_schema["properties"]["a"]["type"], json!("integer"));
+    }
+
+    #[test]
+    fn test_annotations_preserved() {
+        let schema = json!({"type": "object", "properties": {}});
+        let annotations = json!({
+            "title": "My Tool",
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false
+        });
+        let tool = make_tool_mcp_with_annotations(schema, annotations);
+        let desc = tool.tool_description();
+        let ann = desc.annotations.expect("annotations should be present");
+        assert_eq!(ann["title"], json!("My Tool"));
+        assert_eq!(ann["readOnlyHint"], json!(true));
+        assert_eq!(ann["destructiveHint"], json!(false));
+        assert_eq!(ann["idempotentHint"], json!(true));
+        assert_eq!(ann["openWorldHint"], json!(false));
+    }
+
+    #[test]
+    fn test_no_annotations_is_none() {
+        let schema = json!({"type": "object", "properties": {}});
+        let tool = make_tool_mcp(schema);
+        let desc = tool.tool_description();
+        assert!(desc.annotations.is_none());
+    }
+
+    #[test]
+    fn test_audio_content_produces_metadata_text() {
+        use rmcp::model::{RawContent, RawAudioContent, Annotated};
+        let audio = RawContent::Audio(Annotated {
+            raw: RawAudioContent {
+                data: "AAABBBCCC".to_string(),
+                mime_type: "audio/mp3".to_string(),
+            },
+            annotations: None,
+        });
+        let text = match audio {
+            RawContent::Audio(audio_content) => format!(
+                "[Audio content: {}, {} bytes - audio playback not supported]",
+                audio_content.raw.mime_type,
+                audio_content.raw.data.len(),
+            ),
+            _ => panic!("expected audio"),
+        };
+        assert!(text.contains("audio/mp3"));
+        assert!(text.contains("9 bytes"));
+        assert!(text.contains("audio playback not supported"));
+    }
+
+    #[test]
+    fn test_resource_text_content_includes_uri_and_text() {
+        use rmcp::model::{RawContent, RawEmbeddedResource, ResourceContents};
+        let resource = RawContent::Resource(RawEmbeddedResource {
+            resource: ResourceContents::TextResourceContents {
+                uri: "file:///path/to/file.txt".to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: "Hello from resource".to_string(),
+            },
+        });
+        let text = match resource {
+            RawContent::Resource(embedded) => match &embedded.resource {
+                ResourceContents::TextResourceContents { uri, mime_type, text } => {
+                    format!(
+                        "[Resource: {} ({}) - {}]\n{}",
+                        uri,
+                        mime_type.as_deref().unwrap_or("unknown"),
+                        uri,
+                        text,
+                    )
+                }
+                _ => panic!("expected text resource"),
+            },
+            _ => panic!("expected resource"),
+        };
+        assert!(text.contains("file:///path/to/file.txt"));
+        assert!(text.contains("text/plain"));
+        assert!(text.contains("Hello from resource"));
+    }
+
+    #[test]
+    fn test_resource_blob_content_includes_uri_and_size() {
+        use rmcp::model::{RawContent, RawEmbeddedResource, ResourceContents};
+        let resource = RawContent::Resource(RawEmbeddedResource {
+            resource: ResourceContents::BlobResourceContents {
+                uri: "file:///path/to/data.bin".to_string(),
+                mime_type: Some("application/octet-stream".to_string()),
+                blob: "AABBCCDD".to_string(),
+            },
+        });
+        let text = match resource {
+            RawContent::Resource(embedded) => match &embedded.resource {
+                ResourceContents::BlobResourceContents { uri, mime_type, blob } => {
+                    format!(
+                        "[Resource: {} ({}) - {} bytes blob]",
+                        uri,
+                        mime_type.as_deref().unwrap_or("unknown"),
+                        blob.len(),
+                    )
+                }
+                _ => panic!("expected blob resource"),
+            },
+            _ => panic!("expected resource"),
+        };
+        assert!(text.contains("file:///path/to/data.bin"));
+        assert!(text.contains("application/octet-stream"));
+        assert!(text.contains("8 bytes blob"));
     }
 }
