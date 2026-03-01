@@ -390,7 +390,7 @@ pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync 
 async fn mcp_health_monitor<T: MCPTransportInitializer + Clone>(
     session_arc: Arc<AMutex<Box<dyn crate::integrations::sessions::IntegrationSession>>>,
     transport_initializer: T,
-    client_arc: Arc<AMutex<Option<RunningService<RoleClient, ()>>>>,
+    client_arc: Arc<AMutex<Option<McpRunningService>>>,
     logs: Arc<AMutex<Vec<String>>>,
     debug_name: String,
     init_timeout: u64,
@@ -440,7 +440,7 @@ async fn mcp_health_monitor<T: MCPTransportInitializer + Clone>(
 async fn reconnect_with_backoff<T: MCPTransportInitializer>(
     session_arc: Arc<AMutex<Box<dyn crate::integrations::sessions::IntegrationSession>>>,
     transport_initializer: &T,
-    client_arc: Arc<AMutex<Option<RunningService<RoleClient, ()>>>>,
+    client_arc: Arc<AMutex<Option<McpRunningService>>>,
     logs: Arc<AMutex<Vec<String>>>,
     debug_name: &str,
     init_timeout: u64,
@@ -465,6 +465,15 @@ async fn reconnect_with_backoff<T: MCPTransportInitializer>(
 
         tokio::time::sleep(Duration::from_secs(delay)).await;
 
+        let peer_arc: Arc<AMutex<Option<Peer<RoleClient>>>> = Arc::new(AMutex::new(None));
+        let handler = McpClientHandler {
+            peer_arc: peer_arc.clone(),
+            session_arc: session_arc.clone(),
+            logs: logs.clone(),
+            debug_name: debug_name.to_string(),
+            request_timeout,
+        };
+
         let new_client = transport_initializer
             .init_mcp_transport(
                 logs.clone(),
@@ -472,6 +481,7 @@ async fn reconnect_with_backoff<T: MCPTransportInitializer>(
                 init_timeout,
                 request_timeout,
                 session_arc.clone(),
+                handler,
             )
             .await;
 
@@ -572,14 +582,15 @@ mod tests {
                 _init_timeout: u64,
                 _request_timeout: u64,
                 _session: Arc<AMutex<Box<dyn IntegrationSession>>>,
-            ) -> Option<RunningService<RoleClient, ()>> {
+                _handler: McpClientHandler,
+            ) -> Option<McpRunningService> {
                 self.attempts.fetch_add(1, Ordering::SeqCst);
                 None
             }
         }
 
         let initializer = AlwaysFailInitializer { attempts: attempt_count.clone() };
-        let client_arc: Arc<AMutex<Option<RunningService<RoleClient, ()>>>> = Arc::new(AMutex::new(None));
+        let client_arc: Arc<AMutex<Option<McpRunningService>>> = Arc::new(AMutex::new(None));
         let backoff_delays = vec![0u64, 0, 0];
 
         let result = reconnect_with_backoff(
@@ -624,14 +635,15 @@ mod tests {
                 _init_timeout: u64,
                 _request_timeout: u64,
                 _session: Arc<AMutex<Box<dyn IntegrationSession>>>,
-            ) -> Option<RunningService<RoleClient, ()>> {
+                _handler: McpClientHandler,
+            ) -> Option<McpRunningService> {
                 self.attempts.fetch_add(1, Ordering::SeqCst);
                 None
             }
         }
 
         let initializer = CountingInitializer { attempts: attempt_count.clone() };
-        let client_arc: Arc<AMutex<Option<RunningService<RoleClient, ()>>>> = Arc::new(AMutex::new(None));
+        let client_arc: Arc<AMutex<Option<McpRunningService>>> = Arc::new(AMutex::new(None));
         let backoff_delays = vec![0u64, 0];
 
         reconnect_with_backoff(

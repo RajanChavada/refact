@@ -10,12 +10,11 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::common::client_side_sse::ExponentialBackoff;
 use rmcp::serve_client;
-use rmcp::{RoleClient, service::RunningService};
 use serde::{Deserialize, Serialize};
 
 use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::{IntegrationTrait, IntegrationCommon};
-use super::session_mcp::add_log_entry;
+use super::session_mcp::{McpClientHandler, McpRunningService, add_log_entry};
 use super::integr_mcp_common::{
     CommonMCPSettings, MCPTransportInitializer, mcp_integr_tools, mcp_session_setup,
 };
@@ -58,7 +57,8 @@ impl MCPTransportInitializer for IntegrationMCPHttp {
         init_timeout: u64,
         _request_timeout: u64,
         _session: Arc<AMutex<Box<dyn crate::integrations::sessions::IntegrationSession>>>,
-    ) -> Option<RunningService<RoleClient, ()>> {
+        handler: McpClientHandler,
+    ) -> Option<McpRunningService> {
         let log = async |level: tracing::Level, msg: String| {
             match level {
                 tracing::Level::ERROR => tracing::error!("{msg} for {debug_name}"),
@@ -125,7 +125,7 @@ impl MCPTransportInitializer for IntegrationMCPHttp {
 
         match timeout(
             Duration::from_secs(init_timeout),
-            serve_client((), transport),
+            serve_client(handler, transport),
         )
         .await
         {
@@ -170,6 +170,9 @@ impl IntegrationTrait for IntegrationMCPHttp {
             self.clone(),
             self.cfg.common.init_timeout,
             self.cfg.common.request_timeout,
+            self.cfg.common.health_check_interval,
+            self.cfg.common.reconnect_max_attempts,
+            self.cfg.common.reconnect_enabled,
         )
         .await;
 
