@@ -5,6 +5,7 @@ pub mod tools_list;
 #[cfg(test)]
 mod tests_schema;
 pub mod tool_helpers;
+pub mod tool_name_alias;
 pub mod subagent_phases;
 
 mod tool_add_workspace_folder;

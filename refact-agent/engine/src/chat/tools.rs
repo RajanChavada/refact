@@ -18,6 +18,7 @@ use crate::postprocessing::pp_tool_results::{postprocess_tool_results, ToolBudge
 use crate::yaml_configs::customization_registry::{get_mode_config, map_legacy_mode_to_id, match_tool_confirm_action};
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, first_block_reason, get_project_dir_string, run_hooks};
+use crate::tools::tool_name_alias::build_registry_from_names;
 
 #[derive(Default)]
 pub struct ExecuteToolsOptions {
@@ -55,6 +56,26 @@ async fn get_effective_n_ctx(gcx: Arc<ARwLock<GlobalContext>>, thread: &ThreadPa
 
 fn is_server_executed_tool(tool_call_id: &str) -> bool {
     tool_call_id.starts_with("srvtoolu_")
+}
+
+async fn resolve_tool_call_aliases(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    tool_calls: Vec<ChatToolCall>,
+    mode_id: &str,
+    model_id: Option<&str>,
+) -> Vec<ChatToolCall> {
+    let available_tools = crate::tools::tools_list::get_tools_for_mode(gcx, mode_id, model_id).await;
+    let tool_names: Vec<String> = available_tools.iter().map(|t| t.tool_description().name.clone()).collect();
+    let registry = build_registry_from_names(&tool_names);
+    if !registry.needs_aliasing() {
+        return tool_calls;
+    }
+    tool_calls.into_iter().map(|mut tc| {
+        if let Some(internal_name) = registry.resolve_alias(&tc.function.name) {
+            tc.function.name = internal_name.to_string();
+        }
+        tc
+    }).collect()
 }
 
 const EDITING_TOOLS: &[&str] = &[
@@ -514,6 +535,8 @@ pub async fn process_tool_calls_once(
     if tool_calls.is_empty() {
         return ToolStepOutcome::NoToolCalls;
     }
+
+    let tool_calls = resolve_tool_call_aliases(gcx.clone(), tool_calls, mode_id, model_id).await;
 
     info!(
         "process_tool_calls_once: {} tool calls to process",

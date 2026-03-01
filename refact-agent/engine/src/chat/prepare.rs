@@ -14,6 +14,7 @@ use crate::llm::params::CacheControl;
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::scratchpads::scratchpad_utils::HasRagResults;
 use crate::tools::tools_description::ToolDesc;
+use crate::tools::tool_name_alias::build_registry_from_names;
 use super::tools::execute_tools;
 use super::types::ThreadParams;
 
@@ -210,16 +211,27 @@ pub async fn prepare_chat_passthrough(
         }
     }
 
-    // 6. Build tools list
+    // 6. Build tools list with alias layer to ensure provider-safe names (≤64 chars)
     let filtered_tools: Vec<ToolDesc> = if options.supports_tools {
         tools.to_vec()
     } else {
         vec![]
     };
     let strict_tools = model_record.supports_strict_tools;
+    let tool_names: Vec<String> = filtered_tools.iter().map(|t| t.name.clone()).collect();
+    let alias_registry = build_registry_from_names(&tool_names);
     let openai_tools: Vec<Value> = filtered_tools
         .iter()
-        .map(|tool| tool.clone().into_openai_style(strict_tools))
+        .map(|tool| {
+            let alias = alias_registry.get_alias(&tool.name).unwrap_or(&tool.name).to_string();
+            let mut v = tool.clone().into_openai_style(strict_tools);
+            if alias != tool.name {
+                if let Some(func) = v.get_mut("function") {
+                    func["name"] = serde_json::Value::String(alias);
+                }
+            }
+            v
+        })
         .collect();
 
     // 7. History validation and fixing
