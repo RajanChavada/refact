@@ -3,7 +3,6 @@ import { Flex, Button, Tabs } from "@radix-ui/themes";
 import { ArrowLeftIcon } from "@radix-ui/react-icons";
 
 import { PageWrapper } from "../../components/PageWrapper";
-import { ScrollArea } from "../../components/ScrollArea";
 import { Spinner } from "../../components/Spinner";
 import type { Config } from "../Config/configSlice";
 import {
@@ -93,100 +92,90 @@ export const Extensions: React.FC<ExtensionsProps> = ({
 
   return (
     <PageWrapper host={host} noPadding>
-      {host === "vscode" && !tabbed ? (
-        <Flex gap="2" pb="2">
-          <Button variant="surface" onClick={backFromExtensions}>
-            <ArrowLeftIcon width="16" height="16" />
+      <div className={styles.page}>
+        {host === "vscode" && !tabbed ? (
+          <Flex gap="2" pb="2">
+            <Button variant="surface" onClick={backFromExtensions}>
+              <ArrowLeftIcon width="16" height="16" />
+              Back
+            </Button>
+          </Flex>
+        ) : (
+          <Button
+            mr="auto"
+            variant="outline"
+            onClick={backFromExtensions}
+            mb="2"
+          >
             Back
           </Button>
-        </Flex>
-      ) : (
-        <Button
-          mr="auto"
-          variant="outline"
-          onClick={backFromExtensions}
-          mb="2"
-        >
-          Back
-        </Button>
-      )}
+        )}
 
-      <Tabs.Root value={activeTab} onValueChange={handleTabChange} className={styles.tabsRoot}>
-        <Tabs.List size="1">
-          <Tabs.Trigger value="skills">
-            Skills ({registry?.skills.length ?? 0})
-          </Tabs.Trigger>
-          <Tabs.Trigger value="commands">
-            Commands ({registry?.slash_commands.length ?? 0})
-          </Tabs.Trigger>
-          <Tabs.Trigger value="hooks">Hooks</Tabs.Trigger>
-          <Tabs.Trigger value="marketplace">Marketplace</Tabs.Trigger>
-        </Tabs.List>
+        <Tabs.Root value={activeTab} onValueChange={handleTabChange}>
+          <Tabs.List size="1">
+            <Tabs.Trigger value="skills">
+              Skills ({registry?.skills.length ?? 0})
+            </Tabs.Trigger>
+            <Tabs.Trigger value="commands">
+              Commands ({registry?.slash_commands.length ?? 0})
+            </Tabs.Trigger>
+            <Tabs.Trigger value="hooks">Hooks</Tabs.Trigger>
+            <Tabs.Trigger value="marketplace">Marketplace</Tabs.Trigger>
+          </Tabs.List>
+        </Tabs.Root>
 
         <div className={styles.panelContainer}>
-          <Tabs.Content value="skills" className={styles.tabContent}>
-            {selectedSkill ? (
-              <div className={styles.editorPanel}>
-                <SkillEditor
-                  name={selectedSkill}
-                  onBack={() => setSelectedSkill(null)}
-                />
-              </div>
+          {activeTab === "skills" && (
+            selectedSkill ? (
+              <SkillEditor
+                name={selectedSkill}
+                onBack={() => setSelectedSkill(null)}
+              />
             ) : (
-              <ScrollArea scrollbars="vertical" className={styles.listPanel}>
-                <ExtItemList
-                  items={registry?.skills ?? []}
-                  selectedId={selectedSkill}
-                  onSelect={setSelectedSkill}
-                  onCreate={() => openCreateDialog("skill")}
-                  onDelete={(name, scope) => void handleDeleteSkill(name, scope)}
-                />
-              </ScrollArea>
-            )}
-          </Tabs.Content>
+              <ExtItemList
+                items={registry?.skills ?? []}
+                selectedId={selectedSkill}
+                onSelect={setSelectedSkill}
+                onCreate={() => openCreateDialog("skill")}
+                onDelete={(name, scope) => void handleDeleteSkill(name, scope)}
+              />
+            )
+          )}
 
-          <Tabs.Content value="commands" className={styles.tabContent}>
-            {selectedCommand ? (
-              <div className={styles.editorPanel}>
-                <CommandEditor
-                  name={selectedCommand}
-                  onBack={() => setSelectedCommand(null)}
-                />
-              </div>
+          {activeTab === "commands" && (
+            selectedCommand ? (
+              <CommandEditor
+                name={selectedCommand}
+                onBack={() => setSelectedCommand(null)}
+              />
             ) : (
-              <ScrollArea scrollbars="vertical" className={styles.listPanel}>
-                <ExtItemList
-                  items={registry?.slash_commands ?? []}
-                  selectedId={selectedCommand}
-                  onSelect={setSelectedCommand}
-                  onCreate={() => openCreateDialog("command")}
-                  onDelete={(name, scope) => void handleDeleteCommand(name, scope)}
-                />
-              </ScrollArea>
-            )}
-          </Tabs.Content>
+              <ExtItemList
+                items={registry?.slash_commands ?? []}
+                selectedId={selectedCommand}
+                onSelect={setSelectedCommand}
+                onCreate={() => openCreateDialog("command")}
+                onDelete={(name, scope) => void handleDeleteCommand(name, scope)}
+              />
+            )
+          )}
 
-          <Tabs.Content value="hooks" className={styles.tabContent}>
-            <HooksEditor />
-          </Tabs.Content>
+          {activeTab === "hooks" && <HooksEditor />}
 
-          <Tabs.Content value="marketplace" className={styles.tabContent}>
-            <MarketplacePanel />
-          </Tabs.Content>
+          {activeTab === "marketplace" && <MarketplacePanel />}
         </div>
-      </Tabs.Root>
 
-      <CreateItemDialog
-        type={createDialogType}
-        open={createDialogOpen}
-        onOpenChange={setCreateDialogOpen}
-        onCreated={(name) => {
-          if (createDialogType === "skill") setSelectedSkill(name);
-          else setSelectedCommand(name);
-          void refetch();
-        }}
-        hasProjectRoot={hasProjectRoot}
-      />
+        <CreateItemDialog
+          type={createDialogType}
+          open={createDialogOpen}
+          onOpenChange={setCreateDialogOpen}
+          onCreated={(name) => {
+            if (createDialogType === "skill") setSelectedSkill(name);
+            else setSelectedCommand(name);
+            void refetch();
+          }}
+          hasProjectRoot={hasProjectRoot}
+        />
+      </div>
     </PageWrapper>
   );
 };

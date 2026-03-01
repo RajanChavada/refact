@@ -1,40 +1,15 @@
-.tabsRoot {
+.page {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .panelContainer {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-
-.tabContent {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-
-.listPanel {
   composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  min-height: 0;
-}
-
-.placeholder {
-  padding: var(--space-4);
-  color: var(--gray-10);
-}
-
-.editorPanel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
+  padding-top: var(--space-2);
 }
