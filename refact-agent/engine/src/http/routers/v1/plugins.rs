@@ -9,8 +9,8 @@ use tokio::sync::RwLock as ARwLock;
 
 use crate::custom_error::ScratchError;
 use crate::ext::plugins::{
-    add_marketplace, install_plugin, list_marketplace_plugins, load_plugins_db,
-    remove_marketplace, uninstall_plugin, validate_plugin_name,
+    add_marketplace, ensure_default_marketplaces, install_plugin, list_marketplace_plugins,
+    load_plugins_db, remove_marketplace, uninstall_plugin, validate_plugin_name,
 };
 use crate::global_context::GlobalContext;
 
@@ -28,6 +28,7 @@ pub struct InstallPluginRequest {
 pub async fn handle_list_marketplaces(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let _ = ensure_default_marketplaces(gcx.clone()).await;
     let config_dir = gcx.read().await.config_dir.clone();
     let db = load_plugins_db(&config_dir).await;
     let summaries: Vec<Value> = db.marketplaces.iter().map(|m| {

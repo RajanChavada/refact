@@ -212,21 +212,18 @@ async fn fetch_marketplace_to_cache(
     Ok(target_dir)
 }
 
-pub async fn add_marketplace(
-    gcx: Arc<ARwLock<GlobalContext>>,
+async fn add_marketplace_impl(
+    config_dir: &Path,
+    cache_dir: &Path,
     source: &str,
 ) -> Result<MarketplaceJson, String> {
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
     if !is_local_source(source) {
         validate_github_source(source)?;
     }
     let tmp_name = format!("tmp_marketplace_{}", uuid::Uuid::new_v4().simple());
-    let marketplace_dir = fetch_marketplace_to_cache(source, &cache_dir, &tmp_name).await
+    let marketplace_dir = fetch_marketplace_to_cache(source, cache_dir, &tmp_name).await
         .map_err(|e| {
-            let tmp_dir = marketplace_cache_dir(&cache_dir, &tmp_name);
+            let tmp_dir = marketplace_cache_dir(cache_dir, &tmp_name);
             if tmp_dir.exists() {
                 let _ = std::fs::remove_dir_all(&tmp_dir);
             }
@@ -234,7 +231,7 @@ pub async fn add_marketplace(
         })?;
     let mj = load_marketplace_json(&marketplace_dir).await
         .map_err(|e| {
-            let tmp_dir = marketplace_cache_dir(&cache_dir, &tmp_name);
+            let tmp_dir = marketplace_cache_dir(cache_dir, &tmp_name);
             if tmp_dir.exists() {
                 let _ = std::fs::remove_dir_all(&tmp_dir);
             }
@@ -252,24 +249,58 @@ pub async fn add_marketplace(
             .map_err(|e| format!("invalid plugin name '{}': {}", plugin.name, e))?;
     }
     if !is_local_source(source) {
-        let final_dir = marketplace_cache_dir(&cache_dir, &name);
+        let final_dir = marketplace_cache_dir(cache_dir, &name);
         if final_dir != marketplace_dir {
-            let tmp_dir = marketplace_cache_dir(&cache_dir, &tmp_name);
+            let tmp_dir = marketplace_cache_dir(cache_dir, &tmp_name);
             if tmp_dir.exists() {
                 tokio::fs::rename(&tmp_dir, &final_dir).await
                     .map_err(|e| format!("rename marketplace dir: {}", e))?;
             }
         }
     }
-    let mut db = load_plugins_db(&config_dir).await;
+    let mut db = load_plugins_db(config_dir).await;
     db.marketplaces.retain(|m| m.name != name);
     db.marketplaces.push(MarketplaceEntry {
         name: name.clone(),
         source: source.to_string(),
         added_at: Utc::now().to_rfc3339(),
     });
-    save_plugins_db(&config_dir, &db).await?;
+    save_plugins_db(config_dir, &db).await?;
     Ok(MarketplaceJson { name, ..mj })
+}
+
+pub async fn add_marketplace(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    source: &str,
+) -> Result<MarketplaceJson, String> {
+    let (config_dir, cache_dir) = {
+        let g = gcx.read().await;
+        (g.config_dir.clone(), g.cache_dir.clone())
+    };
+    add_marketplace_impl(&config_dir, &cache_dir, source).await
+}
+
+async fn ensure_default_marketplaces_with_source(
+    config_dir: &Path,
+    cache_dir: &Path,
+    default_source: &str,
+) -> Result<(), String> {
+    let db = load_plugins_db(config_dir).await;
+    if !db.marketplaces.is_empty() {
+        return Ok(());
+    }
+    if let Err(e) = add_marketplace_impl(config_dir, cache_dir, default_source).await {
+        tracing::warn!("Failed to seed default marketplace '{}': {}", default_source, e);
+    }
+    Ok(())
+}
+
+pub async fn ensure_default_marketplaces(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), String> {
+    let (config_dir, cache_dir) = {
+        let g = gcx.read().await;
+        (g.config_dir.clone(), g.cache_dir.clone())
+    };
+    ensure_default_marketplaces_with_source(&config_dir, &cache_dir, "anthropics/claude-code").await
 }
 
 pub async fn remove_marketplace(
@@ -717,5 +748,71 @@ mod tests {
         let db = load_plugins_db(Path::new("/nonexistent/path")).await;
         assert!(db.marketplaces.is_empty());
         assert!(db.installed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_default_marketplaces_empty_db_adds_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let cache_dir = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&config_dir).await.unwrap();
+        tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+
+        let local_marketplace = tmp.path().join("local-market");
+        tokio::fs::create_dir_all(&local_marketplace).await.unwrap();
+        tokio::fs::write(
+            local_marketplace.join("marketplace.json"),
+            r#"{"name": "local-market", "plugins": []}"#,
+        ).await.unwrap();
+
+        let source = local_marketplace.to_string_lossy().to_string();
+        ensure_default_marketplaces_with_source(&config_dir, &cache_dir, &source).await.unwrap();
+
+        let db = load_plugins_db(&config_dir).await;
+        assert_eq!(db.marketplaces.len(), 1);
+        assert_eq!(db.marketplaces[0].name, "local-market");
+        assert_eq!(db.marketplaces[0].source, source);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_default_marketplaces_non_empty_db_does_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let cache_dir = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&config_dir).await.unwrap();
+
+        let existing_db = PluginsDb {
+            marketplaces: vec![MarketplaceEntry {
+                name: "existing".to_string(),
+                source: "/some/path".to_string(),
+                added_at: "2024-01-01".to_string(),
+            }],
+            installed: vec![],
+        };
+        save_plugins_db(&config_dir, &existing_db).await.unwrap();
+
+        ensure_default_marketplaces_with_source(&config_dir, &cache_dir, "anthropics/claude-code").await.unwrap();
+
+        let db = load_plugins_db(&config_dir).await;
+        assert_eq!(db.marketplaces.len(), 1);
+        assert_eq!(db.marketplaces[0].name, "existing");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_default_marketplaces_seeding_failure_non_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let cache_dir = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&config_dir).await.unwrap();
+
+        let result = ensure_default_marketplaces_with_source(
+            &config_dir,
+            &cache_dir,
+            "/nonexistent/marketplace/path",
+        ).await;
+        assert!(result.is_ok(), "seeding failure should be non-fatal");
+
+        let db = load_plugins_db(&config_dir).await;
+        assert!(db.marketplaces.is_empty(), "failed seeding should not add anything");
     }
 }
