@@ -173,6 +173,7 @@ async fn expand_with_data(
     Ok(None)
 }
 
+#[cfg(test)]
 async fn expand_with_dirs(ext_dirs: &ExtDirs, raw_input: &str) -> Result<Option<ExpandedCommand>, String> {
     if !raw_input.contains('/') {
         return Ok(None);

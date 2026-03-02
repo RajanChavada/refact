@@ -44,7 +44,6 @@ pub async fn load_skills_config(gcx: Arc<ARwLock<GlobalContext>>) -> SkillsConfi
     }
 }
 
-const MAX_INCLUDE_FILE_SIZE: usize = 50 * 1024;
 const MAX_INCLUDES: usize = 5;
 
 pub async fn expand_skill_includes(body: &str, skill_dir: &Path) -> String {
@@ -55,13 +54,9 @@ pub async fn expand_skill_includes(body: &str, skill_dir: &Path) -> String {
         if let Some(path) = trimmed.strip_prefix("@include ") {
             if include_count < MAX_INCLUDES {
                 if let Some(content) = load_skill_linked_file(skill_dir, path.trim()).await {
-                    if content.len() <= MAX_INCLUDE_FILE_SIZE {
-                        new_lines.push(content);
-                        include_count += 1;
-                        continue;
-                    } else {
-                        tracing::warn!("Skipping @include (file > 50KB): {}", path.trim());
-                    }
+                    new_lines.push(content);
+                    include_count += 1;
+                    continue;
                 } else {
                     tracing::warn!("Failed to load @include file: {}", path.trim());
                 }
@@ -429,7 +424,7 @@ mod tests {
         let skill_dir = tmp.path().join("skills").join("big-include");
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
 
-        let big_content = "x".repeat(MAX_INCLUDE_FILE_SIZE + 1);
+        let big_content = "x".repeat(50 * 1024 + 1);
         tokio::fs::write(skill_dir.join("big.md"), &big_content).await.unwrap();
         tokio::fs::write(
             skill_dir.join("SKILL.md"),
@@ -828,5 +823,59 @@ mod tests {
         let ext_dirs = make_ext_dirs(tmp.path());
         let (msgs, _) = build_context_messages_from_dirs(&ext_dirs, "anything", Some("locked-skill"), SkillsAutoTrigger::InjectFull).await;
         assert!(msgs.is_empty(), "disable_model_invocation=true must block explicit injection");
+    }
+
+    #[tokio::test]
+    async fn test_auto_trigger_subset_of_prompt_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "normal-skill",
+            "name: normal-skill\ndescription: reviews security vulnerabilities code auditing",
+            "Body",
+        ).await;
+        write_skill(
+            tmp.path(),
+            "disabled-skill",
+            "name: disabled-skill\ndescription: reviews security vulnerabilities code auditing\ndisable-model-invocation: true",
+            "Body",
+        ).await;
+        write_skill(
+            tmp.path(),
+            "noninvocable-skill",
+            "name: noninvocable-skill\ndescription: reviews security vulnerabilities code auditing\nuser-invocable: false",
+            "Body",
+        ).await;
+
+        let ext_dirs = make_ext_dirs(tmp.path());
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+
+        let displayable: Vec<_> = indices.iter()
+            .filter(|s| s.user_invocable && !s.disable_model_invocation)
+            .collect();
+        let prompt_names: std::collections::HashSet<&str> =
+            displayable.iter().map(|s| s.name.as_str()).collect();
+
+        let triggered = crate::ext::skills_matcher::select_relevant_skills(
+            &indices,
+            "security vulnerabilities code review",
+            10,
+            0.0,
+        );
+
+        for name in &triggered {
+            assert!(
+                prompt_names.contains(name.as_str()),
+                "Auto-triggered skill '{}' must be in the prompt set (prompt has: {:?})",
+                name,
+                prompt_names
+            );
+        }
+        assert!(prompt_names.contains("normal-skill"), "normal-skill must be in prompt");
+        assert!(!prompt_names.contains("disabled-skill"), "disabled-skill must not be in prompt");
+        assert!(!prompt_names.contains("noninvocable-skill"), "noninvocable-skill must not be in prompt");
+        assert!(triggered.contains(&"normal-skill".to_string()), "normal-skill must be auto-triggered");
+        assert!(!triggered.contains(&"disabled-skill".to_string()), "disabled-skill must not be auto-triggered");
+        assert!(!triggered.contains(&"noninvocable-skill".to_string()), "noninvocable-skill must not be auto-triggered");
     }
 }

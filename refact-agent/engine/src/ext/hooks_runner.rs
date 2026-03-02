@@ -35,6 +35,7 @@ pub struct HookPayload {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum HookResult {
     Success(String),
     Block(String),
