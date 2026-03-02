@@ -5,6 +5,7 @@ use crate::ext::config_dirs::{get_ext_dirs, ExtDirs};
 use crate::ext::skills::{load_skill_full, load_skill_indices};
 use crate::ext::slash_commands::load_slash_commands;
 use crate::global_context::GlobalContext;
+use crate::integrations::mcp::mcp_prompts::{MCP_PROMPT_PREFIX, execute_mcp_prompt};
 
 pub struct ExpandedCommand {
     pub expanded_text: String,
@@ -135,8 +136,53 @@ pub async fn expand_slash_command(
     gcx: Arc<ARwLock<GlobalContext>>,
     raw_input: &str,
 ) -> Result<Option<ExpandedCommand>, String> {
-    let ext_dirs = get_ext_dirs(gcx).await;
-    expand_with_dirs(&ext_dirs, raw_input).await
+    let ext_dirs = get_ext_dirs(gcx.clone()).await;
+    if let Some(expanded) = expand_with_dirs(&ext_dirs, raw_input).await? {
+        return Ok(Some(expanded));
+    }
+    expand_mcp_prompt_command(gcx, raw_input).await
+}
+
+async fn expand_mcp_prompt_command(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    raw_input: &str,
+) -> Result<Option<ExpandedCommand>, String> {
+    let char_bytes: Vec<(usize, char)> = raw_input.char_indices().collect();
+    for (char_idx, &(byte_pos, ch)) in char_bytes.iter().enumerate() {
+        if ch != '/' {
+            continue;
+        }
+        if char_idx > 0 && !char_bytes[char_idx - 1].1.is_whitespace() {
+            continue;
+        }
+        let name_byte_start = byte_pos + 1;
+        let name_byte_end = char_bytes[char_idx + 1..]
+            .iter()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(b, _)| *b)
+            .unwrap_or(raw_input.len());
+        let cmd_name = &raw_input[name_byte_start..name_byte_end];
+        if !cmd_name.starts_with(MCP_PROMPT_PREFIX) {
+            continue;
+        }
+        let args_str = raw_input[name_byte_end..].trim().to_string();
+        let prefix = &raw_input[..byte_pos];
+        match execute_mcp_prompt(gcx.clone(), cmd_name, &args_str, 30).await {
+            Ok(expanded_body) => {
+                return Ok(Some(ExpandedCommand {
+                    expanded_text: format!("{}{}", prefix, expanded_body),
+                    model_override: None,
+                    allowed_tools: vec![],
+                    source_command: cmd_name.to_string(),
+                    context_fork: None,
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("MCP prompt expansion failed for {}: {}", cmd_name, e);
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

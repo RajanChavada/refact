@@ -18,6 +18,7 @@ use tracing::info;
 use crate::ext::config_dirs::{CommandSource, get_ext_dirs};
 use crate::ext::slash_commands::{SlashCommand, load_slash_commands};
 use crate::ext::skills::{SkillIndex, load_skill_indices};
+use crate::integrations::mcp::mcp_prompts::mcp_prompts_as_slash_commands;
 
 use crate::at_commands::execute_at::run_at_commands_locally;
 use crate::indexing_utils::wait_for_indexing_if_needed;
@@ -111,8 +112,10 @@ async fn load_slash_commands_and_skills(
             }
         }
     }
-    let ext_dirs = get_ext_dirs(gcx).await;
-    let commands = load_slash_commands(&ext_dirs).await;
+    let ext_dirs = get_ext_dirs(gcx.clone()).await;
+    let mut commands = load_slash_commands(&ext_dirs).await;
+    let mcp_commands = mcp_prompts_as_slash_commands(gcx).await;
+    commands.extend(mcp_commands);
     let skills = load_skill_indices(&ext_dirs).await;
     let mut write = lock.write().await;
     *write = Some(SlashCacheEntry {

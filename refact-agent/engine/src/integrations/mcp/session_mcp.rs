@@ -152,12 +152,66 @@ impl ClientHandler for McpClientHandler {
     }
 
     fn on_prompt_list_changed(&self) -> impl Future<Output = ()> + Send + '_ {
+        let peer_arc = self.peer_arc.clone();
+        let session_arc = self.session_arc.clone();
         let logs = self.logs.clone();
         let debug_name = self.debug_name.clone();
+        let request_timeout = self.request_timeout;
         async move {
-            let msg = "prompts/list_changed notification received".to_string();
-            tracing::info!("{} for {}", msg, debug_name);
-            add_log_entry(logs, msg).await;
+            tokio::spawn(async move {
+                sleep(Duration::from_millis(200)).await;
+                let peer = {
+                    let locked = peer_arc.lock().await;
+                    locked.clone()
+                };
+                let peer = match peer {
+                    Some(p) => p,
+                    None => {
+                        tracing::warn!("prompts/list_changed: no peer available for {}", debug_name);
+                        return;
+                    }
+                };
+                let new_prompts = match timeout(
+                    Duration::from_secs(request_timeout),
+                    peer.list_all_prompts(),
+                )
+                .await
+                {
+                    Ok(Ok(prompts)) => prompts,
+                    Ok(Err(e)) => {
+                        let msg = format!("prompts/list_changed: failed to list prompts: {:?}", e);
+                        tracing::error!("{} for {}", msg, debug_name);
+                        add_log_entry(logs, msg).await;
+                        return;
+                    }
+                    Err(_) => {
+                        let msg = format!(
+                            "prompts/list_changed: list_prompts timed out after {}s",
+                            request_timeout
+                        );
+                        tracing::error!("{} for {}", msg, debug_name);
+                        add_log_entry(logs, msg).await;
+                        return;
+                    }
+                };
+                let new_count = new_prompts.len();
+                {
+                    let mut session_locked = session_arc.lock().await;
+                    let session_downcasted = session_locked
+                        .as_any_mut()
+                        .downcast_mut::<SessionMCP>()
+                        .unwrap();
+                    let old_count = session_downcasted.mcp_prompts.len();
+                    session_downcasted.mcp_prompts = new_prompts;
+                    let msg = format!(
+                        "prompts/list_changed: {} → {} prompts",
+                        old_count, new_count
+                    );
+                    tracing::info!("{} for {}", msg, debug_name);
+                    add_log_entry(logs, msg).await;
+                }
+                crate::http::routers::v1::at_commands::invalidate_slash_cache().await;
+            });
         }
     }
 }
