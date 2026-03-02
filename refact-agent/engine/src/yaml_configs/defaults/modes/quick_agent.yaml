@@ -1,4 +1,4 @@
-schema_version: 8
+schema_version: 9
 id: quick_agent
 title: Quick Agent
 description: Fast autonomous coding with minimal overhead
@@ -66,6 +66,8 @@ tools:
   - search_pattern
   - search_symbol_definition
   - search_semantic
+  - activate_skill
+  - deactivate_skill
   - knowledge
   - create_knowledge
   - search_trajectories

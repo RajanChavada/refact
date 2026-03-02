@@ -1,4 +1,4 @@
-schema_version: 9
+schema_version: 10
 id: task_planner
 title: Task Planner
 description: Task board management mode
@@ -225,6 +225,8 @@ tools:
   - search_pattern
   - search_symbol_definition
   - search_semantic
+  - activate_skill
+  - deactivate_skill
   - knowledge
   - search_trajectories
   - get_trajectory_context

@@ -1,4 +1,4 @@
-schema_version: 7
+schema_version: 8
 id: openai_agent
 title: OpenAI Agent
 description: Optimized for GPT-4o/GPT-5 models using OpenAI Codex-style agentic workflow
@@ -218,6 +218,8 @@ override:
     - search_pattern
     - search_symbol_definition
     - search_semantic
+    - activate_skill
+    - deactivate_skill
     - knowledge
     - create_knowledge
     - search_trajectories
