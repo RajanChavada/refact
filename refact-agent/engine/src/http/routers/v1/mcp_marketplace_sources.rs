@@ -15,6 +15,7 @@ use crate::global_context::GlobalContext;
 
 pub const BUNDLED_SOURCE_ID: &str = "refact-bundled";
 pub const SMITHERY_SOURCE_ID: &str = "smithery";
+pub const OFFICIAL_MCP_SOURCE_ID: &str = "official-mcp";
 const SOURCES_FILENAME: &str = "marketplace_sources.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,6 +23,7 @@ const SOURCES_FILENAME: &str = "marketplace_sources.yaml";
 pub enum SourceType {
     RefactIndex,
     Smithery,
+    OfficialMcp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,10 +93,22 @@ pub async fn load_sources(config_dir: &PathBuf) -> SourcesConfig {
     }
 }
 
+fn default_official_mcp_source() -> MarketplaceSource {
+    MarketplaceSource {
+        id: OFFICIAL_MCP_SOURCE_ID.to_string(),
+        label: "MCP Registry".to_string(),
+        source_type: SourceType::OfficialMcp,
+        enabled: true,
+        url: None,
+        api_key: None,
+    }
+}
+
 fn default_sources_config() -> SourcesConfig {
     SourcesConfig {
         sources: vec![
             default_remote_source(),
+            default_official_mcp_source(),
             default_smithery_source(),
         ],
     }
@@ -123,6 +137,7 @@ pub fn source_to_api_json(source: &MarketplaceSource, removable: bool) -> Value 
     obj.insert("type".to_string(), json!(match source.source_type {
         SourceType::RefactIndex => "refact_index",
         SourceType::Smithery => "smithery",
+        SourceType::OfficialMcp => "official_mcp",
     }));
     obj.insert("enabled".to_string(), json!(source.enabled));
     obj.insert("removable".to_string(), json!(removable));
@@ -177,6 +192,7 @@ pub async fn handle_v1_mcp_marketplace_sources_post(
     let source_type = match req.source_type.as_str() {
         "refact_index" => SourceType::RefactIndex,
         "smithery" => SourceType::Smithery,
+        "official_mcp" => SourceType::OfficialMcp,
         _ => return Err(ScratchError::new(StatusCode::BAD_REQUEST, format!("unknown source type: {}", req.source_type))),
     };
 
@@ -283,6 +299,11 @@ pub fn smithery_api_key(sources: &[MarketplaceSource]) -> Option<String> {
 }
 
 #[cfg(test)]
+pub fn default_sources_config_for_test() -> SourcesConfig {
+    default_sources_config()
+}
+
+#[cfg(test)]
 pub fn get_source_map(bundled: &MarketplaceSource, sources: &[MarketplaceSource]) -> HashMap<String, MarketplaceSource> {
     let mut map = HashMap::new();
     map.insert(bundled.id.clone(), bundled.clone());
@@ -295,6 +316,33 @@ pub fn get_source_map(bundled: &MarketplaceSource, sources: &[MarketplaceSource]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_default_sources_include_official_mcp() {
+        let cfg = default_sources_config_for_test();
+        let official = cfg.sources.iter().find(|s| s.id == OFFICIAL_MCP_SOURCE_ID);
+        assert!(official.is_some(), "official-mcp must be in default sources");
+        let official = official.unwrap();
+        assert!(official.enabled, "official-mcp must be enabled by default");
+        assert_eq!(official.source_type, SourceType::OfficialMcp);
+        assert!(official.api_key.is_none(), "official-mcp must not need an api key");
+    }
+
+    #[test]
+    fn test_official_mcp_source_json_type_field() {
+        let source = MarketplaceSource {
+            id: OFFICIAL_MCP_SOURCE_ID.to_string(),
+            label: "MCP Registry".to_string(),
+            source_type: SourceType::OfficialMcp,
+            enabled: true,
+            url: None,
+            api_key: None,
+        };
+        let json = source_to_api_json(&source, false);
+        assert_eq!(json["type"], "official_mcp");
+        assert!(json.get("needs_api_key").is_none());
+        assert!(json.get("has_api_key").is_none());
+    }
 
     #[tokio::test]
     async fn test_source_config_persistence() {

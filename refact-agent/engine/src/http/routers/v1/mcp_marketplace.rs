@@ -18,10 +18,13 @@ use crate::http::routers::v1::mcp_marketplace_sources::{
     BUNDLED_SOURCE_ID, SourceType, MarketplaceSource,
 };
 #[cfg(test)]
-use crate::http::routers::v1::mcp_marketplace_sources::SMITHERY_SOURCE_ID;
+use crate::http::routers::v1::mcp_marketplace_sources::{SMITHERY_SOURCE_ID, OFFICIAL_MCP_SOURCE_ID};
 
 const BUNDLED_CACHE_TTL_SECS: u64 = 3600;
 const SMITHERY_CACHE_TTL_SECS: u64 = 900;
+const OFFICIAL_MCP_CACHE_TTL_SECS: u64 = 900;
+
+const OFFICIAL_MCP_REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io/v0/servers";
 
 static SOURCE_CACHES: Mutex<Option<HashMap<String, (Instant, Vec<MarketplaceServerWithSource>)>>> = Mutex::new(None);
 
@@ -248,6 +251,143 @@ async fn fetch_smithery_detail(http_client: &reqwest::Client, qualified_name: &s
     })
 }
 
+#[derive(Deserialize)]
+struct OfficialRegistryResponse {
+    servers: Vec<OfficialRegistryEntry>,
+    #[allow(dead_code)]
+    metadata: OfficialRegistryMetadata,
+}
+
+#[derive(Deserialize)]
+struct OfficialRegistryEntry {
+    server: OfficialRegistryServer,
+}
+
+#[derive(Deserialize)]
+struct OfficialRegistryServer {
+    name: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default, rename = "websiteUrl")]
+    website_url: Option<String>,
+    #[serde(default)]
+    icons: Vec<OfficialRegistryIcon>,
+    #[serde(default)]
+    remotes: Vec<OfficialRegistryRemote>,
+    #[serde(default)]
+    packages: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct OfficialRegistryIcon {
+    src: String,
+}
+
+#[derive(Deserialize)]
+struct OfficialRegistryRemote {
+    #[serde(rename = "type")]
+    remote_type: String,
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct OfficialRegistryMetadata {
+    #[allow(dead_code)]
+    #[serde(default, rename = "nextCursor")]
+    next_cursor: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    count: u32,
+}
+
+async fn fetch_official_registry_servers(
+    http_client: &reqwest::Client,
+    query: &str,
+    _page: u32,
+    page_size: u32,
+) -> Result<(Vec<MarketplaceServer>, u32), String> {
+    let limit = page_size.min(100);
+    let url = format!("{}?limit={}", OFFICIAL_MCP_REGISTRY_URL, limit);
+
+    let resp = http_client
+        .get(&url)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("official-mcp request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("official-mcp: HTTP {}", resp.status()));
+    }
+
+    let body: OfficialRegistryResponse = resp.json().await
+        .map_err(|e| format!("official-mcp parse: {}", e))?;
+
+    let servers: Vec<MarketplaceServer> = body.servers.into_iter()
+        .map(|entry| {
+            let s = entry.server;
+            let parts: Vec<&str> = s.name.splitn(2, '/').collect();
+            let publisher = parts.first().copied().unwrap_or("").to_string();
+            let short_name = parts.get(1).copied().unwrap_or(s.name.as_str());
+            let display_name = s.title.unwrap_or_else(|| short_name.to_string());
+
+            let (transport, install_url) = s.remotes.first()
+                .map(|r| {
+                    let t = match r.remote_type.as_str() {
+                        "streamable-http" => "http",
+                        "sse" => "sse",
+                        _ => "http",
+                    };
+                    (t.to_string(), Some(r.url.clone()))
+                })
+                .unwrap_or_else(|| {
+                    if !s.packages.is_empty() {
+                        ("stdio".to_string(), None)
+                    } else {
+                        ("stdio".to_string(), None)
+                    }
+                });
+
+            let icon_url = s.icons.first().map(|i| i.src.clone());
+
+            MarketplaceServer {
+                id: s.name.clone(),
+                name: display_name,
+                description: s.description.unwrap_or_default(),
+                publisher,
+                tags: vec!["official-mcp".to_string()],
+                icon_url,
+                homepage: s.website_url,
+                transport,
+                install_recipe: InstallRecipe {
+                    command: None,
+                    url: install_url,
+                    env: HashMap::new(),
+                    headers: HashMap::new(),
+                },
+                confirmation_default: vec!["**".to_string()],
+            }
+        })
+        .collect();
+
+    let filtered: Vec<MarketplaceServer> = if query.is_empty() {
+        servers
+    } else {
+        let q = query.to_lowercase();
+        servers.into_iter().filter(|s| {
+            s.name.to_lowercase().contains(&q)
+                || s.description.to_lowercase().contains(&q)
+                || s.id.to_lowercase().contains(&q)
+                || s.publisher.to_lowercase().contains(&q)
+        }).collect()
+    };
+
+    let total = filtered.len() as u32;
+    Ok((filtered, total))
+}
+
 async fn load_source_servers(
     gcx: Arc<ARwLock<GlobalContext>>,
     source: &MarketplaceSource,
@@ -256,10 +396,10 @@ async fn load_source_servers(
     page_size: u32,
     cache: &mut HashMap<String, (Instant, Vec<MarketplaceServerWithSource>)>,
 ) -> (Vec<MarketplaceServerWithSource>, u32, &'static str) {
-    let ttl = if source.source_type == SourceType::Smithery {
-        SMITHERY_CACHE_TTL_SECS
-    } else {
-        BUNDLED_CACHE_TTL_SECS
+    let ttl = match source.source_type {
+        SourceType::Smithery => SMITHERY_CACHE_TTL_SECS,
+        SourceType::OfficialMcp => OFFICIAL_MCP_CACHE_TTL_SECS,
+        SourceType::RefactIndex => BUNDLED_CACHE_TTL_SECS,
     };
 
     let query_str = query.unwrap_or("");
@@ -325,6 +465,25 @@ async fn load_source_servers(
                         .map(|s| MarketplaceServerWithSource { server: s, source_id: source_id.clone() })
                         .collect();
                     (with_source, total, "ok")
+                }
+                Err(_) => (vec![], 0, "error"),
+            }
+        }
+        SourceType::OfficialMcp => {
+            let http_client = gcx.read().await.http_client.clone();
+            let query_str = query.unwrap_or("");
+            match fetch_official_registry_servers(&http_client, query_str, page, page_size).await {
+                Ok((servers, _)) => {
+                    let source_id = source.id.clone();
+                    let all_with_source: Vec<MarketplaceServerWithSource> = servers.into_iter()
+                        .map(|s| MarketplaceServerWithSource { server: s, source_id: source_id.clone() })
+                        .collect();
+                    let total = all_with_source.len() as u32;
+                    cache.insert(cache_key, (Instant::now(), all_with_source.clone()));
+                    let start = ((page - 1) * page_size) as usize;
+                    let end = (start + page_size as usize).min(all_with_source.len());
+                    let page_items = if start < all_with_source.len() { all_with_source[start..end].to_vec() } else { vec![] };
+                    (page_items, total, "ok")
                 }
                 Err(_) => (vec![], 0, "error"),
             }
@@ -410,6 +569,7 @@ pub async fn handle_v1_mcp_marketplace_get(
             sources_meta.push(meta);
             continue;
         }
+        // OfficialMcp IS included in merged mode (free, no API key)
 
         let fetch_page_size = if is_merged_mode { MERGED_MODE_PAGE_SIZE_CAP } else { page_size };
         let fetch_page = if is_merged_mode { 1 } else { page };
@@ -524,6 +684,13 @@ async fn find_server_in_sources(
             let http_client = gcx.read().await.http_client.clone();
             if let Some(server) = fetch_smithery_detail(&http_client, server_id, &api_key).await {
                 return Some((server, source.id.clone()));
+            }
+        } else if source.source_type == SourceType::OfficialMcp {
+            let http_client = gcx.read().await.http_client.clone();
+            if let Ok((servers, _)) = fetch_official_registry_servers(&http_client, "", 1, 100).await {
+                if let Some(server) = servers.into_iter().find(|s| s.id == server_id) {
+                    return Some((server, source.id.clone()));
+                }
             }
         }
     }
@@ -1631,5 +1798,163 @@ mod tests {
         assert!(!validate_env_key("evil:\nfield"), "newline in key invalid");
         assert!(!validate_env_key("evil: true\n  injection"), "injection invalid");
         assert!(!validate_env_key("1STARTS_WITH_NUM"), "key starting with number invalid");
+    }
+
+    #[test]
+    fn test_official_mcp_default_source_enabled() {
+        use crate::http::routers::v1::mcp_marketplace_sources::{default_sources_config_for_test, OFFICIAL_MCP_SOURCE_ID};
+        let cfg = default_sources_config_for_test();
+        let official = cfg.sources.iter().find(|s| s.id == OFFICIAL_MCP_SOURCE_ID);
+        assert!(official.is_some(), "official-mcp must be in default sources");
+        let official = official.unwrap();
+        assert!(official.enabled, "official-mcp must be enabled by default");
+        assert!(official.api_key.is_none(), "official-mcp must not require api key");
+        assert_eq!(official.source_type, SourceType::OfficialMcp);
+    }
+
+    #[test]
+    fn test_official_mcp_source_json() {
+        use crate::http::routers::v1::mcp_marketplace_sources::{source_to_api_json, OFFICIAL_MCP_SOURCE_ID};
+        let source = MarketplaceSource {
+            id: OFFICIAL_MCP_SOURCE_ID.to_string(),
+            label: "MCP Registry".to_string(),
+            source_type: SourceType::OfficialMcp,
+            enabled: true,
+            url: None,
+            api_key: None,
+        };
+        let json = source_to_api_json(&source, false);
+        assert_eq!(json["type"], "official_mcp", "type must serialize as official_mcp");
+        assert_eq!(json["enabled"], true);
+        assert!(json.get("needs_api_key").is_none(), "official-mcp must not have needs_api_key");
+        assert!(json.get("has_api_key").is_none(), "official-mcp must not have has_api_key");
+    }
+
+    #[test]
+    fn test_official_mcp_registry_response_mapping() {
+        let json = r#"{
+            "servers": [{
+                "server": {
+                    "name": "namespace/my-server",
+                    "title": "My Server",
+                    "description": "A test server",
+                    "websiteUrl": "https://example.com",
+                    "icons": [{"src": "https://example.com/icon.png"}],
+                    "remotes": [{"type": "streamable-http", "url": "https://api.example.com/mcp"}],
+                    "packages": []
+                }
+            }, {
+                "server": {
+                    "name": "other/stdio-server",
+                    "description": "A stdio server",
+                    "remotes": [],
+                    "packages": [{"registry_name": "npm", "name": "@other/stdio-server"}]
+                }
+            }],
+            "metadata": {"nextCursor": null, "count": 2}
+        }"#;
+        let resp: OfficialRegistryResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.servers.len(), 2);
+        assert_eq!(resp.metadata.count, 2);
+
+        let s = &resp.servers[0].server;
+        assert_eq!(s.name, "namespace/my-server");
+        assert_eq!(s.title.as_deref(), Some("My Server"));
+        assert_eq!(s.remotes[0].remote_type, "streamable-http");
+        assert_eq!(s.remotes[0].url, "https://api.example.com/mcp");
+
+        let s2 = &resp.servers[1].server;
+        assert!(s2.remotes.is_empty());
+        assert_eq!(s2.packages.len(), 1);
+    }
+
+    #[test]
+    fn test_official_mcp_server_mapping() {
+        let entry = OfficialRegistryEntry {
+            server: OfficialRegistryServer {
+                name: "acme/my-tool".to_string(),
+                title: Some("My Tool".to_string()),
+                description: Some("Does stuff".to_string()),
+                website_url: Some("https://acme.com".to_string()),
+                icons: vec![OfficialRegistryIcon { src: "https://acme.com/icon.png".to_string() }],
+                remotes: vec![OfficialRegistryRemote { remote_type: "streamable-http".to_string(), url: "https://api.acme.com/mcp".to_string() }],
+                packages: vec![],
+            },
+        };
+        let s = entry.server;
+        let parts: Vec<&str> = s.name.splitn(2, '/').collect();
+        let publisher = parts.first().copied().unwrap_or("").to_string();
+        let short_name = parts.get(1).copied().unwrap_or(s.name.as_str());
+        let display_name = s.title.unwrap_or_else(|| short_name.to_string());
+        let (transport, install_url) = s.remotes.first()
+            .map(|r| {
+                let t = match r.remote_type.as_str() {
+                    "streamable-http" => "http",
+                    "sse" => "sse",
+                    _ => "http",
+                };
+                (t.to_string(), Some(r.url.clone()))
+            })
+            .unwrap_or_else(|| ("stdio".to_string(), None));
+
+        assert_eq!(publisher, "acme");
+        assert_eq!(display_name, "My Tool");
+        assert_eq!(transport, "http");
+        assert_eq!(install_url.as_deref(), Some("https://api.acme.com/mcp"));
+    }
+
+    #[test]
+    fn test_official_mcp_client_side_search_filter() {
+        let servers = vec![
+            MarketplaceServer {
+                id: "acme/github-tool".to_string(),
+                name: "GitHub Tool".to_string(),
+                description: "Integrates with GitHub".to_string(),
+                publisher: "acme".to_string(),
+                tags: vec!["official-mcp".to_string()],
+                icon_url: None,
+                homepage: None,
+                transport: "http".to_string(),
+                install_recipe: InstallRecipe { command: None, url: Some("https://api.acme.com/mcp".to_string()), env: HashMap::new(), headers: HashMap::new() },
+                confirmation_default: vec!["**".to_string()],
+            },
+            MarketplaceServer {
+                id: "other/slack-tool".to_string(),
+                name: "Slack Integration".to_string(),
+                description: "Chat via Slack".to_string(),
+                publisher: "other".to_string(),
+                tags: vec!["official-mcp".to_string()],
+                icon_url: None,
+                homepage: None,
+                transport: "stdio".to_string(),
+                install_recipe: InstallRecipe { command: None, url: None, env: HashMap::new(), headers: HashMap::new() },
+                confirmation_default: vec!["**".to_string()],
+            },
+        ];
+
+        let q = "github".to_lowercase();
+        let filtered: Vec<_> = servers.iter().filter(|s| {
+            s.name.to_lowercase().contains(&q)
+                || s.description.to_lowercase().contains(&q)
+                || s.id.to_lowercase().contains(&q)
+                || s.publisher.to_lowercase().contains(&q)
+        }).collect();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "acme/github-tool");
+    }
+
+    #[test]
+    fn test_official_mcp_included_in_merged_mode() {
+        let official_source = MarketplaceSource {
+            id: OFFICIAL_MCP_SOURCE_ID.to_string(),
+            label: "MCP Registry".to_string(),
+            source_type: SourceType::OfficialMcp,
+            enabled: true,
+            url: None,
+            api_key: None,
+        };
+        let is_merged_mode = true;
+        let should_skip = is_merged_mode && official_source.source_type == SourceType::Smithery;
+        assert!(!should_skip, "OfficialMcp must NOT be excluded in merged mode");
     }
 }
