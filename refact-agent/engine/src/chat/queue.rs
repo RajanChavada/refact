@@ -5,7 +5,7 @@ use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::call_validation::{ChatContent, ChatMessage};
+use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
 use crate::global_context::GlobalContext;
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, first_block_reason, get_project_dir_string, run_hooks};
@@ -17,6 +17,7 @@ use super::generation::{start_generation, prepare_session_preamble_and_knowledge
 use super::tools::execute_tools_with_session;
 use super::trajectories::maybe_save_trajectory;
 use crate::ext::slash_expand::expand_slash_command;
+use crate::ext::skills_context::expand_skill_includes;
 
 fn command_triggers_generation(cmd: &ChatCommand) -> bool {
     matches!(
@@ -445,9 +446,11 @@ pub async fn process_command_queue(
                 mut content,
                 attachments,
             } => {
+                let mut skill_activation_info = None;
                 if let Some(text) = content.as_str() {
                     match expand_slash_command(gcx.clone(), text).await {
                         Ok(Some(expanded)) => {
+                            skill_activation_info = expanded.skill_to_activate;
                             content = serde_json::Value::String(expanded.expanded_text);
                             let mut session = session_arc.lock().await;
                             session.active_command = ActiveCommandContext {
@@ -468,6 +471,30 @@ pub async fn process_command_queue(
                         }
                     }
                 }
+
+                let skill_context_msg = if let Some(info) = skill_activation_info {
+                    let body = expand_skill_includes(&info.body, &info.skill_dir).await;
+                    let line_count = body.lines().count().max(1);
+                    Some(ChatMessage {
+                        message_id: Uuid::new_v4().to_string(),
+                        role: "context_file".to_string(),
+                        content: ChatContent::ContextFiles(vec![ContextFile {
+                            file_name: format!("skill://{}", info.name),
+                            file_content: body,
+                            line1: 1,
+                            line2: line_count,
+                            file_rev: None,
+                            symbols: vec![],
+                            gradient_type: 0,
+                            usefulness: 95.0,
+                            skip_pp: true,
+                        }]),
+                        tool_call_id: format!("skill_activation_{}", info.name),
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
 
                 let additional_messages = if !request.priority {
                     let mut session = session_arc.lock().await;
@@ -590,6 +617,10 @@ pub async fn process_command_queue(
 
                     if let Some((ctx_msg, _)) = browser_ctx_result {
                         session.add_message(ctx_msg);
+                    }
+
+                    if let Some(skill_msg) = skill_context_msg {
+                        session.add_message(skill_msg);
                     }
 
                     let parsed_content = parse_content_with_attachments(&content, &attachments);

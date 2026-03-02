@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 
@@ -7,12 +8,19 @@ use crate::ext::slash_commands::load_slash_commands;
 use crate::global_context::GlobalContext;
 use crate::integrations::mcp::mcp_prompts::{MCP_PROMPT_PREFIX, execute_mcp_prompt};
 
+pub struct SkillActivationInfo {
+    pub name: String,
+    pub body: String,
+    pub skill_dir: PathBuf,
+}
+
 pub struct ExpandedCommand {
     pub expanded_text: String,
     pub model_override: Option<String>,
     pub allowed_tools: Vec<String>,
     pub source_command: String,
     pub context_fork: Option<String>,
+    pub skill_to_activate: Option<SkillActivationInfo>,
 }
 
 fn shell_split(s: &str) -> Vec<String> {
@@ -107,6 +115,7 @@ async fn expand_with_dirs(ext_dirs: &ExtDirs, raw_input: &str) -> Result<Option<
                 allowed_tools: command.allowed_tools.clone(),
                 source_command: cmd_name.to_string(),
                 context_fork: None,
+                skill_to_activate: None,
             }));
         }
         if skill_names.contains(cmd_name) {
@@ -118,12 +127,22 @@ async fn expand_with_dirs(ext_dirs: &ExtDirs, raw_input: &str) -> Result<Option<
                     } else {
                         None
                     };
+                    let expanded_text = if args_str.is_empty() {
+                        format!("{}Run the {} skill", prefix, cmd_name)
+                    } else {
+                        format!("{}{}", prefix, args_str)
+                    };
                     return Ok(Some(ExpandedCommand {
-                        expanded_text: format!("{}{}", prefix, expand_template(&skill.body, &args_str, &positional)),
+                        expanded_text,
                         model_override: skill.model.clone(),
                         allowed_tools: skill.allowed_tools.clone(),
                         source_command: cmd_name.to_string(),
                         context_fork,
+                        skill_to_activate: Some(SkillActivationInfo {
+                            name: cmd_name.to_string(),
+                            body: skill.body.clone(),
+                            skill_dir: skill.skill_dir.clone(),
+                        }),
                     }));
                 }
             }
@@ -175,6 +194,7 @@ async fn expand_mcp_prompt_command(
                     allowed_tools: vec![],
                     source_command: cmd_name.to_string(),
                     context_fork: None,
+                    skill_to_activate: None,
                 }));
             }
             Err(e) => {
@@ -359,11 +379,63 @@ mod tests {
 
         let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
         let result = expand_with_dirs(&ext_dirs, "/my-skill some args").await.unwrap().unwrap();
-        assert_eq!(result.expanded_text, "Do something with some args");
+        assert_eq!(result.expanded_text, "some args");
         assert_eq!(result.model_override, Some("gpt-4o".to_string()));
         assert_eq!(result.allowed_tools, vec!["cat"]);
         assert_eq!(result.source_command, "my-skill");
         assert!(result.context_fork.is_none());
+        let info = result.skill_to_activate.expect("skill_to_activate must be Some for skill invocation");
+        assert_eq!(info.name, "my-skill");
+        assert!(info.body.contains("Do something with $ARGUMENTS"));
+    }
+
+    #[tokio::test]
+    async fn test_skill_no_args_gets_default_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("my-skill");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A useful skill\nuser-invocable: true\n---\nBody",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/my-skill").await.unwrap().unwrap();
+        assert_eq!(result.expanded_text, "Run the my-skill skill");
+        assert!(result.skill_to_activate.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_skill_with_args_uses_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("tester");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tester\ndescription: Test skill\nuser-invocable: true\n---\nBody $ARGUMENTS",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "/tester fix the bug").await.unwrap().unwrap();
+        assert_eq!(result.expanded_text, "fix the bug");
+        let info = result.skill_to_activate.unwrap();
+        assert_eq!(info.name, "tester");
+    }
+
+    #[tokio::test]
+    async fn test_skill_mid_message_uses_prefix_plus_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = tmp.path().join("skills").join("helper");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: helper\ndescription: Helper skill\nuser-invocable: true\n---\nBody",
+        ).await.unwrap();
+
+        let ext_dirs = make_ext_dirs(tmp.path().to_path_buf());
+        let result = expand_with_dirs(&ext_dirs, "please /helper do work").await.unwrap().unwrap();
+        assert_eq!(result.expanded_text, "please do work");
+        assert!(result.skill_to_activate.is_some());
     }
 
     #[tokio::test]
