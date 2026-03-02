@@ -333,7 +333,11 @@ async fn load_source_servers(
 }
 
 fn validate_config_name(name: &str) -> bool {
-    !name.is_empty() && !name.contains("..") && !name.contains('/') && !name.contains('\\')
+    !name.is_empty() && !name.contains("..") && !name.contains('\\')
+}
+
+fn validate_env_key(key: &str) -> bool {
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
 }
 
 #[derive(Deserialize)]
@@ -537,7 +541,7 @@ pub async fn handle_v1_mcp_marketplace_install(
         return Err(ScratchError::new(StatusCode::BAD_REQUEST, "invalid server_id".to_string()));
     }
 
-    let (server, _found_source_id) = find_server_in_sources(
+    let (server, found_source_id) = find_server_in_sources(
         gcx.clone(),
         &req.server_id,
         req.source_id.as_deref(),
@@ -574,14 +578,30 @@ pub async fn handle_v1_mcp_marketplace_install(
     let mut headers = server.install_recipe.headers.clone();
     if let Some(overrides) = &req.config_overrides {
         for (k, v) in &overrides.env {
+            if !validate_env_key(k) {
+                return Err(ScratchError::new(StatusCode::BAD_REQUEST, format!("invalid env key: {:?}", k)));
+            }
             env.insert(k.clone(), v.clone());
         }
         for (k, v) in &overrides.headers {
+            if !validate_env_key(k) {
+                return Err(ScratchError::new(StatusCode::BAD_REQUEST, format!("invalid header key: {:?}", k)));
+            }
             headers.insert(k.clone(), v.clone());
         }
     }
+    for k in env.keys() {
+        if !validate_env_key(k) {
+            return Err(ScratchError::new(StatusCode::BAD_REQUEST, format!("invalid env key in recipe: {:?}", k)));
+        }
+    }
+    for k in headers.keys() {
+        if !validate_env_key(k) {
+            return Err(ScratchError::new(StatusCode::BAD_REQUEST, format!("invalid header key in recipe: {:?}", k)));
+        }
+    }
 
-    let yaml_content = build_integration_yaml(&server, &env, &headers);
+    let yaml_content = build_integration_yaml(&server, &env, &headers, &found_source_id);
     match tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -607,64 +627,79 @@ pub async fn handle_v1_mcp_marketplace_install(
     })))
 }
 
-fn build_integration_yaml(server: &MarketplaceServer, env: &HashMap<String, String>, headers: &HashMap<String, String>) -> String {
-    let mut lines = Vec::new();
+fn build_integration_yaml(server: &MarketplaceServer, env: &HashMap<String, String>, headers: &HashMap<String, String>, source_id: &str) -> String {
+    let mut map = serde_yaml::Mapping::new();
+
     match server.transport.as_str() {
         "http" | "streamable-http" => {
             if let Some(ref url) = server.install_recipe.url {
-                lines.push(format!("url: {:?}", url));
+                map.insert(serde_yaml::Value::String("url".to_string()), serde_yaml::Value::String(url.clone()));
             }
-            lines.push("headers:".to_string());
-            if headers.is_empty() {
-                lines.push("  {}".to_string());
-            } else {
-                for (k, v) in headers {
-                    lines.push(format!("  {}: {:?}", k, v));
-                }
-            }
-            lines.push("auth_type: \"none\"".to_string());
+            let headers_map: serde_yaml::Mapping = headers.iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k.clone()), serde_yaml::Value::String(v.clone())))
+                .collect();
+            map.insert(serde_yaml::Value::String("headers".to_string()), serde_yaml::Value::Mapping(headers_map));
+            map.insert(serde_yaml::Value::String("auth_type".to_string()), serde_yaml::Value::String("none".to_string()));
         }
         "sse" => {
             if let Some(ref url) = server.install_recipe.url {
-                lines.push(format!("url: {:?}", url));
+                map.insert(serde_yaml::Value::String("url".to_string()), serde_yaml::Value::String(url.clone()));
             }
-            lines.push("headers:".to_string());
-            if headers.is_empty() {
-                lines.push("  {}".to_string());
-            } else {
-                for (k, v) in headers {
-                    lines.push(format!("  {}: {:?}", k, v));
-                }
-            }
-            lines.push("auth_type: \"none\"".to_string());
+            let headers_map: serde_yaml::Mapping = headers.iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k.clone()), serde_yaml::Value::String(v.clone())))
+                .collect();
+            map.insert(serde_yaml::Value::String("headers".to_string()), serde_yaml::Value::Mapping(headers_map));
+            map.insert(serde_yaml::Value::String("auth_type".to_string()), serde_yaml::Value::String("none".to_string()));
         }
         _ => {
             if let Some(ref cmd) = server.install_recipe.command {
-                lines.push(format!("command: {:?}", cmd));
+                map.insert(serde_yaml::Value::String("command".to_string()), serde_yaml::Value::String(cmd.clone()));
             }
-            lines.push("env:".to_string());
-            if env.is_empty() {
-                lines.push("  {}".to_string());
-            } else {
-                for (k, v) in env {
-                    lines.push(format!("  {}: {:?}", k, v));
-                }
-            }
+            let env_map: serde_yaml::Mapping = env.iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k.clone()), serde_yaml::Value::String(v.clone())))
+                .collect();
+            map.insert(serde_yaml::Value::String("env".to_string()), serde_yaml::Value::Mapping(env_map));
         }
     }
-    lines.push("init_timeout: \"60\"".to_string());
-    lines.push("request_timeout: \"30\"".to_string());
-    lines.push("available:".to_string());
-    lines.push("  on_your_laptop: true".to_string());
-    lines.push("  when_isolated: false".to_string());
-    lines.push("confirmation:".to_string());
-    if server.confirmation_default.is_empty() {
-        lines.push("  ask_user_default: []".to_string());
-    } else {
-        let items: Vec<String> = server.confirmation_default.iter().map(|s| format!("\"{}\"", s)).collect();
-        lines.push(format!("  ask_user_default: [{}]", items.join(", ")));
+
+    map.insert(serde_yaml::Value::String("init_timeout".to_string()), serde_yaml::Value::String("60".to_string()));
+    map.insert(serde_yaml::Value::String("request_timeout".to_string()), serde_yaml::Value::String("30".to_string()));
+
+    let mut available = serde_yaml::Mapping::new();
+    available.insert(serde_yaml::Value::String("on_your_laptop".to_string()), serde_yaml::Value::Bool(true));
+    available.insert(serde_yaml::Value::String("when_isolated".to_string()), serde_yaml::Value::Bool(false));
+    map.insert(serde_yaml::Value::String("available".to_string()), serde_yaml::Value::Mapping(available));
+
+    let confirmation_list: serde_yaml::Value = serde_yaml::Value::Sequence(
+        server.confirmation_default.iter().map(|s| serde_yaml::Value::String(s.clone())).collect()
+    );
+    let mut confirmation = serde_yaml::Mapping::new();
+    confirmation.insert(serde_yaml::Value::String("ask_user_default".to_string()), confirmation_list);
+    map.insert(serde_yaml::Value::String("confirmation".to_string()), serde_yaml::Value::Mapping(confirmation));
+
+    let yaml_body = serde_yaml::to_string(&serde_yaml::Value::Mapping(map))
+        .unwrap_or_else(|_| String::new());
+
+    format!(
+        "# mcp_marketplace_source: {}\n# mcp_marketplace_server: {}\n{}",
+        source_id, server.id, yaml_body
+    )
+}
+
+fn parse_marketplace_comments(content: &str) -> (Option<String>, Option<String>) {
+    let mut source_id = None;
+    let mut server_id = None;
+    for line in content.lines().take(10) {
+        if let Some(val) = line.strip_prefix("# mcp_marketplace_source:") {
+            source_id = Some(val.trim().to_string());
+        } else if let Some(val) = line.strip_prefix("# mcp_marketplace_server:") {
+            server_id = Some(val.trim().to_string());
+        }
+        if !line.starts_with('#') && !line.is_empty() {
+            break;
+        }
     }
-    lines.join("\n") + "\n"
+    (source_id, server_id)
 }
 
 pub async fn handle_v1_mcp_marketplace_installed(
@@ -691,14 +726,32 @@ pub async fn handle_v1_mcp_marketplace_installed(
         if !fname_str.ends_with(".yaml") {
             continue;
         }
+        let is_mcp = ["mcp_stdio_", "mcp_sse_", "mcp_http_"].iter().any(|p| fname_str.starts_with(p));
+        if !is_mcp {
+            continue;
+        }
+
+        let content = match tokio::fs::read_to_string(entry.path()).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let (found_source, found_server) = parse_marketplace_comments(&content);
+        if let (Some(src_id), Some(srv_id)) = (found_source, found_server) {
+            installed.push(json!({
+                "id": srv_id,
+                "config_path": entry.path().display().to_string(),
+                "source_id": src_id,
+            }));
+            continue;
+        }
+
         for prefix in &["mcp_stdio_", "mcp_sse_", "mcp_http_"] {
             if let Some(rest) = fname_str.strip_prefix(prefix) {
                 let id_candidate = rest.trim_end_matches(".yaml").replace('_', "-");
                 if index_ids.contains(&id_candidate) {
-                    let server = bundled.servers.iter().find(|s| s.id == id_candidate).unwrap();
                     installed.push(json!({
                         "id": id_candidate,
-                        "name": server.name,
                         "config_path": entry.path().display().to_string(),
                         "source_id": BUNDLED_SOURCE_ID,
                     }));
@@ -891,7 +944,7 @@ mod tests {
         assert!(validate_config_name("my-server"), "valid name with dash");
         assert!(!validate_config_name(""), "empty name invalid");
         assert!(!validate_config_name("../evil"), "path traversal invalid");
-        assert!(!validate_config_name("a/b"), "slash invalid");
+        assert!(validate_config_name("a/b"), "slash valid for smithery IDs");
         assert!(!validate_config_name("a\\b"), "backslash invalid");
     }
 
@@ -916,13 +969,15 @@ mod tests {
         };
         let mut env = HashMap::new();
         env.insert("GITHUB_PERSONAL_ACCESS_TOKEN".to_string(), "ghp_test".to_string());
-        let yaml = build_integration_yaml(&server, &env, &HashMap::new());
+        let yaml = build_integration_yaml(&server, &env, &HashMap::new(), "refact-bundled");
         assert!(yaml.contains("npx -y @modelcontextprotocol/server-github"), "yaml must contain command");
         assert!(yaml.contains("GITHUB_PERSONAL_ACCESS_TOKEN"), "yaml must contain env key");
         assert!(yaml.contains("ghp_test"), "yaml must contain env value");
         assert!(yaml.contains("init_timeout"), "yaml must contain init_timeout");
         assert!(yaml.contains("request_timeout"), "yaml must contain request_timeout");
         assert!(yaml.contains("ask_user_default"), "yaml must contain confirmation");
+        assert!(yaml.contains("# mcp_marketplace_source: refact-bundled"), "yaml must have source comment");
+        assert!(yaml.contains("# mcp_marketplace_server: github"), "yaml must have server comment");
     }
 
     #[test]
@@ -944,9 +999,8 @@ mod tests {
             },
             confirmation_default: vec!["*".to_string()],
         };
-        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new());
+        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new(), "refact-bundled");
         assert!(yaml.contains("env:"), "yaml must contain env section");
-        assert!(yaml.contains("{}"), "yaml must show empty env as {{}}");
     }
 
     #[test]
@@ -968,7 +1022,7 @@ mod tests {
             },
             confirmation_default: vec![],
         };
-        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new());
+        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new(), "refact-bundled");
         assert!(yaml.contains("url:"), "yaml must contain url");
         assert!(yaml.contains("auth_type:"), "yaml must contain auth_type");
         assert!(yaml.contains("headers:"), "yaml must contain headers");
@@ -997,7 +1051,7 @@ mod tests {
         };
         let mut headers = HashMap::new();
         headers.insert("Authorization".to_string(), "Bearer token123".to_string());
-        let yaml = build_integration_yaml(&server, &HashMap::new(), &headers);
+        let yaml = build_integration_yaml(&server, &HashMap::new(), &headers, "refact-bundled");
         assert!(yaml.contains("url:"), "yaml must contain url");
         assert!(yaml.contains("Authorization"), "yaml must contain Authorization header");
         assert!(yaml.contains("token123"), "yaml must contain token value");
@@ -1127,7 +1181,7 @@ mod tests {
             },
             confirmation_default: vec![],
         };
-        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new());
+        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new(), "refact-bundled");
         assert!(yaml.contains("command:"));
     }
 
@@ -1158,7 +1212,7 @@ mod tests {
         let mut env = server.install_recipe.env.clone();
         env.insert("BRAVE_API_KEY".to_string(), "test-key-123".to_string());
 
-        let yaml = build_integration_yaml(&server, &env, &HashMap::new());
+        let yaml = build_integration_yaml(&server, &env, &HashMap::new(), "refact-bundled");
         let config_path = integrations_dir.join("mcp_stdio_brave_search.yaml");
         tokio::fs::write(&config_path, &yaml).await.unwrap();
 
@@ -1383,5 +1437,143 @@ mod tests {
         let json = source_to_api_json(&smithery, true);
         assert!(json.get("has_api_key").is_some(), "field must be named has_api_key");
         assert!(json.get("api_key_configured").is_none(), "old field name api_key_configured must not exist");
+    }
+
+    #[test]
+    fn test_build_integration_yaml_no_injection_malicious_env_key() {
+        let server = MarketplaceServer {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            description: "desc".to_string(),
+            publisher: "pub".to_string(),
+            tags: vec![],
+            icon_url: None,
+            homepage: None,
+            transport: "stdio".to_string(),
+            install_recipe: InstallRecipe {
+                command: Some("cmd".to_string()),
+                url: None,
+                env: HashMap::new(),
+                headers: HashMap::new(),
+            },
+            confirmation_default: vec![],
+        };
+        let mut env = HashMap::new();
+        env.insert("MY_KEY".to_string(), "safe_value".to_string());
+        let yaml = build_integration_yaml(&server, &env, &HashMap::new(), "refact-bundled");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n")).unwrap();
+        let env_section = &parsed["env"];
+        assert!(env_section["MY_KEY"].as_str().is_some(), "MY_KEY must be present");
+        assert_eq!(env_section["MY_KEY"].as_str().unwrap(), "safe_value");
+        assert!(env_section.get("evil_field").is_none(), "injection must not create new YAML fields");
+    }
+
+    #[test]
+    fn test_build_integration_yaml_smithery_id_with_slash() {
+        let server = MarketplaceServer {
+            id: "acme/my-server".to_string(),
+            name: "My Server".to_string(),
+            description: "desc".to_string(),
+            publisher: "acme".to_string(),
+            tags: vec!["smithery".to_string()],
+            icon_url: None,
+            homepage: None,
+            transport: "stdio".to_string(),
+            install_recipe: InstallRecipe {
+                command: Some("npx @acme/my-server".to_string()),
+                url: None,
+                env: HashMap::new(),
+                headers: HashMap::new(),
+            },
+            confirmation_default: vec!["*".to_string()],
+        };
+        let yaml = build_integration_yaml(&server, &HashMap::new(), &HashMap::new(), "smithery");
+        assert!(yaml.contains("# mcp_marketplace_source: smithery"), "must have source comment");
+        assert!(yaml.contains("# mcp_marketplace_server: acme/my-server"), "must preserve slash in server ID");
+        assert!(yaml.contains("npx @acme/my-server"), "command must be present");
+    }
+
+    #[test]
+    fn test_parse_marketplace_comments_reads_headers() {
+        let content = "# mcp_marketplace_source: smithery\n# mcp_marketplace_server: acme/my-server\ncommand: cmd\n";
+        let (src, srv) = parse_marketplace_comments(content);
+        assert_eq!(src.as_deref(), Some("smithery"));
+        assert_eq!(srv.as_deref(), Some("acme/my-server"));
+    }
+
+    #[test]
+    fn test_parse_marketplace_comments_missing_headers() {
+        let content = "command: npx something\nenv:\n  KEY: val\n";
+        let (src, srv) = parse_marketplace_comments(content);
+        assert!(src.is_none(), "no source comment");
+        assert!(srv.is_none(), "no server comment");
+    }
+
+    #[test]
+    fn test_parse_marketplace_comments_partial_headers() {
+        let content = "# mcp_marketplace_source: refact-bundled\ncommand: cmd\n";
+        let (src, srv) = parse_marketplace_comments(content);
+        assert_eq!(src.as_deref(), Some("refact-bundled"));
+        assert!(srv.is_none(), "no server comment");
+    }
+
+    #[tokio::test]
+    async fn test_installed_detection_reads_comment_headers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let integrations_dir = tmp.path().join("integrations.d");
+        tokio::fs::create_dir_all(&integrations_dir).await.unwrap();
+
+        let smithery_yaml = "# mcp_marketplace_source: smithery\n# mcp_marketplace_server: acme/my-server\ncommand: npx @acme/my-server\n";
+        tokio::fs::write(integrations_dir.join("mcp_stdio_acme_my_server.yaml"), smithery_yaml).await.unwrap();
+
+        let bundled_yaml = "command: npx github\n";
+        tokio::fs::write(integrations_dir.join("mcp_stdio_github.yaml"), bundled_yaml).await.unwrap();
+
+        let mut smithery_found = None;
+        let bundled = bundled_index();
+        let index_ids: std::collections::HashSet<String> = bundled.servers.iter().map(|s| s.id.clone()).collect();
+
+        let mut rd = tokio::fs::read_dir(&integrations_dir).await.unwrap();
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let fname = entry.file_name();
+            let fname_str = fname.to_string_lossy().to_string();
+            if !fname_str.ends_with(".yaml") { continue; }
+            let is_mcp = ["mcp_stdio_", "mcp_sse_", "mcp_http_"].iter().any(|p| fname_str.starts_with(p));
+            if !is_mcp { continue; }
+            let content = tokio::fs::read_to_string(entry.path()).await.unwrap();
+            let (found_source, found_server) = parse_marketplace_comments(&content);
+            if let (Some(src_id), Some(srv_id)) = (found_source, found_server) {
+                if srv_id == "acme/my-server" {
+                    smithery_found = Some(src_id);
+                }
+                continue;
+            }
+            for prefix in &["mcp_stdio_", "mcp_sse_", "mcp_http_"] {
+                if let Some(rest) = fname_str.strip_prefix(prefix) {
+                    let id_candidate = rest.trim_end_matches(".yaml").replace('_', "-");
+                    if index_ids.contains(&id_candidate) {
+                        assert_eq!(id_candidate, "github");
+                    }
+                    break;
+                }
+            }
+        }
+        assert_eq!(smithery_found.as_deref(), Some("smithery"), "must detect smithery server via comment headers");
+    }
+
+    #[test]
+    fn test_validate_env_key_valid() {
+        assert!(validate_env_key("MY_KEY"), "simple env key");
+        assert!(validate_env_key("GITHUB_TOKEN"), "env key with underscore");
+        assert!(validate_env_key("_PRIVATE"), "env key starting with underscore");
+        assert!(validate_env_key("API-KEY"), "env key with dash");
+    }
+
+    #[test]
+    fn test_validate_env_key_invalid() {
+        assert!(!validate_env_key(""), "empty key invalid");
+        assert!(!validate_env_key("evil:\nfield"), "newline in key invalid");
+        assert!(!validate_env_key("evil: true\n  injection"), "injection invalid");
+        assert!(!validate_env_key("1STARTS_WITH_NUM"), "key starting with number invalid");
     }
 }
