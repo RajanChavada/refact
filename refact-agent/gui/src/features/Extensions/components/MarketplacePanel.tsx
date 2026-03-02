@@ -158,7 +158,7 @@ export const MarketplacePanel: React.FC = () => {
     );
   }
 
-  if (!loadingMarketplaces && !marketplacesError && marketplaces.length === 0) {
+  if (!loadingMarketplaces && marketplaces.length === 0) {
     return (
       <div className={styles.panel}>
         <Flex direction="column" align="center" gap="3" className={styles.onboarding}>

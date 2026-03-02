@@ -198,10 +198,8 @@ export const MCPOAuth: React.FC<MCPOAuthProps> = ({ configPath }) => {
     );
   }
 
-  const isExpired =
-    !status.authenticated &&
-    status.expires_at > 0 &&
-    status.expires_at < Date.now();
+  const expiresAt = status.expires_at;
+  const isExpired = expiresAt !== 0 && expiresAt < Date.now();
 
   return (
     <div className={styles.container}>

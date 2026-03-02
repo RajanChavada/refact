@@ -202,7 +202,7 @@ describe("SourceSelector", () => {
   });
 
   it("calls onSelectSource when a source tab is clicked", () => {
-    const selected: Array<string | null> = [];
+    const selected: (string | null)[] = [];
     render(
       <SourceSelector
         sources={MOCK_SOURCES}
@@ -349,7 +349,7 @@ describe("MCPMarketplace", () => {
           servers: [MOCK_SERVER],
           sources: [
             ...MOCK_SOURCES.filter((s) => s.id !== "smithery"),
-            { ...MOCK_SOURCES[1]!, enabled: true },
+            { ...MOCK_SOURCES[1], enabled: true },
           ],
         });
       }),

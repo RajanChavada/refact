@@ -54,7 +54,10 @@ export const MCPMarketplace: React.FC<MCPMarketplaceProps> = ({
   const { data: installedData } = useGetInstalledServersQuery(undefined);
   const [installServer] = useInstallServerMutation();
 
-  const sources: MarketplaceSource[] = marketplaceData?.sources ?? [];
+  const sources = useMemo<MarketplaceSource[]>(
+    () => marketplaceData?.sources ?? [],
+    [marketplaceData?.sources],
+  );
 
   const sourceMap = useMemo(() => {
     const map = new Map<string, string>();

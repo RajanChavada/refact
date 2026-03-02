@@ -117,7 +117,7 @@ describe("MCPSetupWizard", () => {
   });
 
   it("Continue with setup creates correct config path for stdio command", async () => {
-    const calls: Array<{ configPath: string; integrName: string; initialInput?: { input: string; transport: string } }> = [];
+    const calls: { configPath: string; integrName: string; initialInput?: { input: string; transport: string } }[] = [];
 
     server.use(
       http.post("http://127.0.0.1:8001/v1/mcp/auto-name", () => {
@@ -156,7 +156,7 @@ describe("MCPSetupWizard", () => {
   });
 
   it("Continue with setup passes initialInput with http transport for URL inputs", async () => {
-    const calls: Array<{ configPath: string; integrName: string; initialInput?: { input: string; transport: string } }> = [];
+    const calls: { configPath: string; integrName: string; initialInput?: { input: string; transport: string } }[] = [];
 
     server.use(
       http.post("http://127.0.0.1:8001/v1/mcp/auto-name", () => {

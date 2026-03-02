@@ -46,8 +46,8 @@ export const QueuedMessage: React.FC<QueuedMessageProps> = ({
     setIsWorking(true);
     try {
       await cancelQueued(queuedItem.client_request_id);
-    } catch (e) {
-      console.error("Failed to cancel queued message", e);
+    } catch {
+      // ignore cancel errors
     } finally {
       setIsWorking(false);
     }
@@ -60,8 +60,8 @@ export const QueuedMessage: React.FC<QueuedMessageProps> = ({
       const ok = await cancelQueued(queuedItem.client_request_id);
       if (!ok) return;
       postInputValue(content, queuedItem.priority);
-    } catch (e) {
-      console.error("Failed to edit queued message", e);
+    } catch {
+      // ignore edit errors
     } finally {
       setIsWorking(false);
     }
@@ -98,12 +98,11 @@ export const QueuedMessage: React.FC<QueuedMessageProps> = ({
           apiKey ?? undefined,
           !queuedItem.priority,
         );
-      } catch (sendError) {
-        console.error("Failed to re-enqueue with new priority", sendError);
+      } catch {
         postInputValue(content, queuedItem.priority);
       }
-    } catch (e) {
-      console.error("Failed to toggle queued message priority", e);
+    } catch {
+      // ignore toggle errors
     } finally {
       setIsWorking(false);
     }
