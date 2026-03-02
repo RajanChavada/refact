@@ -193,4 +193,13 @@ mod tests {
         let registry = build_registry_from_names(&names);
         assert!(registry.needs_aliasing());
     }
+
+    #[test]
+    fn test_alias_registry_maps_tool_choice() {
+        let names = vec!["very_long_mcp_tool_name_that_exceeds_the_64_char_limit_for_provider_apis".to_string()];
+        let registry = build_registry_from_names(&names);
+        let alias = registry.get_alias(&names[0]);
+        assert!(alias.is_some());
+        assert!(alias.unwrap().len() <= 64);
+    }
 }

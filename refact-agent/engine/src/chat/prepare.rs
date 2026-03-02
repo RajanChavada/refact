@@ -276,7 +276,10 @@ pub async fn prepare_chat_passthrough(
         ToolChoice::Auto => CanonicalToolChoice::Auto,
         ToolChoice::None => CanonicalToolChoice::None,
         ToolChoice::Required => CanonicalToolChoice::Required,
-        ToolChoice::Function { name } => CanonicalToolChoice::Function { name: name.clone() },
+        ToolChoice::Function { name } => {
+            let aliased_name = alias_registry.get_alias(name).unwrap_or(name).to_string();
+            CanonicalToolChoice::Function { name: aliased_name }
+        },
     });
 
     let mut llm_request = LlmRequest::new(model_id.to_string(), linearized_msgs.clone())

@@ -16,7 +16,13 @@ pub fn command_should_be_confirmed_by_user(
     commands_need_confirmation_rules: &Vec<String>,
 ) -> (bool, String) {
     if let Some(rule) = commands_need_confirmation_rules.iter().find(|glob| {
-        let pattern = Pattern::new(glob).unwrap();
+        let pattern = match Pattern::new(glob) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Invalid glob pattern '{}': {}", glob, e);
+                return false;
+            }
+        };
         pattern.matches(&command)
     }) {
         return (true, rule.clone());
@@ -29,7 +35,13 @@ pub fn command_should_be_denied(
     commands_deny_rules: &Vec<String>,
 ) -> (bool, String) {
     if let Some(rule) = commands_deny_rules.iter().find(|glob| {
-        let pattern = Pattern::new(glob).unwrap();
+        let pattern = match Pattern::new(glob) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Invalid glob pattern '{}': {}", glob, e);
+                return false;
+            }
+        };
         pattern.matches(&command)
     }) {
         return (true, rule.clone());
@@ -437,6 +449,21 @@ mod tests {
         );
         assert_eq!(result["function"]["parameters"]["properties"]["items"]["type"], json!("array"));
         assert_eq!(result["function"]["parameters"]["properties"]["mode"]["enum"], json!(["fast", "slow"]));
+    }
+
+    #[test]
+    fn test_invalid_glob_does_not_panic() {
+        let (confirmed, _) = command_should_be_confirmed_by_user(
+            &"some command".to_string(),
+            &vec!["[invalid".to_string()],
+        );
+        assert!(!confirmed);
+
+        let (denied, _) = command_should_be_denied(
+            &"some command".to_string(),
+            &vec!["[invalid".to_string()],
+        );
+        assert!(!denied);
     }
 
     #[test]
