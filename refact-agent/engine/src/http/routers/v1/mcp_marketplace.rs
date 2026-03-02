@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
+use crate::integrations::mcp::mcp_naming;
 use crate::http::routers::v1::mcp_marketplace_sources::{
     load_sources, get_all_sources, smithery_api_key, source_to_api_json,
     BUNDLED_SOURCE_ID, SourceType, MarketplaceSource,
@@ -491,10 +492,6 @@ async fn load_source_servers(
     }
 }
 
-fn validate_config_name(name: &str) -> bool {
-    !name.is_empty() && !name.contains("..") && !name.contains('\\')
-}
-
 fn validate_env_key(key: &str) -> bool {
     !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
 }
@@ -704,7 +701,7 @@ pub async fn handle_v1_mcp_marketplace_install(
     let req = serde_json::from_slice::<InstallRequest>(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("JSON: {}", e)))?;
 
-    if !validate_config_name(&req.server_id) {
+    if mcp_naming::validate_server_id(&req.server_id).is_err() {
         return Err(ScratchError::new(StatusCode::BAD_REQUEST, "invalid server_id".to_string()));
     }
 
@@ -1132,13 +1129,13 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_config_name() {
-        assert!(validate_config_name("github"), "valid name");
-        assert!(validate_config_name("my-server"), "valid name with dash");
-        assert!(!validate_config_name(""), "empty name invalid");
-        assert!(!validate_config_name("../evil"), "path traversal invalid");
-        assert!(validate_config_name("a/b"), "slash valid for smithery IDs");
-        assert!(!validate_config_name("a\\b"), "backslash invalid");
+    fn test_validate_server_id() {
+        assert!(mcp_naming::validate_server_id("github").is_ok(), "valid name");
+        assert!(mcp_naming::validate_server_id("my-server").is_ok(), "valid name with dash");
+        assert!(mcp_naming::validate_server_id("").is_err(), "empty name invalid");
+        assert!(mcp_naming::validate_server_id("../evil").is_err(), "path traversal invalid");
+        assert!(mcp_naming::validate_server_id("a/b").is_ok(), "slash valid for smithery IDs");
+        assert!(mcp_naming::validate_server_id("a\\b").is_err(), "backslash invalid");
     }
 
     #[test]

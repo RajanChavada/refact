@@ -8,6 +8,7 @@ use tokio::sync::RwLock as ARwLock;
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
+use crate::integrations::mcp::mcp_naming;
 use crate::integrations::mcp::session_mcp::{SessionMCP, MCPConnectionStatus};
 use crate::integrations::mcp::mcp_metrics::MCPServerMetrics;
 use crate::integrations::running_integrations::load_integrations;
@@ -65,15 +66,6 @@ struct McpServerInfoResponse {
     capabilities: serde_json::Value,
     logs_tail: Vec<String>,
     metrics: MCPServerMetrics,
-}
-
-fn shorten_mcp_yaml_name(yaml_stem: &str) -> String {
-    for prefix in &["mcp_stdio_", "mcp_sse_", "mcp_http_"] {
-        if let Some(stripped) = yaml_stem.strip_prefix(prefix) {
-            return format!("mcp_{}", stripped);
-        }
-    }
-    yaml_stem.to_string()
 }
 
 pub async fn handle_v1_mcp_server_info(
@@ -147,7 +139,7 @@ pub async fn handle_v1_mcp_server_info(
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("unknown");
-    let shortened_yaml_name = shorten_mcp_yaml_name(yaml_name);
+    let shortened_yaml_name = mcp_naming::shorten_config_name(yaml_name);
 
     let tools: Vec<McpToolInfo> = tools_raw.iter().map(|tool| {
         let input_schema = {
@@ -392,16 +384,16 @@ mod tests {
 
     #[test]
     fn test_shorten_mcp_yaml_name() {
-        assert_eq!(shorten_mcp_yaml_name("mcp_stdio_github"), "mcp_github");
-        assert_eq!(shorten_mcp_yaml_name("mcp_sse_myserver"), "mcp_myserver");
-        assert_eq!(shorten_mcp_yaml_name("mcp_http_myserver"), "mcp_myserver");
-        assert_eq!(shorten_mcp_yaml_name("other_integration"), "other_integration");
+        assert_eq!(mcp_naming::shorten_config_name("mcp_stdio_github"), "mcp_github");
+        assert_eq!(mcp_naming::shorten_config_name("mcp_sse_myserver"), "mcp_myserver");
+        assert_eq!(mcp_naming::shorten_config_name("mcp_http_myserver"), "mcp_myserver");
+        assert_eq!(mcp_naming::shorten_config_name("other_integration"), "other_integration");
     }
 
     #[test]
     fn test_mcp_http_prefix_stripped_in_internal_name() {
         let yaml_name = "mcp_http_myserver";
-        let shortened = shorten_mcp_yaml_name(yaml_name);
+        let shortened = mcp_naming::shorten_config_name(yaml_name);
         assert_eq!(shortened, "mcp_myserver");
     }
 

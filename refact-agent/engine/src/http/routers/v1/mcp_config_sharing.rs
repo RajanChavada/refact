@@ -9,6 +9,7 @@ use tokio::sync::RwLock as ARwLock;
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
+use crate::integrations::mcp::mcp_naming;
 
 const EXPORT_VERSION: u32 = 1;
 
@@ -46,25 +47,6 @@ pub struct ExportBundle {
     pub servers: Vec<ExportedServer>,
 }
 
-fn validate_config_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("config name must not be empty".to_string());
-    }
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(format!("config name '{}' contains invalid characters", name));
-    }
-    if name.starts_with('/') || name.contains(':') {
-        return Err(format!("config name '{}' looks like an absolute path", name));
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err(format!("config name '{}' contains unsafe characters (only a-z, A-Z, 0-9, _, - allowed)", name));
-    }
-    if name.len() > 128 {
-        return Err(format!("config name '{}' exceeds 128 characters", name));
-    }
-    Ok(())
-}
-
 fn parse_yaml_config(content: &str) -> HashMap<String, Value> {
     match serde_yaml::from_str::<HashMap<String, Value>>(content) {
         Ok(map) => map,
@@ -72,24 +54,6 @@ fn parse_yaml_config(content: &str) -> HashMap<String, Value> {
             tracing::warn!("Failed to parse YAML config: {}", e);
             HashMap::new()
         }
-    }
-}
-
-fn determine_transport(config_name: &str) -> String {
-    if config_name.starts_with("mcp_sse_") {
-        "sse".to_string()
-    } else if config_name.starts_with("mcp_http_") {
-        "http".to_string()
-    } else {
-        "stdio".to_string()
-    }
-}
-
-fn config_prefix_for_transport(transport: &str) -> &'static str {
-    match transport {
-        "sse" => "mcp_sse_",
-        "http" | "streamable-http" => "mcp_http_",
-        _ => "mcp_stdio_",
     }
 }
 
@@ -161,7 +125,7 @@ pub async fn handle_v1_mcp_export(
         }
 
         let mut parsed = parse_yaml_config(content);
-        let transport = determine_transport(config_name);
+        let transport = mcp_naming::detect_transport(config_name);
 
         if !req.include_secrets {
             if let Some(Value::Object(env_map)) = parsed.get_mut("env") {
@@ -261,11 +225,11 @@ pub async fn handle_v1_mcp_import(
     let mut errors: Vec<Value> = Vec::new();
 
     for server in &req.bundle.servers {
-        if let Err(e) = validate_config_name(&server.config_name) {
+        if let Err(e) = mcp_naming::validate_config_filename(&server.config_name) {
             errors.push(json!({ "config_name": server.config_name, "error": e }));
             continue;
         }
-        let prefix = config_prefix_for_transport(&server.transport);
+        let prefix = mcp_naming::config_prefix_for_transport(&server.transport);
         let config_name = if server.config_name.starts_with("mcp_stdio_")
             || server.config_name.starts_with("mcp_sse_")
             || server.config_name.starts_with("mcp_http_")
@@ -274,7 +238,7 @@ pub async fn handle_v1_mcp_import(
         } else {
             format!("{}{}", prefix, server.config_name)
         };
-        if let Err(e) = validate_config_name(&config_name) {
+        if let Err(e) = mcp_naming::validate_config_filename(&config_name) {
             errors.push(json!({ "config_name": server.config_name, "error": e }));
             continue;
         }
@@ -352,11 +316,11 @@ pub async fn handle_v1_mcp_project_config(
 
         let mut missing_servers = Vec::new();
         for server in &bundle.servers {
-            if validate_config_name(&server.config_name).is_err() {
+            if mcp_naming::validate_config_filename(&server.config_name).is_err() {
                 missing_servers.push(server.config_name.clone());
                 continue;
             }
-            let prefix = config_prefix_for_transport(&server.transport);
+            let prefix = mcp_naming::config_prefix_for_transport(&server.transport);
             let config_name = if server.config_name.starts_with("mcp_stdio_")
                 || server.config_name.starts_with("mcp_sse_")
                 || server.config_name.starts_with("mcp_http_")
@@ -365,7 +329,7 @@ pub async fn handle_v1_mcp_project_config(
             } else {
                 format!("{}{}", prefix, server.config_name)
             };
-            if validate_config_name(&config_name).is_err() {
+            if mcp_naming::validate_config_filename(&config_name).is_err() {
                 missing_servers.push(server.config_name.clone());
                 continue;
             }
@@ -392,13 +356,13 @@ mod tests {
 
     #[test]
     fn test_validate_config_name_rejects_traversal() {
-        assert!(validate_config_name("../evil").is_err());
-        assert!(validate_config_name("foo/../../bar").is_err());
-        assert!(validate_config_name("mcp_stdio_ok").is_ok());
-        assert!(validate_config_name("").is_err());
-        assert!(validate_config_name("/etc/passwd").is_err());
-        assert!(validate_config_name("a\\b").is_err());
-        assert!(validate_config_name("mcp_http_my-server").is_ok());
+        assert!(mcp_naming::validate_config_filename("../evil").is_err());
+        assert!(mcp_naming::validate_config_filename("foo/../../bar").is_err());
+        assert!(mcp_naming::validate_config_filename("mcp_stdio_ok").is_ok());
+        assert!(mcp_naming::validate_config_filename("").is_err());
+        assert!(mcp_naming::validate_config_filename("/etc/passwd").is_err());
+        assert!(mcp_naming::validate_config_filename("a\\b").is_err());
+        assert!(mcp_naming::validate_config_filename("mcp_http_my-server").is_ok());
     }
 
     #[test]
@@ -432,27 +396,27 @@ mod tests {
 
     #[test]
     fn test_determine_transport_stdio() {
-        assert_eq!(determine_transport("mcp_stdio_github"), "stdio");
-        assert_eq!(determine_transport("mcp_stdio_brave_search"), "stdio");
+        assert_eq!(mcp_naming::detect_transport("mcp_stdio_github"), "stdio");
+        assert_eq!(mcp_naming::detect_transport("mcp_stdio_brave_search"), "stdio");
     }
 
     #[test]
     fn test_determine_transport_sse() {
-        assert_eq!(determine_transport("mcp_sse_myserver"), "sse");
+        assert_eq!(mcp_naming::detect_transport("mcp_sse_myserver"), "sse");
     }
 
     #[test]
     fn test_determine_transport_http() {
-        assert_eq!(determine_transport("mcp_http_myserver"), "http");
+        assert_eq!(mcp_naming::detect_transport("mcp_http_myserver"), "http");
     }
 
     #[test]
     fn test_config_prefix_for_transport() {
-        assert_eq!(config_prefix_for_transport("stdio"), "mcp_stdio_");
-        assert_eq!(config_prefix_for_transport("sse"), "mcp_sse_");
-        assert_eq!(config_prefix_for_transport("http"), "mcp_http_");
-        assert_eq!(config_prefix_for_transport("streamable-http"), "mcp_http_");
-        assert_eq!(config_prefix_for_transport("unknown"), "mcp_stdio_");
+        assert_eq!(mcp_naming::config_prefix_for_transport("stdio"), "mcp_stdio_");
+        assert_eq!(mcp_naming::config_prefix_for_transport("sse"), "mcp_sse_");
+        assert_eq!(mcp_naming::config_prefix_for_transport("http"), "mcp_http_");
+        assert_eq!(mcp_naming::config_prefix_for_transport("streamable-http"), "mcp_http_");
+        assert_eq!(mcp_naming::config_prefix_for_transport("unknown"), "mcp_stdio_");
     }
 
     #[test]
