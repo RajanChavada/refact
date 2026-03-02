@@ -74,24 +74,6 @@ pub async fn expand_skill_includes(body: &str, skill_dir: &Path) -> String {
     new_lines.join("\n")
 }
 
-#[cfg(test)]
-pub async fn build_skills_index_from_dirs(ext_dirs: &ExtDirs) -> String {
-    let indices = load_skill_indices(ext_dirs).await;
-    let displayable: Vec<_> = indices.iter().filter(|s| s.user_invocable && !s.disable_model_invocation).collect();
-    if displayable.is_empty() {
-        return String::new();
-    }
-    let mut lines = vec![
-        "## Available Skills".to_string(),
-        "The following skills are available. They may be auto-loaded when relevant, or invoked explicitly with /skill-name.".to_string(),
-        String::new(),
-    ];
-    for skill in &displayable {
-        lines.push(format!("- **{}**: {}", skill.name, skill.description));
-    }
-    lines.join("\n")
-}
-
 fn build_skills_prompt_markdown(
     displayable: &[&crate::ext::skills::SkillIndex],
     has_activate_skill: bool,
@@ -147,19 +129,6 @@ pub async fn build_skills_prompt_text(
     build_skills_prompt_markdown(&displayable, has_activate_skill, has_deactivate_skill)
 }
 
-#[cfg(test)]
-async fn auto_select_skills_from_dirs(ext_dirs: &ExtDirs, user_message: &str) -> Vec<SkillFull> {
-    let indices = load_skill_indices(ext_dirs).await;
-    let selected_names = select_relevant_skills(&indices, user_message, 2, 0.5);
-    let mut result = Vec::new();
-    for name in &selected_names {
-        if let Some(full) = load_skill_full(ext_dirs, name).await {
-            result.push(full);
-        }
-    }
-    result
-}
-
 async fn build_context_messages_from_dirs(
     ext_dirs: &ExtDirs,
     user_message: &str,
@@ -179,7 +148,11 @@ async fn build_context_messages_from_dirs(
         vec![]
     } else if let Some(name) = explicit_skill {
         match load_skill_full(ext_dirs, name).await {
-            Some(full) => vec![full],
+            Some(full) if !full.index.disable_model_invocation => vec![full],
+            Some(full) => {
+                tracing::warn!("Skipping explicit skill '{}': disable_model_invocation is true", full.index.name);
+                vec![]
+            }
             None => vec![],
         }
     } else {
@@ -276,14 +249,16 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let index = build_skills_index_from_dirs(&ext_dirs).await;
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let displayable: Vec<_> = indices.iter().filter(|s| s.user_invocable && !s.disable_model_invocation).collect();
+        let text = build_skills_prompt_markdown(&displayable, true, false);
 
-        assert!(index.contains("## Available Skills"));
-        assert!(index.contains("**code-explainer**"));
-        assert!(index.contains("Explains code using analogies"));
-        assert!(index.contains("**security-review**"));
-        assert!(index.contains("Reviews code for security vulnerabilities"));
-        assert!(index.contains("/skill-name"));
+        assert!(text.contains("### Available Skills"));
+        assert!(text.contains("**code-explainer**"));
+        assert!(text.contains("Explains code using analogies"));
+        assert!(text.contains("**security-review**"));
+        assert!(text.contains("Reviews code for security vulnerabilities"));
+        assert!(text.contains("/skill-name"));
     }
 
     #[tokio::test]
@@ -305,22 +280,18 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let index = build_skills_index_from_dirs(&ext_dirs).await;
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let displayable: Vec<_> = indices.iter().filter(|s| s.user_invocable && !s.disable_model_invocation).collect();
+        let text = build_skills_prompt_markdown(&displayable, true, false);
 
-        assert!(index.contains("visible-skill"));
-        assert!(!index.contains("hidden-skill"), "Non-user-invocable skills must not appear in index");
+        assert!(text.contains("visible-skill"));
+        assert!(!text.contains("hidden-skill"), "Non-user-invocable skills must not appear in index");
     }
 
     #[tokio::test]
     async fn test_skills_index_empty_when_no_skills() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ext_dirs = ExtDirs {
-            global_dirs: vec![PathBuf::from("/nonexistent")],
-            installed_dirs: vec![],
-            project_dirs: vec![],
-        };
-        let index = build_skills_index_from_dirs(&ext_dirs).await;
-        assert!(index.is_empty());
+        let text = build_skills_prompt_markdown(&[], true, false);
+        assert!(text.is_empty());
     }
 
     #[tokio::test]
@@ -335,8 +306,10 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let index = build_skills_index_from_dirs(&ext_dirs).await;
-        assert!(index.is_empty());
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let displayable: Vec<_> = indices.iter().filter(|s| s.user_invocable && !s.disable_model_invocation).collect();
+        let text = build_skills_prompt_markdown(&displayable, true, false);
+        assert!(text.is_empty());
     }
 
     #[tokio::test]
@@ -358,9 +331,9 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let selected = auto_select_skills_from_dirs(&ext_dirs, "security vulnerabilities auditing code review").await;
-        let names: Vec<_> = selected.iter().map(|s| s.index.name.as_str()).collect();
-        assert!(names.contains(&"security-review"), "Security skill should be auto-triggered");
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let selected = crate::ext::skills_matcher::select_relevant_skills(&indices, "security vulnerabilities auditing code review", 2, 0.5);
+        assert!(selected.contains(&"security-review".to_string()), "Security skill should be auto-triggered");
     }
 
     #[tokio::test]
@@ -375,7 +348,8 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let selected = auto_select_skills_from_dirs(&ext_dirs, "breakfast cereal recipes").await;
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let selected = crate::ext::skills_matcher::select_relevant_skills(&indices, "breakfast cereal recipes", 2, 0.5);
         assert!(selected.is_empty(), "Unrelated message should not trigger skills");
     }
 
@@ -391,7 +365,8 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let selected = auto_select_skills_from_dirs(&ext_dirs, "security review vulnerabilities").await;
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let selected = crate::ext::skills_matcher::select_relevant_skills(&indices, "security review vulnerabilities", 2, 0.1);
         assert!(selected.is_empty(), "disable-model-invocation must prevent auto-trigger");
     }
 
@@ -660,9 +635,11 @@ mod tests {
         .await;
 
         let ext_dirs = make_ext_dirs(tmp.path());
-        let index = build_skills_index_from_dirs(&ext_dirs).await;
-        assert!(index.contains("user-skill"), "user-invocable skill must appear in index");
-        assert!(!index.contains("model-disabled"), "disable-model-invocation skill must not appear in index");
+        let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
+        let displayable: Vec<_> = indices.iter().filter(|s| s.user_invocable && !s.disable_model_invocation).collect();
+        let text = build_skills_prompt_markdown(&displayable, true, false);
+        assert!(text.contains("user-skill"), "user-invocable skill must appear in index");
+        assert!(!text.contains("model-disabled"), "disable-model-invocation skill must not appear in index");
     }
 
     #[tokio::test]
@@ -712,31 +689,15 @@ mod tests {
             .collect();
         assert!(!displayable.is_empty(), "Expected at least one displayable skill");
 
-        let mut lines = vec![
-            "## Skills".to_string(),
-            String::new(),
-            "You have access to skills — specialized instruction sets that guide you through specific workflows.".to_string(),
-            String::new(),
-            "### Available Skills".to_string(),
-            "The following skills are available. You can activate any skill using the `activate_skill(name)` tool when it's relevant to the user's request. Users can also invoke skills directly with `/skill-name`.".to_string(),
-            String::new(),
-        ];
-        for skill in &displayable {
-            lines.push(format!("- **{}**: {}", skill.name, skill.description));
-        }
-        lines.extend([
-            String::new(),
-            "### How Skills Work".to_string(),
-        ]);
-        let prompt_text = lines.join("\n");
+        let text = build_skills_prompt_markdown(&displayable, true, true);
 
-        assert!(prompt_text.contains("## Skills"));
-        assert!(prompt_text.contains("### Available Skills"));
-        assert!(prompt_text.contains("### How Skills Work"));
-        assert!(prompt_text.contains("**my-skill**"));
-        assert!(prompt_text.contains("Does something useful"));
-        assert!(!prompt_text.contains("hidden-skill"), "disable-model-invocation skills must not appear");
-        assert!(prompt_text.contains("activate_skill"));
+        assert!(text.contains("## Skills"));
+        assert!(text.contains("### Available Skills"));
+        assert!(text.contains("### How Skills Work"));
+        assert!(text.contains("**my-skill**"));
+        assert!(text.contains("Does something useful"));
+        assert!(!text.contains("hidden-skill"), "disable-model-invocation skills must not appear");
+        assert!(text.contains("activate_skill"));
     }
 
     #[tokio::test]
@@ -835,5 +796,37 @@ mod tests {
         let text_without = build_skills_prompt_markdown(&displayable, true, false);
         assert!(text_with.contains("deactivate_skill()"), "deactivate_skill must appear when has_deactivate_skill=true");
         assert!(!text_without.contains("deactivate_skill()"), "deactivate_skill must not appear when has_deactivate_skill=false");
+    }
+
+    #[tokio::test]
+    async fn test_non_user_invocable_never_auto_triggered() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "hidden-skill",
+            "name: hidden-skill\ndescription: reviews security vulnerabilities code\nuser-invocable: false\ndisable-model-invocation: false",
+            "Body",
+        )
+        .await;
+
+        let ext_dirs = make_ext_dirs(tmp.path());
+        let (msgs, _) = build_context_messages_from_dirs(&ext_dirs, "security vulnerabilities review", None, SkillsAutoTrigger::InjectFull).await;
+        assert!(msgs.is_empty(), "user_invocable=false skill must not be auto-injected");
+    }
+
+    #[tokio::test]
+    async fn test_explicit_injection_rejects_disable_model_invocation() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_skill(
+            tmp.path(),
+            "locked-skill",
+            "name: locked-skill\ndescription: Locked skill\ndisable-model-invocation: true",
+            "Sensitive instructions",
+        )
+        .await;
+
+        let ext_dirs = make_ext_dirs(tmp.path());
+        let (msgs, _) = build_context_messages_from_dirs(&ext_dirs, "anything", Some("locked-skill"), SkillsAutoTrigger::InjectFull).await;
+        assert!(msgs.is_empty(), "disable_model_invocation=true must block explicit injection");
     }
 }

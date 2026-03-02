@@ -29,7 +29,7 @@ pub fn select_relevant_skills(
 ) -> Vec<String> {
     let mut scored: Vec<(f32, String)> = skills
         .iter()
-        .filter(|s| !s.disable_model_invocation)
+        .filter(|s| s.user_invocable && !s.disable_model_invocation)
         .filter_map(|s| {
             let score = skill_relevance_score(&s.description, user_message);
             if score >= threshold {
@@ -170,5 +170,20 @@ mod tests {
         let low_threshold = select_relevant_skills(&skills, "security review", 2, 0.01);
         let high_threshold = select_relevant_skills(&skills, "security review", 2, 0.5);
         assert!(low_threshold.len() >= high_threshold.len(), "Lower threshold should match more");
+    }
+
+    #[test]
+    fn test_skills_select_user_invocable_false_prevents_auto_trigger() {
+        let skills = vec![
+            SkillIndex {
+                name: "security-review".to_string(),
+                description: "reviews security vulnerabilities code".to_string(),
+                user_invocable: false,
+                disable_model_invocation: false,
+                source: CommandSource::GlobalRefact,
+            },
+        ];
+        let selected = select_relevant_skills(&skills, "security review vulnerabilities", 2, 0.1);
+        assert!(selected.is_empty(), "user_invocable=false should prevent auto-trigger");
     }
 }
