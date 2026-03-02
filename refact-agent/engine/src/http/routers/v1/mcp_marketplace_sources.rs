@@ -107,6 +107,10 @@ async fn save_sources(config_dir: &PathBuf, config: &SourcesConfig) -> Result<()
     let tmp_path = path.with_extension("yaml.tmp");
     tokio::fs::write(&tmp_path, yaml.as_bytes()).await
         .map_err(|e| format!("write sources tmp: {}", e))?;
+    #[cfg(target_os = "windows")]
+    {
+        let _ = tokio::fs::remove_file(&path).await;
+    }
     tokio::fs::rename(&tmp_path, &path).await
         .map_err(|e| format!("rename sources: {}", e))?;
     Ok(())
@@ -359,5 +363,42 @@ mod tests {
         assert!(map.contains_key(BUNDLED_SOURCE_ID));
         assert!(map.contains_key("extra"));
         assert_eq!(map.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_save_sources_overwrites_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().to_path_buf();
+
+        let cfg1 = SourcesConfig {
+            sources: vec![MarketplaceSource {
+                id: "first".to_string(),
+                label: "First".to_string(),
+                source_type: SourceType::RefactIndex,
+                enabled: true,
+                url: Some("https://example.com/first.json".to_string()),
+                api_key: None,
+            }],
+        };
+        save_sources(&config_dir, &cfg1).await.unwrap();
+
+        let loaded1 = load_sources(&config_dir).await;
+        assert!(loaded1.sources.iter().any(|s| s.id == "first"), "first save should persist");
+
+        let cfg2 = SourcesConfig {
+            sources: vec![MarketplaceSource {
+                id: "second".to_string(),
+                label: "Second".to_string(),
+                source_type: SourceType::RefactIndex,
+                enabled: true,
+                url: Some("https://example.com/second.json".to_string()),
+                api_key: None,
+            }],
+        };
+        save_sources(&config_dir, &cfg2).await.unwrap();
+
+        let loaded2 = load_sources(&config_dir).await;
+        assert!(loaded2.sources.iter().any(|s| s.id == "second"), "second save should persist");
+        assert!(!loaded2.sources.iter().any(|s| s.id == "first"), "first entry must be overwritten");
     }
 }

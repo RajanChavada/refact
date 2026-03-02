@@ -801,9 +801,29 @@ fn extract_name_from_url(url: &str) -> String {
     let without_scheme = url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
-    let host = without_scheme.split('/').next().unwrap_or(without_scheme);
-    let host = host.split(':').next().unwrap_or(host);
+    let host_and_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let host = if host_and_port.starts_with('[') {
+        host_and_port.trim_start_matches('[').split(']').next().unwrap_or("mcp")
+    } else {
+        host_and_port.split(':').next().unwrap_or(host_and_port)
+    };
+
+    if host == "localhost" {
+        return "localhost".to_string();
+    }
+
+    let is_ip = host.split('.').all(|seg| seg.chars().all(|c| c.is_ascii_digit()));
+    if is_ip || host.starts_with('[') {
+        return host.replace('[', "").replace(']', "").replace(':', "_");
+    }
+
     let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() >= 3 {
+        let last = parts[parts.len() - 1];
+        if last.len() == 2 {
+            return parts[parts.len() - 3].to_string();
+        }
+    }
     if parts.len() >= 2 {
         parts[parts.len() - 2].to_string()
     } else {
@@ -1258,6 +1278,36 @@ mod tests {
     fn test_auto_name_from_url() {
         let name = extract_name_from_input("https://api.example.com/mcp").unwrap();
         assert_eq!(name, "example");
+    }
+
+    #[test]
+    fn test_extract_name_from_url_country_code_tld() {
+        assert_eq!(extract_name_from_url("https://api.example.co.uk/mcp"), "example");
+    }
+
+    #[test]
+    fn test_extract_name_from_url_localhost() {
+        assert_eq!(extract_name_from_url("http://localhost:3000"), "localhost");
+        assert_eq!(extract_name_from_url("http://localhost:3000/path"), "localhost");
+    }
+
+    #[test]
+    fn test_extract_name_from_url_ip_address() {
+        let name = extract_name_from_url("http://192.168.1.1:8080/mcp");
+        assert_eq!(name, "192.168.1.1");
+    }
+
+    #[test]
+    fn test_extract_name_from_url_ipv6() {
+        let name = extract_name_from_url("http://[::1]:3000/mcp");
+        assert!(!name.contains('['), "brackets must be stripped from ipv6 result");
+        assert!(!name.contains(']'), "brackets must be stripped from ipv6 result");
+    }
+
+    #[test]
+    fn test_extract_name_from_url_simple_domain() {
+        assert_eq!(extract_name_from_url("https://api.example.com/path"), "example");
+        assert_eq!(extract_name_from_url("https://mcp.myservice.io/v1"), "myservice");
     }
 
     #[test]
