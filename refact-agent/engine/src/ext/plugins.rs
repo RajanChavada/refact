@@ -317,10 +317,13 @@ pub async fn ensure_default_marketplaces(gcx: Arc<ARwLock<GlobalContext>>) -> Re
     };
     ensure_default_marketplaces_with_source(&config_dir, &cache_dir, &[
         "anthropics/claude-code",
+        "anthropics/claude-plugins-official",
+        "anthropics/skills",
+        "anthropics/knowledge-work-plugins",
+        "microsoft/skills",
         "ComposioHQ/awesome-claude-skills",
         "wshobson/agents",
         "VoltAgent/awesome-claude-code-subagents",
-        "anthropics/knowledge-work-plugins",
     ]).await
 }
 
