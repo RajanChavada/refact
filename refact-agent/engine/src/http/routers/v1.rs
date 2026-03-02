@@ -140,6 +140,7 @@ mod stats;
 mod plugins;
 mod skills_status;
 mod mcp_server_info;
+mod skillsmp;
 
 use crate::http::routers::v1::ext_management::{
     handle_v1_ext_registry,
@@ -167,6 +168,7 @@ use crate::http::routers::v1::plugins::{
 };
 use crate::http::routers::v1::skills_status::handle_v1_skills_status;
 use crate::http::routers::v1::mcp_server_info::{handle_v1_mcp_server_info, handle_v1_mcp_server_reconnect};
+use crate::http::routers::v1::skillsmp::{handle_skillsmp_search, handle_skillsmp_ai_search};
 use crate::http::routers::v1::mcp_marketplace::{
     handle_v1_mcp_marketplace_get, handle_v1_mcp_marketplace_install, handle_v1_mcp_marketplace_installed,
     handle_v1_mcp_auto_name,
@@ -455,7 +457,9 @@ pub fn make_v1_router() -> Router {
         .route("/mcp/marketplace/sources/:id/configure", post(handle_v1_mcp_marketplace_sources_configure))
         .route("/mcp/export", post(handle_v1_mcp_export))
         .route("/mcp/import", post(handle_v1_mcp_import))
-        .route("/mcp/project-config", get(handle_v1_mcp_project_config));
+        .route("/mcp/project-config", get(handle_v1_mcp_project_config))
+        .route("/skillsmp/search", get(handle_skillsmp_search))
+        .route("/skillsmp/ai-search", get(handle_skillsmp_ai_search));
 
     builder.layer(axum::middleware::from_fn(telemetry_middleware))
 }
