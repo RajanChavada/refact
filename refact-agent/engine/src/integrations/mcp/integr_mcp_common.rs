@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Instant;
@@ -13,7 +14,8 @@ use serde_json::Value;
 use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::IntegrationCommon;
 use crate::integrations::utils::{serialize_num_to_str, deserialize_str_to_num};
-use super::session_mcp::{SessionMCP, McpClientHandler, McpRunningService, MCPConnectionStatus, add_log_entry, cancel_mcp_client};
+use super::session_mcp::{SessionMCP, McpClientHandler, McpRunningService, MCPConnectionStatus, add_log_entry, cancel_mcp_client, redact_sensitive_value};
+use super::mcp_auth::{MCPAuthSettings, MCPTokenManager};
 use super::mcp_metrics::new_shared_metrics;
 use super::tool_mcp::ToolMCP;
 
@@ -152,6 +154,146 @@ pub async fn mcp_integr_tools(
 
     result
 }
+
+pub(crate) async fn build_reqwest_client_for_mcp(
+    url: &str,
+    headers: &HashMap<String, String>,
+    auth: &MCPAuthSettings,
+    transport_name: &str,
+    logs: Arc<AMutex<Vec<String>>>,
+    debug_name: &str,
+) -> Option<reqwest::Client> {
+    if url.is_empty() {
+        let msg = format!("URL is empty for {} transport", transport_name);
+        tracing::error!("{msg} for {debug_name}");
+        add_log_entry(logs, msg).await;
+        return None;
+    }
+
+    let mut effective_headers = headers.clone();
+    let token_manager = MCPTokenManager::new(auth.clone());
+    if let Err(e) = token_manager.apply_auth(&mut effective_headers).await {
+        if auth.auth_type != "none" {
+            let msg = format!("Auth failed: {}", e);
+            tracing::error!("{msg} for {debug_name}");
+            add_log_entry(logs, msg).await;
+            return None;
+        }
+    }
+
+    let mut header_map = reqwest::header::HeaderMap::new();
+    for (k, v) in &effective_headers {
+        match (
+            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+            reqwest::header::HeaderValue::from_str(v),
+        ) {
+            (Ok(name), Ok(value)) => {
+                header_map.insert(name, value);
+            }
+            _ => {
+                let msg = format!("Invalid header: {}: {}", k, redact_sensitive_value(k, v));
+                tracing::warn!("{msg} for {debug_name}");
+                add_log_entry(logs.clone(), msg).await;
+            }
+        }
+    }
+
+    match reqwest::Client::builder().default_headers(header_map).build() {
+        Ok(client) => Some(client),
+        Err(e) => {
+            let msg = format!("Failed to build reqwest client: {}", e);
+            tracing::error!("{msg} for {debug_name}");
+            add_log_entry(logs, msg).await;
+            None
+        }
+    }
+}
+
+pub(crate) async fn serve_client_with_timeout<Fut, E>(
+    serve_fut: Fut,
+    init_timeout: u64,
+    transport_name: &str,
+    logs: Arc<AMutex<Vec<String>>>,
+    debug_name: &str,
+) -> Option<McpRunningService>
+where
+    Fut: std::future::Future<Output = Result<McpRunningService, E>> + Send,
+    E: std::fmt::Display,
+{
+    match timeout(Duration::from_secs(init_timeout), serve_fut).await {
+        Ok(Ok(client)) => Some(client),
+        Ok(Err(e)) => {
+            let msg = format!("Failed to init {} server: {}", transport_name, e);
+            tracing::error!("{msg} for {debug_name}");
+            add_log_entry(logs, msg).await;
+            None
+        }
+        Err(_) => {
+            let msg = format!("Request timed out after {} seconds", init_timeout);
+            tracing::error!("{msg} for {debug_name}");
+            add_log_entry(logs, msg).await;
+            None
+        }
+    }
+}
+
+macro_rules! impl_mcp_integration_trait {
+    ($struct_name:ty, $schema_yaml:expr) => {
+        #[async_trait::async_trait]
+        impl crate::integrations::integr_abstract::IntegrationTrait for $struct_name {
+            async fn integr_settings_apply(
+                &mut self,
+                gcx: std::sync::Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+                config_path: String,
+                value: &serde_json::Value,
+            ) -> Result<(), serde_json::Error> {
+                self.gcx_option = Some(std::sync::Arc::downgrade(&gcx));
+                self.cfg = serde_json::from_value(value.clone())?;
+                self.common = serde_json::from_value(value.clone())?;
+                self.config_path = config_path.clone();
+                crate::integrations::mcp::integr_mcp_common::mcp_session_setup(
+                    gcx,
+                    config_path,
+                    serde_json::to_value(&self.cfg).unwrap_or_default(),
+                    self.clone(),
+                    self.cfg.common.init_timeout,
+                    self.cfg.common.request_timeout,
+                    self.cfg.common.health_check_interval,
+                    self.cfg.common.reconnect_max_attempts,
+                    self.cfg.common.reconnect_enabled,
+                )
+                .await;
+                Ok(())
+            }
+
+            fn integr_settings_as_json(&self) -> serde_json::Value {
+                serde_json::to_value(&self.cfg).unwrap()
+            }
+
+            fn integr_common(&self) -> crate::integrations::integr_abstract::IntegrationCommon {
+                self.common.clone()
+            }
+
+            async fn integr_tools(
+                &self,
+                _integr_name: &str,
+            ) -> Vec<Box<dyn crate::tools::tools_description::Tool + Send>> {
+                crate::integrations::mcp::integr_mcp_common::mcp_integr_tools(
+                    self.gcx_option.clone(),
+                    &self.config_path,
+                    &self.common,
+                    self.cfg.common.request_timeout,
+                )
+                .await
+            }
+
+            fn integr_schema(&self) -> &str {
+                include_str!($schema_yaml)
+            }
+        }
+    };
+}
+pub(crate) use impl_mcp_integration_trait;
 
 pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync + 'static>(
     gcx: Arc<ARwLock<GlobalContext>>,

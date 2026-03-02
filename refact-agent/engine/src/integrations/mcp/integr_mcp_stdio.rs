@@ -17,7 +17,7 @@ use super::session_mcp::{McpClientHandler, McpRunningService, SessionMCP, add_lo
 use super::mcp_metrics::SharedMetrics;
 use super::mcp_path_resolution;
 use super::integr_mcp_common::{
-    CommonMCPSettings, MCPTransportInitializer, mcp_integr_tools, mcp_session_setup,
+    CommonMCPSettings, MCPTransportInitializer, impl_mcp_integration_trait,
 };
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Default, Debug)]
@@ -188,60 +188,7 @@ fn read_last_child_pid() -> Option<u32> {
         .last()
 }
 
-#[async_trait]
-impl IntegrationTrait for IntegrationMCPStdio {
-    async fn integr_settings_apply(
-        &mut self,
-        gcx: Arc<ARwLock<GlobalContext>>,
-        config_path: String,
-        value: &serde_json::Value,
-    ) -> Result<(), serde_json::Error> {
-        self.gcx_option = Some(Arc::downgrade(&gcx));
-        self.cfg = serde_json::from_value(value.clone())?;
-        self.common = serde_json::from_value(value.clone())?;
-        self.config_path = config_path.clone();
-
-        mcp_session_setup(
-            gcx,
-            config_path,
-            serde_json::to_value(&self.cfg).unwrap_or_default(),
-            self.clone(),
-            self.cfg.common.init_timeout,
-            self.cfg.common.request_timeout,
-            self.cfg.common.health_check_interval,
-            self.cfg.common.reconnect_max_attempts,
-            self.cfg.common.reconnect_enabled,
-        )
-        .await;
-
-        Ok(())
-    }
-
-    fn integr_settings_as_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.cfg).unwrap()
-    }
-
-    fn integr_common(&self) -> IntegrationCommon {
-        self.common.clone()
-    }
-
-    async fn integr_tools(
-        &self,
-        _integr_name: &str,
-    ) -> Vec<Box<dyn crate::tools::tools_description::Tool + Send>> {
-        mcp_integr_tools(
-            self.gcx_option.clone(),
-            &self.config_path,
-            &self.common,
-            self.cfg.common.request_timeout,
-        )
-        .await
-    }
-
-    fn integr_schema(&self) -> &str {
-        include_str!("mcp_stdio_schema.yaml")
-    }
-}
+impl_mcp_integration_trait!(IntegrationMCPStdio, "mcp_stdio_schema.yaml");
 
 #[derive(Default, Clone)]
 pub struct IntegrationMCPUnified {
