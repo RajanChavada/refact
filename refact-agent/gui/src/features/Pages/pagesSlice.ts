@@ -74,6 +74,10 @@ export interface ExtensionsPage {
   itemId?: string;
 }
 
+export interface MCPMarketplacePage {
+  name: "mcp marketplace";
+}
+
 export interface IntegrationsSetupPage {
   name: "integrations page";
   projectPath?: string;
@@ -100,7 +104,8 @@ export type Page =
   | CustomizationPage
   | DefaultModelsPage
   | StatsDashboardPage
-  | ExtensionsPage;
+  | ExtensionsPage
+  | MCPMarketplacePage;
 
 export function isIntegrationSetupPage(
   page: Page,

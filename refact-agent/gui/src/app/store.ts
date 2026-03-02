@@ -68,6 +68,7 @@ import { connectionSlice } from "../features/Connection";
 import { browserSlice } from "../features/Browser";
 import { skillsStatusApi } from "../services/refact/skillsStatus";
 import { mcpServerInfoApi } from "../services/refact/mcpServerInfo";
+import { mcpMarketplaceApi } from "../services/refact/mcpMarketplace";
 
 const tipOfTheDayPersistConfig = {
   key: "totd",
@@ -120,6 +121,7 @@ const rootReducer = combineSlices(
     [projectInformationApi.reducerPath]: projectInformationApi.reducer,
     [extensionsApi.reducerPath]: extensionsApi.reducer,
     [pluginsApi.reducerPath]: pluginsApi.reducer,
+    [mcpMarketplaceApi.reducerPath]: mcpMarketplaceApi.reducer,
   },
   historySlice,
   errorSlice,
@@ -215,6 +217,7 @@ export function setUpStore(preloadedState?: Partial<RootState>) {
           extensionsApi.middleware,
           pluginsApi.middleware,
           mcpServerInfoApi.middleware,
+          mcpMarketplaceApi.middleware,
         )
         .prepend(historyMiddleware.middleware)
         .prepend(listenerMiddleware.middleware);

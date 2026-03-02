@@ -43,6 +43,7 @@ import { KnowledgeWorkspace } from "./Knowledge";
 import { Customization } from "./Customization";
 import { Extensions } from "./Extensions";
 import { DefaultModels } from "./DefaultModels";
+import { MCPMarketplace } from "./MCPMarketplace";
 import { StatsDashboard } from "./StatsDashboard";
 import { ChatLoading } from "../components/ChatContent/ChatLoading";
 
@@ -318,6 +319,13 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
             host={config.host}
             initialTab={renderedPage.tab}
             initialItemId={renderedPage.itemId}
+          />
+        )}
+        {!pageSwitching && renderedPage.name === "mcp marketplace" && (
+          <MCPMarketplace
+            backFromMarketplace={goBack}
+            tabbed={config.tabbed}
+            host={config.host}
           />
         )}
       </PageWrapper>
