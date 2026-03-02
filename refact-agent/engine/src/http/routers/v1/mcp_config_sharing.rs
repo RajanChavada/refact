@@ -45,6 +45,25 @@ pub struct ExportBundle {
     pub servers: Vec<ExportedServer>,
 }
 
+fn validate_config_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("config name must not be empty".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(format!("config name '{}' contains invalid characters", name));
+    }
+    if name.starts_with('/') || name.contains(':') {
+        return Err(format!("config name '{}' looks like an absolute path", name));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!("config name '{}' contains unsafe characters (only a-z, A-Z, 0-9, _, - allowed)", name));
+    }
+    if name.len() > 128 {
+        return Err(format!("config name '{}' exceeds 128 characters", name));
+    }
+    Ok(())
+}
+
 fn parse_yaml_config(content: &str) -> HashMap<String, Value> {
     serde_yaml::from_str::<HashMap<String, Value>>(content).unwrap_or_default()
 }
@@ -229,6 +248,10 @@ pub async fn handle_v1_mcp_import(
     let mut errors: Vec<Value> = Vec::new();
 
     for server in &req.bundle.servers {
+        if let Err(e) = validate_config_name(&server.config_name) {
+            errors.push(json!({ "config_name": server.config_name, "error": e }));
+            continue;
+        }
         let prefix = config_prefix_for_transport(&server.transport);
         let config_name = if server.config_name.starts_with("mcp_stdio_")
             || server.config_name.starts_with("mcp_sse_")
@@ -238,6 +261,10 @@ pub async fn handle_v1_mcp_import(
         } else {
             format!("{}{}", prefix, server.config_name)
         };
+        if let Err(e) = validate_config_name(&config_name) {
+            errors.push(json!({ "config_name": server.config_name, "error": e }));
+            continue;
+        }
 
         let filename = format!("{}.yaml", config_name);
         let config_path = integrations_dir.join(&filename);
@@ -317,6 +344,10 @@ pub async fn handle_v1_mcp_project_config(
 
         let mut missing_servers = Vec::new();
         for server in &bundle.servers {
+            if validate_config_name(&server.config_name).is_err() {
+                missing_servers.push(server.config_name.clone());
+                continue;
+            }
             let prefix = config_prefix_for_transport(&server.transport);
             let config_name = if server.config_name.starts_with("mcp_stdio_")
                 || server.config_name.starts_with("mcp_sse_")
@@ -326,6 +357,10 @@ pub async fn handle_v1_mcp_project_config(
             } else {
                 format!("{}{}", prefix, server.config_name)
             };
+            if validate_config_name(&config_name).is_err() {
+                missing_servers.push(server.config_name.clone());
+                continue;
+            }
             let config_path = integrations_dir.join(format!("{}.yaml", config_name));
             if !config_path.exists() {
                 missing_servers.push(server.config_name.clone());
@@ -346,6 +381,17 @@ pub async fn handle_v1_mcp_project_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_config_name_rejects_traversal() {
+        assert!(validate_config_name("../evil").is_err());
+        assert!(validate_config_name("foo/../../bar").is_err());
+        assert!(validate_config_name("mcp_stdio_ok").is_ok());
+        assert!(validate_config_name("").is_err());
+        assert!(validate_config_name("/etc/passwd").is_err());
+        assert!(validate_config_name("a\\b").is_err());
+        assert!(validate_config_name("mcp_http_my-server").is_ok());
+    }
 
     #[test]
     fn test_is_secret_field_detects_secrets() {

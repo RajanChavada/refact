@@ -170,10 +170,6 @@ pub async fn handle_v1_mcp_marketplace_install(
     let filename = format!("{}_{}.yaml", prefix, safe_id);
     let config_path = integrations_dir.join(&filename);
 
-    if config_path.exists() {
-        return Err(ScratchError::new(StatusCode::CONFLICT, format!("config file '{}' already exists", filename)));
-    }
-
     let mut env = server.install_recipe.env.clone();
     if let Some(overrides) = &req.config_overrides {
         for (k, v) in &overrides.env {
@@ -182,11 +178,24 @@ pub async fn handle_v1_mcp_marketplace_install(
     }
 
     let yaml_content = build_integration_yaml(server, &env);
-    let tmp_path = config_path.with_extension("yaml.tmp");
-    tokio::fs::write(&tmp_path, &yaml_content).await
-        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("write error: {}", e)))?;
-    tokio::fs::rename(&tmp_path, &config_path).await
-        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("rename error: {}", e)))?;
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&config_path)
+        .await
+    {
+        Ok(mut file) => {
+            use tokio::io::AsyncWriteExt;
+            file.write_all(yaml_content.as_bytes()).await
+                .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("write error: {}", e)))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(ScratchError::new(StatusCode::CONFLICT, format!("config file '{}' already exists", filename)));
+        }
+        Err(e) => {
+            return Err(ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("create error: {}", e)));
+        }
+    }
 
     Ok(Json(json!({
         "success": true,
@@ -450,6 +459,23 @@ mod tests {
         assert!(content.contains("init_timeout"));
         assert!(content.contains("request_timeout"));
         assert!(content.contains("ask_user_default"));
+    }
+
+    #[tokio::test]
+    async fn test_install_no_clobber_race_safe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let integrations_dir = tmp.path().join("integrations.d");
+        tokio::fs::create_dir_all(&integrations_dir).await.unwrap();
+        let path = integrations_dir.join("mcp_stdio_github.yaml");
+        tokio::fs::write(&path, "existing: true\n").await.unwrap();
+
+        let result = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
     }
 
     #[tokio::test]
