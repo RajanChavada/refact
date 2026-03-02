@@ -14,6 +14,7 @@ use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::IntegrationCommon;
 use crate::integrations::utils::{serialize_num_to_str, deserialize_str_to_num};
 use super::session_mcp::{SessionMCP, McpClientHandler, McpRunningService, MCPConnectionStatus, add_log_entry, cancel_mcp_client};
+use super::mcp_metrics::new_shared_metrics;
 use super::tool_mcp::ToolMCP;
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
@@ -192,6 +193,7 @@ pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync 
                 stderr_cursor: Arc::new(AMutex::new(0)),
                 connection_status: MCPConnectionStatus::Connecting,
                 last_successful_connection: None,
+                metrics: new_shared_metrics(),
             })));
             tracing::info!("MCP START SESSION {:?}", session_key);
             gcx_write
@@ -392,6 +394,9 @@ pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync 
                 session_downcasted.server_info = Some(server_info);
                 session_downcasted.connection_status = MCPConnectionStatus::Connected;
                 session_downcasted.last_successful_connection = Some(Instant::now());
+                if let Ok(mut m) = session_downcasted.metrics.try_lock() {
+                    m.record_connected();
+                }
                 arc
             };
 
@@ -573,12 +578,18 @@ async fn reconnect_with_backoff<T: MCPTransportInitializer>(
             let mut client_locked = client_arc.lock().await;
             *client_locked = Some(new_client);
         }
-        {
+        let metrics_arc = {
             let mut session_locked = session_arc.lock().await;
             let mcp_session = session_locked.as_any_mut().downcast_mut::<SessionMCP>().unwrap();
             mcp_session.mcp_tools = tools;
             mcp_session.connection_status = MCPConnectionStatus::Connected;
             mcp_session.last_successful_connection = Some(Instant::now());
+            mcp_session.metrics.clone()
+        };
+        {
+            let mut m = metrics_arc.lock().await;
+            m.record_reconnect();
+            m.record_connected();
         }
 
         let msg = format!("Reconnected to {} successfully with {} tools", debug_name, tools_len);
@@ -613,6 +624,7 @@ mod tests {
             stderr_cursor: Arc::new(AMutex::new(0)),
             connection_status: status,
             last_successful_connection: None,
+            metrics: super::super::mcp_metrics::new_shared_metrics(),
         }) as Box<dyn IntegrationSession>))
     }
 

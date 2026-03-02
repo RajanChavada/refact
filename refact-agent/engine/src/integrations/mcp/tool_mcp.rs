@@ -70,13 +70,13 @@ impl Tool for ToolMCP {
             json_args
         );
 
-        let session_logs = {
+        let (session_logs, session_metrics) = {
             let mut session_locked = session.lock().await;
             let session_downcasted = session_locked
                 .as_any_mut()
                 .downcast_mut::<super::session_mcp::SessionMCP>()
                 .unwrap();
-            session_downcasted.logs.clone()
+            (session_downcasted.logs.clone(), session_downcasted.metrics.clone())
         };
 
         add_log_entry(
@@ -88,6 +88,7 @@ impl Tool for ToolMCP {
         )
         .await;
 
+        let call_start = std::time::Instant::now();
         let result_probably = {
             let mcp_client_locked = self.mcp_client.lock().await;
             if let Some(client) = &*mcp_client_locked {
@@ -118,6 +119,10 @@ impl Tool for ToolMCP {
                 if result.is_error.unwrap_or(false) {
                     let error_msg = format!("Tool execution error: {:?}", result.content);
                     add_log_entry(session_logs.clone(), error_msg.clone()).await;
+                    {
+                        let mut m = session_metrics.lock().await;
+                        m.record_call_failure(&self.mcp_tool.name, call_start);
+                    }
                     return Err(error_msg);
                 }
 
@@ -194,6 +199,10 @@ impl Tool for ToolMCP {
                     ChatContent::Multimodal(elements)
                 };
 
+                {
+                    let mut m = session_metrics.lock().await;
+                    m.record_call_success(&self.mcp_tool.name, call_start);
+                }
                 ContextEnum::ChatMessage(ChatMessage {
                     role: "tool".to_string(),
                     content,
@@ -206,6 +215,10 @@ impl Tool for ToolMCP {
                 let error_msg = format!("Failed to call tool: {:?}", e);
                 tracing::error!("{}", error_msg);
                 add_log_entry(session_logs.clone(), error_msg).await;
+                {
+                    let mut m = session_metrics.lock().await;
+                    m.record_call_failure(&self.mcp_tool.name, call_start);
+                }
                 return Err(e.to_string());
             }
         };

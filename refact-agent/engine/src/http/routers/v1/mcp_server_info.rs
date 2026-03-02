@@ -9,6 +9,7 @@ use tokio::sync::RwLock as ARwLock;
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 use crate::integrations::mcp::session_mcp::{SessionMCP, MCPConnectionStatus};
+use crate::integrations::mcp::mcp_metrics::MCPServerMetrics;
 
 #[derive(Deserialize)]
 pub struct McpServerInfoQuery {
@@ -62,6 +63,7 @@ struct McpServerInfoResponse {
     prompts: Vec<McpPromptInfo>,
     capabilities: serde_json::Value,
     logs_tail: Vec<String>,
+    metrics: MCPServerMetrics,
 }
 
 pub async fn handle_v1_mcp_server_info(
@@ -175,6 +177,12 @@ pub async fn handle_v1_mcp_server_info(
         .map(|l| l.clone())
         .unwrap_or_default();
 
+    let metrics = if let Ok(mut m) = mcp_session.metrics.try_lock() {
+        m.snapshot()
+    } else {
+        crate::integrations::mcp::mcp_metrics::MCPServerMetrics::default()
+    };
+
     let response = McpServerInfoResponse {
         config_path: session_key,
         status,
@@ -186,6 +194,7 @@ pub async fn handle_v1_mcp_server_info(
         prompts,
         capabilities: capabilities_json,
         logs_tail,
+        metrics,
     };
 
     let payload = serde_json::to_string_pretty(&response).map_err(|e| {
@@ -307,12 +316,14 @@ mod tests {
             prompts: vec![],
             capabilities: serde_json::json!({"tools": true, "resources": false, "prompts": false, "sampling": false}),
             logs_tail: vec!["[12:00:00] Connected".to_string()],
+            metrics: MCPServerMetrics::default(),
         };
 
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("TestServer"));
         assert!(json.contains("mcp_test_my_tool"));
         assert!(json.contains("Connected"));
+        assert!(json.contains("\"metrics\""));
     }
 
     #[test]
@@ -328,11 +339,29 @@ mod tests {
             prompts: vec![],
             capabilities: serde_json::json!({"tools": false, "resources": false, "prompts": false, "sampling": false}),
             logs_tail: vec![],
+            metrics: MCPServerMetrics::default(),
         };
 
         let json = serde_json::to_value(&response).unwrap();
         assert!(json.get("server_name").is_none(), "server_name should be omitted when None");
         assert!(json.get("server_version").is_none(), "server_version should be omitted when None");
         assert!(json.get("protocol_version").is_none(), "protocol_version should be omitted when None");
+        assert!(json.get("metrics").is_some(), "metrics should always be present");
+    }
+
+    #[test]
+    fn test_mcp_metrics_in_response() {
+        use crate::integrations::mcp::mcp_metrics::MCPMetricsCollector;
+        use std::time::Instant;
+        let mut collector = MCPMetricsCollector::new();
+        let start = Instant::now();
+        collector.record_call_success("test_tool", start);
+        collector.record_call_failure("bad_tool", start);
+        let metrics = collector.snapshot();
+        assert_eq!(metrics.total_tool_calls, 2);
+        assert_eq!(metrics.successful_calls, 1);
+        assert_eq!(metrics.failed_calls, 1);
+        assert!(metrics.tool_stats.contains_key("test_tool"));
+        assert!(metrics.tool_stats.contains_key("bad_tool"));
     }
 }

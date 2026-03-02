@@ -16,6 +16,9 @@ use crate::global_context::GlobalContext;
 use crate::integrations::sessions::IntegrationSession;
 use crate::integrations::process_io_utils::read_file_with_cursor;
 use super::mcp_sampling::mcp_sampling_create_message;
+use super::mcp_metrics::SharedMetrics;
+#[cfg(test)]
+use super::mcp_metrics::new_shared_metrics;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -298,6 +301,7 @@ pub struct SessionMCP {
     pub stderr_cursor: Arc<AMutex<u64>>,
     pub connection_status: MCPConnectionStatus,
     pub last_successful_connection: Option<Instant>,
+    pub metrics: SharedMetrics,
 }
 
 impl IntegrationSession for SessionMCP {
@@ -435,6 +439,7 @@ mod tests {
             stderr_cursor: Arc::new(AMutex::new(0)),
             connection_status: MCPConnectionStatus::Disconnected,
             last_successful_connection: None,
+            metrics: new_shared_metrics(),
         }
     }
 
