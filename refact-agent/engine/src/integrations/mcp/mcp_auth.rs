@@ -402,9 +402,27 @@ struct PendingOAuthSession {
 }
 
 static PENDING_SESSIONS: OnceLock<AMutex<HashMap<String, PendingOAuthSession>>> = OnceLock::new();
+static STATE_INDEX: OnceLock<AMutex<HashMap<String, String>>> = OnceLock::new();
 
 fn pending_sessions() -> &'static AMutex<HashMap<String, PendingOAuthSession>> {
     PENDING_SESSIONS.get_or_init(|| AMutex::new(HashMap::new()))
+}
+
+fn state_index() -> &'static AMutex<HashMap<String, String>> {
+    STATE_INDEX.get_or_init(|| AMutex::new(HashMap::new()))
+}
+
+fn extract_state_from_url(auth_url: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(auth_url)
+        .map_err(|_| "Failed to parse authorization URL".to_string())?;
+    let state = parsed.query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string())
+        .ok_or_else(|| "Authorization URL missing state parameter".to_string())?;
+    if state.is_empty() {
+        return Err("Authorization URL has empty state parameter".to_string());
+    }
+    Ok(state)
 }
 
 pub struct MCPOAuthSessionManager;
@@ -416,6 +434,8 @@ impl MCPOAuthSessionManager {
         scopes: &[&str],
         redirect_uri: &str,
     ) -> Result<(String, String), String> {
+        Self::cleanup_expired_sessions().await;
+
         let mut state = OAuthState::new(mcp_url, None)
             .await
             .map_err(|e| format!("create OAuth state: {}", e))?;
@@ -425,23 +445,24 @@ impl MCPOAuthSessionManager {
         let auth_url = state.get_authorization_url()
             .await
             .map_err(|e| format!("get authorization URL: {}", e))?;
-        let state_param = url::Url::parse(&auth_url)
-            .ok()
-            .and_then(|u| u.query_pairs().find(|(k, _)| k == "state").map(|(_, v)| v.to_string()))
-            .unwrap_or_default();
+        let state_param = extract_state_from_url(&auth_url)?;
         let session_id = Uuid::new_v4().to_string();
         pending_sessions().lock().await.insert(session_id.clone(), PendingOAuthSession {
             oauth_state: Arc::new(AMutex::new(state)),
             config_path: config_path.to_string(),
             created_at: SystemTime::now(),
-            state_param,
+            state_param: state_param.clone(),
         });
+        state_index().lock().await.insert(state_param, session_id.clone());
         Ok((session_id, auth_url))
     }
 
     pub async fn exchange_code(session_id: &str, code: &str) -> Result<(MCPOAuthTokens, String), String> {
         let session = pending_sessions().lock().await.remove(session_id)
             .ok_or_else(|| format!("No pending OAuth session: {}", session_id))?;
+        if !session.state_param.is_empty() {
+            state_index().lock().await.remove(&session.state_param);
+        }
         let config_path = session.config_path.clone();
         let mut oauth_state = session.oauth_state.lock().await;
         oauth_state.handle_callback(code)
@@ -482,25 +503,27 @@ impl MCPOAuthSessionManager {
     }
 
     pub async fn find_session_id_by_state(state: &str) -> Option<String> {
-        let sessions = pending_sessions().lock().await;
-        for (id, session) in sessions.iter() {
-            if session.state_param == state {
-                return Some(id.clone());
-            }
-        }
-        None
+        state_index().lock().await.get(state).cloned()
     }
 
     pub async fn cleanup_expired_sessions() {
         let expiry = Duration::from_secs(600);
-        let mut sessions = pending_sessions().lock().await;
-        sessions.retain(|id, session| {
-            let keep = session.created_at.elapsed().map(|age| age < expiry).unwrap_or(false);
-            if !keep {
-                warn!("MCPOAuthSessionManager: removing expired session {}", id);
-            }
-            keep
-        });
+        let mut removed_states: Vec<String> = Vec::new();
+        {
+            let mut sessions = pending_sessions().lock().await;
+            sessions.retain(|id, session| {
+                let keep = session.created_at.elapsed().map(|age| age < expiry).unwrap_or(false);
+                if !keep {
+                    warn!("MCPOAuthSessionManager: removing expired session {}", id);
+                    removed_states.push(session.state_param.clone());
+                }
+                keep
+            });
+        }
+        let mut si = state_index().lock().await;
+        for state in removed_states {
+            si.remove(&state);
+        }
     }
 }
 
@@ -928,5 +951,60 @@ mod tests {
         let result = manager.apply_auth(&mut headers).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unknown auth_type"));
+    }
+
+    #[test]
+    fn test_start_flow_empty_state_rejected() {
+        let url_no_state = "https://example.com/authorize?code_challenge=abc&code_challenge_method=S256";
+        assert!(extract_state_from_url(url_no_state).is_err(), "URL missing state should fail");
+
+        let url_empty_state = "https://example.com/authorize?state=&code_challenge=abc";
+        assert!(extract_state_from_url(url_empty_state).is_err(), "URL with empty state should fail");
+
+        let url_with_state = "https://example.com/authorize?state=abc123&code_challenge=xyz";
+        let result = extract_state_from_url(url_with_state);
+        assert!(result.is_ok(), "URL with valid state should succeed");
+        assert_eq!(result.unwrap(), "abc123");
+    }
+
+    #[tokio::test]
+    async fn test_find_session_by_state_o1() {
+        let session_id = format!("test-state-o1-{}", Uuid::new_v4());
+        let state_val = format!("test-state-{}", Uuid::new_v4());
+
+        state_index().lock().await.insert(state_val.clone(), session_id.clone());
+
+        let found = MCPOAuthSessionManager::find_session_id_by_state(&state_val).await;
+        assert_eq!(found, Some(session_id.clone()));
+
+        let not_found = MCPOAuthSessionManager::find_session_id_by_state("nonexistent_state_xyz_unique").await;
+        assert!(not_found.is_none());
+
+        state_index().lock().await.remove(&state_val);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_called_on_start() {
+        let stale_id = format!("test-cleanup-stale-{}", Uuid::new_v4());
+        let stale_state = format!("test-state-stale-{}", Uuid::new_v4());
+
+        let old_state = OAuthState::new("http://localhost", None).await.unwrap();
+        {
+            let mut sessions = pending_sessions().lock().await;
+            sessions.insert(stale_id.clone(), PendingOAuthSession {
+                oauth_state: Arc::new(AMutex::new(old_state)),
+                config_path: "/tmp/test.yaml".to_string(),
+                created_at: SystemTime::now() - Duration::from_secs(700),
+                state_param: stale_state.clone(),
+            });
+        }
+        state_index().lock().await.insert(stale_state.clone(), stale_id.clone());
+
+        MCPOAuthSessionManager::cleanup_expired_sessions().await;
+
+        assert!(!pending_sessions().lock().await.contains_key(&stale_id),
+            "stale session should be removed by cleanup");
+        assert!(!state_index().lock().await.contains_key(&stale_state),
+            "stale state should be removed from state_index by cleanup");
     }
 }

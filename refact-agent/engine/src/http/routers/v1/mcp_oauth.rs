@@ -15,6 +15,14 @@ use crate::integrations::mcp::mcp_auth::{
     MCPOAuthSessionManager, clear_tokens_from_config, load_tokens_from_config, save_tokens_to_config,
 };
 
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+     .replace('\'', "&#x27;")
+}
+
 fn json_response(status: StatusCode, body: &impl Serialize) -> Result<Response<Body>, ScratchError> {
     let json = serde_json::to_string(body)
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("JSON: {}", e)))?;
@@ -34,13 +42,39 @@ fn html_response(title: &str, heading: &str, heading_color: &str, message: &str)
 <h1 style="color: {heading_color};">{heading}</h1>
 <p>{message}</p>
 </div>
-</body></html>"#
+</body></html>"#,
+        title = html_escape(title),
+        heading = html_escape(heading),
+        heading_color = heading_color,
+        message = html_escape(message),
     );
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/html")
+        .header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
         .body(Body::from(html))
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Response build failed: {}", e)))
+}
+
+fn reject_path_traversal(config_path: &str) -> Result<(), ScratchError> {
+    if config_path.contains("..") {
+        return Err(ScratchError::new(StatusCode::BAD_REQUEST,
+            "Invalid config_path: path traversal not allowed".to_string()));
+    }
+    Ok(())
+}
+
+async fn validate_mcp_config_path(
+    gcx: &Arc<ARwLock<GlobalContext>>,
+    config_path: &str,
+) -> Result<String, ScratchError> {
+    reject_path_traversal(config_path)?;
+    let exists = gcx.read().await.integration_sessions.contains_key(config_path);
+    if !exists {
+        return Err(ScratchError::new(StatusCode::NOT_FOUND,
+            format!("No active MCP session for config: {}", config_path)));
+    }
+    Ok(config_path.to_string())
 }
 
 async fn reload_mcp_integration(gcx: Arc<ARwLock<GlobalContext>>, config_path: &str) {
@@ -72,6 +106,8 @@ pub async fn handle_v1_mcp_oauth_start(
 ) -> Result<Response<Body>, ScratchError> {
     let req: McpOAuthStartRequest = serde_json::from_slice(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("Invalid JSON: {}", e)))?;
+
+    validate_mcp_config_path(&gcx, &req.config_path).await?;
 
     let http_port = gcx.read().await.cmdline.http_port;
     let redirect_uri = format!("http://127.0.0.1:{}/v1/mcp/oauth/callback", http_port);
@@ -225,6 +261,8 @@ pub async fn handle_v1_mcp_oauth_logout(
     let req: McpOAuthLogoutRequest = serde_json::from_slice(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("Invalid JSON: {}", e)))?;
 
+    validate_mcp_config_path(&gcx, &req.config_path).await?;
+
     clear_tokens_from_config(&req.config_path).await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Clear tokens: {}", e)))?;
 
@@ -247,8 +285,11 @@ struct McpOAuthStatusResponse {
 }
 
 pub async fn handle_v1_mcp_oauth_status(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Query(query): Query<McpOAuthStatusQuery>,
 ) -> Result<Response<Body>, ScratchError> {
+    validate_mcp_config_path(&gcx, &query.config_path).await?;
+
     let config_content = tokio::fs::read_to_string(&query.config_path).await
         .map_err(|e| ScratchError::new(StatusCode::NOT_FOUND, format!("Read config {}: {}", query.config_path, e)))?;
     let config_yaml: serde_yaml::Value = serde_yaml::from_str(&config_content)
@@ -286,6 +327,33 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
     use crate::integrations::mcp::mcp_auth::{MCPOAuthTokens, save_tokens_to_config, load_tokens_from_config, clear_tokens_from_config};
+
+    #[test]
+    fn test_html_escape_script_tags() {
+        let result = html_escape("<script>alert('xss')</script>");
+        assert_eq!(result, "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;");
+        assert!(!result.contains('<'));
+        assert!(!result.contains('>'));
+        assert!(!result.contains('\''));
+    }
+
+    #[test]
+    fn test_html_response_contains_csp_header() {
+        let response = html_response("Title", "Heading", "#4ade80", "Message").unwrap();
+        let csp = response.headers().get("Content-Security-Policy").unwrap();
+        let csp_str = csp.to_str().unwrap();
+        assert!(csp_str.contains("default-src 'none'"));
+        assert!(csp_str.contains("style-src 'unsafe-inline'"));
+    }
+
+    #[test]
+    fn test_config_path_traversal_rejected() {
+        assert!(reject_path_traversal("../../etc/passwd").is_err());
+        assert!(reject_path_traversal("/tmp/../etc/passwd").is_err());
+        assert!(reject_path_traversal("foo/../bar").is_err());
+        assert!(reject_path_traversal("/safe/path/config.yaml").is_ok());
+        assert!(reject_path_traversal("/home/user/.config/refact/integrations.d/mcp_http_myserver.yaml").is_ok());
+    }
 
     #[tokio::test]
     async fn test_oauth_start_fails_gracefully_when_server_unreachable() {
