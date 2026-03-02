@@ -24,8 +24,8 @@ pub struct ISchemaField {
     pub f_label: String,
     #[serde(default, skip_serializing_if = "is_empty")]
     pub smartlinks: Vec<ISmartLink>,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub f_extra: bool,
+    #[serde(default, skip_serializing_if = "is_default_value")]
+    pub f_extra: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -81,6 +81,10 @@ pub struct ISchema {
 
 fn is_default<T: Default + PartialEq>(t: &T) -> bool {
     t == &T::default()
+}
+
+fn is_default_value(v: &serde_json::Value) -> bool {
+    v.is_null()
 }
 
 fn is_empty<T>(t: &Vec<T>) -> bool {

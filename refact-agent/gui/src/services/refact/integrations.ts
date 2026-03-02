@@ -397,7 +397,7 @@ export type IntegrationField<T extends IntegrationPrimitive> = {
   f_placeholder?: T; // should match f_type
   f_default?: T | Record<string, IntegrationPrimitive>;
   f_label?: string;
-  f_extra?: boolean; // rather the field is hidden by default or not
+  f_extra?: boolean | Record<string, unknown>; // rather the field is hidden by default or not; can be object like {"password": true}
   smartlinks?: SmartLink[];
 };
 
@@ -424,7 +424,7 @@ function isIntegrationField<T extends IntegrationPrimitive>(
     return false;
   }
 
-  if ("f_extra" in json && typeof json.f_extra !== "boolean") {
+  if ("f_extra" in json && typeof json.f_extra !== "boolean" && typeof json.f_extra !== "object") {
     return false;
   }
   if ("f_placeholder" in json && !isPrimitive(json.f_placeholder)) {

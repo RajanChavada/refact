@@ -143,7 +143,8 @@ mod tests {
 
     #[test]
     fn test_auth_settings_default() {
-        let s = MCPAuthSettings::default();
+        // Default via serde (deserializing an empty map) should use "none"
+        let s: MCPAuthSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.auth_type, "none");
         assert!(s.bearer_token.is_empty());
     }
