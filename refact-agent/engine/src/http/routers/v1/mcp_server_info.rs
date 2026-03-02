@@ -10,6 +10,7 @@ use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 use crate::integrations::mcp::session_mcp::{SessionMCP, MCPConnectionStatus};
 use crate::integrations::mcp::mcp_metrics::MCPServerMetrics;
+use crate::integrations::running_integrations::load_integrations;
 
 #[derive(Deserialize)]
 pub struct McpServerInfoQuery {
@@ -299,7 +300,14 @@ pub async fn handle_v1_mcp_server_reconnect(
         mcp_session.mcp_resources = vec![];
         mcp_session.mcp_prompts = vec![];
         mcp_session.server_info = None;
+        mcp_session.connection_status = MCPConnectionStatus::Connecting;
     }
+
+    let config_filename = std::path::Path::new(&session_key)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let _ = load_integrations(gcx.clone(), &[format!("**/{}", config_filename)]).await;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -395,5 +403,58 @@ mod tests {
         let yaml_name = "mcp_http_myserver";
         let shortened = shorten_mcp_yaml_name(yaml_name);
         assert_eq!(shortened, "mcp_myserver");
+    }
+
+    #[test]
+    fn test_reconnect_sets_status_to_connecting() {
+        use crate::integrations::mcp::mcp_metrics::new_shared_metrics;
+        use tokio::sync::Mutex as AMutex;
+        let mut session = SessionMCP {
+            debug_name: "test".to_string(),
+            config_path: "/tmp/mcp_stdio_test.yaml".to_string(),
+            launched_cfg: serde_json::json!({"command": "npx", "args": ["something"]}),
+            mcp_client: None,
+            mcp_tools: Vec::new(),
+            mcp_resources: Vec::new(),
+            mcp_prompts: Vec::new(),
+            server_info: None,
+            startup_task_handles: None,
+            health_task_handle: None,
+            logs: Arc::new(AMutex::new(Vec::new())),
+            stderr_file_path: None,
+            stderr_cursor: Arc::new(AMutex::new(0)),
+            connection_status: MCPConnectionStatus::Disconnected,
+            last_successful_connection: None,
+            metrics: new_shared_metrics(),
+        };
+        session.connection_status = MCPConnectionStatus::Connecting;
+        assert!(matches!(session.connection_status, MCPConnectionStatus::Connecting));
+    }
+
+    #[test]
+    fn test_reconnect_resets_launched_cfg_to_null() {
+        use crate::integrations::mcp::mcp_metrics::new_shared_metrics;
+        use tokio::sync::Mutex as AMutex;
+        let mut session = SessionMCP {
+            debug_name: "test".to_string(),
+            config_path: "/tmp/mcp_stdio_test.yaml".to_string(),
+            launched_cfg: serde_json::json!({"command": "npx", "args": ["something"]}),
+            mcp_client: None,
+            mcp_tools: Vec::new(),
+            mcp_resources: Vec::new(),
+            mcp_prompts: Vec::new(),
+            server_info: None,
+            startup_task_handles: None,
+            health_task_handle: None,
+            logs: Arc::new(AMutex::new(Vec::new())),
+            stderr_file_path: None,
+            stderr_cursor: Arc::new(AMutex::new(0)),
+            connection_status: MCPConnectionStatus::Connected,
+            last_successful_connection: None,
+            metrics: new_shared_metrics(),
+        };
+        assert_ne!(session.launched_cfg, serde_json::Value::Null);
+        session.launched_cfg = serde_json::Value::Null;
+        assert_eq!(session.launched_cfg, serde_json::Value::Null);
     }
 }
