@@ -117,7 +117,7 @@ describe("MCPSetupWizard", () => {
   });
 
   it("Continue with setup creates correct config path for stdio command", async () => {
-    const calls: Array<{ configPath: string; integrName: string }> = [];
+    const calls: Array<{ configPath: string; integrName: string; initialInput?: { input: string; transport: string } }> = [];
 
     server.use(
       http.post("http://127.0.0.1:8001/v1/mcp/auto-name", () => {
@@ -132,8 +132,8 @@ describe("MCPSetupWizard", () => {
     render(
       <MCPSetupWizard
         integration={MOCK_INTEGRATION}
-        onSubmit={(configPath, integrName) => {
-          calls.push({ configPath, integrName });
+        onSubmit={(configPath, integrName, initialInput) => {
+          calls.push({ configPath, integrName, initialInput });
         }}
       />,
       { preloadedState: PRELOADED_STATE },
@@ -151,6 +151,45 @@ describe("MCPSetupWizard", () => {
     expect(calls.length).toBe(1);
     expect(calls[0]?.integrName).toBe("mcp_stdio_notion_server");
     expect(calls[0]?.configPath).toContain("mcp_stdio_notion_server");
+    expect(calls[0]?.initialInput?.input).toBe("npx notion");
+    expect(calls[0]?.initialInput?.transport).toBe("stdio");
+  });
+
+  it("Continue with setup passes initialInput with http transport for URL inputs", async () => {
+    const calls: Array<{ configPath: string; integrName: string; initialInput?: { input: string; transport: string } }> = [];
+
+    server.use(
+      http.post("http://127.0.0.1:8001/v1/mcp/auto-name", () => {
+        return HttpResponse.json({
+          suggested_name: "example_mcp",
+          transport: "http",
+          config_prefix: "mcp_http_",
+        });
+      }),
+    );
+
+    render(
+      <MCPSetupWizard
+        integration={MOCK_INTEGRATION}
+        onSubmit={(configPath, integrName, initialInput) => {
+          calls.push({ configPath, integrName, initialInput });
+        }}
+      />,
+      { preloadedState: PRELOADED_STATE },
+    );
+
+    const input = screen.getByTestId("mcp-wizard-input");
+    fireEvent.change(input, { target: { value: "https://api.example.com/mcp" } });
+
+    const nameField = await screen.findByTestId("mcp-wizard-name");
+    fireEvent.change(nameField, { target: { value: "example_mcp" } });
+
+    const submitBtn = screen.getByTestId("mcp-wizard-submit");
+    fireEvent.click(submitBtn);
+
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.initialInput?.input).toBe("https://api.example.com/mcp");
+    expect(calls[0]?.initialInput?.transport).toBe("http");
   });
 
   it("fallback name used when auto-name API unavailable", async () => {
