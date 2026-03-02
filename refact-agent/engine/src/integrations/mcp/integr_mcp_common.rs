@@ -204,6 +204,7 @@ pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync 
     };
 
     let session_arc_clone = session_arc.clone();
+    let gcx_weak = Arc::downgrade(&gcx);
 
     {
         let mut session_locked = session_arc.lock().await;
@@ -275,6 +276,7 @@ pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync 
                 logs: logs.clone(),
                 debug_name: debug_name.clone(),
                 request_timeout,
+                gcx: gcx_weak.clone(),
             };
 
             let client = match transport_initializer
@@ -410,6 +412,7 @@ pub async fn mcp_session_setup<T: MCPTransportInitializer + Clone + Send + Sync 
                     request_timeout,
                     health_check_interval,
                     reconnect_max_attempts,
+                    gcx_weak.clone(),
                 ));
                 let health_abort = health_task.abort_handle();
                 let mut session_locked = session_arc_clone.lock().await;
@@ -438,6 +441,7 @@ async fn mcp_health_monitor<T: MCPTransportInitializer + Clone>(
     request_timeout: u64,
     health_check_interval: u64,
     reconnect_max_attempts: u64,
+    gcx_weak: std::sync::Weak<ARwLock<GlobalContext>>,
 ) {
     let backoff_delays: Vec<u64> = vec![1, 2, 4, 8, 16, 30, 60];
 
@@ -463,6 +467,7 @@ async fn mcp_health_monitor<T: MCPTransportInitializer + Clone>(
                 request_timeout,
                 reconnect_max_attempts,
                 &backoff_delays,
+                gcx_weak.clone(),
             ).await;
 
             if !reconnected {
@@ -488,6 +493,7 @@ async fn reconnect_with_backoff<T: MCPTransportInitializer>(
     request_timeout: u64,
     reconnect_max_attempts: u64,
     backoff_delays: &[u64],
+    gcx_weak: std::sync::Weak<ARwLock<GlobalContext>>,
 ) -> bool {
     let max_attempts = reconnect_max_attempts.min(backoff_delays.len() as u64) as usize;
 
@@ -513,6 +519,7 @@ async fn reconnect_with_backoff<T: MCPTransportInitializer>(
             logs: logs.clone(),
             debug_name: debug_name.to_string(),
             request_timeout,
+            gcx: gcx_weak.clone(),
         };
 
         let new_client = transport_initializer
@@ -647,6 +654,7 @@ mod tests {
             1,
             3,
             &backoff_delays,
+            std::sync::Weak::new(),
         ).await;
 
         assert!(!result, "Should return false when all attempts fail");
@@ -700,6 +708,7 @@ mod tests {
             1,
             100,
             &backoff_delays,
+            std::sync::Weak::new(),
         ).await;
 
         assert_eq!(

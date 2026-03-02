@@ -1,19 +1,21 @@
 use std::any::Any;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::future::Future;
 use std::time::Instant;
-use tokio::sync::Mutex as AMutex;
+use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tokio::task::{AbortHandle, JoinHandle};
 use rmcp::{RoleClient, service::RunningService};
 use rmcp::handler::client::ClientHandler;
-use rmcp::model::{Tool as McpTool, Resource as McpResource, Prompt as McpPrompt, ServerInfo};
-use rmcp::service::Peer;
+use rmcp::model::{Tool as McpTool, Resource as McpResource, Prompt as McpPrompt, ServerInfo, ClientInfo, ClientCapabilities};
+use rmcp::service::{Peer, RequestContext};
 use tokio::time::{timeout, sleep, Duration};
 use serde::{Deserialize, Serialize};
 
+use crate::global_context::GlobalContext;
 use crate::integrations::sessions::IntegrationSession;
 use crate::integrations::process_io_utils::read_file_with_cursor;
+use super::mcp_sampling::mcp_sampling_create_message;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -33,6 +35,7 @@ pub struct McpClientHandler {
     pub logs: Arc<AMutex<Vec<String>>>,
     pub debug_name: String,
     pub request_timeout: u64,
+    pub gcx: Weak<ARwLock<GlobalContext>>,
 }
 
 impl ClientHandler for McpClientHandler {
@@ -43,6 +46,25 @@ impl ClientHandler for McpClientHandler {
     fn set_peer(&mut self, peer: Peer<RoleClient>) {
         if let Ok(mut g) = self.peer_arc.try_lock() {
             *g = Some(peer);
+        }
+    }
+
+    fn get_info(&self) -> ClientInfo {
+        ClientInfo {
+            capabilities: ClientCapabilities::builder().enable_sampling().build(),
+            ..ClientInfo::default()
+        }
+    }
+
+    fn create_message(
+        &self,
+        params: rmcp::model::CreateMessageRequestParam,
+        _context: RequestContext<RoleClient>,
+    ) -> impl Future<Output = Result<rmcp::model::CreateMessageResult, rmcp::Error>> + Send + '_ {
+        let gcx_weak = self.gcx.clone();
+        let debug_name = self.debug_name.clone();
+        async move {
+            mcp_sampling_create_message(gcx_weak, params, &debug_name).await
         }
     }
 
@@ -309,6 +331,7 @@ mod tests {
             logs,
             debug_name: "test".to_string(),
             request_timeout: 30,
+            gcx: Weak::new(),
         };
         assert_eq!(handler.debug_name, "test");
         assert_eq!(handler.request_timeout, 30);
