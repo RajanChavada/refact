@@ -134,6 +134,7 @@ mod customization_editor;
 mod mcp_marketplace;
 mod mcp_marketplace_sources;
 mod mcp_config_sharing;
+mod mcp_oauth;
 pub mod project_information;
 mod v1_browser;
 mod stats;
@@ -178,6 +179,10 @@ use crate::http::routers::v1::mcp_marketplace_sources::{
 };
 use crate::http::routers::v1::mcp_config_sharing::{
     handle_v1_mcp_export, handle_v1_mcp_import, handle_v1_mcp_project_config,
+};
+use crate::http::routers::v1::mcp_oauth::{
+    handle_v1_mcp_oauth_start, handle_v1_mcp_oauth_exchange,
+    handle_v1_mcp_oauth_callback, handle_v1_mcp_oauth_logout, handle_v1_mcp_oauth_status,
 };
 use crate::http::routers::v1::v1_browser::{
     handle_browser_start, handle_browser_stop, handle_browser_screenshot,
@@ -457,6 +462,11 @@ pub fn make_v1_router() -> Router {
         .route("/mcp/export", post(handle_v1_mcp_export))
         .route("/mcp/import", post(handle_v1_mcp_import))
         .route("/mcp/project-config", get(handle_v1_mcp_project_config))
+        .route("/mcp/oauth/start", post(handle_v1_mcp_oauth_start))
+        .route("/mcp/oauth/exchange", post(handle_v1_mcp_oauth_exchange))
+        .route("/mcp/oauth/callback", get(handle_v1_mcp_oauth_callback))
+        .route("/mcp/oauth/logout", post(handle_v1_mcp_oauth_logout))
+        .route("/mcp/oauth/status", get(handle_v1_mcp_oauth_status))
         ;
 
     builder.layer(axum::middleware::from_fn(telemetry_middleware))

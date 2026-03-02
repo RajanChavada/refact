@@ -85,6 +85,26 @@ pub async fn load_tokens_from_config(config_path: &str) -> Option<MCPOAuthTokens
     serde_yaml::from_value(tokens_value.clone()).ok()
 }
 
+pub async fn clear_tokens_from_config(config_path: &str) -> Result<(), String> {
+    let path = PathBuf::from(config_path);
+    let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let mut mapping: serde_yaml::Mapping = serde_yaml::from_str(&existing).unwrap_or_default();
+    mapping.remove(serde_yaml::Value::String("oauth_tokens".to_string()));
+    let yaml_str = serde_yaml::to_string(&serde_yaml::Value::Mapping(mapping))
+        .map_err(|e| format!("serialize yaml: {}", e))?;
+    let tmp = path.with_extension("tmp");
+    tokio::fs::write(&tmp, &yaml_str).await
+        .map_err(|e| format!("write {:?}: {}", tmp, e))?;
+    #[cfg(target_os = "windows")]
+    if path.exists() {
+        tokio::fs::remove_file(&path).await
+            .map_err(|e| format!("remove {:?}: {}", path, e))?;
+    }
+    tokio::fs::rename(&tmp, &path).await
+        .map_err(|e| format!("rename {:?} -> {:?}: {}", tmp, path, e))?;
+    Ok(())
+}
+
 struct TokenState {
     access_token: String,
     expires_at: Option<Instant>,
@@ -214,6 +234,7 @@ struct PendingOAuthSession {
     oauth_state: Arc<AMutex<OAuthState>>,
     config_path: String,
     created_at: SystemTime,
+    state_param: String,
 }
 
 static PENDING_SESSIONS: OnceLock<AMutex<HashMap<String, PendingOAuthSession>>> = OnceLock::new();
@@ -240,18 +261,24 @@ impl MCPOAuthSessionManager {
         let auth_url = state.get_authorization_url()
             .await
             .map_err(|e| format!("get authorization URL: {}", e))?;
+        let state_param = url::Url::parse(&auth_url)
+            .ok()
+            .and_then(|u| u.query_pairs().find(|(k, _)| k == "state").map(|(_, v)| v.to_string()))
+            .unwrap_or_default();
         let session_id = Uuid::new_v4().to_string();
         pending_sessions().lock().await.insert(session_id.clone(), PendingOAuthSession {
             oauth_state: Arc::new(AMutex::new(state)),
             config_path: config_path.to_string(),
             created_at: SystemTime::now(),
+            state_param,
         });
         Ok((session_id, auth_url))
     }
 
-    pub async fn exchange_code(session_id: &str, code: &str) -> Result<MCPOAuthTokens, String> {
+    pub async fn exchange_code(session_id: &str, code: &str) -> Result<(MCPOAuthTokens, String), String> {
         let session = pending_sessions().lock().await.remove(session_id)
             .ok_or_else(|| format!("No pending OAuth session: {}", session_id))?;
+        let config_path = session.config_path.clone();
         let mut oauth_state = session.oauth_state.lock().await;
         oauth_state.handle_callback(code)
             .await
@@ -280,14 +307,24 @@ impl MCPOAuthSessionManager {
                 now_ms + secs as i64 * 1000
             })
             .unwrap_or(0);
-        Ok(MCPOAuthTokens {
+        Ok((MCPOAuthTokens {
             access_token,
             refresh_token,
             expires_at,
             client_id,
             client_secret: None,
             scopes: vec![],
-        })
+        }, config_path))
+    }
+
+    pub async fn find_session_id_by_state(state: &str) -> Option<String> {
+        let sessions = pending_sessions().lock().await;
+        for (id, session) in sessions.iter() {
+            if session.state_param == state {
+                return Some(id.clone());
+            }
+        }
+        None
     }
 
     pub async fn cleanup_expired_sessions() {
@@ -449,6 +486,7 @@ mod tests {
                 oauth_state: Arc::new(AMutex::new(old_state)),
                 config_path: "/tmp/test.yaml".to_string(),
                 created_at: SystemTime::now() - Duration::from_secs(700),
+                state_param: String::new(),
             });
         }
 
@@ -459,6 +497,7 @@ mod tests {
                 oauth_state: Arc::new(AMutex::new(fresh_state)),
                 config_path: "/tmp/test.yaml".to_string(),
                 created_at: SystemTime::now(),
+                state_param: String::new(),
             });
         }
 
