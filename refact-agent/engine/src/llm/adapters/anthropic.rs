@@ -5,15 +5,12 @@ use crate::call_validation::ChatUsage;
 use crate::llm::adapter::{AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, extract_extra_fields, insert_extra_headers};
 use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta};
 use crate::llm::params::CacheControl;
+use super::claude_code_compat;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_THINKING_BUDGET: usize = 8192;
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 const EFFORT: &str = "effort-2025-11-24";
-const CLAUDE_CODE_OAUTH_BETA: &str = "oauth-2025-04-20";
-const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.2 (external, cli)";
-const CLAUDE_CODE_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const CLAUDE_CODE_MCP_TOOL_PREFIX: &str = "mcp_";
 
 const PROTECTED_FIELDS: &[&str] = &["model", "messages", "stream", "system", "tools", "tool_choice"];
 
@@ -28,32 +25,14 @@ impl LlmWireAdapter for AnthropicAdapter {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        // Support both API key auth (x-api-key) and OAuth Bearer token auth
-        // (Authorization: Bearer). This mirrors the official Anthropic SDK which
-        // accepts both api_key and auth_token parameters.
-        
-        let mut is_claude_code_oauth = false;
-        if !settings.auth_token.is_empty() {
-            is_claude_code_oauth = true;
-            headers.insert(
-                "authorization",
-                HeaderValue::from_str(&format!("Bearer {}", settings.auth_token))
-                    .map_err(|e| format!("invalid auth_token: {e}"))?,
-            );
+        let is_cc = claude_code_compat::is_claude_code_oauth(&settings.auth_token);
+        if is_cc {
+            claude_code_compat::apply_oauth_headers(&mut headers, &settings.auth_token)?;
         } else if !settings.api_key.is_empty() {
             headers.insert(
                 "x-api-key",
                 HeaderValue::from_str(&settings.api_key)
                     .map_err(|e| format!("invalid api_key: {e}"))?,
-            );
-        }
-
-        // Claude Code OAuth requires specific headers and user-agent to pass
-        // Anthropic's server-side validation for subscription-based access.
-        if is_claude_code_oauth {
-            headers.insert(
-                "user-agent",
-                HeaderValue::from_static(CLAUDE_CODE_USER_AGENT),
             );
         }
 
@@ -76,16 +55,13 @@ impl LlmWireAdapter for AnthropicAdapter {
         });
 
         if let Some(sys) = system {
-            if is_claude_code_oauth {
-                // Claude Code OAuth requires the system prompt to start with a specific prefix
-                // for Anthropic's server-side validation.
-                let prefixed = prepend_claude_code_system(sys);
-                body["system"] = prefixed;
+            if is_cc {
+                body["system"] = claude_code_compat::prepend_system(sys);
             } else {
                 body["system"] = sys;
             }
-        } else if is_claude_code_oauth {
-            body["system"] = json!(CLAUDE_CODE_SYSTEM_PREFIX);
+        } else if is_cc {
+            body["system"] = json!(claude_code_compat::SYSTEM_PREFIX);
         }
 
         if let Some(temp) = req.params.temperature {
@@ -100,8 +76,8 @@ impl LlmWireAdapter for AnthropicAdapter {
             if let Some(tools) = &req.tools {
                 if !tools.is_empty() {
                     let mut converted_tools = convert_tools_to_anthropic(tools);
-                    if is_claude_code_oauth {
-                        prefix_tool_names(&mut converted_tools, CLAUDE_CODE_MCP_TOOL_PREFIX);
+                    if is_cc {
+                        claude_code_compat::prefix_tool_names(&mut converted_tools, claude_code_compat::MCP_TOOL_PREFIX);
                     }
                     // Add Anthropic's server-side web_search tool if enabled
                     if settings.supports_web_search {
@@ -171,8 +147,8 @@ impl LlmWireAdapter for AnthropicAdapter {
                 betas.push(INTERLEAVED_THINKING_BETA);
                 betas.push(EFFORT);
             }
-            if is_claude_code_oauth {
-                betas.push(CLAUDE_CODE_OAUTH_BETA);
+            if is_cc {
+                betas.push(claude_code_compat::OAUTH_BETA_FLAG);
                 if !betas.contains(&INTERLEAVED_THINKING_BETA) {
                     betas.push(INTERLEAVED_THINKING_BETA);
                     betas.push(EFFORT);
@@ -217,30 +193,15 @@ impl LlmWireAdapter for AnthropicAdapter {
             "anthropic adapter request"
         );
 
-        let url = if is_claude_code_oauth {
-            // Claude Code OAuth requires ?beta=true query parameter
-            let sep = if settings.endpoint.contains('?') { "&" } else { "?" };
-            format!("{}{}beta=true", settings.endpoint, sep)
+        let url = if is_cc {
+            claude_code_compat::build_oauth_url(&settings.endpoint)
         } else {
             settings.endpoint.clone()
         };
 
-        // For Claude Code OAuth, prefix tool_use names in messages with mcp_
-        if is_claude_code_oauth {
-            if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
-                for msg in msgs {
-                    if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-                        for block in content {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                                if let Some(name) = block.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) {
-                                    if !name.starts_with(CLAUDE_CODE_MCP_TOOL_PREFIX) {
-                                        block["name"] = json!(format!("{}{}", CLAUDE_CODE_MCP_TOOL_PREFIX, name));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        if is_cc {
+            if let Some(msgs) = body.get_mut("messages") {
+                claude_code_compat::prefix_tool_use_in_messages(msgs, claude_code_compat::MCP_TOOL_PREFIX);
             }
         }
 
@@ -753,60 +714,6 @@ fn convert_tools_to_anthropic(tools: &[Value]) -> Value {
     json!(converted)
 }
 
-/// Prefix tool names in an Anthropic tools array with the given prefix.
-/// Required for Claude Code OAuth: Anthropic's server expects tools to be
-/// prefixed with "mcp_" when using subscription-based OAuth tokens.
-fn prefix_tool_names(tools: &mut Value, prefix: &str) {
-    if let Some(arr) = tools.as_array_mut() {
-        for tool in arr {
-            if let Some(name) = tool.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) {
-                if !name.starts_with(prefix) {
-                    tool["name"] = json!(format!("{}{}", prefix, name));
-                }
-            }
-        }
-    }
-}
-
-/// Prepend the Claude Code system prompt prefix to an existing system value.
-fn prepend_claude_code_system(system: Value) -> Value {
-    match system {
-        Value::String(text) => {
-            if text.trim().is_empty() {
-                json!(CLAUDE_CODE_SYSTEM_PREFIX)
-            } else {
-                json!([
-                    {"type": "text", "text": CLAUDE_CODE_SYSTEM_PREFIX},
-                    {"type": "text", "text": text}
-                ])
-            }
-        }
-        Value::Array(blocks) => {
-            let mut new_blocks = vec![json!({"type": "text", "text": CLAUDE_CODE_SYSTEM_PREFIX})];
-            new_blocks.extend(blocks);
-
-            if let Some(second_text) = new_blocks
-                .get(1)
-                .and_then(|v| {
-                    v.get("type")
-                        .and_then(|t| t.as_str())
-                        .filter(|&t| t == "text")
-                        .and_then(|_| v.get("text").and_then(|t| t.as_str()))
-                })
-            {
-                if !second_text.starts_with(CLAUDE_CODE_SYSTEM_PREFIX) {
-                    new_blocks[1] = json!({
-                        "type": "text",
-                        "text": format!("{}\n\n{}", CLAUDE_CODE_SYSTEM_PREFIX, second_text),
-                    });
-                }
-            }
-            json!(new_blocks)
-        }
-        _ => json!(CLAUDE_CODE_SYSTEM_PREFIX),
-    }
-}
-
 fn tool_choice_to_anthropic(choice: &CanonicalToolChoice) -> Value {
     match choice {
         CanonicalToolChoice::Auto => json!({"type": "auto"}),
@@ -877,31 +784,6 @@ mod tests {
         let http = adapter.build_http(&req, &settings()).unwrap();
         assert!(http.headers.get("x-api-key").is_some());
         assert!(http.headers.get("anthropic-version").is_some());
-    }
-
-    #[test]
-    fn test_prepend_claude_code_system_keeps_prefix_as_standalone_block() {
-        // For Claude Code OAuth, the server may reject requests if the prefix is
-        // concatenated with other text in the same system block.
-        let system = json!("Be helpful");
-        let prefixed = prepend_claude_code_system(system);
-        assert!(prefixed.is_array());
-        let arr = prefixed.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["type"], "text");
-        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
-        assert_eq!(arr[1]["type"], "text");
-        assert_eq!(arr[1]["text"], "Be helpful");
-
-        let system2 = json!([
-            {"type": "text", "text": "Be helpful"},
-            {"type": "text", "text": "Also be brief"}
-        ]);
-        let prefixed2 = prepend_claude_code_system(system2);
-        let arr2 = prefixed2.as_array().unwrap();
-        assert_eq!(arr2[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
-        assert_eq!(arr2[1]["text"], "You are Claude Code, Anthropic's official CLI for Claude.\n\nBe helpful");
-        assert_eq!(arr2[2]["text"], "Also be brief");
     }
 
     #[test]
