@@ -100,11 +100,36 @@ export const mcpMarketplaceApi = createApi({
       },
       providesTags: ["InstalledServers"],
     }),
+
+    getAutoName: builder.mutation<AutoNameResponse, AutoNameRequest>({
+      queryFn: async (body, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const result = await baseQuery({
+          url: `http://127.0.0.1:${port}/v1/mcp/auto-name`,
+          method: "POST",
+          body,
+        });
+        if (result.error) return { error: result.error };
+        return { data: result.data as AutoNameResponse };
+      },
+    }),
   }),
 });
+
+export type AutoNameRequest = {
+  input: string;
+};
+
+export type AutoNameResponse = {
+  suggested_name: string;
+  transport: "stdio" | "http" | "sse";
+  config_prefix: string;
+};
 
 export const {
   useGetMarketplaceQuery,
   useInstallServerMutation,
   useGetInstalledServersQuery,
+  useGetAutoNameMutation,
 } = mcpMarketplaceApi;

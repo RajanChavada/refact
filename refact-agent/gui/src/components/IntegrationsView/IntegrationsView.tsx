@@ -49,6 +49,7 @@ export const IntegrationsView: FC<IntegrationViewProps> = ({
     handleSubmit,
     handleDeleteIntegration,
     handleNotConfiguredIntegrationSubmit,
+    handleMCPWizardSubmit,
     handleSetCurrentIntegrationSchema,
     handleSetCurrentIntegrationValues,
     handleFormReturn,
@@ -147,6 +148,7 @@ export const IntegrationsView: FC<IntegrationViewProps> = ({
         <IntermediateIntegration
           handleSubmit={handleNotConfiguredIntegrationSubmit}
           integration={currentNotConfiguredIntegration}
+          handleMCPWizardSubmit={handleMCPWizardSubmit}
         />
       </Flex>
     );
