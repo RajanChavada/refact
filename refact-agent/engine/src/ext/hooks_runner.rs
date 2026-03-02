@@ -159,6 +159,25 @@ pub async fn run_hooks(
     results
 }
 
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(mut reader: R, max_bytes: usize) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let to_store = (max_bytes.saturating_sub(buf.len())).min(n);
+                if to_store > 0 {
+                    buf.extend_from_slice(&chunk[..to_store]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    buf
+}
+
 async fn run_single_hook(config: &HookConfig, payload: &HookPayload) -> HookResult {
     let payload_json = match serde_json::to_string(payload) {
         Ok(j) => j,
@@ -185,29 +204,22 @@ async fn run_single_hook(config: &HookConfig, payload: &HookPayload) -> HookResu
         drop(stdin);
     }
 
-    let stdout_task = child.stdout.take().map(|mut out| {
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let _ = out.read_to_end(&mut buf).await;
-            buf
-        })
+    let stdout_task = child.stdout.take().map(|out| {
+        tokio::spawn(read_bounded(out, HOOK_MAX_OUTPUT_BYTES))
     });
-    let stderr_task = child.stderr.take().map(|mut err| {
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf).await;
-            buf
-        })
+    let stderr_task = child.stderr.take().map(|err| {
+        tokio::spawn(read_bounded(err, HOOK_MAX_OUTPUT_BYTES))
     });
 
-    match tokio::time::timeout(timeout_dur, child.wait()).await {
-        Ok(Ok(status)) => {
-            let stdout_bytes = if let Some(t) = stdout_task { t.await.unwrap_or_default() } else { Vec::new() };
-            let stderr_bytes = if let Some(t) = stderr_task { t.await.unwrap_or_default() } else { Vec::new() };
-            let stdout = truncate_bytes(&stdout_bytes, HOOK_MAX_OUTPUT_BYTES);
-            let stderr = truncate_bytes(&stderr_bytes, HOOK_MAX_OUTPUT_BYTES);
+    match tokio::time::timeout(timeout_dur, async {
+        let status = child.wait().await?;
+        let stdout_bytes = if let Some(t) = stdout_task { t.await.unwrap_or_default() } else { Vec::new() };
+        let stderr_bytes = if let Some(t) = stderr_task { t.await.unwrap_or_default() } else { Vec::new() };
+        Ok::<_, std::io::Error>((status, stdout_bytes, stderr_bytes))
+    }).await {
+        Ok(Ok((status, stdout_bytes, stderr_bytes))) => {
+            let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
+            let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
             match status.code().unwrap_or(-1) {
                 0 => HookResult::Success(stdout),
                 2 => {
@@ -269,15 +281,6 @@ fn make_hook_command(
         .env("REFACT_HOOK_EVENT", &payload.hook_event_name);
 
     cmd
-}
-
-fn truncate_bytes(data: &[u8], max_bytes: usize) -> String {
-    let slice = if data.len() > max_bytes {
-        &data[..max_bytes]
-    } else {
-        data
-    };
-    String::from_utf8_lossy(slice).into_owned()
 }
 
 pub fn first_block_reason(results: &[HookResult]) -> Option<String> {
@@ -574,16 +577,31 @@ mod tests {
         assert_eq!(trusted[0].command, "global_cmd");
     }
 
-    #[test]
-    fn test_truncate_bytes_no_truncation() {
-        let data = b"hello world";
-        assert_eq!(truncate_bytes(data, 100), "hello world");
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_run_single_hook_large_output_truncated() {
+        let config = make_hook_config(HookEvent::PreToolUse, None, "yes | head -c 102400");
+        let payload = make_payload("PreToolUse", Some("shell"));
+        let result = run_single_hook(&config, &payload).await;
+        match result {
+            HookResult::Success(out) => {
+                assert!(out.len() <= HOOK_MAX_OUTPUT_BYTES, "output should be bounded: {} > {}", out.len(), HOOK_MAX_OUTPUT_BYTES);
+            }
+            other => panic!("Expected Success, got {:?}", other),
+        }
     }
 
-    #[test]
-    fn test_truncate_bytes_truncates() {
-        let data = b"hello world";
-        let result = truncate_bytes(data, 5);
-        assert_eq!(result, "hello");
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_run_single_hook_large_stderr_truncated() {
+        let config = make_hook_config(HookEvent::PreToolUse, None, "yes | head -c 102400 >&2; exit 2");
+        let payload = make_payload("PreToolUse", Some("shell"));
+        let result = run_single_hook(&config, &payload).await;
+        match result {
+            HookResult::Block(reason) => {
+                assert!(reason.len() <= HOOK_MAX_OUTPUT_BYTES, "stderr should be bounded: {} > {}", reason.len(), HOOK_MAX_OUTPUT_BYTES);
+            }
+            other => panic!("Expected Block, got {:?}", other),
+        }
     }
 }
