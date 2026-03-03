@@ -30,7 +30,6 @@ enum LinkAction {
     Commit,
     GitInit,
     Goto,
-    SummarizeProject,
     PostChat,
     RegenerateWithIncreasedContextSize,
 }
@@ -52,7 +51,7 @@ fn is_default_json_value(value: &serde_json::Value) -> bool {
     value == &serde_json::Value::Null
 }
 
-fn last_message_assistant_without_tools_with_code_blocks(messages: &Vec<ChatMessage>) -> bool {
+fn last_message_assistant_without_tools_with_code_blocks(messages: &[ChatMessage]) -> bool {
     if let Some(m) = messages.last() {
         m.role == "assistant"
             && m.tool_calls.as_ref().map(|x| x.is_empty()).unwrap_or(true)
@@ -63,7 +62,7 @@ fn last_message_assistant_without_tools_with_code_blocks(messages: &Vec<ChatMess
     }
 }
 
-fn last_message_stripped_assistant(messages: &Vec<ChatMessage>) -> bool {
+fn last_message_stripped_assistant(messages: &[ChatMessage]) -> bool {
     if let Some(m) = messages.last() {
         m.role == "assistant" && m.finish_reason == Some("length".to_string())
     } else {
@@ -93,12 +92,17 @@ pub async fn handle_v1_links(
     
     tracing::info!("for links, canonical_mode == {:?}", canonical_mode);
     
-    let (_integrations_map, integration_yaml_errors) =
-        crate::integrations::running_integrations::load_integrations(
-            gcx.clone(),
-            &["**/*".to_string()],
-        )
-        .await;
+    let integration_yaml_errors = if is_agentic_mode_id(&canonical_mode) {
+        let (_integrations_map, integration_yaml_errors) =
+            crate::integrations::running_integrations::load_integrations(
+                gcx.clone(),
+                &["**/*".to_string()],
+            )
+            .await;
+        integration_yaml_errors
+    } else {
+        Vec::new()
+    };
     if canonical_mode == "configurator" {
         if last_message_assistant_without_tools_with_code_blocks(&post.messages) {
             links.push(Link {
@@ -112,11 +116,11 @@ pub async fn handle_v1_links(
         }
     }
 
-    if canonical_mode == "project_summary" {
+    if canonical_mode == "setup" {
         if last_message_assistant_without_tools_with_code_blocks(&post.messages) {
             links.push(Link {
                 link_action: LinkAction::FollowUp,
-                link_text: "Looks alright! Save the generated summary".to_string(),
+                link_text: "Looks alright! Save the generated setup artifacts".to_string(),
                 link_goto: None,
                 link_summary_path: None,
                 link_tooltip: format!(""),
@@ -340,26 +344,27 @@ pub async fn handle_v1_links(
         }
     }
 
-    tracing::info!(
-        "generated links2\n{}",
-        serde_json::to_string_pretty(&links).unwrap()
-    );
+    match serde_json::to_string_pretty(&links) {
+        Ok(serialized) => tracing::info!("generated links2\n{}", serialized),
+        Err(err) => tracing::warn!("failed to serialize links for logging: {}", err),
+    }
 
-    Ok(Response::builder()
+    let payload = serde_json::to_string_pretty(&serde_json::json!({
+        "links": links,
+        "uncommited_changes_warning": uncommited_changes_warning,
+        "new_chat_suggestion": new_chat_suggestion
+    }))
+    .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("response json error: {}", e)))?;
+
+    let response = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(Body::from(
-            serde_json::to_string_pretty(&serde_json::json!({
-                "links": links,
-                "uncommited_changes_warning": uncommited_changes_warning,
-                "new_chat_suggestion": new_chat_suggestion
-            }))
-            .unwrap(),
-        ))
-        .unwrap())
+        .body(Body::from(payload))
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("response build error: {}", e)))?;
+    Ok(response)
 }
 
-fn failed_integration_names_after_last_user_message(messages: &Vec<ChatMessage>) -> Vec<String> {
+fn failed_integration_names_after_last_user_message(messages: &[ChatMessage]) -> Vec<String> {
     let last_user_msg_index = messages.iter().rposition(|m| m.role == "user").unwrap_or(0);
     let tool_calls = messages[last_user_msg_index..]
         .iter()

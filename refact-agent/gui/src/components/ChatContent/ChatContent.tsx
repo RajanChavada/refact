@@ -99,7 +99,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     selectSseStatusForChat(s, renderChatId),
   );
 
-  const isConfig = thread !== null && thread.mode === "CONFIGURE";
+  const isConfig = thread !== null && thread.mode === "configurator";
   const isWaiting = useAppSelector((s) => selectIsWaitingById(s, renderChatId));
   const integrationMeta = useAppSelector(selectIntegration);
   const isWaitingForConfirmation = useAppSelector((s) =>
@@ -193,7 +193,11 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   ]);
 
   const shouldConfigButtonBeVisible = useMemo(() => {
-    return isConfig && !integrationMeta?.path?.includes("project_summary");
+    return (
+      isConfig &&
+      !integrationMeta?.path?.includes("project_summary") &&
+      !integrationMeta?.path?.includes("setup")
+    );
   }, [isConfig, integrationMeta?.path]);
 
   useDiffFileReload();

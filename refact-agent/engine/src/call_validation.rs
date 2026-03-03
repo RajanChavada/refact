@@ -429,7 +429,6 @@ pub fn canonical_mode_id(mode: &str) -> Result<String, String> {
         "EXPLORE" => "explore".to_string(),
         "AGENT" => "agent".to_string(),
         "CONFIGURE" | "CONFIGURATOR" => "configurator".to_string(),
-        "PROJECT_SUMMARY" => "project_summary".to_string(),
         "PLAN" => "plan".to_string(),
         "TASK_PLANNER" => "task_planner".to_string(),
         "TASK_AGENT" => "task_agent".to_string(),

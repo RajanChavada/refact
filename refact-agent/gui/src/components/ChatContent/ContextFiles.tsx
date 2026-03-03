@@ -59,7 +59,6 @@ function isInstructionFile(filePath: string): boolean {
     lower.includes("copilot-instructions") ||
     lower.includes(".github/instructions") ||
     lower.includes(".aider.conf") ||
-    lower.includes(".refact/project_summary") ||
     lower.includes(".refact/instructions")
   );
 }

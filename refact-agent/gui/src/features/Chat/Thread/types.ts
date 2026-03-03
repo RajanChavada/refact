@@ -128,7 +128,9 @@ export function normalizeLegacyMode(mode: string | undefined): ChatModeId {
     case "CONFIGURE":
       return "configurator";
     case "PROJECT_SUMMARY":
-      return "project_summary";
+      return "setup";
+    case "SETUP":
+      return "setup";
     case "TASK_PLANNER":
       return "task_planner";
     case "TASK_AGENT":

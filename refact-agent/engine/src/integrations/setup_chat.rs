@@ -1,28 +1,31 @@
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
-use crate::global_context::GlobalContext;
+
 use crate::call_validation::{ChatContent, ChatMessage, ChatMeta};
+use crate::global_context::GlobalContext;
 use crate::integrations::setting_up_integrations::integrations_all;
 use crate::scratchpads::chat_utils_prompts::system_prompt_add_extra_instructions;
 use crate::scratchpads::scratchpad_utils::HasRagResults;
 use crate::tools::tools_list::get_tools_for_mode;
 
-pub async fn mix_project_summary_messages(
+pub async fn mix_setup_messages(
     gcx: Arc<ARwLock<GlobalContext>>,
     chat_meta: &ChatMeta,
     messages: &mut Vec<ChatMessage>,
     stream_back_to_user: &mut HasRagResults,
 ) {
-    assert!(messages[0].role != "system"); // we are here to add this, can't already exist
+    assert!(messages[0].role != "system");
 
     let mut sp_text = match crate::yaml_configs::customization_registry::get_mode_config(
         gcx.clone(),
-        "project_summary",
+        "setup",
         None,
-    ).await {
+    )
+    .await
+    {
         Some(mode_config) => mode_config.prompt,
         None => {
-            tracing::error!("Mode 'project_summary' not found");
+            tracing::error!("Mode 'setup' not found");
             String::new()
         }
     };
@@ -52,7 +55,7 @@ pub async fn mix_project_summary_messages(
     sp_text = system_prompt_add_extra_instructions(
         gcx.clone(),
         sp_text,
-        get_tools_for_mode(gcx.clone(), "project_summary", None)
+        get_tools_for_mode(gcx.clone(), "setup", None)
             .await
             .into_iter()
             .map(|t| t.tool_description().name)
@@ -72,7 +75,7 @@ pub async fn mix_project_summary_messages(
         stream_back_to_user.push_in_json(serde_json::json!(system_message));
     } else {
         tracing::error!(
-            "more than 1 message when mixing configuration chat context, bad things might happen!"
+            "more than 1 message when mixing setup chat context, bad things might happen!"
         );
     }
 

@@ -141,6 +141,7 @@ mod stats;
 mod plugins;
 mod skills_status;
 mod mcp_server_info;
+mod setup_status;
 
 use crate::http::routers::v1::ext_management::{
     handle_v1_ext_registry,
@@ -168,6 +169,7 @@ use crate::http::routers::v1::plugins::{
 };
 use crate::http::routers::v1::skills_status::handle_v1_skills_status;
 use crate::http::routers::v1::mcp_server_info::{handle_v1_mcp_server_info, handle_v1_mcp_server_reconnect};
+use crate::http::routers::v1::setup_status::handle_v1_setup_status;
 
 use crate::http::routers::v1::mcp_marketplace::{
     handle_v1_mcp_marketplace_get, handle_v1_mcp_marketplace_install, handle_v1_mcp_marketplace_installed,
@@ -410,6 +412,7 @@ pub fn make_v1_router() -> Router {
         .route("/project-information", get(handle_v1_project_information_get))
         .route("/project-information", post(handle_v1_project_information_save))
         .route("/project-information/preview", post(handle_v1_project_information_preview))
+        .route("/setup/status", get(handle_v1_setup_status))
         .route("/browser/start", post(handle_browser_start))
         .route("/browser/stop", post(handle_browser_stop))
         .route("/browser/screenshot", post(handle_browser_screenshot))

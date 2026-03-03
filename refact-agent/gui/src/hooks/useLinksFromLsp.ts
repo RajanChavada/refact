@@ -5,7 +5,7 @@ import {
   isUserMessage,
   linksApi,
   type ChatLink,
-} from "..//services/refact";
+} from "../services/refact";
 import { useAppDispatch } from "./useAppDispatch";
 import { useAppSelector } from "./useAppSelector";
 import { useGetCapsQuery } from "./useGetCapsQuery";
@@ -203,17 +203,6 @@ export function useLinksFromLsp() {
 
       if (link.link_action === "follow-up") {
         void submit(link.link_text);
-        return;
-      }
-
-      if (link.link_action === "summarize-project") {
-        if ("link_summary_path" in link && link.link_summary_path) {
-          dispatch(setIntegrationData({ path: link.link_summary_path }));
-        }
-        // Set mode then send message
-        void setParams({ mode: "PROJECT_SUMMARY" }).then(() => {
-          void submit(link.link_text);
-        });
         return;
       }
 

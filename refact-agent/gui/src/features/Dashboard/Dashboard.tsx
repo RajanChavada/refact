@@ -5,6 +5,7 @@ import { RecentSection } from "./components/RecentSection/RecentSection";
 import { NavBar } from "./components/NavBar/NavBar";
 import { useDashboardLayout } from "./hooks/useDashboardLayout";
 import { useOpenTabsData } from "./hooks/useOpenTabsData";
+import { SetupBanner } from "../Setup/SetupBanner";
 import styles from "./Dashboard.module.css";
 
 export const Dashboard: React.FC = () => {
@@ -37,7 +38,7 @@ export const Dashboard: React.FC = () => {
         />
       )}
 
-      {/* TODO: SetupBanner will go here when setup mode is implemented */}
+      <SetupBanner />
       {/* TODO: BackgroundSection will go here when background tasks are implemented */}
 
       {/* Recent history — expandable */}

@@ -513,7 +513,6 @@ pub fn map_legacy_mode_to_id(mode_str: &str) -> &str {
         "EXPLORE" => "explore",
         "AGENT" => "agent",
         "CONFIGURE" => "configurator",
-        "PROJECT_SUMMARY" => "project_summary",
         "TASK_PLANNER" => "task_planner",
         "TASK_AGENT" => "task_agent",
         _ => {
@@ -605,7 +604,6 @@ mod tests {
         assert_eq!(map_legacy_mode_to_id("EXPLORE"), "explore");
         assert_eq!(map_legacy_mode_to_id("NO_TOOLS"), "explore");
         assert_eq!(map_legacy_mode_to_id("CONFIGURE"), "configurator");
-        assert_eq!(map_legacy_mode_to_id("PROJECT_SUMMARY"), "project_summary");
         assert_eq!(map_legacy_mode_to_id("TASK_PLANNER"), "task_planner");
         assert_eq!(map_legacy_mode_to_id("TASK_AGENT"), "task_agent");
     }

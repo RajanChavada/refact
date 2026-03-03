@@ -2,7 +2,7 @@ import { LinksForChatResponse } from "../services/refact/links";
 
 export const STUB_LINKS_FOR_CHAT_RESPONSE: LinksForChatResponse = {
   uncommited_changes_warning:
-    "You have uncommitted changes:\n```\nIn project refact-lsp: A tests/emergency_frog_situation/.refact/project_summary.yaml, M tests/emergency_frog_situation/frog.py, M tests/emergency_frog_situation/jump_to_conclusions.py, ...\n```\n⚠️ You might have a problem rolling back agent's changes.",
+    "You have uncommitted changes:\n```\nIn project refact-lsp: A tests/emergency_frog_situation/.refact/integrations.d/github.yaml, M tests/emergency_frog_situation/frog.py, M tests/emergency_frog_situation/jump_to_conclusions.py, ...\n```\n⚠️ You might have a problem rolling back agent's changes.",
   new_chat_suggestion: false,
   links: [
     {
@@ -25,11 +25,6 @@ export const STUB_LINKS_FOR_CHAT_RESPONSE: LinksForChatResponse = {
     // { text: 'git commit -m "message"', action: "commit", link_tooltip: "" },
     // { text: "Save and return", goto: "SETTINGS:postgres", link_tooltip: "" },
     {
-      link_text: "Investigate Project",
-      link_action: "summarize-project",
-      link_tooltip: "",
-    },
-    {
       link_action: "post-chat",
       link_text: "Stop recommending integrations",
       link_tooltip: "",
@@ -39,7 +34,7 @@ export const STUB_LINKS_FOR_CHAT_RESPONSE: LinksForChatResponse = {
           chat_remote: false,
           chat_mode: "CONFIGURE",
           current_config_file:
-            "/Users/kot/code_aprojects/demotest/.refact/project_summary.yaml",
+            "/Users/kot/code_aprojects/demotest/.refact/integrations.d/github.yaml",
         },
         messages: [
           {
@@ -50,11 +45,6 @@ export const STUB_LINKS_FOR_CHAT_RESPONSE: LinksForChatResponse = {
         ],
       },
     },
-    // {
-    //   text: "long long long long long long long long long long long long long long long long long long ",
-    //   action: "summarize-project",
-    //   link_tooltip: "",
-    // },
     {
       link_action: "commit",
       link_text: "Commit 4 files in `refact-lsp`",

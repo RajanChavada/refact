@@ -998,6 +998,14 @@ pub async fn file_watcher_event(event: Event, gcx_weak: Weak<ARwLock<GlobalConte
         } else {
             return; // the program is shutting down
         }
+        if let Some(gcx) = gcx_weak.clone().upgrade() {
+            if event.paths.iter().any(|p| path_triggers_registry_reload(p)) {
+                crate::yaml_configs::customization_registry::invalidate_all_registry_caches(
+                    gcx.clone(),
+                )
+                .await;
+            }
+        }
         for p in &event.paths {
             let indexing_settings = indexing_everywhere_arc.indexing_for_path(p);
             if is_blocklisted(&indexing_settings, &p) {
@@ -1018,6 +1026,18 @@ pub async fn file_watcher_event(event: Event, gcx_weak: Weak<ARwLock<GlobalConte
         if let Some(gcx) = gcx_weak.clone().upgrade() {
             enqueue_some_docs(gcx, &docs, false).await;
         }
+    }
+
+    fn path_triggers_registry_reload(path: &PathBuf) -> bool {
+        if !path.components().any(|c| c == Component::Normal(".refact".as_ref())) {
+            return false;
+        }
+        path.components().any(|c| {
+            c == Component::Normal("modes".as_ref())
+                || c == Component::Normal("subagents".as_ref())
+                || c == Component::Normal("toolbox_commands".as_ref())
+                || c == Component::Normal("code_lens".as_ref())
+        })
     }
 
     async fn on_dot_git_dir_change(gcx_weak: Weak<ARwLock<GlobalContext>>, event: Event) {

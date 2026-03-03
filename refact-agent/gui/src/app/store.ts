@@ -35,6 +35,7 @@ import {
 import { chatModesApi } from "../services/refact/chatModes";
 import { customizationApi } from "../services/refact/customization";
 import { projectInformationApi } from "../services/refact/projectInformation";
+import { setupStatusApi } from "../services/refact/setupStatus";
 import { extensionsApi } from "../services/refact/extensions";
 import { pluginsApi } from "../services/refact/plugins";
 import { smallCloudApi } from "../services/smallcloud";
@@ -119,6 +120,7 @@ const rootReducer = combineSlices(
     [chatModesApi.reducerPath]: chatModesApi.reducer,
     [customizationApi.reducerPath]: customizationApi.reducer,
     [projectInformationApi.reducerPath]: projectInformationApi.reducer,
+    [setupStatusApi.reducerPath]: setupStatusApi.reducer,
     [extensionsApi.reducerPath]: extensionsApi.reducer,
     [pluginsApi.reducerPath]: pluginsApi.reducer,
     [mcpMarketplaceApi.reducerPath]: mcpMarketplaceApi.reducer,
@@ -214,6 +216,7 @@ export function setUpStore(preloadedState?: Partial<RootState>) {
           chatModesApi.middleware,
           customizationApi.middleware,
           projectInformationApi.middleware,
+          setupStatusApi.middleware,
           extensionsApi.middleware,
           pluginsApi.middleware,
           mcpServerInfoApi.middleware,

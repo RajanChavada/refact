@@ -1436,7 +1436,6 @@ mod tests {
         assert_eq!(canonical_mode_id("task_planner").unwrap(), "task_planner");
         assert_eq!(canonical_mode_id("TASK_AGENT").unwrap(), "task_agent");
         assert_eq!(canonical_mode_id("task_agent").unwrap(), "task_agent");
-        assert_eq!(canonical_mode_id("PROJECT_SUMMARY").unwrap(), "project_summary");
         assert_eq!(canonical_mode_id("PLAN").unwrap(), "plan");
         assert_eq!(canonical_mode_id("my_custom_mode").unwrap(), "my_custom_mode");
         assert_eq!(canonical_mode_id("").unwrap(), "agent");

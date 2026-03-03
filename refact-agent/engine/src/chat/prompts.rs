@@ -419,8 +419,8 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
                 )
                 .await;
             }
-            "project_summary" => {
-                crate::integrations::project_summary_chat::mix_project_summary_messages(
+            "setup" => {
+                crate::integrations::setup_chat::mix_setup_messages(
                     gcx.clone(),
                     &chat_meta,
                     &mut messages,
