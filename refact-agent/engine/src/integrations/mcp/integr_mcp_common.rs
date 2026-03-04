@@ -835,7 +835,7 @@ async fn reconnect_with_backoff<T: MCPTransportInitializer>(
     for attempt in 0..max_attempts {
         let shutdown_flag = match gcx_weak.upgrade() {
             Some(gcx) => gcx.read().await.shutdown_flag.clone(),
-            None => return false,
+            None => Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         if shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
             tracing::info!("MCP reconnect: shutdown detected, aborting reconnect for {}", debug_name);

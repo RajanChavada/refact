@@ -1140,7 +1140,7 @@ pub fn strip_model_from_finetune(model: &str) -> String {
 }
 
 pub fn relative_to_full_url(caps_url: &str, maybe_relative_url: &str) -> Result<String, String> {
-    if maybe_relative_url.starts_with("http") {
+    if maybe_relative_url.contains("://") {
         Ok(maybe_relative_url.to_string())
     } else if maybe_relative_url.is_empty() {
         Ok("".to_string())

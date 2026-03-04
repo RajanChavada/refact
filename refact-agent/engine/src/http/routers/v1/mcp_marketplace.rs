@@ -1174,6 +1174,7 @@ mod tests {
                 url: None,
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec!["*".to_string()],
         };
@@ -1206,6 +1207,7 @@ mod tests {
                 url: None,
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec!["*".to_string()],
         };
@@ -1229,6 +1231,7 @@ mod tests {
                 url: Some("http://localhost:3000/mcp".to_string()),
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec![],
         };
@@ -1256,6 +1259,7 @@ mod tests {
                 url: Some("https://api.example.com/sse".to_string()),
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec![],
         };
@@ -1292,6 +1296,7 @@ mod tests {
                 url: None,
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec!["*".to_string()],
         };
@@ -1312,7 +1317,7 @@ mod tests {
                 icon_url: None,
                 homepage: None,
                 transport: "stdio".to_string(),
-                install_recipe: InstallRecipe { command: Some("cmd".to_string()), url: None, env: HashMap::new(), headers: HashMap::new() },
+                install_recipe: InstallRecipe { command: Some("cmd".to_string()), url: None, env: HashMap::new(), headers: HashMap::new(), args_from_env: vec![] },
                 confirmation_default: vec![],
             },
             source_id: BUNDLED_SOURCE_ID.to_string(),
@@ -1327,7 +1332,7 @@ mod tests {
                 icon_url: None,
                 homepage: None,
                 transport: "http".to_string(),
-                install_recipe: InstallRecipe { command: None, url: Some("https://ex.com".to_string()), env: HashMap::new(), headers: HashMap::new() },
+                install_recipe: InstallRecipe { command: None, url: Some("https://ex.com".to_string()), env: HashMap::new(), headers: HashMap::new(), args_from_env: vec![] },
                 confirmation_default: vec![],
             },
             source_id: SMITHERY_SOURCE_ID.to_string(),
@@ -1350,7 +1355,7 @@ mod tests {
                 icon_url: None,
                 homepage: None,
                 transport: "stdio".to_string(),
-                install_recipe: InstallRecipe { command: Some("cmd".to_string()), url: None, env: HashMap::new(), headers: HashMap::new() },
+                install_recipe: InstallRecipe { command: Some("cmd".to_string()), url: None, env: HashMap::new(), headers: HashMap::new(), args_from_env: vec![] },
                 confirmation_default: vec![],
             },
             source_id: "my-source".to_string(),
@@ -1388,6 +1393,7 @@ mod tests {
                 url: None,
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec![],
         };
@@ -1415,6 +1421,7 @@ mod tests {
                 url: None,
                 env: { let mut m = HashMap::new(); m.insert("BRAVE_API_KEY".to_string(), "".to_string()); m },
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec!["*".to_string()],
         };
@@ -1613,7 +1620,7 @@ mod tests {
                 icon_url: None,
                 homepage: None,
                 transport: "stdio".to_string(),
-                install_recipe: InstallRecipe { command: Some("cmd".to_string()), url: None, env: HashMap::new(), headers: HashMap::new() },
+                install_recipe: InstallRecipe { command: Some("cmd".to_string()), url: None, env: HashMap::new(), headers: HashMap::new(), args_from_env: vec![] },
                 confirmation_default: vec![],
             },
             source_id: source.to_string(),
@@ -1695,6 +1702,7 @@ mod tests {
                 url: None,
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec![],
         };
@@ -1724,6 +1732,7 @@ mod tests {
                 url: None,
                 env: HashMap::new(),
                 headers: HashMap::new(),
+                args_from_env: vec![],
             },
             confirmation_default: vec!["*".to_string()],
         };
@@ -1932,7 +1941,7 @@ mod tests {
                 icon_url: None,
                 homepage: None,
                 transport: "http".to_string(),
-                install_recipe: InstallRecipe { command: None, url: Some("https://api.acme.com/mcp".to_string()), env: HashMap::new(), headers: HashMap::new() },
+                install_recipe: InstallRecipe { command: None, url: Some("https://api.acme.com/mcp".to_string()), env: HashMap::new(), headers: HashMap::new(), args_from_env: vec![] },
                 confirmation_default: vec!["**".to_string()],
             },
             MarketplaceServer {
@@ -1944,7 +1953,7 @@ mod tests {
                 icon_url: None,
                 homepage: None,
                 transport: "stdio".to_string(),
-                install_recipe: InstallRecipe { command: None, url: None, env: HashMap::new(), headers: HashMap::new() },
+                install_recipe: InstallRecipe { command: None, url: None, env: HashMap::new(), headers: HashMap::new(), args_from_env: vec![] },
                 confirmation_default: vec!["**".to_string()],
             },
         ];
