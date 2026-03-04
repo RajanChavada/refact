@@ -1,6 +1,6 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo } from "react";
 import { Badge, Flex, Skeleton, Text } from "@radix-ui/themes";
-import { ChevronDownIcon, ChevronUpIcon, ChevronRightIcon, PlusIcon } from "@radix-ui/react-icons";
+import { ChevronRightIcon, PlusIcon } from "@radix-ui/react-icons";
 import { Virtuoso } from "react-virtuoso";
 import { useAppDispatch } from "../../../../hooks";
 import { push } from "../../../Pages/pagesSlice";
@@ -14,8 +14,6 @@ import styles from "./TasksSection.module.css";
 type TasksSectionProps = {
   breakpoint: DashboardBreakpoint;
 };
-
-const INITIAL_VISIBLE = 4;
 
 function formatTaskTime(dateStr: string): string {
   const date = new Date(dateStr);
@@ -47,8 +45,6 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
   const dispatch = useAppDispatch();
   const { data: tasks, isLoading, isError } = useListTasksQuery(undefined);
   const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
-  const [expanded, setExpanded] = useState(false);
-
   const sortedTasks = useMemo(() => {
     if (!tasks) return [];
     const priority = new Map([
@@ -79,10 +75,6 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
         // Task creation failed
       });
   }, [createTask, dispatch]);
-
-  const toggleExpand = useCallback(() => {
-    setExpanded((prev) => !prev);
-  }, []);
 
   if (isLoading) {
     return (
@@ -132,8 +124,7 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
     );
   }
 
-  const visibleTasks = expanded ? sortedTasks : sortedTasks.slice(0, INITIAL_VISIBLE);
-  const useVirtualization = expanded && sortedTasks.length > 20;
+  const useVirtualization = sortedTasks.length > 20;
 
   const renderTaskItem = (task: TaskMeta) => {
     const progress = task.cards_total > 0
@@ -178,6 +169,16 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
               {task.agents_active} agent{task.agents_active !== 1 ? "s" : ""}
             </Text>
           )}
+          {breakpoint !== "narrow" && task.cards_failed > 0 && (
+            <Text size="1" color="red">
+              {task.cards_failed} failed
+            </Text>
+          )}
+          {breakpoint === "wide" && task.base_branch && (
+            <Text size="1" color="gray" truncate style={{ maxWidth: 80 }}>
+              {task.base_branch}
+            </Text>
+          )}
           <Badge size="1" variant="soft" color={getStatusColor(task.status)}>
             {task.status}
           </Badge>
@@ -191,30 +192,16 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
   };
 
   return (
-    <div className={styles.section} data-expanded={expanded || undefined}>
+    <div className={styles.section}>
       <div className={styles.header}>
-        <button
-          type="button"
-          className={styles.headerToggle}
-          onClick={toggleExpand}
-          aria-expanded={expanded}
-        >
+        <Flex align="center" gap="2">
           <Text size="1" weight="bold" color="gray" className={styles.label}>
             TASKS ({sortedTasks.length})
           </Text>
-          <Flex align="center" gap="1">
-            {!expanded && (
-              <Text size="1" color="gray">
-                {sortedTasks.filter((t) => t.status === "active" || t.status === "planning").length} active
-              </Text>
-            )}
-            {expanded ? (
-              <ChevronUpIcon width={12} height={12} color="var(--gray-9)" />
-            ) : (
-              <ChevronDownIcon width={12} height={12} color="var(--gray-9)" />
-            )}
-          </Flex>
-        </button>
+          <Text size="1" color="gray">
+            {sortedTasks.filter((t) => t.status === "active" || t.status === "planning").length} active
+          </Text>
+        </Flex>
         <button
           type="button"
           className={styles.newTaskButton}
@@ -234,7 +221,7 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
             itemContent={(_index, task) => renderTaskItem(task)}
           />
         ) : (
-          visibleTasks.map((task) => renderTaskItem(task))
+          sortedTasks.map((task) => renderTaskItem(task))
         )}
       </div>
 

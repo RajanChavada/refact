@@ -7,6 +7,7 @@ import { useGetKnowledgeGraphQuery } from "../../../../services/refact/knowledge
 import { SparklineChart } from "./SparklineChart";
 import { TokenDonut } from "./TokenDonut";
 import { ModelBars } from "./ModelBars";
+import { MiniDonut } from "./MiniDonut";
 import { formatTokenCount } from "../../../StatsDashboard/utils/formatters";
 import type { DashboardBreakpoint } from "../../types";
 import type { ConversationStats } from "../../../StatsDashboard/types";
@@ -242,81 +243,124 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
       <div className={styles.card}>
         <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>PROJECT PULSE</Text>
 
-        {topModes.length > 0 && (
-          <div className={styles.cardSection}>
-            <HoverStat label={`${by_mode.length} modes used`}>
-              <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Agent Modes</Text>
-                <Text size="1" color="gray">
-                  Different modes determine which tools and prompts the AI uses.
-                  Common modes: Agent (full tools), Explore (read-only), Chat (no tools).
-                </Text>
-                {by_mode.map((m) => (
-                  <Flex key={m.mode} justify="between" gap="2">
-                    <Text size="1">{m.mode}</Text>
-                    <Text size="1" color="gray">{m.total_calls} calls</Text>
-                  </Flex>
-                ))}
-              </Flex>
-            </HoverStat>
-            {topModes.map((m) => {
-              const pct = Math.round((m.total_calls / totalModeCalls) * 100);
-              return (
-                <Flex key={m.mode} align="center" gap="2">
-                  <div
-                    className={styles.modeFill}
-                    style={{ width: `${Math.max(pct, 4)}%` }}
-                  />
-                  <Text size="1" truncate>{m.mode} ({pct}%)</Text>
-                </Flex>
-              );
-            })}
-          </div>
-        )}
-
-        <div className={styles.cardDivider} />
-
         <div className={styles.cardSection}>
-          <ModelBars models={by_model} />
+          <Flex align="center" gap="3">
+            {topModes.length > 0 && (
+              <MiniDonut
+                segments={topModes.map((m, i) => ({
+                  value: m.total_calls,
+                  color: ["var(--blue-8)", "var(--green-8)", "var(--amber-8)", "var(--purple-8)", "var(--red-8)"][i % 5],
+                  label: m.mode,
+                }))}
+              />
+            )}
+            <Flex direction="column" gap="1" style={{ flex: 1 }}>
+              <HoverStat label={`${by_mode.length} modes used`}>
+                <Flex direction="column" gap="1">
+                  <Text size="2" weight="bold">Agent Modes</Text>
+                  <Text size="1" color="gray">
+                    Different modes determine which tools and prompts the AI uses.
+                    Common modes: Agent (full tools), Explore (read-only), Chat (no tools).
+                  </Text>
+                  {by_mode.map((m) => (
+                    <Flex key={m.mode} justify="between" gap="2">
+                      <Text size="1">{m.mode}</Text>
+                      <Text size="1" color="gray">{m.total_calls} calls</Text>
+                    </Flex>
+                  ))}
+                </Flex>
+              </HoverStat>
+              {topModes.slice(0, 3).map((m) => {
+                const pct = Math.round((m.total_calls / totalModeCalls) * 100);
+                return (
+                  <Text key={m.mode} size="1" color="gray">{m.mode} {pct}%</Text>
+                );
+              })}
+            </Flex>
+          </Flex>
         </div>
 
         <div className={styles.cardDivider} />
 
         <div className={styles.cardSection}>
-          {providerCount > 0 && (
-            <HoverStat label={`${providerCount} active providers`}>
-              <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">LLM Providers</Text>
-                <Text size="1" color="gray">
-                  Configured LLM providers (e.g. OpenAI, Anthropic, local models).
-                </Text>
-                {totalModels > 0 && (
-                  <Text size="1">{totalModels} models available across all providers.</Text>
-                )}
-              </Flex>
-            </HoverStat>
-          )}
-          {integrationCount > 0 && (
-            <HoverStat label={`${integrationCount} integrations`}>
-              <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Integrations</Text>
-                <Text size="1" color="gray">
-                  Connected tools and services: GitHub, Docker, databases, MCP servers, etc.
-                </Text>
-              </Flex>
-            </HoverStat>
-          )}
-          {memoryCount > 0 && (
-            <HoverStat label={`${memoryCount} memories`}>
-              <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Knowledge Memories</Text>
-                <Text size="1" color="gray">
-                  Persistent knowledge entries the AI remembers across sessions.
-                  Includes project patterns, decisions, and learned preferences.
-                </Text>
-              </Flex>
-            </HoverStat>
-          )}
+          <Flex align="center" gap="3">
+            {by_model.length > 0 && (
+              <MiniDonut
+                segments={by_model.slice(0, 5).map((m, i) => ({
+                  value: m.total_tokens,
+                  color: ["var(--blue-8)", "var(--green-8)", "var(--amber-8)", "var(--purple-8)", "var(--red-8)"][i % 5],
+                  label: m.model.split("/").pop() ?? m.model,
+                }))}
+              />
+            )}
+            <Flex direction="column" gap="1" style={{ flex: 1 }}>
+              <HoverStat label={`${by_model.length} models used`}>
+                <Flex direction="column" gap="1">
+                  <Text size="2" weight="bold">Model Usage</Text>
+                  <Text size="1" color="gray">
+                    Token usage across different LLM models in the last 7 days.
+                  </Text>
+                  {by_model.slice(0, 5).map((m) => (
+                    <Flex key={m.model_id || m.model} justify="between" gap="2">
+                      <Text size="1" truncate>{m.model.split("/").pop() ?? m.model}</Text>
+                      <Text size="1" color="gray">{formatTokenCount(m.total_tokens)} tok</Text>
+                    </Flex>
+                  ))}
+                </Flex>
+              </HoverStat>
+              <ModelBars models={by_model} />
+            </Flex>
+          </Flex>
+        </div>
+
+        <div className={styles.cardDivider} />
+
+        <div className={styles.cardSection}>
+          <Flex align="center" gap="3">
+            <MiniDonut
+              segments={[
+                { value: providerCount, color: "var(--blue-8)", label: "Providers" },
+                { value: integrationCount, color: "var(--green-8)", label: "Integrations" },
+                { value: memoryCount, color: "var(--amber-8)", label: "Memories" },
+              ]}
+            />
+            <Flex direction="column" gap="1" style={{ flex: 1 }}>
+              {providerCount > 0 && (
+                <HoverStat label={`${providerCount} active providers`}>
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="bold">LLM Providers</Text>
+                    <Text size="1" color="gray">
+                      Enabled LLM providers (e.g. OpenAI, Anthropic, local models).
+                    </Text>
+                    {totalModels > 0 && (
+                      <Text size="1">{totalModels} models available across all providers.</Text>
+                    )}
+                  </Flex>
+                </HoverStat>
+              )}
+              {integrationCount > 0 && (
+                <HoverStat label={`${integrationCount} integrations`}>
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="bold">Integrations</Text>
+                    <Text size="1" color="gray">
+                      Connected tools and services: GitHub, Docker, databases, MCP servers, etc.
+                    </Text>
+                  </Flex>
+                </HoverStat>
+              )}
+              {memoryCount > 0 && (
+                <HoverStat label={`${memoryCount} memories`}>
+                  <Flex direction="column" gap="1">
+                    <Text size="2" weight="bold">Knowledge Memories</Text>
+                    <Text size="1" color="gray">
+                      Persistent knowledge entries the AI remembers across sessions.
+                      Includes project patterns, decisions, and learned preferences.
+                    </Text>
+                  </Flex>
+                </HoverStat>
+              )}
+            </Flex>
+          </Flex>
         </div>
       </div>
 
