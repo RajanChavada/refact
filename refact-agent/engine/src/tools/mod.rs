@@ -29,6 +29,8 @@ mod tool_trajectory_context;
 mod tool_tree;
 mod tool_web;
 mod tool_web_search;
+mod tool_compress_chat;
+mod tool_handoff_to_mode;
 
 pub mod file_edit;
 mod tool_create_knowledge;

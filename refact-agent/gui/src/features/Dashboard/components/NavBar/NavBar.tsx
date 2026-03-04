@@ -21,12 +21,36 @@ type NavItem = {
 const ICON_SIZE = 15;
 
 const NAV_ITEMS: NavItem[] = [
-  { icon: <BarChartIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Stats", page: { name: "stats dashboard" } },
-  { icon: <MixerHorizontalIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Integrations", page: { name: "integrations page" } },
-  { icon: <GearIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Providers", page: { name: "providers page" } },
-  { icon: <RocketIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Modes", page: { name: "customization" } },
-  { icon: <LightningBoltIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Skills", page: { name: "extensions", tab: "skills" } },
-  { icon: <CubeIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Marketplace", page: { name: "mcp marketplace" } },
+  {
+    icon: <BarChartIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    label: "Stats",
+    page: { name: "stats dashboard" },
+  },
+  {
+    icon: <MixerHorizontalIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    label: "Integrations",
+    page: { name: "integrations page" },
+  },
+  {
+    icon: <GearIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    label: "Providers",
+    page: { name: "providers page" },
+  },
+  {
+    icon: <RocketIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    label: "Modes",
+    page: { name: "customization" },
+  },
+  {
+    icon: <LightningBoltIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    label: "Skills",
+    page: { name: "extensions", tab: "skills" },
+  },
+  {
+    icon: <CubeIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    label: "Marketplace",
+    page: { name: "mcp marketplace" },
+  },
 ];
 
 export const NavBar: React.FC = () => {
@@ -50,7 +74,9 @@ export const NavBar: React.FC = () => {
           aria-label={item.label}
         >
           <span className={styles.icon}>{item.icon}</span>
-          <Text size="1" className={styles.label}>{item.label}</Text>
+          <Text size="1" className={styles.label}>
+            {item.label}
+          </Text>
         </button>
       ))}
     </nav>

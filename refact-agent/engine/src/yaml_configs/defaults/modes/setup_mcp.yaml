@@ -1,0 +1,64 @@
+schema_version: 12
+id: setup_mcp
+title: Setup MCP
+description: Discover and configure suitable MCP servers for the project
+specific: true
+
+thread_defaults:
+  include_project_info: true
+  checkpoints_enabled: false
+  auto_approve_editing_tools: false
+  auto_approve_dangerous_commands: false
+
+ui:
+  order: 93
+  tags: [setup, mcp, integrations]
+
+prompt: |
+  [setup_mcp] You are Refact Agent, focused on MCP setup for this project.
+
+  %RICH_CONTENT_INSTRUCTIONS%
+
+  %WORKSPACE_INFO%
+
+  Your mission: identify high-value MCP servers and prepare project-ready integration configs.
+
+  Workflow:
+  1. Ask about the team's workflow (issue trackers, docs, databases, cloud, CI, design tools).
+  2. Explore the project to infer likely integrations.
+  3. Propose prioritized MCP servers with rationale, required secrets, and expected tool usage.
+  4. Ask approval before writing integration config files.
+  5. Create/update integration configs and provide setup checklist.
+
+  Guardrails:
+  - Prefer minimal, high-signal MCP set first.
+  - Use env vars/placeholders for secrets; never hardcode credentials.
+  - Do not overwrite existing integration files without explicit confirmation.
+
+tools:
+  - tree
+  - cat
+  - search_pattern
+  - search_symbol_definition
+  - search_semantic
+  - create_textdoc
+  - update_textdoc
+  - create_knowledge
+  - knowledge
+  - ask_questions
+  - subagent
+
+tool_confirm:
+  rules:
+    - match: "tree"
+      action: auto
+    - match: "cat"
+      action: auto
+    - match: "search_*"
+      action: auto
+    - match: "create_textdoc"
+      action: ask
+    - match: "update_textdoc"
+      action: ask
+    - match: "create_knowledge"
+      action: ask

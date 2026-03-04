@@ -80,12 +80,15 @@ describe("Delete a Chat form history", () => {
 
     const restoreButtonText = await app.findByText(itemTitleToDelete);
 
-    // Find the delete button - in compact view, it uses aria-label="Delete"
+    // Find the delete button - uses aria-label="Delete chat"
     let container = restoreButtonText.parentElement;
-    while (container && !container.querySelector('[aria-label="Delete"]')) {
+    while (
+      container &&
+      !container.querySelector('[aria-label="Delete chat"]')
+    ) {
       container = container.parentElement;
     }
-    const deleteButton = container?.querySelector('[aria-label="Delete"]');
+    const deleteButton = container?.querySelector('[aria-label="Delete chat"]');
 
     expect(deleteButton).not.toBeNull();
 

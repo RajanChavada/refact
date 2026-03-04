@@ -37,7 +37,8 @@ function get7DaysAgo(): string {
 function formatCost(usd: number | null, coins: number | null): string {
   const parts: string[] = [];
   if (usd != null && usd > 0) parts.push(`$${usd.toFixed(2)}`);
-  if (coins != null && coins > 0) parts.push(`${formatTokenCount(coins)} coins`);
+  if (coins != null && coins > 0)
+    parts.push(`${formatTokenCount(coins)} coins`);
   if (parts.length === 0) return "free";
   return parts.join(" / ");
 }
@@ -47,13 +48,25 @@ function formatRate(perDay: number): string {
   return `~$${perDay.toFixed(2)}/day`;
 }
 
-function HoverStat({ label, children }: { label: string; children: React.ReactNode }) {
+function HoverStat({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <HoverCard.Root openDelay={300} closeDelay={100}>
       <HoverCard.Trigger>
         <span className={styles.hoverTrigger}>{label}</span>
       </HoverCard.Trigger>
-      <HoverCard.Content size="1" side="top" align="center" className={styles.hoverContent} avoidCollisions>
+      <HoverCard.Content
+        size="1"
+        side="top"
+        align="center"
+        className={styles.hoverContent}
+        avoidCollisions
+      >
         {children}
       </HoverCard.Content>
     </HoverCard.Root>
@@ -64,50 +77,117 @@ function formatResetAt(resetAt: string | null | undefined): string | null {
   if (!resetAt) return null;
   const d = new Date(resetAt);
   if (isNaN(d.getTime())) return null;
-  return `Resets ${d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+  return `Resets ${d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }
 
 function UsageBar({ pct }: { pct: number }) {
   const clamped = Math.max(0, Math.min(pct, 100));
-  const color = clamped >= 90 ? "var(--red-9)" : clamped >= 70 ? "var(--orange-9)" : "var(--green-9)";
+  const color =
+    clamped >= 90
+      ? "var(--red-9)"
+      : clamped >= 70
+        ? "var(--orange-9)"
+        : "var(--green-9)";
   return (
-    <div style={{ height: "3px", width: "100%", borderRadius: "2px", background: "var(--gray-a4)", overflow: "hidden", marginTop: "3px" }}>
-      <div style={{ height: "100%", width: `${clamped}%`, borderRadius: "2px", background: color, transition: "width 0.3s ease" }} />
+    <div
+      style={{
+        height: "3px",
+        width: "100%",
+        borderRadius: "2px",
+        background: "var(--gray-a4)",
+        overflow: "hidden",
+        marginTop: "3px",
+      }}
+    >
+      <div
+        style={{
+          height: "100%",
+          width: `${clamped}%`,
+          borderRadius: "2px",
+          background: color,
+          transition: "width 0.3s ease",
+        }}
+      />
     </div>
   );
 }
 
-function WindowRow({ label, pct, resetAt, limitReached }: { label: string; pct: number; resetAt?: string | null; limitReached?: boolean }) {
+function WindowRow({
+  label,
+  pct,
+  resetAt,
+  limitReached,
+}: {
+  label: string;
+  pct: number;
+  resetAt?: string | null;
+  limitReached?: boolean;
+}) {
   const clamped = Math.max(0, Math.min(pct, 100));
   const reset = formatResetAt(resetAt);
   return (
     <div style={{ marginBottom: "6px" }}>
       <Flex justify="between" align="center">
         <Flex align="center" gap="1">
-          <Text size="1" color="gray">{label}</Text>
-          {limitReached && <Badge color="red" size="1">Limit</Badge>}
+          <Text size="1" color="gray">
+            {label}
+          </Text>
+          {limitReached && (
+            <Badge color="red" size="1">
+              Limit
+            </Badge>
+          )}
         </Flex>
-        <Text size="1" color="gray">{Math.round(clamped)}%{reset ? ` · ${reset}` : ""}</Text>
+        <Text size="1" color="gray">
+          {Math.round(clamped)}%{reset ? ` · ${reset}` : ""}
+        </Text>
       </Flex>
       <UsageBar pct={clamped} />
     </div>
   );
 }
 
-function ModelRow({ label, model, explanation }: { label: string; model: string; explanation: string }) {
+function ModelRow({
+  label,
+  model,
+  explanation,
+}: {
+  label: string;
+  model: string;
+  explanation: string;
+}) {
   const shortName = model.split("/").pop() ?? model;
   return (
     <HoverCard.Root openDelay={300} closeDelay={100}>
       <HoverCard.Trigger>
         <Flex align="center" gap="2" style={{ cursor: "help" }}>
-          <Text size="1" color="gray" style={{ minWidth: 70, flexShrink: 0 }}>{label}</Text>
-          <Text size="1" weight="medium" truncate>{shortName}</Text>
+          <Text size="1" color="gray" style={{ minWidth: 70, flexShrink: 0 }}>
+            {label}
+          </Text>
+          <Text size="1" weight="medium" truncate>
+            {shortName}
+          </Text>
         </Flex>
       </HoverCard.Trigger>
-      <HoverCard.Content size="1" side="top" align="center" className={styles.hoverContent} avoidCollisions>
+      <HoverCard.Content
+        size="1"
+        side="top"
+        align="center"
+        className={styles.hoverContent}
+        avoidCollisions
+      >
         <Flex direction="column" gap="1">
-          <Text size="2" weight="bold">{label}</Text>
-          <Text size="1" color="gray">{explanation}</Text>
+          <Text size="2" weight="bold">
+            {label}
+          </Text>
+          <Text size="1" color="gray">
+            {explanation}
+          </Text>
           <Text size="1">Current: {model}</Text>
         </Flex>
       </HoverCard.Content>
@@ -122,7 +202,9 @@ function DefaultModelsCard() {
   return (
     <div className={styles.card}>
       <Flex justify="between" align="center" className={styles.cardTitle}>
-        <Text size="1" weight="bold" color="gray">DEFAULT MODELS</Text>
+        <Text size="1" weight="bold" color="gray">
+          DEFAULT MODELS
+        </Text>
         <button
           type="button"
           className={styles.configureButton}
@@ -140,19 +222,38 @@ function DefaultModelsCard() {
       ) : (
         <div className={styles.cardSection}>
           {caps.chat_default_model && (
-            <ModelRow label="Chat" model={caps.chat_default_model} explanation="Primary model for chat conversations and agent tasks." />
+            <ModelRow
+              label="Chat"
+              model={caps.chat_default_model}
+              explanation="Primary model for chat conversations and agent tasks."
+            />
           )}
-          {caps.chat_thinking_model && caps.chat_thinking_model !== caps.chat_default_model && (
-            <ModelRow label="Thinking" model={caps.chat_thinking_model} explanation="Model with extended reasoning for complex tasks." />
-          )}
-          {caps.chat_light_model && caps.chat_light_model !== caps.chat_default_model && (
-            <ModelRow label="Light" model={caps.chat_light_model} explanation="Faster, cheaper model for simple tasks." />
-          )}
+          {caps.chat_thinking_model &&
+            caps.chat_thinking_model !== caps.chat_default_model && (
+              <ModelRow
+                label="Thinking"
+                model={caps.chat_thinking_model}
+                explanation="Model with extended reasoning for complex tasks."
+              />
+            )}
+          {caps.chat_light_model &&
+            caps.chat_light_model !== caps.chat_default_model && (
+              <ModelRow
+                label="Light"
+                model={caps.chat_light_model}
+                explanation="Faster, cheaper model for simple tasks."
+              />
+            )}
           {caps.completion_default_model && (
-            <ModelRow label="Completion" model={caps.completion_default_model} explanation="Model for inline code completion." />
+            <ModelRow
+              label="Completion"
+              model={caps.completion_default_model}
+              explanation="Model for inline code completion."
+            />
           )}
           <Text size="1" color="gray">
-            {Object.keys(caps.chat_models).length} chat + {Object.keys(caps.completion_models).length} completion available
+            {Object.keys(caps.chat_models).length} chat +{" "}
+            {Object.keys(caps.completion_models).length} completion available
           </Text>
         </div>
       )}
@@ -161,21 +262,32 @@ function DefaultModelsCard() {
 }
 
 function ProviderQuotaCard() {
-  const { data: claudeUsage } = useGetClaudeCodeUsageQuery(undefined, { pollingInterval: 5 * 60_000 });
-  const { data: codexUsage } = useGetOpenAICodexUsageQuery(undefined, { pollingInterval: 5 * 60_000 });
+  const { data: claudeUsage } = useGetClaudeCodeUsageQuery(undefined, {
+    pollingInterval: 5 * 60_000,
+  });
+  const { data: codexUsage } = useGetOpenAICodexUsageQuery(undefined, {
+    pollingInterval: 5 * 60_000,
+  });
 
-  const hasClaudeData = !!(claudeUsage?.data && (claudeUsage.data.five_hour || claudeUsage.data.seven_day));
-  const hasCodexData = !!(codexUsage?.data?.rate_limit);
+  const hasClaudeData = !!(
+    claudeUsage?.data &&
+    (claudeUsage.data.five_hour ?? claudeUsage.data.seven_day)
+  );
+  const hasCodexData = !!codexUsage?.data?.rate_limit;
 
   if (!hasClaudeData && !hasCodexData) return null;
 
   return (
     <div className={styles.card}>
-      <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>PROVIDER QUOTAS</Text>
+      <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>
+        PROVIDER QUOTAS
+      </Text>
 
-      {hasClaudeData && claudeUsage?.data && (
+      {hasClaudeData && claudeUsage.data && (
         <div className={styles.cardSection}>
-          <Text size="1" weight="medium" mb="1" as="p">Claude Code</Text>
+          <Text size="1" weight="medium" mb="1" as="p">
+            Claude Code
+          </Text>
           {claudeUsage.data.five_hour && (
             <WindowRow
               label="Session (5h)"
@@ -192,7 +304,8 @@ function ProviderQuotaCard() {
           )}
           {claudeUsage.data.extra_usage && (
             <Text size="1" color="gray">
-              Extra: {claudeUsage.data.extra_usage.is_enabled ? "on" : "off"} · ${claudeUsage.data.extra_usage.used_credits.toFixed(2)} spent
+              Extra: {claudeUsage.data.extra_usage.is_enabled ? "on" : "off"} ·
+              ${claudeUsage.data.extra_usage.used_credits.toFixed(2)} spent
               {typeof claudeUsage.data.extra_usage.monthly_limit === "number"
                 ? ` / $${claudeUsage.data.extra_usage.monthly_limit.toFixed(0)}`
                 : ""}
@@ -203,11 +316,17 @@ function ProviderQuotaCard() {
 
       {hasClaudeData && hasCodexData && <div className={styles.cardDivider} />}
 
-      {hasCodexData && codexUsage?.data && (
+      {hasCodexData && codexUsage.data && (
         <div className={styles.cardSection}>
           <Flex align="center" gap="2" mb="1">
-            <Text size="1" weight="medium">OpenAI Codex</Text>
-            {codexUsage.data.plan_type && <Badge color="blue" size="1">{codexUsage.data.plan_type}</Badge>}
+            <Text size="1" weight="medium">
+              OpenAI Codex
+            </Text>
+            {codexUsage.data.plan_type && (
+              <Badge color="blue" size="1">
+                {codexUsage.data.plan_type}
+              </Badge>
+            )}
           </Flex>
           {codexUsage.data.rate_limit?.primary_window && (
             <WindowRow
@@ -227,13 +346,23 @@ function ProviderQuotaCard() {
           {codexUsage.data.code_review_rate_limit?.primary_window && (
             <WindowRow
               label="Code review"
-              pct={codexUsage.data.code_review_rate_limit.primary_window.used_percent}
-              limitReached={codexUsage.data.code_review_rate_limit.limit_reached}
+              pct={
+                codexUsage.data.code_review_rate_limit.primary_window
+                  .used_percent
+              }
+              limitReached={
+                codexUsage.data.code_review_rate_limit.limit_reached
+              }
             />
           )}
           {codexUsage.data.credits && (
             <Text size="1" color="gray">
-              Credits: {codexUsage.data.credits.unlimited ? "unlimited" : codexUsage.data.credits.has_credits ? `${codexUsage.data.credits.balance} remaining` : "none"}
+              Credits:{" "}
+              {codexUsage.data.credits.unlimited
+                ? "unlimited"
+                : codexUsage.data.credits.has_credits
+                  ? `${codexUsage.data.credits.balance} remaining`
+                  : "none"}
             </Text>
           )}
         </div>
@@ -251,10 +380,12 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
   const from = useMemo(() => get7DaysAgo(), [todayKey]);
   const { data, isLoading, isError } = useGetStatsSummaryQuery({ from });
   const { data: providersData } = useGetConfiguredProvidersQuery();
-  const { data: integrationsData } = integrationsApi.useGetAllIntegrationsQuery(undefined);
+  const { data: integrationsData } =
+    integrationsApi.useGetAllIntegrationsQuery(undefined);
   const { data: knowledgeData } = useGetKnowledgeGraphQuery(undefined);
 
-  const providerCount = providersData?.providers.filter((p) => p.enabled).length ?? 0;
+  const providerCount =
+    providersData?.providers.filter((p) => p.enabled).length ?? 0;
   const integrationCount = integrationsData?.integrations.length ?? 0;
   const memoryCount = knowledgeData?.stats.active_docs ?? 0;
 
@@ -268,7 +399,9 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
   if (isError) {
     return (
       <div className={styles.compactRow}>
-        <Text size="1" color="red">Failed to load stats</Text>
+        <Text size="1" color="red">
+          Failed to load stats
+        </Text>
       </div>
     );
   }
@@ -277,7 +410,9 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
     if (compact) {
       return (
         <div className={styles.compactRow}>
-          <Skeleton><Text size="1">Loading stats...</Text></Skeleton>
+          <Skeleton>
+            <Text size="1">Loading stats...</Text>
+          </Skeleton>
         </div>
       );
     }
@@ -301,25 +436,31 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
   }
 
   const { totals, by_day, by_model, by_mode, top_conversations } = data;
-  const successRate = totals.total_calls > 0
-    ? Math.round((totals.successful_calls / totals.total_calls) * 100)
-    : 0;
-  const successColor = successRate >= 95 ? "green" : successRate >= 80 ? "amber" : "red";
+  const successRate =
+    totals.total_calls > 0
+      ? Math.round((totals.successful_calls / totals.total_calls) * 100)
+      : 0;
+  const successColor =
+    successRate >= 95 ? "green" : successRate >= 80 ? "amber" : "red";
   const costStr = formatCost(totals.total_cost_usd, totals.total_cost_coins);
   const failedCalls = totals.failed_calls;
-  const cacheHitRate = totals.total_tokens > 0
-    ? Math.round(((totals.total_cache_read_tokens) / totals.total_tokens) * 100)
-    : 0;
+  const cacheHitRate =
+    totals.total_tokens > 0
+      ? Math.round((totals.total_cache_read_tokens / totals.total_tokens) * 100)
+      : 0;
 
-  const dailyCostUsd = totals.total_cost_usd != null ? totals.total_cost_usd / 7 : 0;
-  const dailyCostCoins = totals.total_cost_coins != null ? totals.total_cost_coins / 7 : 0;
+  const dailyCostUsd =
+    totals.total_cost_usd != null ? totals.total_cost_usd / 7 : 0;
+  const dailyCostCoins =
+    totals.total_cost_coins != null ? totals.total_cost_coins / 7 : 0;
   const hasUsageTracking = totals.total_calls > 0;
 
   if (compact) {
     return (
       <div className={styles.compactRow}>
         <Text size="1" color="gray">
-          {totals.total_conversations} chats · {formatTokenCount(totals.total_tokens)} tok · {costStr}
+          {totals.total_conversations} chats ·{" "}
+          {formatTokenCount(totals.total_tokens)} tok · {costStr}
           {totals.total_calls > 0 ? ` · ${successRate}% ok` : ""}
         </Text>
       </div>
@@ -330,21 +471,34 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
     return (
       <div className={styles.narrowStats}>
         <Flex justify="between" align="center">
-          <Text size="1" color="gray">{totals.total_conversations} chats · {formatTokenCount(totals.total_tokens)} tok</Text>
-          <Text size="1" color="gray">{costStr}</Text>
+          <Text size="1" color="gray">
+            {totals.total_conversations} chats ·{" "}
+            {formatTokenCount(totals.total_tokens)} tok
+          </Text>
+          <Text size="1" color="gray">
+            {costStr}
+          </Text>
         </Flex>
         <Flex justify="between" align="center" gap="2">
           {totals.total_calls > 0 && (
-            <Badge size="1" color={successColor} variant="soft">{successRate}% success</Badge>
+            <Badge size="1" color={successColor} variant="soft">
+              {successRate}% success
+            </Badge>
           )}
-          {providerCount > 0 && <Text size="1" color="gray">{providerCount} active providers</Text>}
+          {providerCount > 0 && (
+            <Text size="1" color="gray">
+              {providerCount} active providers
+            </Text>
+          )}
         </Flex>
         <SparklineChart days={by_day} />
       </div>
     );
   }
 
-  const topModes = [...by_mode].sort((a, b) => b.total_calls - a.total_calls).slice(0, 3);
+  const topModes = [...by_mode]
+    .sort((a, b) => b.total_calls - a.total_calls)
+    .slice(0, 3);
   const totalModeCalls = topModes.reduce((s, m) => s + m.total_calls, 0) || 1;
 
   return (
@@ -353,15 +507,24 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
       <ProviderQuotaCard />
       {/* Card 1: 7-Day Activity */}
       <div className={styles.card}>
-        <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>7-DAY ACTIVITY</Text>
+        <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>
+          7-DAY ACTIVITY
+        </Text>
 
         <div className={styles.cardSection}>
           <Flex justify="between" align="center">
             <HoverStat label={`${totals.total_conversations} conversations`}>
               <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Conversations</Text>
-                <Text size="1" color="gray">Total unique chat sessions in the last 7 days.</Text>
-                <Text size="1">{totals.total_messages_sent} user messages sent across all chats.</Text>
+                <Text size="2" weight="bold">
+                  Conversations
+                </Text>
+                <Text size="1" color="gray">
+                  Total unique chat sessions in the last 7 days.
+                </Text>
+                <Text size="1">
+                  {totals.total_messages_sent} user messages sent across all
+                  chats.
+                </Text>
               </Flex>
             </HoverStat>
           </Flex>
@@ -374,21 +537,41 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
             <TokenDonut
               prompt={totals.total_prompt_tokens}
               completion={totals.total_completion_tokens}
-              cache={totals.total_cache_read_tokens + totals.total_cache_creation_tokens}
+              cache={
+                totals.total_cache_read_tokens +
+                totals.total_cache_creation_tokens
+              }
             />
           </Flex>
-          <HoverStat label={`${formatTokenCount(totals.total_tokens)} total tokens`}>
+          <HoverStat
+            label={`${formatTokenCount(totals.total_tokens)} total tokens`}
+          >
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">Token Breakdown</Text>
-              <Text size="1">Prompt: {formatTokenCount(totals.total_prompt_tokens)}</Text>
-              <Text size="1">Completion: {formatTokenCount(totals.total_completion_tokens)}</Text>
-              <Text size="1">Cache read: {formatTokenCount(totals.total_cache_read_tokens)}</Text>
-              <Text size="1">Cache created: {formatTokenCount(totals.total_cache_creation_tokens)}</Text>
+              <Text size="2" weight="bold">
+                Token Breakdown
+              </Text>
+              <Text size="1">
+                Prompt: {formatTokenCount(totals.total_prompt_tokens)}
+              </Text>
+              <Text size="1">
+                Completion: {formatTokenCount(totals.total_completion_tokens)}
+              </Text>
+              <Text size="1">
+                Cache read: {formatTokenCount(totals.total_cache_read_tokens)}
+              </Text>
+              <Text size="1">
+                Cache created:{" "}
+                {formatTokenCount(totals.total_cache_creation_tokens)}
+              </Text>
               {cacheHitRate > 0 && (
-                <Text size="1" color="gray">Cache hit rate: {cacheHitRate}% of tokens served from cache.</Text>
+                <Text size="1" color="gray">
+                  Cache hit rate: {cacheHitRate}% of tokens served from cache.
+                </Text>
               )}
               {!hasUsageTracking && (
-                <Text size="1" color="amber">Note: Not all threads have tracked usage data.</Text>
+                <Text size="1" color="amber">
+                  Note: Not all threads have tracked usage data.
+                </Text>
               )}
             </Flex>
           </HoverStat>
@@ -401,24 +584,39 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
             <Flex justify="between" align="center">
               <HoverStat label={`${successRate}% success`}>
                 <Flex direction="column" gap="1">
-                  <Text size="2" weight="bold">LLM Call Success Rate</Text>
+                  <Text size="2" weight="bold">
+                    LLM Call Success Rate
+                  </Text>
                   <Text size="1" color="gray">
                     Percentage of successful LLM API calls out of all attempts.
-                    Failures include network errors, rate limits, and model errors.
+                    Failures include network errors, rate limits, and model
+                    errors.
                   </Text>
-                  <Text size="1">{totals.successful_calls} succeeded / {totals.total_calls} total calls</Text>
+                  <Text size="1">
+                    {totals.successful_calls} succeeded / {totals.total_calls}{" "}
+                    total calls
+                  </Text>
                   {failedCalls > 0 && (
-                    <Text size="1" color="red">{failedCalls} failed calls (retries, timeouts, rate limits)</Text>
+                    <Text size="1" color="red">
+                      {failedCalls} failed calls (retries, timeouts, rate
+                      limits)
+                    </Text>
                   )}
                 </Flex>
               </HoverStat>
-              <Badge size="1" color={successColor} variant="soft">{successRate}%</Badge>
+              <Badge size="1" color={successColor} variant="soft">
+                {successRate}%
+              </Badge>
             </Flex>
           )}
           {totals.avg_duration_ms > 0 && (
-            <HoverStat label={`Avg ${Math.round(totals.avg_duration_ms)}ms response`}>
+            <HoverStat
+              label={`Avg ${Math.round(totals.avg_duration_ms)}ms response`}
+            >
               <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Average Response Time</Text>
+                <Text size="2" weight="bold">
+                  Average Response Time
+                </Text>
                 <Text size="1" color="gray">
                   Mean duration of LLM API calls, from request to full response.
                   Includes network latency and model inference time.
@@ -432,7 +630,9 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
 
       {/* Card 2: Project Pulse */}
       <div className={styles.card}>
-        <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>PROJECT PULSE</Text>
+        <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>
+          PROJECT PULSE
+        </Text>
 
         <div className={styles.cardSection}>
           <Flex align="center" gap="3">
@@ -440,7 +640,13 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
               <MiniDonut
                 segments={topModes.map((m, i) => ({
                   value: m.total_calls,
-                  color: ["var(--blue-8)", "var(--green-8)", "var(--amber-8)", "var(--purple-8)", "var(--red-8)"][i % 5],
+                  color: [
+                    "var(--blue-8)",
+                    "var(--green-8)",
+                    "var(--amber-8)",
+                    "var(--purple-8)",
+                    "var(--red-8)",
+                  ][i % 5],
                   label: m.mode,
                 }))}
               />
@@ -448,15 +654,20 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
             <Flex direction="column" gap="1" style={{ flex: 1 }}>
               <HoverStat label={`${by_mode.length} modes used`}>
                 <Flex direction="column" gap="1">
-                  <Text size="2" weight="bold">Agent Modes</Text>
+                  <Text size="2" weight="bold">
+                    Agent Modes
+                  </Text>
                   <Text size="1" color="gray">
-                    Different modes determine which tools and prompts the AI uses.
-                    Common modes: Agent (full tools), Explore (read-only), Chat (no tools).
+                    Different modes determine which tools and prompts the AI
+                    uses. Common modes: Agent (full tools), Explore (read-only),
+                    Chat (no tools).
                   </Text>
                   {by_mode.map((m) => (
                     <Flex key={m.mode} justify="between" gap="2">
                       <Text size="1">{m.mode}</Text>
-                      <Text size="1" color="gray">{m.total_calls} calls</Text>
+                      <Text size="1" color="gray">
+                        {m.total_calls} calls
+                      </Text>
                     </Flex>
                   ))}
                 </Flex>
@@ -464,7 +675,9 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
               {topModes.slice(0, 3).map((m) => {
                 const pct = Math.round((m.total_calls / totalModeCalls) * 100);
                 return (
-                  <Text key={m.mode} size="1" color="gray">{m.mode} {pct}%</Text>
+                  <Text key={m.mode} size="1" color="gray">
+                    {m.mode} {pct}%
+                  </Text>
                 );
               })}
             </Flex>
@@ -479,7 +692,13 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
               <MiniDonut
                 segments={by_model.slice(0, 5).map((m, i) => ({
                   value: m.total_tokens,
-                  color: ["var(--blue-8)", "var(--green-8)", "var(--amber-8)", "var(--purple-8)", "var(--red-8)"][i % 5],
+                  color: [
+                    "var(--blue-8)",
+                    "var(--green-8)",
+                    "var(--amber-8)",
+                    "var(--purple-8)",
+                    "var(--red-8)",
+                  ][i % 5],
                   label: m.model.split("/").pop() ?? m.model,
                 }))}
               />
@@ -487,14 +706,20 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
             <Flex direction="column" gap="1" style={{ flex: 1 }}>
               <HoverStat label={`${by_model.length} models used`}>
                 <Flex direction="column" gap="1">
-                  <Text size="2" weight="bold">Model Usage</Text>
+                  <Text size="2" weight="bold">
+                    Model Usage
+                  </Text>
                   <Text size="1" color="gray">
                     Token usage across different LLM models in the last 7 days.
                   </Text>
                   {by_model.slice(0, 5).map((m) => (
                     <Flex key={m.model_id || m.model} justify="between" gap="2">
-                      <Text size="1" truncate>{m.model.split("/").pop() ?? m.model}</Text>
-                      <Text size="1" color="gray">{formatTokenCount(m.total_tokens)} tok</Text>
+                      <Text size="1" truncate>
+                        {m.model.split("/").pop() ?? m.model}
+                      </Text>
+                      <Text size="1" color="gray">
+                        {formatTokenCount(m.total_tokens)} tok
+                      </Text>
                     </Flex>
                   ))}
                 </Flex>
@@ -510,21 +735,38 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
           <Flex align="center" gap="3">
             <MiniDonut
               segments={[
-                { value: providerCount, color: "var(--blue-8)", label: "Providers" },
-                { value: integrationCount, color: "var(--green-8)", label: "Integrations" },
-                { value: memoryCount, color: "var(--amber-8)", label: "Memories" },
+                {
+                  value: providerCount,
+                  color: "var(--blue-8)",
+                  label: "Providers",
+                },
+                {
+                  value: integrationCount,
+                  color: "var(--green-8)",
+                  label: "Integrations",
+                },
+                {
+                  value: memoryCount,
+                  color: "var(--amber-8)",
+                  label: "Memories",
+                },
               ]}
             />
             <Flex direction="column" gap="1" style={{ flex: 1 }}>
               {providerCount > 0 && (
                 <HoverStat label={`${providerCount} active providers`}>
                   <Flex direction="column" gap="1">
-                    <Text size="2" weight="bold">LLM Providers</Text>
+                    <Text size="2" weight="bold">
+                      LLM Providers
+                    </Text>
                     <Text size="1" color="gray">
-                      Enabled LLM providers (e.g. OpenAI, Anthropic, local models).
+                      Enabled LLM providers (e.g. OpenAI, Anthropic, local
+                      models).
                     </Text>
                     {totalModels > 0 && (
-                      <Text size="1">{totalModels} models available across all providers.</Text>
+                      <Text size="1">
+                        {totalModels} models available across all providers.
+                      </Text>
                     )}
                   </Flex>
                 </HoverStat>
@@ -532,9 +774,12 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
               {integrationCount > 0 && (
                 <HoverStat label={`${integrationCount} integrations`}>
                   <Flex direction="column" gap="1">
-                    <Text size="2" weight="bold">Integrations</Text>
+                    <Text size="2" weight="bold">
+                      Integrations
+                    </Text>
                     <Text size="1" color="gray">
-                      Connected tools and services: GitHub, Docker, databases, MCP servers, etc.
+                      Connected tools and services: GitHub, Docker, databases,
+                      MCP servers, etc.
                     </Text>
                   </Flex>
                 </HoverStat>
@@ -542,10 +787,13 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
               {memoryCount > 0 && (
                 <HoverStat label={`${memoryCount} memories`}>
                   <Flex direction="column" gap="1">
-                    <Text size="2" weight="bold">Knowledge Memories</Text>
+                    <Text size="2" weight="bold">
+                      Knowledge Memories
+                    </Text>
                     <Text size="1" color="gray">
-                      Persistent knowledge entries the AI remembers across sessions.
-                      Includes project patterns, decisions, and learned preferences.
+                      Persistent knowledge entries the AI remembers across
+                      sessions. Includes project patterns, decisions, and
+                      learned preferences.
                     </Text>
                   </Flex>
                 </HoverStat>
@@ -557,30 +805,47 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
 
       {/* Card 3: Spending */}
       <div className={styles.card}>
-        <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>SPENDING</Text>
+        <Text size="1" weight="bold" color="gray" className={styles.cardTitle}>
+          SPENDING
+        </Text>
 
         <div className={styles.cardSection}>
           <HoverStat label={`Total: ${costStr}`}>
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">7-Day Cost</Text>
+              <Text size="2" weight="bold">
+                7-Day Cost
+              </Text>
               {totals.total_cost_usd != null && totals.total_cost_usd > 0 && (
                 <Text size="1">USD: ${totals.total_cost_usd.toFixed(4)}</Text>
               )}
-              {totals.total_cost_coins != null && totals.total_cost_coins > 0 && (
-                <Text size="1">Coins: {totals.total_cost_coins.toFixed(1)}</Text>
-              )}
+              {totals.total_cost_coins != null &&
+                totals.total_cost_coins > 0 && (
+                  <Text size="1">
+                    Coins: {totals.total_cost_coins.toFixed(1)}
+                  </Text>
+                )}
               <Text size="1" color="gray">
-                Cost is calculated per LLM API call based on token usage.
-                Not all conversations may have tracked cost data.
+                Cost is calculated per LLM API call based on token usage. Not
+                all conversations may have tracked cost data.
               </Text>
             </Flex>
           </HoverStat>
-          <HoverStat label={`Rate: ${dailyCostUsd > 0 ? formatRate(dailyCostUsd) : dailyCostCoins > 0 ? `~${Math.round(dailyCostCoins)} coins/day` : "free"}`}>
+          <HoverStat
+            label={`Rate: ${
+              dailyCostUsd > 0
+                ? formatRate(dailyCostUsd)
+                : dailyCostCoins > 0
+                  ? `~${Math.round(dailyCostCoins)} coins/day`
+                  : "free"
+            }`}
+          >
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">Daily Spend Rate</Text>
+              <Text size="2" weight="bold">
+                Daily Spend Rate
+              </Text>
               <Text size="1" color="gray">
-                Average daily cost over the last 7 days.
-                Actual daily spend varies based on usage patterns.
+                Average daily cost over the last 7 days. Actual daily spend
+                varies based on usage patterns.
               </Text>
             </Flex>
           </HoverStat>
@@ -590,12 +855,23 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
 
         {top_conversations.length > 0 && (
           <div className={styles.cardSection}>
-            <Text size="1" color="gray">Top spenders:</Text>
+            <Text size="1" color="gray">
+              Top spenders:
+            </Text>
             {top_conversations.slice(0, 3).map((conv: ConversationStats) => {
-              const convCost = formatCost(conv.total_cost_usd, conv.total_cost_coins);
-              const shortModel = conv.model_id.split("/").pop() ?? conv.model_id;
+              const convCost = formatCost(
+                conv.total_cost_usd,
+                conv.total_cost_coins,
+              );
+              const shortModel =
+                conv.model_id.split("/").pop() ?? conv.model_id;
               return (
-                <Flex key={conv.chat_id} justify="between" align="center" gap="1">
+                <Flex
+                  key={conv.chat_id}
+                  justify="between"
+                  align="center"
+                  gap="1"
+                >
                   <Text size="1" truncate style={{ flex: 1, minWidth: 0 }}>
                     {shortModel}
                   </Text>
@@ -611,18 +887,30 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
         <div className={styles.cardDivider} />
 
         <div className={styles.cardSection}>
-          <HoverStat label={`${formatTokenCount(totals.total_prompt_tokens)} prompt tokens`}>
+          <HoverStat
+            label={`${formatTokenCount(
+              totals.total_prompt_tokens,
+            )} prompt tokens`}
+          >
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">Prompt Tokens</Text>
+              <Text size="2" weight="bold">
+                Prompt Tokens
+              </Text>
               <Text size="1" color="gray">
-                Tokens sent to the LLM (system prompt + conversation context + tool results).
-                This is typically the largest cost component.
+                Tokens sent to the LLM (system prompt + conversation context +
+                tool results). This is typically the largest cost component.
               </Text>
             </Flex>
           </HoverStat>
-          <HoverStat label={`${formatTokenCount(totals.total_completion_tokens)} completion tokens`}>
+          <HoverStat
+            label={`${formatTokenCount(
+              totals.total_completion_tokens,
+            )} completion tokens`}
+          >
             <Flex direction="column" gap="1">
-              <Text size="2" weight="bold">Completion Tokens</Text>
+              <Text size="2" weight="bold">
+                Completion Tokens
+              </Text>
               <Text size="1" color="gray">
                 Tokens generated by the LLM (responses, tool calls, reasoning).
                 Usually 3-5x more expensive per token than prompt tokens.
@@ -632,12 +920,18 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
           {cacheHitRate > 0 && (
             <HoverStat label={`${cacheHitRate}% cache hit rate`}>
               <Flex direction="column" gap="1">
-                <Text size="2" weight="bold">Cache Efficiency</Text>
-                <Text size="1" color="gray">
-                  Percentage of tokens served from provider cache (Anthropic prompt caching, etc.).
-                  Cached tokens are significantly cheaper than fresh computation.
+                <Text size="2" weight="bold">
+                  Cache Efficiency
                 </Text>
-                <Text size="1">{formatTokenCount(totals.total_cache_read_tokens)} tokens read from cache.</Text>
+                <Text size="1" color="gray">
+                  Percentage of tokens served from provider cache (Anthropic
+                  prompt caching, etc.). Cached tokens are significantly cheaper
+                  than fresh computation.
+                </Text>
+                <Text size="1">
+                  {formatTokenCount(totals.total_cache_read_tokens)} tokens read
+                  from cache.
+                </Text>
               </Flex>
             </HoverStat>
           )}

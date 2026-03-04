@@ -26,7 +26,9 @@ function cleanupOldKeys() {
   try {
     localStorage.removeItem("dashboard:v1:top_ratio");
     localStorage.removeItem("dashboard:v1:bottom_ratio");
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function useDashboardResize(
@@ -34,24 +36,39 @@ export function useDashboardResize(
   storageKey = "dashboard:v1:split_ratio",
   defaultRatio = 0.5,
 ) {
-  const [ratio, setRatio] = useState<number>(() => loadRatio(storageKey, defaultRatio));
+  const [ratio, setRatio] = useState<number>(() =>
+    loadRatio(storageKey, defaultRatio),
+  );
 
-  useEffect(() => { cleanupOldKeys(); }, []);
+  useEffect(() => {
+    cleanupOldKeys();
+  }, []);
 
-  const handleDrag = useCallback((clientY: number) => {
-    const container = containerRef.current;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
-    if (!Number.isFinite(rect.height) || rect.height <= 0) return;
-    const newRatio = clampRatio((clientY - rect.top) / rect.height);
-    setRatio(newRatio);
-    try { localStorage.setItem(storageKey, String(newRatio)); } catch { /* ignore */ }
-  }, [containerRef, storageKey]);
+  const handleDrag = useCallback(
+    (clientY: number) => {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      if (!Number.isFinite(rect.height) || rect.height <= 0) return;
+      const newRatio = clampRatio((clientY - rect.top) / rect.height);
+      setRatio(newRatio);
+      try {
+        localStorage.setItem(storageKey, String(newRatio));
+      } catch {
+        /* ignore */
+      }
+    },
+    [containerRef, storageKey],
+  );
 
   const reset = useCallback(() => {
     const safe = clampRatio(defaultRatio);
     setRatio(safe);
-    try { localStorage.removeItem(storageKey); } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {
+      /* ignore */
+    }
   }, [defaultRatio, storageKey]);
 
   return { ratio, handleDrag, reset };

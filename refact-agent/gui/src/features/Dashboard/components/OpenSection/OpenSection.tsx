@@ -1,6 +1,6 @@
 import React, { useCallback } from "react";
 import { Text } from "@radix-ui/themes";
-import { DrawingPinFilledIcon, ChevronDownIcon, ChevronUpIcon } from "@radix-ui/react-icons";
+import { ChevronDownIcon, ChevronUpIcon } from "@radix-ui/react-icons";
 import { CollapsePanel } from "../../../../components/shared/CollapsePanel";
 import { useAppDispatch } from "../../../../hooks";
 import { switchToThread } from "../../../Chat/Thread";
@@ -38,7 +38,7 @@ export const OpenSection: React.FC<OpenSectionProps> = ({
   if (tabs.length === 0) return null;
 
   return (
-    <div className={styles.section}>
+    <div className={styles.section} data-collapsed={collapsed || undefined}>
       <button
         type="button"
         className={styles.headerToggle}
@@ -46,9 +46,11 @@ export const OpenSection: React.FC<OpenSectionProps> = ({
         aria-expanded={!collapsed}
       >
         <Text size="1" weight="bold" color="gray" className={styles.label}>
-          <DrawingPinFilledIcon width={10} height={10} style={{ display: "inline", verticalAlign: "middle" }} /> OPEN
+          OPEN
         </Text>
-        <Text size="1" color="gray">{tabs.length} open</Text>
+        <Text size="1" color="gray">
+          {tabs.length} open
+        </Text>
         {collapsed ? (
           <ChevronDownIcon width={12} height={12} color="var(--gray-9)" />
         ) : (

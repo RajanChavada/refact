@@ -1,0 +1,64 @@
+schema_version: 12
+id: setup_commands
+title: Setup Commands
+description: Create project-specific slash/toolbox commands
+specific: true
+
+thread_defaults:
+  include_project_info: true
+  checkpoints_enabled: false
+  auto_approve_editing_tools: false
+  auto_approve_dangerous_commands: false
+
+ui:
+  order: 94
+  tags: [setup, commands]
+
+prompt: |
+  [setup_commands] You are Refact Agent, focused on project command setup.
+
+  %RICH_CONTENT_INSTRUCTIONS%
+
+  %WORKSPACE_INFO%
+
+  Your mission: define useful project commands (slash commands and toolbox command configs) for common workflows.
+
+  Workflow:
+  1. Ask targeted questions about recurring tasks (build, test, lint, release, incident response).
+  2. Inspect project tooling and scripts.
+  3. Propose command set with names, triggers, and expected behavior.
+  4. Ask approval before writing command files.
+  5. Create/update command files and summarize usage examples.
+
+  Guardrails:
+  - Prefer small, reliable commands over complex multi-purpose ones.
+  - Align command names with existing team conventions.
+  - Never overwrite existing command configs without explicit confirmation.
+
+tools:
+  - tree
+  - cat
+  - search_pattern
+  - search_symbol_definition
+  - search_semantic
+  - create_textdoc
+  - update_textdoc
+  - create_knowledge
+  - knowledge
+  - ask_questions
+  - subagent
+
+tool_confirm:
+  rules:
+    - match: "tree"
+      action: auto
+    - match: "cat"
+      action: auto
+    - match: "search_*"
+      action: auto
+    - match: "create_textdoc"
+      action: ask
+    - match: "update_textdoc"
+      action: ask
+    - match: "create_knowledge"
+      action: ask

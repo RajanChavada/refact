@@ -5,6 +5,7 @@ const STORAGE_KEY = "dashboard:v1:collapse";
 type CollapseState = {
   stats: boolean;
   open: boolean;
+  setup: boolean;
   chats: boolean;
   tasks: boolean;
 };
@@ -12,6 +13,7 @@ type CollapseState = {
 const DEFAULTS: CollapseState = {
   stats: false,
   open: false,
+  setup: false,
   chats: false,
   tasks: false,
 };
@@ -24,20 +26,29 @@ function load(): CollapseState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<Record<keyof CollapseState, unknown>>;
+      const parsed = JSON.parse(raw) as Partial<
+        Record<keyof CollapseState, unknown>
+      >;
       return {
         stats: isBool(parsed.stats) ? parsed.stats : DEFAULTS.stats,
         open: isBool(parsed.open) ? parsed.open : DEFAULTS.open,
+        setup: isBool(parsed.setup) ? parsed.setup : DEFAULTS.setup,
         chats: isBool(parsed.chats) ? parsed.chats : DEFAULTS.chats,
         tasks: isBool(parsed.tasks) ? parsed.tasks : DEFAULTS.tasks,
       };
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return { ...DEFAULTS };
 }
 
 function save(state: CollapseState): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    /* ignore */
+  }
 }
 
 export function useDashboardCollapseState() {

@@ -297,6 +297,75 @@ pub fn json_schema_from_params(params: &[(&str, &str, &str)], required: &[&str])
     })
 }
 
+pub fn is_strict_compatible(schema: &Value) -> bool {
+    let Some(obj) = schema.as_object() else {
+        return true;
+    };
+    if obj.get("type") != Some(&json!("object")) {
+        return true;
+    }
+    if obj.get("additionalProperties") == Some(&json!(true)) {
+        return false;
+    }
+    let Some(props) = obj.get("properties").and_then(|p| p.as_object()) else {
+        return false;
+    };
+    if props.is_empty() {
+        return true;
+    }
+    let required_set: std::collections::HashSet<&str> = obj
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    for (key, val) in props {
+        if !required_set.contains(key.as_str()) {
+            return false;
+        }
+        if val.get("type") == Some(&json!("object")) && !is_strict_compatible(val) {
+            return false;
+        }
+        if let Some(items) = val.get("items") {
+            if items.get("type") == Some(&json!("object")) && !is_strict_compatible(items) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn apply_strict_schema(schema: Value) -> Value {
+    let Value::Object(mut map) = schema else {
+        return schema;
+    };
+    if map.get("type") == Some(&json!("object")) {
+        if !map.contains_key("additionalProperties") {
+            map.insert("additionalProperties".to_string(), json!(false));
+        }
+        if let Some(Value::Object(props)) = map.remove("properties") {
+            let new_props: serde_json::Map<String, Value> = props
+                .into_iter()
+                .map(|(k, v)| {
+                    let new_v = if v.get("type") == Some(&json!("object")) {
+                        apply_strict_schema(v)
+                    } else if v.get("type") == Some(&json!("array")) {
+                        let Value::Object(mut arr_map) = v else { unreachable!() };
+                        if let Some(items) = arr_map.remove("items") {
+                            arr_map.insert("items".to_string(), apply_strict_schema(items));
+                        }
+                        Value::Object(arr_map)
+                    } else {
+                        v
+                    };
+                    (k, new_v)
+                })
+                .collect();
+            map.insert("properties".to_string(), Value::Object(new_props));
+        }
+    }
+    Value::Object(map)
+}
+
 pub fn make_openai_tool_value(
     name: String,
     description: String,
@@ -304,19 +373,16 @@ pub fn make_openai_tool_value(
     strict: bool,
 ) -> Value {
     let mut parameters_schema = input_schema;
-    if strict {
-        if parameters_schema.get("type") == Some(&json!("object")) {
-            if parameters_schema.get("additionalProperties").is_none() {
-                parameters_schema["additionalProperties"] = json!(false);
-            }
-        }
+    let effective_strict = strict && is_strict_compatible(&parameters_schema);
+    if effective_strict {
+        parameters_schema = apply_strict_schema(parameters_schema);
     }
     let mut function_obj = json!({
         "name": name,
         "description": description,
         "parameters": parameters_schema
     });
-    if strict {
+    if effective_strict {
         function_obj["strict"] = json!(true);
     }
     json!({
@@ -492,5 +558,184 @@ mod tests {
         let result = desc.into_openai_style(false);
         assert_eq!(result["function"]["name"], json!("cat"));
         assert_eq!(result["function"]["parameters"]["properties"]["filename"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn test_is_strict_compatible_all_required() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"}
+            },
+            "required": ["path", "content"]
+        });
+        assert!(is_strict_compatible(&schema));
+    }
+
+    #[test]
+    fn test_is_strict_compatible_optional_param() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "string"}
+            },
+            "required": ["command"]
+        });
+        assert!(!is_strict_compatible(&schema));
+    }
+
+    #[test]
+    fn test_is_strict_compatible_no_params() {
+        let schema = json!({"type": "object", "properties": {}, "required": []});
+        assert!(is_strict_compatible(&schema));
+    }
+
+    #[test]
+    fn test_is_strict_compatible_unstructured_nested_object() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "options": {"type": "object"}
+            },
+            "required": ["url", "options"]
+        });
+        assert!(!is_strict_compatible(&schema));
+    }
+
+    #[test]
+    fn test_is_strict_compatible_nested_array_of_objects_all_required() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "status": {"type": "string"}
+                        },
+                        "required": ["id", "status"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        });
+        assert!(is_strict_compatible(&schema));
+    }
+
+    #[test]
+    fn test_is_strict_compatible_nested_array_of_objects_optional_field() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "options": {"type": "string"}
+                        },
+                        "required": ["id"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        });
+        assert!(!is_strict_compatible(&schema));
+    }
+
+    #[test]
+    fn test_apply_strict_schema_top_level() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"]
+        });
+        let result = apply_strict_schema(schema);
+        assert_eq!(result["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn test_apply_strict_schema_recursive_nested_object() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {"verbose": {"type": "boolean"}},
+                    "required": ["verbose"]
+                }
+            },
+            "required": ["config"]
+        });
+        let result = apply_strict_schema(schema);
+        assert_eq!(result["additionalProperties"], json!(false));
+        assert_eq!(result["properties"]["config"]["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn test_apply_strict_schema_recursive_array_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}},
+                        "required": ["id"]
+                    }
+                }
+            },
+            "required": ["items"]
+        });
+        let result = apply_strict_schema(schema);
+        assert_eq!(result["additionalProperties"], json!(false));
+        assert_eq!(result["properties"]["items"]["items"]["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn test_make_openai_tool_value_strict_skipped_for_optional_params() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "string"}
+            },
+            "required": ["command"]
+        });
+        let result = make_openai_tool_value("shell".to_string(), "Run".to_string(), schema, true);
+        assert!(result["function"]["strict"].is_null());
+        assert!(result["function"]["parameters"]["additionalProperties"].is_null());
+    }
+
+    #[test]
+    fn test_make_openai_tool_value_strict_applied_recursively() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "status": {"type": "string"}
+                        },
+                        "required": ["id", "status"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        });
+        let result = make_openai_tool_value("tasks_set".to_string(), "Set tasks".to_string(), schema, true);
+        assert_eq!(result["function"]["strict"], json!(true));
+        assert_eq!(result["function"]["parameters"]["additionalProperties"], json!(false));
+        assert_eq!(result["function"]["parameters"]["properties"]["tasks"]["items"]["additionalProperties"], json!(false));
     }
 }

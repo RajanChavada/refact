@@ -5,6 +5,10 @@
   flex-shrink: 0;
 }
 
+.section[data-collapsed] {
+  gap: 0;
+}
+
 .headerToggle {
   display: flex;
   align-items: center;

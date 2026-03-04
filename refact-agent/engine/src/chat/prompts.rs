@@ -310,6 +310,20 @@ pub async fn system_prompt_add_extra_instructions(
         );
     }
 
+    if system_prompt.contains("%COMPRESS_HANDOFF_INSTRUCTIONS%") {
+        let has_compress = tool_names.contains("compress_chat_probe")
+            || tool_names.contains("compress_chat_apply");
+        let has_handoff = tool_names.contains("handoff_to_mode");
+        let replacement = if has_compress {
+            super::prompt_snippets::COMPRESS_HANDOFF_INSTRUCTIONS
+        } else if has_handoff {
+            super::prompt_snippets::HANDOFF_ONLY_INSTRUCTIONS
+        } else {
+            ""
+        };
+        system_prompt = system_prompt.replace("%COMPRESS_HANDOFF_INSTRUCTIONS%", replacement);
+    }
+
     if system_prompt.contains("%RICH_CONTENT_INSTRUCTIONS%") {
         system_prompt = system_prompt.replace(
             "%RICH_CONTENT_INSTRUCTIONS%",

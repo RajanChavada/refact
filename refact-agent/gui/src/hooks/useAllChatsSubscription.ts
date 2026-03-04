@@ -21,6 +21,56 @@ import {
 import { calculateBackoff } from "../utils/backoff";
 import type { ChatEventEnvelope } from "../services/refact/chatSubscription";
 
+const DEFAULT_MAX_CHAT_SSE_SUBSCRIPTIONS = 4;
+
+type PickDesiredChatSubscriptionsArgs = {
+  openThreadIds: string[];
+  activeChatId: string | null | undefined;
+  subscribedThreadIds: string[];
+  maxSubscriptions?: number;
+};
+
+export function pickDesiredChatSubscriptions({
+  openThreadIds,
+  activeChatId,
+  subscribedThreadIds,
+  maxSubscriptions = DEFAULT_MAX_CHAT_SSE_SUBSCRIPTIONS,
+}: PickDesiredChatSubscriptionsArgs): string[] {
+  const openUnique: string[] = [];
+  const openSet = new Set<string>();
+  for (const id of openThreadIds) {
+    if (!id || openSet.has(id)) continue;
+    openSet.add(id);
+    openUnique.push(id);
+  }
+
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const push = (id: string | null | undefined) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ordered.push(id);
+  };
+
+  push(activeChatId);
+
+  for (const id of subscribedThreadIds) {
+    if (openSet.has(id) || id === activeChatId) {
+      push(id);
+    }
+  }
+
+  for (let i = openUnique.length - 1; i >= 0; i -= 1) {
+    push(openUnique[i]);
+  }
+
+  if (maxSubscriptions > 0) {
+    return ordered.slice(0, maxSubscriptions);
+  }
+
+  return ordered;
+}
+
 export function useAllChatsSubscription() {
   const dispatch = useAppDispatch();
   const port = useAppSelector(selectLspPort);
@@ -398,10 +448,14 @@ export function useAllChatsSubscription() {
 
     if (!port) return;
 
-    const desired = new Set(openThreadIds);
-    if (activeChatId) desired.add(activeChatId);
-    desiredIdsRef.current = desired;
     const subscribedIds = Array.from(subscriptionsRef.current.keys());
+    const desiredOrder = pickDesiredChatSubscriptions({
+      openThreadIds,
+      activeChatId,
+      subscribedThreadIds: subscribedIds,
+    });
+    const desired = new Set(desiredOrder);
+    desiredIdsRef.current = desired;
 
     for (const id of subscribedIds) {
       if (!desiredIdsRef.current.has(id)) {
@@ -409,7 +463,7 @@ export function useAllChatsSubscription() {
       }
     }
 
-    for (const id of desiredIdsRef.current) {
+    for (const id of desiredOrder) {
       if (!subscriptionsRef.current.has(id)) {
         subscribe(id);
       }

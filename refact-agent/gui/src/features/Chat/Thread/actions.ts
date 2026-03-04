@@ -1,4 +1,5 @@
 import { createAction, createAsyncThunk } from "@reduxjs/toolkit";
+import { v4 as uuidv4 } from "uuid";
 import {
   type PayloadWithIdAndTitle,
   type ChatThread,
@@ -27,9 +28,11 @@ import {
   sendUserMessage,
   sendChatCommand,
   type MessageContent,
+  updateChatParams,
 } from "../../../services/refact/chatCommands";
 import { selectLspPort, selectApiKey } from "../../Config/configSlice";
 import { selectCurrentThreadId } from "./selectors";
+import { push } from "../../Pages/pagesSlice";
 
 function buildThreadParamsPatch(
   thread: ChatThread,
@@ -152,6 +155,39 @@ export const createChatWithId = createAction<{
   parentId?: string;
   linkType?: string;
 }>("chatThread/createWithId");
+
+const SETUP_START_MESSAGES: Record<string, string> = {
+  setup: "Start project setup for this repository.",
+  setup_skills: "Help me set up project skills.",
+  setup_agents_md: "Help me create or update AGENTS.md instructions.",
+  setup_mcp: "Help me find and configure MCPs for this project.",
+  setup_commands: "Help me define project commands.",
+  setup_subagents: "Help me define project subagents.",
+};
+
+export const openChatInModeAndStart = createAsyncThunk<
+  undefined,
+  { mode: string; initialMessage?: string },
+  { dispatch: AppDispatch; state: RootState }
+>(
+  "chatThread/openChatInModeAndStart",
+  async ({ mode, initialMessage }, api) => {
+    const chatId = uuidv4();
+    api.dispatch(createChatWithId({ id: chatId, mode }));
+    api.dispatch(push({ name: "chat" }));
+
+    const state = api.getState();
+    const port = selectLspPort(state);
+    if (!port) return undefined;
+
+    const apiKey = selectApiKey(state) ?? undefined;
+    const startMessage =
+      initialMessage ?? (SETUP_START_MESSAGES[mode] || "Start setup.");
+
+    await updateChatParams(chatId, { mode }, port, apiKey);
+    await sendUserMessage(chatId, startMessage, port, apiKey);
+  },
+);
 
 export const newChatWithInitialMessages = createAsyncThunk(
   "chatThread/newChatWithInitialMessages",

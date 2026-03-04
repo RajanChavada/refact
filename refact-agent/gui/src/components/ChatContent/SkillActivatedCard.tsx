@@ -25,7 +25,8 @@ export const SkillActivatedCard: React.FC<SkillActivatedCardProps> = ({
   const meta = useMemo(() => {
     const parts: string[] = [];
     if (modelOverride) parts.push(modelOverride);
-    if (allowedTools.length > 0) parts.push(`tools: ${allowedTools.join(", ")}`);
+    if (allowedTools.length > 0)
+      parts.push(`tools: ${allowedTools.join(", ")}`);
     return parts.length > 0 ? parts.join(" · ") : undefined;
   }, [allowedTools, modelOverride]);
 

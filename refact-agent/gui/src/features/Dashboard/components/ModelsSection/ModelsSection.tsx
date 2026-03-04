@@ -14,7 +14,11 @@ type ModelsSectionProps = {
   onToggleCollapsed: () => void;
 };
 
-function ModelRow({ label, model, explanation }: {
+function ModelRow({
+  label,
+  model,
+  explanation,
+}: {
   label: string;
   model: string;
   explanation: string;
@@ -24,14 +28,28 @@ function ModelRow({ label, model, explanation }: {
     <HoverCard.Root openDelay={300} closeDelay={100}>
       <HoverCard.Trigger>
         <div className={styles.modelRow}>
-          <Text size="1" color="gray" className={styles.modelLabel}>{label}</Text>
-          <Text size="1" weight="medium" truncate className={styles.modelName}>{shortName}</Text>
+          <Text size="1" color="gray" className={styles.modelLabel}>
+            {label}
+          </Text>
+          <Text size="1" weight="medium" truncate className={styles.modelName}>
+            {shortName}
+          </Text>
         </div>
       </HoverCard.Trigger>
-      <HoverCard.Content size="1" side="top" align="center" className={styles.hoverCard} avoidCollisions>
+      <HoverCard.Content
+        size="1"
+        side="top"
+        align="center"
+        className={styles.hoverCard}
+        avoidCollisions
+      >
         <Flex direction="column" gap="1">
-          <Text size="2" weight="bold">{label}</Text>
-          <Text size="1" color="gray">{explanation}</Text>
+          <Text size="2" weight="bold">
+            {label}
+          </Text>
+          <Text size="1" color="gray">
+            {explanation}
+          </Text>
           <Text size="1">Current: {model}</Text>
         </Flex>
       </HoverCard.Content>
@@ -39,7 +57,11 @@ function ModelRow({ label, model, explanation }: {
   );
 }
 
-export const ModelsSection: React.FC<ModelsSectionProps> = ({ breakpoint, collapsed, onToggleCollapsed }) => {
+export const ModelsSection: React.FC<ModelsSectionProps> = ({
+  breakpoint,
+  collapsed,
+  onToggleCollapsed,
+}) => {
   const dispatch = useAppDispatch();
   const { data: caps, isLoading, isError } = useGetCapsQuery(undefined);
 
@@ -47,9 +69,20 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ breakpoint, collap
     return (
       <div className={styles.section}>
         <div className={styles.header}>
-          <button type="button" className={styles.headerToggle} onClick={onToggleCollapsed} aria-expanded={!collapsed}>
-            <Text size="1" weight="bold" color="gray" className={styles.label}>DEFAULT MODELS</Text>
-            {collapsed ? <ChevronDownIcon width={12} height={12} color="var(--gray-9)" /> : <ChevronUpIcon width={12} height={12} color="var(--gray-9)" />}
+          <button
+            type="button"
+            className={styles.headerToggle}
+            onClick={onToggleCollapsed}
+            aria-expanded={!collapsed}
+          >
+            <Text size="1" weight="bold" color="gray" className={styles.label}>
+              DEFAULT MODELS
+            </Text>
+            {collapsed ? (
+              <ChevronDownIcon width={12} height={12} color="var(--gray-9)" />
+            ) : (
+              <ChevronUpIcon width={12} height={12} color="var(--gray-9)" />
+            )}
           </button>
         </div>
         <CollapsePanel collapsed={collapsed}>
@@ -99,20 +132,22 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ breakpoint, collap
               explanation="Primary model for chat conversations and agent tasks. Used for most interactions."
             />
           )}
-          {caps.chat_thinking_model && caps.chat_thinking_model !== caps.chat_default_model && (
-            <ModelRow
-              label="Thinking"
-              model={caps.chat_thinking_model}
-              explanation="Model with extended reasoning for complex tasks. Uses thinking/reasoning tokens for step-by-step problem solving."
-            />
-          )}
-          {caps.chat_light_model && caps.chat_light_model !== caps.chat_default_model && (
-            <ModelRow
-              label="Light"
-              model={caps.chat_light_model}
-              explanation="Faster, cheaper model for simple tasks like title generation, quick lookups, and subagent calls."
-            />
-          )}
+          {caps.chat_thinking_model &&
+            caps.chat_thinking_model !== caps.chat_default_model && (
+              <ModelRow
+                label="Thinking"
+                model={caps.chat_thinking_model}
+                explanation="Model with extended reasoning for complex tasks. Uses thinking/reasoning tokens for step-by-step problem solving."
+              />
+            )}
+          {caps.chat_light_model &&
+            caps.chat_light_model !== caps.chat_default_model && (
+              <ModelRow
+                label="Light"
+                model={caps.chat_light_model}
+                explanation="Faster, cheaper model for simple tasks like title generation, quick lookups, and subagent calls."
+              />
+            )}
           {caps.completion_default_model && (
             <ModelRow
               label="Completion"
@@ -122,7 +157,8 @@ export const ModelsSection: React.FC<ModelsSectionProps> = ({ breakpoint, collap
           )}
         </div>
         <Text size="1" color="gray" className={styles.modelCount}>
-          {chatModelCount} chat + {completionModelCount} completion models available
+          {chatModelCount} chat + {completionModelCount} completion models
+          available
         </Text>
       </CollapsePanel>
     </div>

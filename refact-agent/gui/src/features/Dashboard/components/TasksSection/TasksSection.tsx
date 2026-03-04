@@ -1,11 +1,19 @@
 import React, { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { Badge, Flex, Skeleton, Text, TextField } from "@radix-ui/themes";
-import { MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon } from "@radix-ui/react-icons";
+import {
+  MagnifyingGlassIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  PlusIcon,
+} from "@radix-ui/react-icons";
 import { CollapsePanel } from "../../../../components/shared/CollapsePanel";
 import { Virtuoso } from "react-virtuoso";
 import { useAppDispatch } from "../../../../hooks";
 import { push } from "../../../Pages/pagesSlice";
-import { useListTasksQuery, useCreateTaskMutation } from "../../../../services/refact/tasks";
+import {
+  useListTasksQuery,
+  useCreateTaskMutation,
+} from "../../../../services/refact/tasks";
 import { StatusDot } from "../../../../components/StatusDot";
 import { getTaskStatusDotState } from "../../../../utils/sessionStatus";
 import type { TaskMeta } from "../../../../services/refact/tasks";
@@ -45,14 +53,22 @@ function getDateGroup(dateStr: string): string {
   return "Earlier";
 }
 
-function getStatusColor(status: string): "blue" | "purple" | "amber" | "green" | "red" | "gray" {
+function getStatusColor(
+  status: string,
+): "blue" | "purple" | "amber" | "green" | "red" | "gray" {
   switch (status) {
-    case "active": return "blue";
-    case "planning": return "purple";
-    case "paused": return "amber";
-    case "completed": return "green";
-    case "abandoned": return "red";
-    default: return "gray";
+    case "active":
+      return "blue";
+    case "planning":
+      return "purple";
+    case "paused":
+      return "amber";
+    case "completed":
+      return "green";
+    case "abandoned":
+      return "red";
+    default:
+      return "gray";
   }
 }
 
@@ -69,7 +85,7 @@ function buildFlatList(tasks: TaskMeta[]): FlatItem[] {
   for (const task of tasks) {
     const group = getDateGroup(task.updated_at);
     if (!groups.has(group)) groups.set(group, []);
-    groups.get(group)!.push(task);
+    groups.get(group)?.push(task);
   }
 
   const items: FlatItem[] = [];
@@ -99,25 +115,35 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
   const sortedTasks = useMemo(() => {
     if (!tasks) return [];
     const priority = new Map([
-      ["active", 0], ["planning", 1], ["paused", 2], ["completed", 3], ["abandoned", 4],
+      ["active", 0],
+      ["planning", 1],
+      ["paused", 2],
+      ["completed", 3],
+      ["abandoned", 4],
     ]);
     return [...tasks].sort((a, b) => {
       const pa = priority.get(a.status) ?? 999;
       const pb = priority.get(b.status) ?? 999;
       if (pa !== pb) return pa - pb;
-      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      return (
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      );
     });
   }, [tasks]);
 
   const filteredTasks = useMemo(() => {
     if (!deferredQuery.trim()) return sortedTasks;
     const q = deferredQuery.toLowerCase();
-    return sortedTasks.filter((t) =>
-      t.name.toLowerCase().includes(q) || t.status.toLowerCase().includes(q),
+    return sortedTasks.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) || t.status.toLowerCase().includes(q),
     );
   }, [sortedTasks, deferredQuery]);
 
-  const flatItems = useMemo(() => buildFlatList(filteredTasks), [filteredTasks]);
+  const flatItems = useMemo(
+    () => buildFlatList(filteredTasks),
+    [filteredTasks],
+  );
 
   const handleTaskClick = useCallback(
     (task: TaskMeta) => {
@@ -137,7 +163,9 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
       });
   }, [createTask, dispatch]);
 
-  const activeCount = filteredTasks.filter((t) => t.status === "active" || t.status === "planning").length;
+  const activeCount = filteredTasks.filter(
+    (t) => t.status === "active" || t.status === "planning",
+  ).length;
 
   const renderHeader = (children?: React.ReactNode) => (
     <div className={styles.header}>
@@ -152,7 +180,9 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
         </Text>
         <Flex align="center" gap="1">
           {activeCount > 0 && (
-            <Text size="1" color="gray">{activeCount} active</Text>
+            <Text size="1" color="gray">
+              {activeCount} active
+            </Text>
           )}
           <Text size="1" color="gray">
             {filteredTasks.length} total
@@ -176,10 +206,20 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
           <Flex direction="column" gap="1" p="1">
             {Array.from({ length: 3 }, (_, i) => (
               <Flex key={i} align="center" gap="2" py="1" px="2">
-                <Skeleton><div style={{ width: 8, height: 8, borderRadius: "50%" }} /></Skeleton>
-                <Skeleton><Text size="2" style={{ width: `${120 + (i % 3) * 40}px` }}>&nbsp;</Text></Skeleton>
+                <Skeleton>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%" }} />
+                </Skeleton>
+                <Skeleton>
+                  <Text size="2" style={{ width: `${120 + (i % 3) * 40}px` }}>
+                    &nbsp;
+                  </Text>
+                </Skeleton>
                 <div style={{ flex: 1 }} />
-                <Skeleton><Text size="1" style={{ width: 40 }}>&nbsp;</Text></Skeleton>
+                <Skeleton>
+                  <Text size="1" style={{ width: 40 }}>
+                    &nbsp;
+                  </Text>
+                </Skeleton>
               </Flex>
             ))}
           </Flex>
@@ -193,7 +233,9 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
       <div className={styles.section} data-collapsed={collapsed || undefined}>
         {renderHeader()}
         <CollapsePanel collapsed={collapsed} className={styles.bodyPanel}>
-          <Text size="1" color="red">Failed to load tasks</Text>
+          <Text size="1" color="red">
+            Failed to load tasks
+          </Text>
         </CollapsePanel>
       </div>
     );
@@ -210,7 +252,7 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
         >
           <PlusIcon width={12} height={12} />
           <Text size="1">New Task</Text>
-        </button>
+        </button>,
       )}
       <CollapsePanel collapsed={collapsed} className={styles.bodyPanel}>
         <div className={styles.controls}>
@@ -235,7 +277,11 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
               if (item.type === "header") {
                 return (
                   <div className={styles.groupLabel}>
-                    <Text size="1" color="gray" className={styles.groupLabelText}>
+                    <Text
+                      size="1"
+                      color="gray"
+                      className={styles.groupLabelText}
+                    >
                       {item.label}
                     </Text>
                     <div className={styles.groupDivider} />
@@ -258,7 +304,10 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
                 >
                   <div className={styles.taskLeft}>
                     <span className={styles.indent} />
-                    <StatusDot state={getTaskStatusDotState(task)} size="small" />
+                    <StatusDot
+                      state={getTaskStatusDotState(task)}
+                      size="small"
+                    />
                     <Text size="2" truncate className={styles.taskName}>
                       {task.name}
                     </Text>
@@ -275,7 +324,11 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
                       </Text>
                     )}
                     {breakpoint !== "narrow" && (
-                      <Badge size="1" variant="soft" color={getStatusColor(task.status)}>
+                      <Badge
+                        size="1"
+                        variant="soft"
+                        color={getStatusColor(task.status)}
+                      >
                         {task.status}
                       </Badge>
                     )}
@@ -287,9 +340,15 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
               );
             }}
           />
-          {!isLoading && filteredTasks.length === 0 && (
-            <Text size="2" color="gray" style={{ padding: "var(--space-4)", textAlign: "center" }}>
-              {searchQuery ? "No matching tasks" : "No tasks yet — start a new one!"}
+          {filteredTasks.length === 0 && (
+            <Text
+              size="2"
+              color="gray"
+              style={{ padding: "var(--space-4)", textAlign: "center" }}
+            >
+              {searchQuery
+                ? "No matching tasks"
+                : "No tasks yet — start a new one!"}
             </Text>
           )}
         </div>

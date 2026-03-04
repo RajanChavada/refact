@@ -589,7 +589,7 @@ function buildDisplayItems(
     }
 
     if (head.role === "assistant") {
-      const toolCalls = "tool_calls" in head ? (head.tool_calls ?? []) : [];
+      const toolCalls = "tool_calls" in head ? head.tool_calls ?? [] : [];
       const isOnlyActivateSkill =
         toolCalls.length > 0 &&
         toolCalls.every((tc) => tc.function.name === "activate_skill") &&

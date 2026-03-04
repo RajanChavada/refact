@@ -228,6 +228,18 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         }),
     ];
 
+    let chat_management_tools: Vec<Box<dyn Tool + Send>> = vec![
+        Box::new(crate::tools::tool_compress_chat::ToolCompressChatProbe {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_compress_chat::ToolCompressChatApply {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_handoff_to_mode::ToolHandoffToMode {
+            config_path: config_path.clone(),
+        }),
+    ];
+
     let task_tools: Vec<Box<dyn Tool + Send>> = vec![
         Box::new(crate::tools::tool_task_init::ToolTaskInit::new()),
         Box::new(crate::tools::tool_task_board::ToolTaskBoardGet::new()),
@@ -293,6 +305,12 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
             description: "User interaction tools".to_string(),
             category: ToolGroupCategory::Builtin,
             tools: interaction_tools,
+        },
+        ToolGroup {
+            name: "Chat Management".to_string(),
+            description: "Chat compression and handoff tools".to_string(),
+            category: ToolGroupCategory::Builtin,
+            tools: chat_management_tools,
         },
         ToolGroup {
             name: "Task Management".to_string(),

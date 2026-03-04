@@ -14,20 +14,32 @@ export const SuccessGauge: React.FC<SuccessGaugeProps> = ({
   if (total === 0) {
     return (
       <div className={styles.gauge}>
-        <Text size="2" color="gray">—</Text>
+        <Text size="2" color="gray">
+          —
+        </Text>
         <div className={styles.bar}>
-          <div className={styles.fill} style={{ width: "0%", background: "var(--gray-7)" }} />
+          <div
+            className={styles.fill}
+            style={{ width: "0%", background: "var(--gray-7)" }}
+          />
         </div>
       </div>
     );
   }
 
   const rate = Math.round((successful / total) * 100);
-  const color = rate >= 95 ? "var(--green-9)" : rate >= 80 ? "var(--amber-9)" : "var(--red-9)";
+  const color =
+    rate >= 95
+      ? "var(--green-9)"
+      : rate >= 80
+        ? "var(--amber-9)"
+        : "var(--red-9)";
 
   return (
     <div className={styles.gauge}>
-      <Text size="3" weight="bold" style={{ color }}>{rate}%</Text>
+      <Text size="3" weight="bold" style={{ color }}>
+        {rate}%
+      </Text>
       <div className={styles.bar}>
         <div
           className={styles.fill}

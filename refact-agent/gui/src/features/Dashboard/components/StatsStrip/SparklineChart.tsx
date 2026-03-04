@@ -21,7 +21,10 @@ export const SparklineChart: React.FC<SparklineChartProps> = ({ days }) => {
   return (
     <svg width={totalWidth} height={height} aria-label="7-day activity chart">
       {last7.map((day, i) => {
-        const barHeight = Math.max((day.total_calls / maxCalls) * (height - 2), 1);
+        const barHeight = Math.max(
+          (day.total_calls / maxCalls) * (height - 2),
+          1,
+        );
         const x = i * (barWidth + gap);
         const y = height - barHeight;
         return (

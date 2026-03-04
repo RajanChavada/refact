@@ -6,7 +6,7 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::at_commands::at_web::execute_at_web;
-use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params};
+use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
 use crate::postprocessing::pp_command_output::OutputFilter;
 
@@ -66,7 +66,70 @@ impl Tool for ToolWeb {
             experimental: false,
             allow_parallel: true,
             description: "Fetch a web page and convert to readable plain text. Supports regular web pages, PDFs, and JavaScript-rendered pages. Uses Jina Reader API with automatic fallback.".to_string(),
-            input_schema: json_schema_from_params(&[("url", "string", "URL of the web page to fetch."), ("options", "object", ""), ("output_filter", "string", "Optional regex pattern to filter output lines. Only lines matching this pattern (and context) will be shown."), ("output_limit", "string", "Optional. Max lines to show (default: 200). Use higher values like '500' or 'all' to see more output.")], &["url"]),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL of the web page to fetch."
+                    },
+                    "options": {
+                        "type": "object",
+                        "description": "Jina Reader API options passed as request headers.",
+                        "properties": {
+                            "respond_with": {
+                                "type": "string",
+                                "description": "Controls response format (x-respond-with header)."
+                            },
+                            "target_selector": {
+                                "type": "string",
+                                "description": "CSS selector to extract a specific element (x-target-selector header)."
+                            },
+                            "wait_for_selector": {
+                                "type": "string",
+                                "description": "CSS selector to wait for before returning content (x-wait-for-selector header)."
+                            },
+                            "timeout": {
+                                "type": "number",
+                                "description": "Request timeout in seconds (x-timeout header)."
+                            },
+                            "no_cache": {
+                                "type": "boolean",
+                                "description": "Bypass Jina cache when true (x-no-cache header)."
+                            },
+                            "cache_tolerance": {
+                                "type": "number",
+                                "description": "Cache staleness tolerance in seconds (x-cache-tolerance header)."
+                            },
+                            "with_generated_alt": {
+                                "type": "boolean",
+                                "description": "Include AI-generated alt text for images (x-with-generated-alt header)."
+                            },
+                            "streaming": {
+                                "type": "boolean",
+                                "description": "Stream the response as SSE (sets Accept: text/event-stream)."
+                            },
+                            "set_cookie": {
+                                "type": "string",
+                                "description": "Cookie string to send with the request (x-set-cookie header)."
+                            },
+                            "proxy_url": {
+                                "type": "string",
+                                "description": "Proxy URL to route the request through (x-proxy-url header)."
+                            }
+                        }
+                    },
+                    "output_filter": {
+                        "type": "string",
+                        "description": "Optional regex pattern to filter output lines. Only lines matching this pattern (and context) will be shown."
+                    },
+                    "output_limit": {
+                        "type": "string",
+                        "description": "Optional. Max lines to show (default: 200). Use higher values like '500' or 'all' to see more output."
+                    }
+                },
+                "required": ["url"]
+            }),
             output_schema: None,
             annotations: None,
         }

@@ -10,7 +10,9 @@
   border: none;
   padding: 0;
   flex-shrink: 0;
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 
 .dot:hover {
@@ -52,7 +54,8 @@
 }
 
 @keyframes dotPulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {

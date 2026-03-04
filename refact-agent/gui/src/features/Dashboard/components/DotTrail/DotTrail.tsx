@@ -28,7 +28,13 @@ function buildNodeMap(
   }
 }
 
-function DotHoverContent({ dot, node }: { dot: TrailDot; node: HistoryTreeNode }) {
+function DotHoverContent({
+  dot,
+  node,
+}: {
+  dot: TrailDot;
+  node: HistoryTreeNode;
+}) {
   const messageCount = node.message_count ?? 0;
   return (
     <Flex direction="column" gap="2" style={{ maxWidth: 260 }}>
@@ -38,54 +44,75 @@ function DotHoverContent({ dot, node }: { dot: TrailDot; node: HistoryTreeNode }
 
       {dot.label && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Type:</Text>
+          <Text size="1" color="gray">
+            Type:
+          </Text>
           <Text size="1">{dot.label}</Text>
         </Flex>
       )}
 
       {node.model && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Model:</Text>
+          <Text size="1" color="gray">
+            Model:
+          </Text>
           <Text size="1">{node.model}</Text>
         </Flex>
       )}
 
       {node.mode && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Mode:</Text>
-          <Badge size="1" color={getModeColor(node.mode)} variant="soft">{node.mode}</Badge>
+          <Text size="1" color="gray">
+            Mode:
+          </Text>
+          <Badge size="1" color={getModeColor(node.mode)} variant="soft">
+            {node.mode}
+          </Badge>
         </Flex>
       )}
 
       {messageCount > 0 && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Messages:</Text>
+          <Text size="1" color="gray">
+            Messages:
+          </Text>
           <Text size="1">{messageCount}</Text>
         </Flex>
       )}
 
       {(node.total_coins ?? 0) > 0 && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Cost:</Text>
+          <Text size="1" color="gray">
+            Cost:
+          </Text>
           <Text size="1">{(node.total_coins ?? 0).toFixed(1)} coins</Text>
         </Flex>
       )}
 
-      {((node.total_lines_added ?? 0) > 0 || (node.total_lines_removed ?? 0) > 0) && (
+      {((node.total_lines_added ?? 0) > 0 ||
+        (node.total_lines_removed ?? 0) > 0) && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Changes:</Text>
+          <Text size="1" color="gray">
+            Changes:
+          </Text>
           {(node.total_lines_added ?? 0) > 0 && (
-            <Text size="1" style={{ color: "var(--green-9)" }}>+{node.total_lines_added}</Text>
+            <Text size="1" style={{ color: "var(--green-9)" }}>
+              +{node.total_lines_added}
+            </Text>
           )}
           {(node.total_lines_removed ?? 0) > 0 && (
-            <Text size="1" style={{ color: "var(--red-9)" }}>−{node.total_lines_removed}</Text>
+            <Text size="1" style={{ color: "var(--red-9)" }}>
+              −{node.total_lines_removed}
+            </Text>
           )}
         </Flex>
       )}
 
       {node.session_state && node.session_state !== "idle" && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Status:</Text>
+          <Text size="1" color="gray">
+            Status:
+          </Text>
           <Text size="1">{node.session_state}</Text>
         </Flex>
       )}
@@ -102,7 +129,8 @@ export const DotTrail: React.FC<DotTrailProps> = ({
   breakpoint,
   onDotClick,
 }) => {
-  const maxDots = breakpoint === "narrow" ? 6 : breakpoint === "medium" ? 8 : 10;
+  const maxDots =
+    breakpoint === "narrow" ? 6 : breakpoint === "medium" ? 8 : 10;
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, HistoryTreeNode>();
@@ -143,22 +171,36 @@ export const DotTrail: React.FC<DotTrailProps> = ({
                     height: size,
                     cursor: onDotClick ? "pointer" : "default",
                   }}
-                  onClick={onDotClick ? (e: React.MouseEvent) => {
-                    e.stopPropagation();
-                    onDotClick(dot.chatId);
-                  } : undefined}
-                  onKeyDown={onDotClick ? (e: React.KeyboardEvent) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onDotClick(dot.chatId);
-                    }
-                  } : undefined}
+                  onClick={
+                    onDotClick
+                      ? (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          onDotClick(dot.chatId);
+                        }
+                      : undefined
+                  }
+                  onKeyDown={
+                    onDotClick
+                      ? (e: React.KeyboardEvent) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onDotClick(dot.chatId);
+                          }
+                        }
+                      : undefined
+                  }
                   tabIndex={onDotClick ? 0 : -1}
                   aria-label={dotNode.title || "Chat"}
                 />
               </HoverCard.Trigger>
-              <HoverCard.Content size="1" side="top" align="center" className={styles.hoverCard} avoidCollisions>
+              <HoverCard.Content
+                size="1"
+                side="top"
+                align="center"
+                className={styles.hoverCard}
+                avoidCollisions
+              >
                 <DotHoverContent dot={dot} node={dotNode} />
               </HoverCard.Content>
             </HoverCard.Root>

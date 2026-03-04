@@ -55,7 +55,11 @@ import {
   UnifiedSendButton,
   BrowserToggleButton,
 } from "../Buttons";
-import { StreamingTokenCounter, UsageCounter, ProviderUsageIndicator } from "../UsageCounter";
+import {
+  StreamingTokenCounter,
+  UsageCounter,
+  ProviderUsageIndicator,
+} from "../UsageCounter";
 import { TrajectoryButton } from "../Trajectory";
 import { TextAreaWithChips } from "../TextAreaWithChips";
 import { selectHost } from "../../features/Config/configSlice";

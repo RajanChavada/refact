@@ -468,33 +468,46 @@ source:
     #[test]
     fn test_allowed_tool_still_denied_if_tool_says_deny() {
         use crate::tools::tools_description::MatchConfirmDenyResult;
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::DENY, None, true), "deny");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::DENY, Some("auto"), true), "deny");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::DENY, Some("ask"), true), "deny");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::DENY, None, true, "shell"), "deny");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::DENY, Some("auto"), true, "shell"), "deny");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::DENY, Some("ask"), true, "shell"), "deny");
     }
 
     #[test]
     fn test_allowed_tool_auto_approves_confirmation() {
         use crate::tools::tools_description::MatchConfirmDenyResult;
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, None, true), "auto");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("ask"), true), "auto");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, None, true, "shell"), "auto");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("ask"), true, "shell"), "auto");
     }
 
     #[test]
     fn test_allowed_tool_respects_mode_deny() {
         use crate::tools::tools_description::MatchConfirmDenyResult;
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("deny"), true), "deny");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::PASS, Some("deny"), true), "deny");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("deny"), true, "shell"), "deny");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::PASS, Some("deny"), true, "shell"), "deny");
     }
 
     #[test]
     fn test_empty_allowed_tools_no_change() {
         use crate::tools::tools_description::MatchConfirmDenyResult;
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, None, false), "ask");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::PASS, None, false), "auto");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("ask"), false), "ask");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("auto"), false), "auto");
-        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("deny"), false), "deny");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, None, false, "shell"), "ask");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::PASS, None, false, "shell"), "auto");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("ask"), false, "shell"), "ask");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("auto"), false, "shell"), "auto");
+        assert_eq!(compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, Some("deny"), false, "shell"), "deny");
+    }
+
+    #[test]
+    fn test_always_ask_tools_override_auto() {
+        use crate::tools::tools_description::MatchConfirmDenyResult;
+        assert_eq!(
+            compute_final_action(&MatchConfirmDenyResult::PASS, Some("auto"), true, "compress_chat_probe"),
+            "ask"
+        );
+        assert_eq!(
+            compute_final_action(&MatchConfirmDenyResult::PASS, None, true, "handoff_to_mode"),
+            "ask"
+        );
     }
 }
 
@@ -783,10 +796,18 @@ fn compute_final_action(
     tool_result: &crate::tools::tools_description::MatchConfirmDenyResult,
     mode_action: Option<&str>,
     is_auto_approved: bool,
+    tool_name: &str,
 ) -> &'static str {
     use crate::tools::tools_description::MatchConfirmDenyResult;
+    const ALWAYS_ASK_TOOLS: &[&str] = &["compress_chat_probe", "compress_chat_apply", "handoff_to_mode"];
     if *tool_result == MatchConfirmDenyResult::DENY {
         return "deny";
+    }
+    if matches!(mode_action, Some("deny")) {
+        return "deny";
+    }
+    if ALWAYS_ASK_TOOLS.iter().any(|name| *name == tool_name) {
+        return "ask";
     }
     match mode_action {
         Some("deny") => "deny",
@@ -902,7 +923,12 @@ pub async fn check_tools_confirmation(
 
                 let is_auto_approved = !allowed_tools.is_empty()
                     && allowed_tools.contains(&tool_call.function.name);
-                let final_action = compute_final_action(&result.result, mode_action.as_deref(), is_auto_approved);
+                let final_action = compute_final_action(
+                    &result.result,
+                    mode_action.as_deref(),
+                    is_auto_approved,
+                    &tool_call.function.name,
+                );
 
                 let rule_text = match mode_action.as_deref() {
                     Some(action) => format!("mode policy: {}", action),

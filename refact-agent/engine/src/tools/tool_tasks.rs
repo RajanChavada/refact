@@ -8,7 +8,7 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params};
+use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskItem {
@@ -45,7 +45,35 @@ impl Tool for ToolTasksSet {
             description: "Set the task progress list shown to the user. Use to track multi-step work. \
                 Pass complete task list each time (replaces previous). \
                 Each task needs: id (unique string), content (description), status (pending/in_progress/completed/failed).".to_string(),
-            input_schema: json_schema_from_params(&[], &["tasks"]),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "Complete task list (replaces previous). Each task needs id, content, and status.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique task identifier (1-50 chars)."
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Task description (1-500 chars)."
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "description": "Task status.",
+                                    "enum": ["pending", "in_progress", "completed", "failed"]
+                                }
+                            },
+                            "required": ["id", "content", "status"]
+                        }
+                    }
+                },
+                "required": ["tasks"]
+            }),
             output_schema: None,
             annotations: None,
         }

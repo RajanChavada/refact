@@ -15,7 +15,11 @@ export const TokenDonut: React.FC<TokenDonutProps> = ({
 }) => {
   const total = prompt + completion + cache;
   if (total === 0) {
-    return <Text size="2" weight="bold" color="gray">0</Text>;
+    return (
+      <Text size="2" weight="bold" color="gray">
+        0
+      </Text>
+    );
   }
 
   const size = 36;
@@ -56,7 +60,9 @@ export const TokenDonut: React.FC<TokenDonutProps> = ({
           fill="none"
           stroke="var(--green-8)"
           strokeWidth={strokeWidth}
-          strokeDasharray={`${completionFraction * circumference} ${circumference}`}
+          strokeDasharray={`${
+            completionFraction * circumference
+          } ${circumference}`}
           strokeDashoffset={-completionOffset}
           transform={`rotate(-90 ${cx} ${cy})`}
         >
@@ -70,7 +76,9 @@ export const TokenDonut: React.FC<TokenDonutProps> = ({
             fill="none"
             stroke="var(--amber-8)"
             strokeWidth={strokeWidth}
-            strokeDasharray={`${cacheFraction * circumference} ${circumference}`}
+            strokeDasharray={`${
+              cacheFraction * circumference
+            } ${circumference}`}
             strokeDashoffset={-cacheOffset}
             transform={`rotate(-90 ${cx} ${cy})`}
           >
@@ -78,7 +86,9 @@ export const TokenDonut: React.FC<TokenDonutProps> = ({
           </circle>
         )}
       </svg>
-      <Text size="1" weight="bold">{formatTokenCount(total)}</Text>
+      <Text size="1" weight="bold">
+        {formatTokenCount(total)}
+      </Text>
     </div>
   );
 };

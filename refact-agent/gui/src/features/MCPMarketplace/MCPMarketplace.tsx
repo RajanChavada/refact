@@ -95,7 +95,9 @@ export const MCPMarketplace: React.FC<MCPMarketplaceProps> = ({
 
   const handleConfigure = (configPath: string) => {
     dispatch(integrationsApi.util.invalidateTags(["INTEGRATIONS"]));
-    dispatch(change({ name: "integrations page", integrationPath: configPath }));
+    dispatch(
+      change({ name: "integrations page", integrationPath: configPath }),
+    );
   };
 
   const allTags = useMemo(() => {

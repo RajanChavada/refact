@@ -10,6 +10,7 @@
 .section[data-collapsed] {
   flex: 0 0 auto;
   overflow: visible;
+  gap: 0;
 }
 
 .bodyPanel {
@@ -50,15 +51,19 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: var(--space-1) var(--space-2);
+  padding: 0 var(--space-2);
   border-radius: var(--radius-2);
   border: 1px solid var(--gray-a5);
   background: transparent;
   cursor: pointer;
   color: var(--gray-11);
   font-size: var(--font-size-1);
-  transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease;
+  line-height: 1;
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease;
   flex-shrink: 0;
+  align-self: center;
 }
 
 .newTaskButton:hover {

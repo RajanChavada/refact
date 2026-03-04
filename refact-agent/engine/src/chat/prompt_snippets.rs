@@ -69,3 +69,15 @@ pub const RICH_CONTENT_INSTRUCTIONS: &str = r#"The chat window renders rich visu
 - ` ```html ` — the user sees a live interactive preview in a sandboxed iframe (HTML + CSS + JS). You can load CDN libraries via <script src="https://cdn.jsdelivr.net/npm/..."> for charts (Chart.js, D3), 3D (Three.js), or any web framework.
 
 Prefer these over plain text descriptions when visual representation would be clearer: architecture diagrams, flowcharts, data visualizations, interactive demos, UI prototypes."#;
+
+pub const COMPRESS_HANDOFF_INSTRUCTIONS: &str = r#"## Chat Management Tools
+
+**compress_chat_probe()** — Analyze token usage when the chat grows large or token budget warnings appear.
+
+**compress_chat_apply(...)** — Apply selective compression using explicit lists from the probe. Requires user approval.
+
+**handoff_to_mode(target_mode, reason, ...)** — Transition to a different mode when the workflow changes (e.g., explore-only or quick Q&A). Requires user approval."#;
+
+pub const HANDOFF_ONLY_INSTRUCTIONS: &str = r#"## Chat Management Tools
+
+**handoff_to_mode(target_mode, reason, ...)** — Transition to a different mode when the workflow changes (e.g., explore-only or quick Q&A). Requires user approval."#;

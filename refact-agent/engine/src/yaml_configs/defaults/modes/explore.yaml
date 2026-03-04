@@ -50,6 +50,8 @@ prompt: |
 
   %CD_INSTRUCTIONS%
 
+  %COMPRESS_HANDOFF_INSTRUCTIONS%
+
   %RICH_CONTENT_INSTRUCTIONS%
 
   %SYSTEM_INFO%
@@ -83,8 +85,11 @@ tools:
   - web_search
   - subagent
   - ask_questions
+  - handoff_to_mode
 
 tool_confirm:
   rules:
+    - match: "handoff_to_mode"
+      action: ask
     - match: "*"
       action: auto

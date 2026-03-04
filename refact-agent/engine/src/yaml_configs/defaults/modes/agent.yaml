@@ -183,6 +183,8 @@ prompt: |
     - %CD_INSTRUCTIONS%
     - %SHELL_INSTRUCTIONS%
 
+  %COMPRESS_HANDOFF_INSTRUCTIONS%
+
   %RICH_CONTENT_INSTRUCTIONS%
 
   %SYSTEM_INFO%
@@ -235,6 +237,9 @@ tools:
   - tasks_set
   - task_done
   - ask_questions
+  - compress_chat_probe
+  - compress_chat_apply
+  - handoff_to_mode
 
 tool_confirm:
   rules:
@@ -258,3 +263,7 @@ tool_confirm:
       action: auto
     - match: "ask_questions"
       action: auto
+    - match: "compress_chat_*"
+      action: ask
+    - match: "handoff_to_mode"
+      action: ask

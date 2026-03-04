@@ -139,7 +139,7 @@ fn should_preserve_tool(name: &str) -> bool {
     TOOLS_TO_PRESERVE.iter().any(|t| *t == name)
 }
 
-fn approx_token_count(messages: &[ChatMessage]) -> usize {
+pub fn approx_token_count(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
         .map(|m| {

@@ -9,21 +9,14 @@ export type TrailDot = {
   hasBranch: boolean;
 };
 
-export function buildDotTrail(
-  node: HistoryTreeNode,
-  maxDots = 8,
-): TrailDot[] {
+export function buildDotTrail(node: HistoryTreeNode, maxDots = 8): TrailDot[] {
   const dots: TrailDot[] = [];
 
-  function addDot(
-    n: HistoryTreeNode,
-    depth: number,
-  ) {
+  function addDot(n: HistoryTreeNode, depth: number) {
     if (dots.length >= maxDots) return;
 
     const isActive =
-      n.session_state === "generating" ||
-      n.session_state === "executing_tools";
+      n.session_state === "generating" || n.session_state === "executing_tools";
     const isCompleted = n.session_state === "completed";
     const hasBranch = n.children.length > 1;
 

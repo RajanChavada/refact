@@ -610,6 +610,52 @@ fn format_lines_with_numbers(lines: &[&str], start: usize, end: usize) -> String
         .join("\n")
 }
 
+fn truncate_text_prefix_to_token_budget(
+    text: &str,
+    tokenizer: Option<Arc<Tokenizer>>,
+    tokens_limit: usize,
+    marker: &str,
+) -> String {
+    if text.is_empty() || tokens_limit == 0 {
+        return String::new();
+    }
+
+    if count_text_tokens_with_fallback(tokenizer.clone(), text) <= tokens_limit {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    let mut best_prefix = 0usize;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let prefix: String = chars[..mid].iter().collect();
+        let candidate = if mid < chars.len() {
+            format!("{}{}", prefix, marker)
+        } else {
+            prefix
+        };
+
+        let tokens = count_text_tokens_with_fallback(tokenizer.clone(), &candidate);
+        if tokens <= tokens_limit {
+            best_prefix = mid;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let mut out: String = chars[..best_prefix].iter().collect();
+    if best_prefix < chars.len() {
+        out.push_str(marker);
+    }
+    out
+}
+
 fn truncate_file_head_tail(
     lines: &[&str],
     start: usize,
@@ -645,8 +691,17 @@ fn truncate_file_head_tail(
         let full_content = format!("{}{}{}", head_content, truncation_marker, tail_content);
         let tokens = count_text_tokens_with_fallback(tokenizer.clone(), &full_content);
 
-        if tokens <= tokens_limit || head_end <= start + 1 {
+        if tokens <= tokens_limit {
             return full_content;
+        }
+
+        if head_end <= start + 1 {
+            return truncate_text_prefix_to_token_budget(
+                &full_content,
+                tokenizer.clone(),
+                tokens_limit,
+                "\n... (content truncated to fit token budget)",
+            );
         }
 
         head_end = start + (head_end - start) * 80 / 100;
@@ -859,6 +914,18 @@ mod tests {
         let result = truncate_file_head_tail(&lines, 0, 100, None, 50);
         assert!(result.contains("   1 |"));
         assert!(result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_truncate_file_head_tail_single_line_respects_budget() {
+        let long_line = "x".repeat(200_000);
+        let lines = vec![long_line.as_str()];
+        let token_budget = 120;
+        let result = truncate_file_head_tail(&lines, 0, 1, None, token_budget);
+        let used = count_text_tokens_with_fallback(None, &result);
+
+        assert!(used <= token_budget);
+        assert!(result.contains("content truncated"));
     }
 
     #[test]

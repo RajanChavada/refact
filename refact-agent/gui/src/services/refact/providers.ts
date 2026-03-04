@@ -584,7 +584,7 @@ export const providersApi = createApi({
           };
         }
 
-        return { data: result.data as ClaudeCodeUsageResponse };
+        return { data: result.data };
       },
     }),
 

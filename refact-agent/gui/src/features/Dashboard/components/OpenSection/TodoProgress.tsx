@@ -65,7 +65,9 @@ export const TodoProgress: React.FC<TodoProgressProps> = ({
         </div>
       ))}
       {remaining > 0 && (
-        <Text size="1" color="gray">+{remaining} more</Text>
+        <Text size="1" color="gray">
+          +{remaining} more
+        </Text>
       )}
     </div>
   );

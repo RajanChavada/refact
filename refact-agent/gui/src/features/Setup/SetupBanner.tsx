@@ -4,8 +4,7 @@ import { Cross1Icon } from "@radix-ui/react-icons";
 import { CalloutFromTop } from "../../components/Callout/Callout";
 import { useGetSetupStatusQuery } from "../../services/refact/setupStatus";
 import { useAppDispatch } from "../../hooks/useAppDispatch";
-import { createChatWithId } from "../Chat/Thread/actions";
-import { push } from "../Pages/pagesSlice";
+import { openChatInModeAndStart } from "../Chat/Thread/actions";
 import styles from "./SetupBanner.module.css";
 
 const DISMISS_KEY = "refact-setup-banner-dismissed";
@@ -16,7 +15,7 @@ function isDismissed(projectRoot: string | null | undefined): boolean {
     const dismissed = JSON.parse(
       localStorage.getItem(DISMISS_KEY) ?? "{}",
     ) as Record<string, boolean>;
-    return dismissed[projectRoot] === true;
+    return dismissed[projectRoot];
   } catch {
     return false;
   }
@@ -43,13 +42,12 @@ export const SetupBanner: React.FC = () => {
 
   const [localDismissed, setLocalDismissed] = useState(false);
 
-  const projectRoot = data?.detail?.project_root;
+  const projectRoot = data?.detail.project_root;
 
   useEffect(() => setLocalDismissed(false), [projectRoot]);
 
   const openSetupChat = useCallback(() => {
-    dispatch(createChatWithId({ id: globalThis.crypto.randomUUID(), mode: "setup" }));
-    dispatch(push({ name: "chat" }));
+    void dispatch(openChatInModeAndStart({ mode: "setup" }));
   }, [dispatch]);
 
   const handleDismiss = useCallback(() => {
@@ -64,8 +62,8 @@ export const SetupBanner: React.FC = () => {
     <CalloutFromTop>
       <Flex direction={{ initial: "column", sm: "row" }} gap="3" align="center">
         <Text size="2" className={styles.text}>
-          This project hasn't been set up for Refact yet. Run setup to generate
-          guidelines, integrations, and toolbox commands.
+          This project hasn&apos;t been set up for Refact yet. Run setup to
+          generate guidelines, integrations, and toolbox commands.
         </Text>
         <Flex gap="2" align="center" style={{ flexShrink: 0 }}>
           <Button size="2" onClick={openSetupChat}>

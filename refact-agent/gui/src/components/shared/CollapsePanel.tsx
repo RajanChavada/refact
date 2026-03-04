@@ -7,13 +7,15 @@ type Props = {
   className?: string;
 };
 
-export const CollapsePanel: React.FC<Props> = ({ collapsed, children, className }) => (
+export const CollapsePanel: React.FC<Props> = ({
+  collapsed,
+  children,
+  className,
+}) => (
   <div
     className={`${styles.panel}${className ? ` ${className}` : ""}`}
     data-collapsed={collapsed || undefined}
   >
-    <div className={styles.inner}>
-      {children}
-    </div>
+    <div className={styles.inner}>{children}</div>
   </div>
 );

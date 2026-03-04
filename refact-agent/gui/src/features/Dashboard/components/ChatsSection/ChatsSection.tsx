@@ -1,9 +1,18 @@
 import React, { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { Flex, Skeleton, Spinner, Text, TextField } from "@radix-ui/themes";
-import { MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon } from "@radix-ui/react-icons";
+import {
+  MagnifyingGlassIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  PlusIcon,
+} from "@radix-ui/react-icons";
 import { CollapsePanel } from "../../../../components/shared/CollapsePanel";
 import { Virtuoso } from "react-virtuoso";
-import { useAppDispatch, useAppSelector, useLoadMoreHistory } from "../../../../hooks";
+import {
+  useAppDispatch,
+  useAppSelector,
+  useLoadMoreHistory,
+} from "../../../../hooks";
 import {
   buildHistoryTree,
   ChatHistoryItem,
@@ -12,7 +21,8 @@ import {
 } from "../../../History/historySlice";
 import { newChatAction, restoreChat } from "../../../Chat/Thread";
 import { push } from "../../../Pages/pagesSlice";
-import { RecentItem, getDateGroup } from "./RecentItem";
+import { RecentItem } from "./RecentItem";
+import { getDateGroup } from "./dateUtils";
 import type { DashboardBreakpoint } from "../../types";
 import styles from "./ChatsSection.module.css";
 
@@ -195,87 +205,112 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
       </div>
 
       <CollapsePanel collapsed={collapsed} className={styles.bodyPanel}>
-          <div className={styles.controls}>
-            <TextField.Root
-              size="1"
-              placeholder="Search..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            >
-              <TextField.Slot>
-                <MagnifyingGlassIcon width={12} height={12} />
-              </TextField.Slot>
-            </TextField.Root>
-          </div>
+        <div className={styles.controls}>
+          <TextField.Root
+            size="1"
+            placeholder="Search..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          >
+            <TextField.Slot>
+              <MagnifyingGlassIcon width={12} height={12} />
+            </TextField.Slot>
+          </TextField.Root>
+        </div>
 
-          <div className={styles.list}>
-            {isInitialLoading && filteredTree.length === 0 ? (
-              <Flex direction="column" gap="1" p="1">
-                {Array.from({ length: 8 }, (_, i) => (
-                  <Flex key={i} align="center" gap="2" py="1" px="2">
-                    <Skeleton><div style={{ width: 8, height: 8, borderRadius: "50%" }} /></Skeleton>
-                    <Skeleton><Text size="2" style={{ width: `${120 + (i % 3) * 40}px` }}>&nbsp;</Text></Skeleton>
-                    <div style={{ flex: 1 }} />
-                    <Skeleton><Text size="1" style={{ width: 40 }}>&nbsp;</Text></Skeleton>
-                  </Flex>
-                ))}
-              </Flex>
-            ) : (
-              <Virtuoso
-                data={flatItems}
-                endReached={handleEndReached}
-                overscan={200}
-                className={styles.virtuosoList}
-                itemContent={(_index, item) => {
-                  if (item.type === "header") {
-                    return (
-                      <div className={styles.groupLabel}>
-                        <Text size="1" color="gray" className={styles.groupLabelText}>
-                          {item.label}
-                        </Text>
-                        <div className={styles.groupDivider} />
-                      </div>
-                    );
-                  }
+        <div className={styles.list}>
+          {isInitialLoading && filteredTree.length === 0 ? (
+            <Flex direction="column" gap="1" p="1">
+              {Array.from({ length: 8 }, (_, i) => (
+                <Flex key={i} align="center" gap="2" py="1" px="2">
+                  <Skeleton>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%" }} />
+                  </Skeleton>
+                  <Skeleton>
+                    <Text size="2" style={{ width: `${120 + (i % 3) * 40}px` }}>
+                      &nbsp;
+                    </Text>
+                  </Skeleton>
+                  <div style={{ flex: 1 }} />
+                  <Skeleton>
+                    <Text size="1" style={{ width: 40 }}>
+                      &nbsp;
+                    </Text>
+                  </Skeleton>
+                </Flex>
+              ))}
+            </Flex>
+          ) : (
+            <Virtuoso
+              data={flatItems}
+              endReached={handleEndReached}
+              overscan={200}
+              className={styles.virtuosoList}
+              itemContent={(_index, item) => {
+                if (item.type === "header") {
                   return (
-                    <RecentItem
-                      node={item.node}
-                      depth={item.depth}
-                      breakpoint={breakpoint}
-                      isExpanded={expandedIds.has(item.node.id)}
-                      onToggleExpand={handleToggleExpand}
-                      onClick={() => handleItemClick(item.node)}
-                      onDotClick={handleDotClick}
-                      onDelete={handleDelete}
-                    />
+                    <div className={styles.groupLabel}>
+                      <Text
+                        size="1"
+                        color="gray"
+                        className={styles.groupLabelText}
+                      >
+                        {item.label}
+                      </Text>
+                      <div className={styles.groupDivider} />
+                    </div>
                   );
-                }}
-                components={{
-                  Footer: () => (
-                    <>
-                      {isLoadingMore && (
-                        <Flex justify="center" py="2">
-                          <Spinner size="2" />
-                        </Flex>
-                      )}
-                      {loadMoreError && (
-                        <Flex justify="center" py="2">
-                          <Text size="1" color="red" style={{ cursor: "pointer" }} onClick={retryLoadMore}>
-                            Load failed — click to retry
-                          </Text>
-                        </Flex>
-                      )}
-                    </>
-                  ),
-                }}
-              />
-            )}
-            {!isInitialLoading && filteredTree.length === 0 && (
-              <Text size="2" color="gray" style={{ padding: "var(--space-4)", textAlign: "center" }}>
-                {searchQuery ? "No matching chats" : "No chats yet — start a new one!"}
-              </Text>
-            )}
-          </div>
+                }
+                return (
+                  <RecentItem
+                    node={item.node}
+                    depth={item.depth}
+                    breakpoint={breakpoint}
+                    isExpanded={expandedIds.has(item.node.id)}
+                    onToggleExpand={handleToggleExpand}
+                    onClick={() => handleItemClick(item.node)}
+                    onDotClick={handleDotClick}
+                    onDelete={handleDelete}
+                  />
+                );
+              }}
+              components={{
+                Footer: () => (
+                  <>
+                    {isLoadingMore && (
+                      <Flex justify="center" py="2">
+                        <Spinner size="2" />
+                      </Flex>
+                    )}
+                    {loadMoreError && (
+                      <Flex justify="center" py="2">
+                        <Text
+                          size="1"
+                          color="red"
+                          style={{ cursor: "pointer" }}
+                          onClick={retryLoadMore}
+                        >
+                          Load failed — click to retry
+                        </Text>
+                      </Flex>
+                    )}
+                  </>
+                ),
+              }}
+            />
+          )}
+          {!isInitialLoading && filteredTree.length === 0 && (
+            <Text
+              size="2"
+              color="gray"
+              style={{ padding: "var(--space-4)", textAlign: "center" }}
+            >
+              {searchQuery
+                ? "No matching chats"
+                : "No chats yet — start a new one!"}
+            </Text>
+          )}
+        </div>
       </CollapsePanel>
     </div>
   );

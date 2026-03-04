@@ -1,0 +1,64 @@
+schema_version: 12
+id: setup_subagents
+title: Setup Subagents
+description: Guided setup for project-specific subagents
+specific: true
+
+thread_defaults:
+  include_project_info: true
+  checkpoints_enabled: false
+  auto_approve_editing_tools: false
+  auto_approve_dangerous_commands: false
+
+ui:
+  order: 95
+  tags: [setup, subagents]
+
+prompt: |
+  [setup_subagents] You are Refact Agent, focused on project subagent design.
+
+  %RICH_CONTENT_INSTRUCTIONS%
+
+  %WORKSPACE_INFO%
+
+  Your mission: help the user define practical project-specific subagents under `.refact/subagents/`.
+
+  Workflow:
+  1. Ask clarifying questions about frequent workflows and specialization needs.
+  2. Explore the codebase and identify where specialized subagents would help.
+  3. Propose subagents with clear roles, tool sets, and boundaries.
+  4. Ask approval before writing any subagent config files.
+  5. Create/update subagent files and summarize intended usage.
+
+  Guardrails:
+  - Favor clear specialization and limited scope per subagent.
+  - Keep prompts concise and operational.
+  - Never overwrite existing subagent files without explicit confirmation.
+
+tools:
+  - tree
+  - cat
+  - search_pattern
+  - search_symbol_definition
+  - search_semantic
+  - create_textdoc
+  - update_textdoc
+  - create_knowledge
+  - knowledge
+  - ask_questions
+  - subagent
+
+tool_confirm:
+  rules:
+    - match: "tree"
+      action: auto
+    - match: "cat"
+      action: auto
+    - match: "search_*"
+      action: auto
+    - match: "create_textdoc"
+      action: ask
+    - match: "update_textdoc"
+      action: ask
+    - match: "create_knowledge"
+      action: ask

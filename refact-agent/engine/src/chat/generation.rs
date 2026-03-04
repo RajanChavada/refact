@@ -29,6 +29,79 @@ use super::queue::inject_priority_messages_if_any;
 use super::config::tokens;
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, get_project_dir_string, run_hooks};
+use crate::chat::trajectory_ops::approx_token_count;
+
+const TOKEN_BUDGET_CADENCE: usize = 6;
+const TOKEN_BUDGET_MARKER: &str = "token_budget_info";
+
+fn maybe_inject_token_budget_instruction(
+    session: &mut ChatSession,
+    effective_n_ctx: usize,
+    cadence: usize,
+) -> bool {
+    let last_has_tool_calls = session
+        .messages
+        .last()
+        .map(|msg| msg.role == "assistant" && msg.tool_calls.as_ref().map(|tcs| !tcs.is_empty()).unwrap_or(false))
+        .unwrap_or(false);
+    if last_has_tool_calls {
+        return false;
+    }
+
+    let mut last_marker_idx = None;
+    let mut user_or_assistant_since = 0usize;
+
+    for (idx, msg) in session.messages.iter().enumerate().rev() {
+        if msg.role == "cd_instruction" && msg.tool_call_id == TOKEN_BUDGET_MARKER {
+            last_marker_idx = Some(idx);
+            break;
+        }
+    }
+
+    for (idx, msg) in session.messages.iter().enumerate().rev() {
+        if let Some(marker_idx) = last_marker_idx {
+            if idx <= marker_idx {
+                break;
+            }
+        }
+        if msg.role == "user" || msg.role == "assistant" {
+            user_or_assistant_since += 1;
+        }
+    }
+
+    if user_or_assistant_since < cadence {
+        return false;
+    }
+
+    if session.messages.iter().rev().take(cadence).any(|msg| {
+        msg.role == "cd_instruction" && msg.tool_call_id == TOKEN_BUDGET_MARKER
+    }) {
+        return false;
+    }
+
+    let used_tokens = approx_token_count(&session.messages);
+    let remaining = effective_n_ctx.saturating_sub(used_tokens);
+    let pct_used = if effective_n_ctx > 0 {
+        used_tokens.saturating_mul(100) / effective_n_ctx
+    } else {
+        0
+    };
+
+    let message = ChatMessage {
+        role: "cd_instruction".to_string(),
+        tool_call_id: TOKEN_BUDGET_MARKER.to_string(),
+        content: ChatContent::SimpleText(format!(
+            "💿 Token budget: ~{} used / ~{} available (~{}% used). ~{} tokens remaining. Consider using compress_chat_probe() if running low.",
+            used_tokens,
+            effective_n_ctx,
+            pct_used,
+            remaining
+        )),
+        ..Default::default()
+    };
+    session.add_message(message);
+    true
+}
 
 
 
@@ -417,11 +490,13 @@ pub fn start_generation(
                 break;
             }
 
-            maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
-
-            let (mode_id, model_id) = {
+            let (mode_id, model_id, context_tokens_cap) = {
                 let session = session_arc.lock().await;
-                (session.thread.mode.clone(), session.thread.model.clone())
+                (
+                    session.thread.mode.clone(),
+                    session.thread.model.clone(),
+                    session.thread.context_tokens_cap,
+                )
             };
 
             let model_id_opt = if model_id.is_empty() {
@@ -429,6 +504,41 @@ pub fn start_generation(
             } else {
                 Some(model_id.as_str())
             };
+
+            let effective_n_ctx = {
+                let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0).await;
+                let model_rec = match caps {
+                    Ok(caps) => crate::caps::resolve_chat_model(caps, &model_id).ok(),
+                    Err(_) => None,
+                };
+                model_rec.map(|rec| {
+                    let model_n_ctx = if rec.base.n_ctx > 0 {
+                        rec.base.n_ctx
+                    } else {
+                        tokens().default_n_ctx
+                    };
+                    match context_tokens_cap {
+                        Some(cap) if cap > 0 => cap.min(model_n_ctx),
+                        _ => model_n_ctx,
+                    }
+                })
+            };
+
+            let mut injected_budget = false;
+            if let Some(effective_n_ctx) = effective_n_ctx {
+                let mut session = session_arc.lock().await;
+                injected_budget = maybe_inject_token_budget_instruction(
+                    &mut session,
+                    effective_n_ctx,
+                    TOKEN_BUDGET_CADENCE,
+                );
+            }
+
+            if injected_budget {
+                maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
+            } else {
+                maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
+            }
 
             match process_tool_calls_once(gcx.clone(), session_arc.clone(), &mode_id, model_id_opt).await {
                 ToolStepOutcome::NoToolCalls => {

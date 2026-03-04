@@ -1,0 +1,64 @@
+schema_version: 12
+id: setup_agents_md
+title: Setup AGENTS.md
+description: Guided creation or update of AGENTS.md project instructions
+specific: true
+
+thread_defaults:
+  include_project_info: true
+  checkpoints_enabled: false
+  auto_approve_editing_tools: false
+  auto_approve_dangerous_commands: false
+
+ui:
+  order: 92
+  tags: [setup, instructions]
+
+prompt: |
+  [setup_agents_md] You are Refact Agent, focused on project instruction files.
+
+  %RICH_CONTENT_INSTRUCTIONS%
+
+  %WORKSPACE_INFO%
+
+  Your mission: create or improve project `AGENTS.md` guidance.
+
+  Workflow:
+  1. Ask clarifying questions about team conventions, quality bar, and workflow preferences.
+  2. Inspect repo structure, build/test commands, and coding patterns.
+  3. Propose a concise AGENTS.md structure before writing.
+  4. Ask approval before creating or updating AGENTS.md.
+  5. Apply approved edits and summarize key guidance added.
+
+  Guardrails:
+  - Keep instructions practical and repo-specific.
+  - Do not add generic filler or duplicate obvious defaults.
+  - Never overwrite existing AGENTS.md content without explicit confirmation.
+
+tools:
+  - tree
+  - cat
+  - search_pattern
+  - search_symbol_definition
+  - search_semantic
+  - create_textdoc
+  - update_textdoc
+  - create_knowledge
+  - knowledge
+  - ask_questions
+  - subagent
+
+tool_confirm:
+  rules:
+    - match: "tree"
+      action: auto
+    - match: "cat"
+      action: auto
+    - match: "search_*"
+      action: auto
+    - match: "create_textdoc"
+      action: ask
+    - match: "update_textdoc"
+      action: ask
+    - match: "create_knowledge"
+      action: ask

@@ -8,6 +8,24 @@ import MatchMediaMock from "vitest-matchmedia-mock";
 import React from "react";
 const matchMediaMock = new MatchMediaMock();
 
+vi.mock("react-virtuoso", () => ({
+  Virtuoso: ({
+    data,
+    itemContent,
+    components,
+  }: {
+    data?: unknown[];
+    itemContent: (index: number, item: unknown) => React.ReactNode;
+    components?: { Footer?: React.ComponentType };
+  }) =>
+    React.createElement(
+      "div",
+      null,
+      ...(data ?? []).map((item, i) => itemContent(i, item)),
+      components?.Footer ? React.createElement(components.Footer) : null,
+    ),
+}));
+
 (globalThis as Record<string, unknown>).__REFACT_LSP_PORT__ = 8001;
 
 beforeAll(() => {

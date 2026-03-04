@@ -220,7 +220,7 @@ pub async fn prepare_chat_passthrough(
     let strict_tools = model_record.supports_strict_tools;
     let tool_names: Vec<String> = filtered_tools.iter().map(|t| t.name.clone()).collect();
     let alias_registry = build_registry_from_names(&tool_names);
-    let openai_tools: Vec<Value> = filtered_tools
+    let mut openai_tools: Vec<Value> = filtered_tools
         .iter()
         .map(|tool| {
             let alias = alias_registry.get_alias(&tool.name).unwrap_or(&tool.name).to_string();
@@ -233,6 +233,60 @@ pub async fn prepare_chat_passthrough(
             v
         })
         .collect();
+
+    // 6b. Enrich handoff_to_mode tool with dynamic mode list
+    if options.supports_tools {
+        let handoff_alias = alias_registry.get_alias("handoff_to_mode").unwrap_or("handoff_to_mode");
+        if let Some(idx) = openai_tools.iter().position(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|n| n == handoff_alias)
+                .unwrap_or(false)
+        }) {
+            if let Some(registry) = crate::yaml_configs::customization_registry::get_project_registry(gcx.clone()).await {
+                let mut mode_lines = Vec::new();
+                let mut mode_ids = Vec::new();
+                let mut modes: Vec<_> = registry.modes.values().collect();
+                modes.sort_by(|a, b| a.id.cmp(&b.id));
+                for mode in modes {
+                    if mode.specific {
+                        continue;
+                    }
+                    let title = if mode.title.is_empty() {
+                        mode.id.clone()
+                    } else {
+                        mode.title.clone()
+                    };
+                    let mut desc = mode.description.clone();
+                    if desc.len() > 120 {
+                        desc = format!("{}...", desc.chars().take(120).collect::<String>());
+                    }
+                    mode_lines.push(format!("- {}: {}", mode.id, if desc.is_empty() { title } else { desc }));
+                    mode_ids.push(mode.id.clone());
+                }
+                let mode_list = mode_lines.join("\n");
+                if let Some(func) = openai_tools[idx].get_mut("function") {
+                    if let Some(desc_val) = func.get_mut("description") {
+                        let desc = desc_val.as_str().unwrap_or("");
+                        let enriched = format!("{}\n\nAvailable modes:\n{}", desc, mode_list);
+                        *desc_val = serde_json::Value::String(enriched);
+                    }
+                    if let Some(params) = func.get_mut("parameters") {
+                        if let Some(props) = params.get_mut("properties") {
+                            if let Some(target_mode) = props.get_mut("target_mode") {
+                                let desc = format!("Target mode ID. Available modes:\n{}", mode_list);
+                                target_mode["description"] = serde_json::Value::String(desc);
+                                target_mode["enum"] = serde_json::Value::Array(
+                                    mode_ids.into_iter().map(serde_json::Value::String).collect()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 7. History validation and fixing
     let limited_msgs = fix_and_limit_messages_history(&messages, sampling_parameters)?;

@@ -22,7 +22,11 @@ export const ModelBars: React.FC<ModelBarsProps> = ({ models }) => {
     .slice(0, 4);
 
   if (sorted.length === 0) {
-    return <Text size="1" color="gray">No data</Text>;
+    return (
+      <Text size="1" color="gray">
+        No data
+      </Text>
+    );
   }
 
   const maxTokens = Math.max(...sorted.map((m) => m.total_tokens), 1);
@@ -33,7 +37,12 @@ export const ModelBars: React.FC<ModelBarsProps> = ({ models }) => {
         const width = Math.max((model.total_tokens / maxTokens) * 100, 4);
         const shortName = model.model.split("/").pop() ?? model.model;
         return (
-          <Tooltip key={model.model_id || model.model} content={`${shortName}: ${formatTokenCount(model.total_tokens)} tokens`}>
+          <Tooltip
+            key={model.model_id || model.model}
+            content={`${shortName}: ${formatTokenCount(
+              model.total_tokens,
+            )} tokens`}
+          >
             <div className={styles.barRow}>
               <div
                 className={styles.barFill}
@@ -42,7 +51,9 @@ export const ModelBars: React.FC<ModelBarsProps> = ({ models }) => {
                   background: MODEL_COLORS[i % MODEL_COLORS.length],
                 }}
               />
-              <Text size="1" className={styles.barLabel} truncate>{shortName}</Text>
+              <Text size="1" className={styles.barLabel} truncate>
+                {shortName}
+              </Text>
             </div>
           </Tooltip>
         );

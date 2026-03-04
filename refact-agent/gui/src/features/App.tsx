@@ -229,9 +229,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
         <UserSurvey />
         {renderedPage.name === "login page" && <LoginPage />}
         {pageSwitching && <ChatLoading />}
-        {!pageSwitching && renderedPage.name === "history" && (
-          <Dashboard />
-        )}
+        {!pageSwitching && renderedPage.name === "history" && <Dashboard />}
         {!pageSwitching && renderedPage.name === "chat" && (
           <Chat
             host={config.host}

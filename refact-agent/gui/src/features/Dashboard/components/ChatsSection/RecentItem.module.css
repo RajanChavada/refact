@@ -91,7 +91,9 @@
   color: var(--gray-9);
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--motion-fast) ease, background var(--motion-fast) ease;
+  transition:
+    opacity var(--motion-fast) ease,
+    background var(--motion-fast) ease;
 }
 
 .item:hover .actionButton,
