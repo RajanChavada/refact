@@ -1,21 +1,30 @@
 import React, { useCallback } from "react";
 import { Text, Tooltip } from "@radix-ui/themes";
+import {
+  BarChartIcon,
+  MixerHorizontalIcon,
+  GearIcon,
+  LightningBoltIcon,
+  CubeIcon,
+} from "@radix-ui/react-icons";
 import { useAppDispatch } from "../../../../hooks";
 import { push, type Page } from "../../../Pages/pagesSlice";
 import styles from "./NavBar.module.css";
 
 type NavItem = {
-  icon: string;
+  icon: React.ReactNode;
   label: string;
   page: Page;
 };
 
+const ICON_SIZE = 15;
+
 const NAV_ITEMS: NavItem[] = [
-  { icon: "📊", label: "Stats", page: { name: "stats dashboard" } },
-  { icon: "🔌", label: "Integrations", page: { name: "integrations page" } },
-  { icon: "⚙", label: "Providers", page: { name: "providers page" } },
-  { icon: "🧠", label: "Knowledge", page: { name: "knowledge graph" } },
-  { icon: "🛒", label: "Marketplace", page: { name: "mcp marketplace" } },
+  { icon: <BarChartIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Stats", page: { name: "stats dashboard" } },
+  { icon: <MixerHorizontalIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Integrations", page: { name: "integrations page" } },
+  { icon: <GearIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Providers", page: { name: "providers page" } },
+  { icon: <LightningBoltIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Knowledge", page: { name: "knowledge graph" } },
+  { icon: <CubeIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Marketplace", page: { name: "mcp marketplace" } },
 ];
 
 export const NavBar: React.FC = () => {

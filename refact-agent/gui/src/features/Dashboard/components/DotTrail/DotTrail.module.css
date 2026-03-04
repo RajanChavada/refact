@@ -1,5 +1,6 @@
 .trail {
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .dot {

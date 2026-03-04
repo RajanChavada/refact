@@ -11,7 +11,7 @@ export type TrailDot = {
 
 export function buildDotTrail(
   node: HistoryTreeNode,
-  maxDots: number = 8,
+  maxDots = 8,
 ): TrailDot[] {
   const dots: TrailDot[] = [];
 

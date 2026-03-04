@@ -1,5 +1,6 @@
 import React, { useCallback } from "react";
 import { Text } from "@radix-ui/themes";
+import { DrawingPinFilledIcon } from "@radix-ui/react-icons";
 import { useAppDispatch } from "../../../../hooks";
 import { switchToThread } from "../../../Chat/Thread";
 import { popBackTo, push } from "../../../Pages/pagesSlice";
@@ -37,7 +38,7 @@ export const OpenSection: React.FC<OpenSectionProps> = ({
     return (
       <div className={styles.compact}>
         <Text size="1" color="gray">
-          📌 {tabs.length} open
+          <DrawingPinFilledIcon width={10} height={10} style={{ display: "inline", verticalAlign: "middle" }} /> {tabs.length} open
         </Text>
       </div>
     );
@@ -46,7 +47,7 @@ export const OpenSection: React.FC<OpenSectionProps> = ({
   return (
     <div className={styles.section}>
       <Text size="1" weight="bold" color="gray" className={styles.label}>
-        📌 OPEN
+        <DrawingPinFilledIcon width={10} height={10} style={{ display: "inline", verticalAlign: "middle" }} /> OPEN
       </Text>
       <div
         className={styles.grid}

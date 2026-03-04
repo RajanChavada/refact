@@ -11,6 +11,8 @@ import {
   DotFilledIcon,
   PersonIcon,
   GearIcon,
+  ChevronRightIcon,
+  ChevronDownIcon,
 } from "@radix-ui/react-icons";
 import { StatusDot } from "../../../../components/StatusDot";
 import { getStatusFromSessionState } from "../../../../utils/sessionStatus";
@@ -24,6 +26,7 @@ import styles from "./RecentItem.module.css";
 type RecentItemProps = {
   node: HistoryTreeNode;
   breakpoint: DashboardBreakpoint;
+  depth?: number;
   onClick: () => void;
   onDotClick?: (chatId: string) => void;
   onDelete?: (id: string) => void;
@@ -92,6 +95,7 @@ function getRelationInfo(node: HistoryTreeNode, depth: number): RelationInfo | n
 export const RecentItem: React.FC<RecentItemProps> = ({
   node,
   breakpoint,
+  depth = 0,
   onClick,
   onDotClick,
   onDelete,
@@ -99,11 +103,12 @@ export const RecentItem: React.FC<RecentItemProps> = ({
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const statusState = getStatusFromSessionState(node.session_state);
   const hasChildren = node.children.length > 0;
   const messageCount = node.message_count ?? 0;
-  const relation = getRelationInfo(node, 0);
+  const relation = getRelationInfo(node, depth);
 
   const handleStartEdit = useCallback(
     (e: React.MouseEvent) => {
@@ -171,15 +176,40 @@ export const RecentItem: React.FC<RecentItemProps> = ({
   const hasStats = messageCount > 0 || (node.total_coins ?? 0) > 0
     || (node.total_lines_added ?? 0) > 0 || (node.total_lines_removed ?? 0) > 0;
 
+  const handleToggleExpand = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setIsExpanded((prev) => !prev);
+    },
+    [],
+  );
+
+  const indent = depth * 16;
+
   const itemContent = (
     <div
       role="button"
       tabIndex={0}
       className={styles.item}
+      style={indent > 0 ? { paddingLeft: `calc(var(--space-2) + ${indent}px)` } : undefined}
       onClick={isEditing ? undefined : onClick}
       onKeyDown={handleKeyDown_row}
     >
       <div className={styles.left}>
+        {hasChildren ? (
+          <button
+            type="button"
+            className={styles.expandButton}
+            onClick={handleToggleExpand}
+            aria-label={isExpanded ? "Collapse" : "Expand"}
+          >
+            {isExpanded
+              ? <ChevronDownIcon width={12} height={12} />
+              : <ChevronRightIcon width={12} height={12} />}
+          </button>
+        ) : depth > 0 ? (
+          <span className={styles.treeIndent} />
+        ) : null}
         <StatusDot state={statusState} size="small" />
         {relation && (
           <Tooltip content={relation.label}>
@@ -261,12 +291,35 @@ export const RecentItem: React.FC<RecentItemProps> = ({
     </div>
   );
 
-  if (!hasStats && !relation) return itemContent;
+  const childNodes = hasChildren && isExpanded ? (
+    node.children.map((child) => (
+      <RecentItem
+        key={child.id}
+        node={child}
+        breakpoint={breakpoint}
+        depth={depth + 1}
+        onClick={() => onDotClick?.(child.id)}
+        onDotClick={onDotClick}
+        onDelete={onDelete}
+        onRename={onRename}
+      />
+    ))
+  ) : null;
+
+  if (!hasStats && !relation) {
+    return (
+      <>
+        {itemContent}
+        {childNodes}
+      </>
+    );
+  }
 
   return (
+    <>
     <HoverCard.Root openDelay={400} closeDelay={100}>
       <HoverCard.Trigger>{itemContent}</HoverCard.Trigger>
-      <HoverCard.Content size="1" side="left" align="start" className={styles.hoverCard}>
+      <HoverCard.Content size="1" side="top" align="center" className={styles.hoverCard} avoidCollisions>
         <Flex direction="column" gap="2">
           <Text size="2" weight="bold" truncate>
             {node.title || "New Chat"}
@@ -344,5 +397,7 @@ export const RecentItem: React.FC<RecentItemProps> = ({
         </Flex>
       </HoverCard.Content>
     </HoverCard.Root>
+    {childNodes}
+    </>
   );
 };

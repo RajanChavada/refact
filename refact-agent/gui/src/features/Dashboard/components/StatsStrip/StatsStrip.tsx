@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Text } from "@radix-ui/themes";
+import { Skeleton, Text } from "@radix-ui/themes";
 import { useGetStatsSummaryQuery } from "../../../../services/refact/stats";
 import { SparklineChart } from "./SparklineChart";
 import { TokenDonut } from "./TokenDonut";
@@ -31,9 +31,21 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
   const { data, isLoading } = useGetStatsSummaryQuery({ from });
 
   if (isLoading || !data) {
+    if (compact) {
+      return (
+        <div className={styles.stripCompact}>
+          <Skeleton><Text size="1">Loading stats...</Text></Skeleton>
+        </div>
+      );
+    }
     return (
-      <div className={styles.strip}>
-        <Text size="1" color="gray">Loading stats...</Text>
+      <div className={styles.strip} data-breakpoint={breakpoint}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className={styles.card}>
+            <Skeleton><Text size="1">Label</Text></Skeleton>
+            <Skeleton width="60px" height="28px" />
+          </div>
+        ))}
       </div>
     );
   }
@@ -41,7 +53,7 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
   const { totals, by_day, by_model } = data;
 
   if (compact) {
-    const cost = totals.total_cost_usd != null
+    const cost = totals.total_cost_usd != null && totals.total_cost_usd > 0
       ? `$${totals.total_cost_usd.toFixed(2)}`
       : `${formatTokenCount(totals.total_tokens)} tok`;
     const successRate = totals.total_calls > 0
@@ -50,7 +62,7 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
     return (
       <div className={styles.stripCompact}>
         <Text size="1" color="gray">
-          {totals.total_conversations} chats · {cost} · {successRate}
+          {totals.total_conversations} chats · {cost} · {successRate} success
         </Text>
       </div>
     );
@@ -86,5 +98,3 @@ export const StatsStrip: React.FC<StatsStripProps> = ({
     </div>
   );
 };
-
-

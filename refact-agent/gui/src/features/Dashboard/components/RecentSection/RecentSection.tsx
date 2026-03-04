@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { Flex, Spinner, Text, TextField } from "@radix-ui/themes";
+import { Flex, Skeleton, Spinner, Text, TextField } from "@radix-ui/themes";
 import { MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon } from "@radix-ui/react-icons";
 import { useAppDispatch, useAppSelector, useLoadMoreHistory } from "../../../../hooks";
 import {
@@ -23,8 +23,8 @@ type RecentSectionProps = {
 
 function treeMatchesQuery(node: HistoryTreeNode, query: string): boolean {
   if (
-    (node.title ?? "").toLowerCase().includes(query) ||
-    (node.mode ?? "").toLowerCase().includes(query)
+    node.title.toLowerCase().includes(query) ||
+    (node.mode?.toLowerCase().includes(query) ?? false)
   ) {
     return true;
   }
@@ -37,6 +37,7 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
   onToggleExpand,
 }) => {
   const dispatch = useAppDispatch();
+  const isInitialLoading = useAppSelector((state) => state.history.isLoading);
   const history = useAppSelector((state) => state.history.chats, {
     devModeChecks: { stabilityCheck: "never" },
   });
@@ -59,16 +60,10 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
     return tree.filter((n) => treeMatchesQuery(n, q));
   }, [tree, searchQuery]);
 
-  const displayNodes = expanded ? filteredTree : filteredTree.slice(0, 5);
-
   const handleItemClick = useCallback(
     (node: HistoryTreeNode) => {
-      const item = history[node.id];
-      if (item) {
-        dispatch(restoreChat(item));
-      } else {
-        dispatch(restoreChat(node as unknown as ChatHistoryItem));
-      }
+      const item = history[node.id] as ChatHistoryItem | undefined;
+      dispatch(restoreChat(item ?? (node as unknown as ChatHistoryItem)));
       dispatch(push({ name: "chat" }));
     },
     [dispatch, history],
@@ -76,7 +71,7 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
 
   const handleDotClick = useCallback(
     (chatId: string) => {
-      const item = history[chatId];
+      const item = history[chatId] as ChatHistoryItem | undefined;
       if (item) {
         dispatch(restoreChat(item));
         dispatch(push({ name: "chat" }));
@@ -107,32 +102,33 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
     for (const label of GROUP_ORDER) {
       groups.set(label, []);
     }
-    for (const node of displayNodes) {
+    for (const node of filteredTree) {
       const group = getDateGroup(node.updatedAt);
       if (!groups.has(group)) groups.set(group, []);
-      groups.get(group)!.push(node);
+      const arr = groups.get(group);
+      if (arr) arr.push(node);
     }
     const result = new Map<string, HistoryTreeNode[]>();
     for (const [key, nodes] of groups) {
       if (nodes.length > 0) result.set(key, nodes);
     }
     return result;
-  }, [expanded, displayNodes]);
+  }, [expanded, filteredTree]);
 
   const listRef = useRef<HTMLDivElement>(null);
 
   const handleScroll = useCallback(() => {
-    if (!expanded || !hasMore || isLoadingMore) return;
+    if (!hasMore || isLoadingMore) return;
     const el = listRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
     if (nearBottom) {
       void loadMoreAsync();
     }
-  }, [expanded, hasMore, isLoadingMore, loadMoreAsync]);
+  }, [hasMore, isLoadingMore, loadMoreAsync]);
 
   return (
-    <div className={styles.section} data-expanded={expanded || undefined}>
+    <div className={styles.section}>
       <button
         type="button"
         className={styles.header}
@@ -199,7 +195,7 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
             </div>
           ))
         ) : (
-          displayNodes.map((node) => (
+          filteredTree.map((node) => (
             <RecentItem
               key={node.id}
               node={node}
@@ -211,12 +207,24 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
             />
           ))
         )}
-        {expanded && isLoadingMore && (
+        {isInitialLoading && filteredTree.length === 0 && (
+          <Flex direction="column" gap="1" p="1">
+            {Array.from({ length: 8 }, (_, i) => (
+              <Flex key={i} align="center" gap="2" py="1" px="2">
+                <Skeleton><div style={{ width: 8, height: 8, borderRadius: "50%" }} /></Skeleton>
+                <Skeleton><Text size="2" style={{ width: `${120 + (i % 3) * 40}px` }}>&nbsp;</Text></Skeleton>
+                <div style={{ flex: 1 }} />
+                <Skeleton><Text size="1" style={{ width: 40 }}>&nbsp;</Text></Skeleton>
+              </Flex>
+            ))}
+          </Flex>
+        )}
+        {isLoadingMore && (
           <Flex justify="center" py="2">
             <Spinner size="2" />
           </Flex>
         )}
-        {expanded && loadMoreError && (
+        {loadMoreError && (
           <Flex justify="center" py="2">
             <Text
               size="1"
@@ -228,7 +236,7 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
             </Text>
           </Flex>
         )}
-        {displayNodes.length === 0 && (
+        {!isInitialLoading && filteredTree.length === 0 && (
           <Text size="2" color="gray" style={{ padding: "var(--space-4)", textAlign: "center" }}>
             {searchQuery ? "No matching chats" : "No chats yet"}
           </Text>
