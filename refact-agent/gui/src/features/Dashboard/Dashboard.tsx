@@ -6,6 +6,7 @@ import { RecentSection } from "./components/RecentSection/RecentSection";
 import { NavBar } from "./components/NavBar/NavBar";
 import { useDashboardLayout } from "./hooks/useDashboardLayout";
 import { useOpenTabsData } from "./hooks/useOpenTabsData";
+import { ModelsSection } from "./components/ModelsSection/ModelsSection";
 import { SetupBanner } from "../Setup/SetupBanner";
 import styles from "./Dashboard.module.css";
 
@@ -27,8 +28,9 @@ export const Dashboard: React.FC = () => {
       className={styles.dashboard}
       data-breakpoint={breakpoint}
     >
-      {/* Stats Strip — compact when RECENT is expanded */}
       <StatsStrip breakpoint={breakpoint} compact={expanded} />
+
+      {!expanded && <ModelsSection breakpoint={breakpoint} />}
 
       <div className={styles.sectionDivider} />
 

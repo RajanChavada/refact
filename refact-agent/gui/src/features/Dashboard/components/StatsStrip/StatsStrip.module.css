@@ -1,7 +1,11 @@
 .statsGrid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: var(--space-3);
+}
+
+.statsGrid[data-breakpoint="medium"] {
+  grid-template-columns: 1fr 1fr;
 }
 
 .compactRow {
@@ -30,6 +34,7 @@
   border-radius: var(--radius-2);
   background: var(--gray-a2);
   overflow: hidden;
+  min-width: 0;
 }
 
 .cardTitle {
@@ -56,4 +61,22 @@
   background: var(--accent-8);
   min-width: 4px;
   flex-shrink: 0;
+}
+
+.hoverTrigger {
+  cursor: help;
+  border-bottom: 1px dotted var(--gray-8);
+  font-size: var(--font-size-1);
+  color: var(--gray-11);
+  line-height: 1.4;
+}
+
+.hoverTrigger:hover {
+  border-bottom-color: var(--accent-8);
+  color: var(--gray-12);
+}
+
+.hoverContent {
+  max-width: 300px;
+  z-index: 100;
 }

@@ -6,6 +6,7 @@ import {
   GearIcon,
   LightningBoltIcon,
   CubeIcon,
+  RocketIcon,
 } from "@radix-ui/react-icons";
 import { useAppDispatch } from "../../../../hooks";
 import { push, type Page } from "../../../Pages/pagesSlice";
@@ -23,7 +24,8 @@ const NAV_ITEMS: NavItem[] = [
   { icon: <BarChartIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Stats", page: { name: "stats dashboard" } },
   { icon: <MixerHorizontalIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Integrations", page: { name: "integrations page" } },
   { icon: <GearIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Providers", page: { name: "providers page" } },
-  { icon: <LightningBoltIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Knowledge", page: { name: "knowledge graph" } },
+  { icon: <RocketIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Modes", page: { name: "customization" } },
+  { icon: <LightningBoltIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Skills", page: { name: "extensions", tab: "skills" } },
   { icon: <CubeIcon width={ICON_SIZE} height={ICON_SIZE} />, label: "Marketplace", page: { name: "mcp marketplace" } },
 ];
 
@@ -41,10 +43,11 @@ export const NavBar: React.FC = () => {
     <nav className={styles.nav}>
       {NAV_ITEMS.map((item) => (
         <button
-          key={item.page.name}
+          key={item.label}
           type="button"
           className={styles.navButton}
           onClick={() => handleClick(item.page)}
+          aria-label={item.label}
         >
           <span className={styles.icon}>{item.icon}</span>
           <Text size="1" className={styles.label}>{item.label}</Text>

@@ -1,9 +1,9 @@
 import React, { useCallback, useState } from "react";
-import { Badge, Flex, Skeleton, Text } from "@radix-ui/themes";
-import { ChevronDownIcon, ChevronUpIcon } from "@radix-ui/react-icons";
+import { Badge, Flex, IconButton, Skeleton, Text, Tooltip } from "@radix-ui/themes";
+import { ChevronDownIcon, ChevronUpIcon, ChevronRightIcon, PlusIcon } from "@radix-ui/react-icons";
 import { useAppDispatch } from "../../../../hooks";
 import { push } from "../../../Pages/pagesSlice";
-import { useListTasksQuery } from "../../../../services/refact/tasks";
+import { useListTasksQuery, useCreateTaskMutation } from "../../../../services/refact/tasks";
 import { StatusDot } from "../../../../components/StatusDot";
 import { getTaskStatusDotState } from "../../../../utils/sessionStatus";
 import type { TaskMeta } from "../../../../services/refact/tasks";
@@ -47,11 +47,11 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
 }) => {
   const dispatch = useAppDispatch();
   const { data: tasks, isLoading, isError } = useListTasksQuery(undefined);
+  const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
   const [showAll, setShowAll] = useState(false);
 
   const sortedTasks = React.useMemo(() => {
     if (!tasks) return [];
-    // Active/planning/paused first, then completed/abandoned
     const priority = new Map([
       ["active", 0], ["planning", 1], ["paused", 2], ["completed", 3], ["abandoned", 4],
     ]);
@@ -69,6 +69,17 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
     },
     [dispatch],
   );
+
+  const handleNewTask = useCallback(() => {
+    void createTask({ name: "New Task" })
+      .unwrap()
+      .then((task) => {
+        dispatch(push({ name: "task workspace", taskId: task.id }));
+      })
+      .catch(() => {
+        // Task creation failed
+      });
+  }, [createTask, dispatch]);
 
   const toggleShowAll = useCallback(() => {
     setShowAll((prev) => !prev);
@@ -96,7 +107,30 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
     );
   }
 
-  if (sortedTasks.length === 0) return null;
+  if (sortedTasks.length === 0) {
+    return (
+      <div className={styles.section}>
+        <div className={styles.header}>
+          <Text size="1" weight="bold" color="gray" className={styles.label}>TASKS</Text>
+          <Tooltip content="New Task">
+            <IconButton
+              size="1"
+              variant="ghost"
+              color="gray"
+              onClick={handleNewTask}
+              disabled={isCreatingTask}
+              aria-label="New Task"
+            >
+              <PlusIcon width={14} height={14} />
+            </IconButton>
+          </Tooltip>
+        </div>
+        <Text size="1" color="gray" style={{ padding: "var(--space-2)", textAlign: "center" }}>
+          No tasks yet
+        </Text>
+      </div>
+    );
+  }
 
   if (compact) {
     const activeCount = sortedTasks.filter(
@@ -118,60 +152,72 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
         <Text size="1" weight="bold" color="gray" className={styles.label}>
           TASKS ({sortedTasks.length})
         </Text>
+        <Tooltip content="New Task">
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            onClick={handleNewTask}
+            disabled={isCreatingTask}
+            aria-label="New Task"
+          >
+            <PlusIcon width={14} height={14} />
+          </IconButton>
+        </Tooltip>
       </div>
       <div className={styles.list}>
         {visibleTasks.map((task) => {
           const progress = task.cards_total > 0
-            ? Math.round((task.cards_done / task.cards_total) * 100)
+            ? Math.min(100, Math.max(0, Math.round((task.cards_done / task.cards_total) * 100)))
             : 0;
           return (
-            <button
+            <div
               key={task.id}
-              type="button"
-              className={styles.taskRow}
+              role="button"
+              tabIndex={0}
+              className={styles.taskItem}
               onClick={() => handleTaskClick(task)}
-              aria-label={`Task: ${task.name}, status: ${task.status}`}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleTaskClick(task);
+                }
+              }}
             >
-              <StatusDot state={getTaskStatusDotState(task)} size="small" />
-              <div className={styles.taskInfo}>
-                <Text size="2" weight="medium" truncate className={styles.taskName}>
+              <div className={styles.taskLeft}>
+                <StatusDot state={getTaskStatusDotState(task)} size="small" />
+                <Text size="2" truncate className={styles.taskName}>
                   {task.name}
                 </Text>
-                <div className={styles.taskMeta}>
-                  {task.cards_total > 0 && (
-                    <>
-                      <div className={styles.progressBar}>
-                        <div
-                          className={styles.progressFill}
-                          style={{ width: `${progress}%` }}
-                        />
-                      </div>
-                      <Text size="1" color="gray">
-                        {task.cards_done}/{task.cards_total}
-                        {task.cards_failed > 0 && (
-                          <Text size="1" color="red"> ({task.cards_failed} failed)</Text>
-                        )}
-                      </Text>
-                    </>
-                  )}
-                  {breakpoint !== "narrow" && task.agents_active > 0 && (
-                    <Text size="1" color="gray">
-                      {task.agents_active} agent{task.agents_active !== 1 ? "s" : ""}
-                    </Text>
-                  )}
-                  {breakpoint !== "narrow" && (
-                    <Text size="1" color="gray">
-                      {formatTaskTime(task.updated_at)}
-                    </Text>
-                  )}
-                </div>
               </div>
-              <Flex gap="1" align="center" flexShrink="0">
+              <div className={styles.taskRight}>
+                {task.cards_total > 0 && (
+                  <Flex align="center" gap="1">
+                    <div className={styles.progressBar}>
+                      <div
+                        className={styles.progressFill}
+                        style={{ width: `${progress}%` }}
+                      />
+                    </div>
+                    <Text size="1" color="gray">
+                      {task.cards_done}/{task.cards_total}
+                    </Text>
+                  </Flex>
+                )}
+                {breakpoint !== "narrow" && task.agents_active > 0 && (
+                  <Text size="1" color="gray">
+                    {task.agents_active} agent{task.agents_active !== 1 ? "s" : ""}
+                  </Text>
+                )}
                 <Badge size="1" variant="soft" color={getStatusColor(task.status)}>
                   {task.status}
                 </Badge>
-              </Flex>
-            </button>
+                <Text size="1" color="gray" className={styles.taskTime}>
+                  {formatTaskTime(task.updated_at)}
+                </Text>
+                <ChevronRightIcon width={12} height={12} color="var(--gray-8)" className={styles.taskChevron} />
+              </div>
+            </div>
           );
         })}
       </div>

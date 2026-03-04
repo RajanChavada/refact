@@ -1,6 +1,6 @@
 import React, { useCallback, useDeferredValue, useMemo, useState } from "react";
-import { Flex, IconButton, Skeleton, Spinner, Text, TextField, Tooltip } from "@radix-ui/themes";
-import { MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, CheckboxIcon } from "@radix-ui/react-icons";
+import { Flex, Skeleton, Spinner, Text, TextField } from "@radix-ui/themes";
+import { MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon } from "@radix-ui/react-icons";
 import { Virtuoso } from "react-virtuoso";
 import { useAppDispatch, useAppSelector, useLoadMoreHistory } from "../../../../hooks";
 import {
@@ -12,7 +12,6 @@ import {
 } from "../../../History/historySlice";
 import { newChatAction, restoreChat } from "../../../Chat/Thread";
 import { push } from "../../../Pages/pagesSlice";
-import { useCreateTaskMutation } from "../../../../services/refact/tasks";
 import { RecentItem, getDateGroup } from "./RecentItem";
 import type { DashboardBreakpoint } from "../../types";
 import styles from "./RecentSection.module.css";
@@ -23,7 +22,7 @@ type RecentSectionProps = {
   onToggleExpand: () => void;
 };
 
-const GROUP_ORDER = ["Today", "Yesterday", "Last 7 days", "Older"] as const;
+const GROUP_ORDER = ["Today", "Yesterday", "Earlier"] as const;
 
 const DOT_LEGEND: { color: string; label: string }[] = [
   { color: "var(--blue-8)", label: "Chat" },
@@ -96,7 +95,6 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const deferredQuery = useDeferredValue(searchQuery);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
 
   const {
     loadMore: loadMoreAsync,
@@ -172,17 +170,6 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
     dispatch(push({ name: "chat" }));
   }, [dispatch]);
 
-  const handleNewTask = useCallback(() => {
-    void createTask({ name: "New Task" })
-      .unwrap()
-      .then((task) => {
-        dispatch(push({ name: "task workspace", taskId: task.id }));
-      })
-      .catch(() => {
-        // Task creation failed — mutation error state is shown by RTK Query
-      });
-  }, [createTask, dispatch]);
-
   const handleEndReached = useCallback(() => {
     if (hasMore && !isLoadingMore) {
       void loadMoreAsync();
@@ -213,31 +200,14 @@ export const RecentSection: React.FC<RecentSectionProps> = ({
             )}
           </Flex>
         </button>
-        <Flex gap="1" align="center" className={styles.headerActions}>
-          <Tooltip content="New Chat">
-            <IconButton
-              size="1"
-              variant="ghost"
-              color="gray"
-              onClick={handleNewChat}
-              aria-label="New Chat"
-            >
-              <PlusIcon width={14} height={14} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip content="New Task">
-            <IconButton
-              size="1"
-              variant="ghost"
-              color="gray"
-              onClick={handleNewTask}
-              disabled={isCreatingTask}
-              aria-label="New Task"
-            >
-              <CheckboxIcon width={14} height={14} />
-            </IconButton>
-          </Tooltip>
-        </Flex>
+        <button
+          type="button"
+          className={styles.newChatButton}
+          onClick={handleNewChat}
+        >
+          <PlusIcon width={12} height={12} />
+          <Text size="1">New Chat</Text>
+        </button>
       </div>
 
       {breakpoint !== "narrow" && (

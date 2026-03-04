@@ -17,7 +17,6 @@ import {
 import { StatusDot } from "../../../../components/StatusDot";
 import { getStatusFromSessionState } from "../../../../utils/sessionStatus";
 import { getModeColor } from "../../../../utils/modeColors";
-import { formatTokenCount } from "../../../StatsDashboard/utils/formatters";
 import { DotTrail } from "../DotTrail/DotTrail";
 import type { HistoryTreeNode } from "../../../History/historySlice";
 import type { DashboardBreakpoint } from "../../types";
@@ -53,14 +52,13 @@ function formatRelativeTime(dateStr: string): string {
 export function getDateGroup(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const dateStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const diffDay = Math.floor((todayStart.getTime() - dateStart.getTime()) / 86_400_000);
+  const todayUTC = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const dateUTC = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDay = Math.floor((todayUTC - dateUTC) / 86_400_000);
 
   if (diffDay === 0) return "Today";
   if (diffDay === 1) return "Yesterday";
-  if (diffDay < 7) return "Last 7 days";
-  return "Older";
+  return "Earlier";
 }
 
 type RelationInfo = {
@@ -132,8 +130,8 @@ function ItemHoverContent({ node, relation }: { node: HistoryTreeNode; relation:
 
       {(node.total_coins ?? 0) > 0 && (
         <Flex gap="1" align="center">
-          <Text size="1" color="gray">Tokens:</Text>
-          <Text size="1">{formatTokenCount(node.total_coins ?? 0)}</Text>
+          <Text size="1" color="gray">Cost:</Text>
+          <Text size="1">{(node.total_coins ?? 0).toFixed(1)} coins</Text>
         </Flex>
       )}
 

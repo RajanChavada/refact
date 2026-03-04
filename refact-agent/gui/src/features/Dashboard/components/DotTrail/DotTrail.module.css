@@ -64,3 +64,8 @@
     animation: none;
   }
 }
+
+.hoverCard {
+  max-width: 280px;
+  z-index: 100;
+}

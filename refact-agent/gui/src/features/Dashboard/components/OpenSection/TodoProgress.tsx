@@ -1,6 +1,6 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Text } from "@radix-ui/themes";
-import type { TodoItem } from "../../../Chat/Thread/types";
+import type { TodoItem, TodoStatus } from "../../../Chat/Thread/types";
 import type { DashboardBreakpoint } from "../../types";
 import styles from "./TodoProgress.module.css";
 
@@ -9,10 +9,23 @@ type TodoProgressProps = {
   breakpoint: DashboardBreakpoint;
 };
 
+const STATUS_PRIORITY: Record<TodoStatus, number> = {
+  in_progress: 0,
+  failed: 1,
+  pending: 2,
+  completed: 3,
+};
+
 export const TodoProgress: React.FC<TodoProgressProps> = ({
   todos,
   breakpoint,
 }) => {
+  const sorted = useMemo(() => {
+    return [...todos].sort((a, b) => {
+      return STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
+    });
+  }, [todos]);
+
   if (todos.length === 0) return null;
 
   const done = todos.filter((t) => t.status === "completed").length;
@@ -25,7 +38,7 @@ export const TodoProgress: React.FC<TodoProgressProps> = ({
           ☑{done}/{total}
         </Text>
         <div className={styles.miniBar}>
-          {todos.slice(0, 12).map((t) => (
+          {sorted.slice(0, 12).map((t) => (
             <div
               key={t.id}
               className={styles.miniSegment}
@@ -38,7 +51,7 @@ export const TodoProgress: React.FC<TodoProgressProps> = ({
   }
 
   const MAX_VISIBLE = 3;
-  const visible = todos.slice(0, MAX_VISIBLE);
+  const visible = sorted.slice(0, MAX_VISIBLE);
   const remaining = todos.length - MAX_VISIBLE;
 
   return (
