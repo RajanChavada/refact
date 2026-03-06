@@ -75,6 +75,7 @@ impl Tool for ToolMcpSearch {
         let matched: Vec<(String, String, Value)> = integration_groups.iter()
             .filter(|g| matches!(g.category, ToolGroupCategory::MCP))
             .flat_map(|g| g.tools.iter())
+            .filter(|tool| tool.config().unwrap_or_default().enabled)
             .filter(|tool| {
                 let d = tool.tool_description();
                 re.is_match(&d.name) || re.is_match(&d.description)

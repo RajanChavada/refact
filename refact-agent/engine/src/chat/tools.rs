@@ -64,7 +64,8 @@ async fn resolve_tool_call_aliases(
     mode_id: &str,
     model_id: Option<&str>,
 ) -> Vec<ChatToolCall> {
-    let available_tools = crate::tools::tools_list::get_tools_for_mode(gcx, mode_id, model_id).await;
+    let raw_tools = crate::tools::tools_list::get_tools_for_mode(gcx, mode_id, model_id).await;
+    let available_tools = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools).tools;
     let tool_names: Vec<String> = available_tools.iter().map(|t| t.tool_description().name.clone()).collect();
     let registry = build_registry_from_names(&tool_names);
     if !registry.needs_aliasing() {
@@ -863,10 +864,11 @@ pub async fn check_tools_confirmation(
         .collect();
 
     let all_tools =
-        crate::tools::tools_list::get_tools_for_mode(gcx.clone(), mode_id, model_id)
-            .await
-            .into_iter()
-            .filter_map(|tool| {
+        crate::tools::tools_list::apply_mcp_lazy_filter(
+            crate::tools::tools_list::get_tools_for_mode(gcx.clone(), mode_id, model_id).await
+        ).tools
+        .into_iter()
+        .filter_map(|tool| {
                 let spec = tool.tool_description();
                 if needed_names.contains(spec.name.as_str()) {
                     Some((spec.name, tool))
