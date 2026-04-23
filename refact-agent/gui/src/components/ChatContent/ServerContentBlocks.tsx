@@ -1,7 +1,8 @@
 import React, { useMemo } from "react";
 import { useStoredOpen } from "./useStoredOpen";
 import { MagnifyingGlassIcon } from "@radix-ui/react-icons";
-import { Box, Flex, Link, Text } from "@radix-ui/themes";
+import { Box, Flex, Text } from "@radix-ui/themes";
+import { Link } from "../Link";
 import { ToolCard } from "./ToolCard";
 import styles from "./ToolCard/OpenAIResponsesTool.module.css";
 import scrollbarStyles from "../shared/scrollbar.module.css";

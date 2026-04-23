@@ -450,6 +450,17 @@ const READ_TOOLS = new Set([
   "knowledge",
   "search_trajectories",
   "get_trajectory_context",
+  // CC OAuth mode aliases
+  "t_cat",
+  "t_tree",
+  "t_search_pattern",
+  "t_search_semantic",
+  "t_search_symbol_definition",
+  "t_web",
+  "t_web_search",
+  "t_knowledge",
+  "t_hist_search",
+  "t_hist_get",
 ]);
 
 const EDIT_TOOLS = new Set([
@@ -462,6 +473,14 @@ const EDIT_TOOLS = new Set([
   "apply_patch",
   "undo_textdoc",
   "rm",
+  // CC OAuth mode aliases
+  "t_write",
+  "t_patch",
+  "t_patch_re",
+  "t_patch_ln",
+  "t_patch_at",
+  "t_undo",
+  "t_rm",
 ]);
 
 type DisplayItemAssistant = {
@@ -884,7 +903,11 @@ function computeHiddenQaMessageIndices(messages: ChatMessages): Set<number> {
     const msg = messages[i];
     if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
       for (const tc of msg.tool_calls) {
-        if (tc.function.name === "ask_questions" && tc.id) {
+        if (
+          (tc.function.name === "ask_questions" ||
+            tc.function.name === "t_ask") &&
+          tc.id
+        ) {
           askQuestionsToolIds.set(tc.id, i);
         }
       }

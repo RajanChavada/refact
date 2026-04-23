@@ -269,7 +269,12 @@ async fn collect_yaml_paths(dir: &Path) -> Vec<PathBuf> {
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
         if path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
-            paths.push(path);
+            let effectively_empty = tokio::fs::read_to_string(&path).await
+                .map(|c| c.trim().is_empty())
+                .unwrap_or(false);
+            if !effectively_empty {
+                paths.push(path);
+            }
         }
     }
     paths.sort();

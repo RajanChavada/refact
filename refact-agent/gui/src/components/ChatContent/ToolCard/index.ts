@@ -29,5 +29,6 @@ export { OpenAIMcpCallTool } from "./OpenAIMcpCallTool";
 export { OpenAIMcpListToolsTool } from "./OpenAIMcpListToolsTool";
 export { TaskDoneTool } from "./TaskDoneTool";
 export { AskQuestionsTool } from "./AskQuestionsTool";
+export { ChromeTool } from "./ChromeTool";
 export { useAutoExpandCollapse } from "./useAutoExpandCollapse";
 export { truncateMiddle, basename } from "./utils";

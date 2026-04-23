@@ -203,7 +203,7 @@ pub async fn create_workspace_checkpoint(
             get_file_changes_from_nested_repos(&repo, &nested_repos, false)?;
         file_changes.extend(flattened_nested_file_changes);
 
-        stage_changes(&repo, &file_changes, &abort_flag)?;
+        let mut skipped = stage_changes(&repo, &file_changes, &abort_flag)?;
         let commit_oid = commit(
             &repo,
             &branch,
@@ -213,7 +213,10 @@ pub async fn create_workspace_checkpoint(
         )?;
 
         for (nested_repo, changes) in nested_file_changes {
-            stage_changes(&nested_repo, &changes, &abort_flag)?;
+            skipped += stage_changes(&nested_repo, &changes, &abort_flag)?;
+        }
+        if skipped > 0 {
+            tracing::warn!("checkpoint for chat {chat_id}: {skipped} large file(s) not snapshotted");
         }
 
         Checkpoint {
@@ -237,7 +240,10 @@ pub async fn preview_changes_for_workspace_checkpoint(
 
     let commit_to_restore_oid =
         Oid::from_str(&checkpoint_to_restore.commit_hash).map_err_to_string()?;
-    let reverted_to = get_commit_datetime(&repo, &commit_to_restore_oid)?;
+    let reverted_to = match get_commit_datetime(&repo, &commit_to_restore_oid) {
+        Ok(dt) => dt,
+        Err(_) => return Err("This checkpoint has expired (checkpoints older than 3 days are removed automatically)".to_string()),
+    };
 
     let mut files_changed =
         match get_diff_statuses_index_to_commit(&repo, &commit_to_restore_oid, true) {
@@ -251,7 +257,7 @@ pub async fn preview_changes_for_workspace_checkpoint(
                     .as_secs();
 
                 if reverted_to.timestamp() < recent_cutoff_timestamp as i64 {
-                    return Err("This checkpoint has expired and was removed".to_string());
+                    return Err("This checkpoint has expired (checkpoints older than 3 days are removed automatically)".to_string());
                 } else {
                     return Err(e);
                 }
@@ -362,13 +368,13 @@ pub async fn init_shadow_repos_if_needed(gcx: Arc<ARwLock<GlobalContext>>) -> ()
 
         let t0 = Instant::now();
 
-        let initial_commit_result: Result<Oid, String> = (|| {
+        let initial_commit_result: Result<(Oid, usize), String> = (|| {
             let (_, mut file_changes) = get_diff_statuses(git2::StatusShow::Workdir, &repo, false)?;
             let (nested_file_changes, all_nested_changes) =
                 get_file_changes_from_nested_repos(&repo, &nested_repos, false)?;
             file_changes.extend(all_nested_changes);
 
-            stage_changes(&repo, &file_changes, &abort_flag)?;
+            let mut skipped = stage_changes(&repo, &file_changes, &abort_flag)?;
 
             let mut index = repo.index().map_err_to_string()?;
             let tree_id = index.write_tree().map_err_to_string()?;
@@ -387,17 +393,22 @@ pub async fn init_shadow_repos_if_needed(gcx: Arc<ARwLock<GlobalContext>>) -> ()
                 .map_err_to_string()?;
 
             for (nested_repo, changes) in nested_file_changes {
-                stage_changes(&nested_repo, &changes, &abort_flag)?;
+                skipped += stage_changes(&nested_repo, &changes, &abort_flag)?;
             }
-            Ok(commit)
+            Ok((commit, skipped))
         })();
 
         match initial_commit_result {
-            Ok(_) => tracing::info!(
-                "Shadow git repo for {} initialized in {:.2}s.",
-                workspace_folder_str,
-                t0.elapsed().as_secs_f64()
-            ),
+            Ok((_, skipped)) => {
+                if skipped > 0 {
+                    tracing::warn!("initial commit for {workspace_folder_str}: {skipped} large file(s) not snapshotted");
+                }
+                tracing::info!(
+                    "Shadow git repo for {} initialized in {:.2}s.",
+                    workspace_folder_str,
+                    t0.elapsed().as_secs_f64()
+                );
+            }
             Err(e) => {
                 tracing::error!("Initial commit for {workspace_folder_str} failed: {e}");
                 continue;

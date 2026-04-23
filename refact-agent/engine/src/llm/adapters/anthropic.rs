@@ -19,6 +19,7 @@ const PROTECTED_FIELDS: &[&str] = &[
     "system",
     "tools",
     "tool_choice",
+    "metadata",
 ];
 
 pub struct AnthropicAdapter;
@@ -109,7 +110,11 @@ impl LlmWireAdapter for AnthropicAdapter {
                         let mut tc = tool_choice_to_anthropic(choice);
                         if is_cc {
                             if let Some(name) = tc.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) {
-                                if !name.starts_with(claude_code_compat::MCP_TOOL_PREFIX) {
+                                if name.starts_with(claude_code_compat::MCP_TOOL_PREFIX) {
+                                    // already transformed
+                                } else if name.starts_with("mcp_") {
+                                    tc["name"] = json!(&name["mcp_".len()..]);
+                                } else {
                                     let renamed = claude_code_compat::cc_rename_base_tool(&name);
                                     tc["name"] = json!(format!("{}{}", claude_code_compat::MCP_TOOL_PREFIX, renamed));
                                 }

@@ -4,6 +4,8 @@ use axum::response::Result;
 use hyper::{Body, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock as ARwLock;
 
 use crate::custom_error::ScratchError;
@@ -388,10 +390,6 @@ pub async fn handle_v1_customization_create(
         }
     };
 
-    if file_path.exists() {
-        return json_error(StatusCode::CONFLICT, "config already exists");
-    }
-
     if let Err(e) = validate_config(&kind, &request.config, &request.id) {
         return json_error(StatusCode::BAD_REQUEST, &e);
     }
@@ -405,7 +403,14 @@ pub async fn handle_v1_customization_create(
         Err(e) => return json_error(StatusCode::BAD_REQUEST, &format!("yaml serialize error: {}", e)),
     };
 
-    if let Err(e) = tokio::fs::write(&file_path, &yaml_str).await {
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(&file_path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return json_error(StatusCode::CONFLICT, "config already exists");
+        }
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("write error: {}", e)),
+    };
+    if let Err(e) = file.write_all(yaml_str.as_bytes()).await {
         return json_error(StatusCode::INTERNAL_SERVER_ERROR, &format!("write error: {}", e));
     }
 
@@ -508,24 +513,34 @@ fn validate_id(id: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+const MAX_SUPPORTED_SCHEMA_VERSION: u32 = 100;
+
 fn validate_config(kind: &str, config: &serde_json::Value, expected_id: &str) -> std::result::Result<(), String> {
     let config_id = config.get("id").and_then(|v| v.as_str()).unwrap_or("");
     if config_id != expected_id {
         return Err(format!("config id '{}' does not match expected '{}'", config_id, expected_id));
     }
-    let yaml_str = serde_json::to_string(config).map_err(|e| e.to_string())?;
+
+    let schema_version = config.get("schema_version")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "missing or invalid schema_version field".to_string())?;
+    if schema_version == 0 || schema_version > MAX_SUPPORTED_SCHEMA_VERSION as u64 {
+        return Err(format!("schema_version {} is not supported (must be 1..={})", schema_version, MAX_SUPPORTED_SCHEMA_VERSION));
+    }
+
+    let json_str = serde_json::to_string(config).map_err(|e| e.to_string())?;
     match kind {
         "modes" => {
-            serde_json::from_str::<ModeConfig>(&yaml_str).map_err(|e| e.to_string())?;
+            serde_json::from_str::<ModeConfig>(&json_str).map_err(|e| e.to_string())?;
         }
         "subagents" => {
-            serde_json::from_str::<SubagentConfig>(&yaml_str).map_err(|e| e.to_string())?;
+            serde_json::from_str::<SubagentConfig>(&json_str).map_err(|e| e.to_string())?;
         }
         "toolbox_commands" => {
-            serde_json::from_str::<ToolboxCommandConfig>(&yaml_str).map_err(|e| e.to_string())?;
+            serde_json::from_str::<ToolboxCommandConfig>(&json_str).map_err(|e| e.to_string())?;
         }
         "code_lens" => {
-            serde_json::from_str::<CodeLensConfig>(&yaml_str).map_err(|e| e.to_string())?;
+            serde_json::from_str::<CodeLensConfig>(&json_str).map_err(|e| e.to_string())?;
         }
         _ => {
             return Err(format!("unknown kind: {}", kind));

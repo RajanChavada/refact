@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo } from "react";
 import { Markdown } from "../Markdown";
 
-import { Box, Flex, Text, Link, Card } from "@radix-ui/themes";
+import { Box, Flex, Text, Card } from "@radix-ui/themes";
+import { Link } from "../Link";
 import {
   ChatContextFile,
   DiffChunk,

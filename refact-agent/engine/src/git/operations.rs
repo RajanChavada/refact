@@ -9,6 +9,8 @@ use crate::git::{FileChange, FileChangeStatus};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+const MAX_STAGE_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+
 fn status_options(include_unmodified: bool, show: git2::StatusShow) -> git2::StatusOptions {
     let mut options = git2::StatusOptions::new();
     options
@@ -227,20 +229,31 @@ pub fn get_diff_statuses_index_to_commit(
 
 pub fn stage_changes(
     repository: &Repository,
-    file_changes: &Vec<FileChange>,
+    file_changes: &[FileChange],
     abort_flag: &Arc<AtomicBool>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
+    let workdir = repository.workdir().map(|p| p.to_path_buf());
     let mut index = repository
         .index()
         .map_err_with_prefix("Failed to get index:")?;
+    let mut skipped = 0usize;
 
     for file_change in file_changes {
-        // NOTE: this loop can take a lot of time (25s for linux) when we just init the repo
         if abort_flag.load(Ordering::SeqCst) {
             return Err("stage_changes aborted".to_string());
         }
         match file_change.status {
             FileChangeStatus::ADDED | FileChangeStatus::MODIFIED => {
+                if let Some(ref wd) = workdir {
+                    if let Ok(meta) = std::fs::metadata(wd.join(&file_change.relative_path)) {
+                        if meta.len() > MAX_STAGE_FILE_SIZE_BYTES {
+                            tracing::warn!("shadow git: skipping large file {} ({:.1} MB)",
+                                file_change.relative_path.display(), meta.len() as f64 / 1_048_576.0);
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                }
                 index
                     .add_path(&file_change.relative_path)
                     .map_err_with_prefix("Failed to add file to index:")?;
@@ -256,7 +269,7 @@ pub fn stage_changes(
     index
         .write()
         .map_err_with_prefix("Failed to write index:")?;
-    Ok(())
+    Ok(skipped)
 }
 
 pub fn get_configured_author_email_and_name(

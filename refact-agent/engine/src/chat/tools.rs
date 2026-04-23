@@ -68,11 +68,32 @@ async fn resolve_tool_call_aliases(
     let available_tools = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools).tools;
     let tool_names: Vec<String> = available_tools.iter().map(|t| t.tool_description().name.clone()).collect();
     let registry = build_registry_from_names(&tool_names);
-    if !registry.needs_aliasing() {
+    let needs_cc = tool_calls.iter().any(|tc| {
+        tc.function.name.starts_with(crate::llm::adapters::claude_code_compat::MCP_TOOL_PREFIX)
+    });
+    if !registry.needs_aliasing() && !needs_cc {
         return tool_calls;
     }
     tool_calls.into_iter().map(|mut tc| {
-        if let Some(internal_name) = registry.resolve_alias(&tc.function.name) {
+        if tc.function.name.starts_with(crate::llm::adapters::claude_code_compat::MCP_TOOL_PREFIX) {
+            // t_-prefixed CC builtin: reverse CC rename, then try alias registry.
+            let cc_resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(&tc.function.name);
+            let lookup_name = if cc_resolved != tc.function.name { &cc_resolved } else { &tc.function.name };
+            if let Some(internal_name) = registry.resolve_alias(lookup_name) {
+                tc.function.name = internal_name.to_string();
+            } else {
+                tc.function.name = cc_resolved;
+            }
+        } else if needs_cc {
+            // CC mode: bare names are MCP tools with mcp_ stripped outbound.
+            // Re-add mcp_ so confirmation and dispatch find them in the registry.
+            let cc_resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(&tc.function.name);
+            if let Some(internal_name) = registry.resolve_alias(&cc_resolved) {
+                tc.function.name = internal_name.to_string();
+            } else {
+                tc.function.name = cc_resolved;
+            }
+        } else if let Some(internal_name) = registry.resolve_alias(&tc.function.name) {
             tc.function.name = internal_name.to_string();
         }
         tc

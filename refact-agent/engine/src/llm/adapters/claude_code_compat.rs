@@ -296,6 +296,8 @@ const CC_SYSTEM_REPLACEMENTS: &[(&str, &str)] = &[
     ("You are Refact Agent", "You are Claude Code"),
     // Remaining brand mentions — specific patterns only; no bare "Refact" catch-all
     // because it would corrupt unrelated words like "Refactor" → "or".
+    ("refact-lsp", "ai-coding-assistant"),
+    (".refact/", ".ai-assistant/"),
     ("Refact Agent Engine", "AI Coding Assistant Engine"),
     ("Refact Agent", "AI coding assistant"),
     ("Refact Quick Agent", "AI coding assistant"),
@@ -997,5 +999,52 @@ mod tests {
         assert!(CC_OAUTH_BETAS.contains(&"oauth-2025-04-20"));
         assert!(CC_OAUTH_BETAS.contains(&"claude-code-20250219"));
         assert!(CC_OAUTH_BETAS.contains(&"interleaved-thinking-2025-05-14"));
+    }
+
+    #[test]
+    fn test_cc_resolve_tool_name_full_rename_table() {
+        assert_eq!(cc_resolve_tool_name("t_tree"), "tree");
+        assert_eq!(cc_resolve_tool_name("t_cat"), "cat");
+        assert_eq!(cc_resolve_tool_name("t_delegate"), "subagent");
+        assert_eq!(cc_resolve_tool_name("t_plan"), "strategic_planning");
+        assert_eq!(cc_resolve_tool_name("t_write"), "create_textdoc");
+        assert_eq!(cc_resolve_tool_name("t_patch"), "update_textdoc");
+        assert_eq!(cc_resolve_tool_name("t_patch_re"), "update_textdoc_regex");
+        assert_eq!(cc_resolve_tool_name("t_patch_ln"), "update_textdoc_by_lines");
+        assert_eq!(cc_resolve_tool_name("t_patch_at"), "update_textdoc_anchored");
+        assert_eq!(cc_resolve_tool_name("t_undo"), "undo_textdoc");
+        assert_eq!(cc_resolve_tool_name("t_finish"), "task_done");
+        assert_eq!(cc_resolve_tool_name("t_ask"), "ask_questions");
+        assert_eq!(cc_resolve_tool_name("t_set_tasks"), "tasks_set");
+        assert_eq!(cc_resolve_tool_name("t_review"), "code_review");
+        assert_eq!(cc_resolve_tool_name("t_research"), "deep_research");
+        assert_eq!(cc_resolve_tool_name("t_save_knowledge"), "create_knowledge");
+        assert_eq!(cc_resolve_tool_name("t_hist_search"), "search_trajectories");
+        assert_eq!(cc_resolve_tool_name("t_hist_get"), "get_trajectory_context");
+        assert_eq!(cc_resolve_tool_name("t_load_skill"), "activate_skill");
+        assert_eq!(cc_resolve_tool_name("t_unload_skill"), "deactivate_skill");
+        assert_eq!(cc_resolve_tool_name("t_ctx_probe"), "compress_chat_probe");
+        assert_eq!(cc_resolve_tool_name("t_ctx_apply"), "compress_chat_apply");
+        assert_eq!(cc_resolve_tool_name("t_switch_mode"), "handoff_to_mode");
+    }
+
+    #[test]
+    fn test_cc_resolve_real_mcp_tools_re_add_mcp_prefix() {
+        assert_eq!(cc_resolve_tool_name("tool_search"), "mcp_tool_search");
+        assert_eq!(cc_resolve_tool_name("github_create_issue"), "mcp_github_create_issue");
+        assert_eq!(cc_resolve_tool_name("github_create_pull_request"), "mcp_github_create_pull_request");
+        assert_eq!(cc_resolve_tool_name("postgres_query"), "mcp_postgres_query");
+    }
+
+    #[test]
+    fn test_apply_cc_tool_names_tool_choice_consistency() {
+        let mut tools = json!([
+            {"name": "mcp_tool_search", "input_schema": {"type": "object"}},
+            {"name": "strategic_planning", "description": "Plan", "input_schema": {"type": "object"}},
+        ]);
+        apply_cc_tool_names(&mut tools);
+        let arr = tools.as_array().unwrap();
+        assert_eq!(arr[0]["name"], "tool_search");
+        assert_eq!(arr[1]["name"], "t_plan");
     }
 }

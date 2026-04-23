@@ -11,7 +11,7 @@ use crate::global_context::GlobalContext;
 
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 const MAX_INACTIVE_REPO_DURATION: Duration = Duration::from_secs(7 * SECONDS_PER_DAY); // 1 week
-pub const RECENT_COMMITS_DURATION: Duration = Duration::from_secs(7 * SECONDS_PER_DAY); // 1 week
+pub const RECENT_COMMITS_DURATION: Duration = Duration::from_secs(3 * SECONDS_PER_DAY); // 3 days
 const CLEANUP_INTERVAL_DURATION: Duration = Duration::from_secs(SECONDS_PER_DAY); // 1 day
 
 pub async fn git_shadow_cleanup_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
@@ -65,9 +65,6 @@ pub async fn git_shadow_cleanup_background_task(gcx: Arc<ARwLock<GlobalContext>>
             }
         }
 
-        // For active repositories: prune stale refact-* branches and run git gc --auto
-        // to pack loose objects and reclaim space from now-unreachable commits.
-        // Covers both top-level shadow repos and nested repos.
         for dir in &existing_shadow_git_dirs {
             match collect_shadow_repo_dirs(dir).await {
                 Ok(repo_dirs) => {
@@ -197,21 +194,14 @@ async fn cleanup_inactive_shadow_repositories(
 
 async fn cleanup_active_shadow_repository(repo_dir: &Path) {
     match prune_old_refact_branches(repo_dir) {
-        Ok(_deleted) => {
+        Ok(deleted) if deleted > 0 => {
             if let Err(e) = run_git_gc(repo_dir).await {
-                tracing::warn!(
-                    "Git shadow cleanup: git gc failed in {}: {}",
-                    repo_dir.display(),
-                    e
-                );
+                tracing::warn!("Git shadow cleanup: git gc failed in {}: {}", repo_dir.display(), e);
             }
         }
+        Ok(_) => {}
         Err(e) => {
-            tracing::warn!(
-                "Git shadow cleanup: failed to prune branches in {}: {}",
-                repo_dir.display(),
-                e
-            );
+            tracing::warn!("Git shadow cleanup: failed to prune branches in {}: {}", repo_dir.display(), e);
         }
     }
 }
@@ -219,7 +209,7 @@ async fn cleanup_active_shadow_repository(repo_dir: &Path) {
 fn prune_old_refact_branches(repo_dir: &Path) -> Result<usize, String> {
     let repo = git2::Repository::open(repo_dir).map_err_to_string()?;
     let cutoff_secs = SystemTime::now()
-        .checked_sub(MAX_INACTIVE_REPO_DURATION)
+        .checked_sub(RECENT_COMMITS_DURATION)
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
@@ -238,6 +228,17 @@ fn prune_old_refact_branches(repo_dir: &Path) -> Result<usize, String> {
         if let Ok(commit) = branch.get().peel_to_commit() {
             if commit.time().seconds() < cutoff_secs {
                 branches_to_delete.push(name);
+            }
+        }
+    }
+
+    let head_branch = repo.head().ok()
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.shorthand().map(|s| s.to_string()));
+    if let Some(ref head) = head_branch {
+        if branches_to_delete.iter().any(|b| b == head) {
+            if let Ok(commit) = repo.head().and_then(|h| h.peel_to_commit()) {
+                let _ = repo.set_head_detached(commit.id());
             }
         }
     }
@@ -274,7 +275,7 @@ fn prune_old_refact_branches(repo_dir: &Path) -> Result<usize, String> {
 
 async fn run_git_gc(repo_dir: &Path) -> Result<(), String> {
     let output = tokio::process::Command::new("git")
-        .args(["-C", &repo_dir.to_string_lossy(), "gc", "--auto", "--quiet"])
+        .arg("-C").arg(repo_dir).args(["gc", "--prune=now", "--quiet"])
         .output()
         .await
         .map_err_to_string()?;

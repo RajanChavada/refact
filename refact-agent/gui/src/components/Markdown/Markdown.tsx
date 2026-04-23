@@ -14,12 +14,12 @@ import {
   Blockquote,
   Em,
   Kbd,
-  Link,
   Quote,
   Strong,
   Flex,
   Table,
 } from "@radix-ui/themes";
+import { Link } from "../Link";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";

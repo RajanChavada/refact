@@ -57,6 +57,7 @@ import {
   GenericTool,
   TaskDoneTool,
   AskQuestionsTool,
+  ChromeTool,
   OpenAIResponsesTool,
   OpenAIWebSearchCallTool,
   OpenAIFileSearchCallTool,
@@ -69,6 +70,39 @@ import {
   OpenAIMcpCallTool,
   OpenAIMcpListToolsTool,
 } from "./ToolCard";
+
+const CC_TOOL_RENAMES: Partial<Record<string, string>> = {
+  delegate: "subagent",
+  plan: "strategic_planning",
+  finish: "task_done",
+  ask: "ask_questions",
+  write: "create_textdoc",
+  patch: "update_textdoc",
+  patch_re: "update_textdoc_regex",
+  patch_ln: "update_textdoc_by_lines",
+  patch_at: "update_textdoc_anchored",
+  undo: "undo_textdoc",
+  review: "code_review",
+  research: "deep_research",
+  set_tasks: "tasks_set",
+  save_knowledge: "create_knowledge",
+  hist_search: "search_trajectories",
+  hist_get: "get_trajectory_context",
+  load_skill: "activate_skill",
+  unload_skill: "deactivate_skill",
+  ctx_probe: "compress_chat_probe",
+  ctx_apply: "compress_chat_apply",
+  switch_mode: "handoff_to_mode",
+};
+
+function normalizeToolName(name: string | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  if (name.startsWith("t_")) {
+    const base = name.slice(2);
+    return CC_TOOL_RENAMES[base] ?? base;
+  }
+  return name;
+}
 
 function parseProgressEntry(entry: string): { step?: string; text: string } {
   const m = entry.match(/^(\d+\/\d+):\s*([\s\S]+)$/);
@@ -370,11 +404,16 @@ function processToolCalls(
 ) {
   if (toolCalls.length === 0) return processed;
   const [head, ...tail] = toolCalls;
+  const headName = normalizeToolName(head.function.name) ?? head.function.name;
+  const normalizedHead: ToolCall = {
+    ...head,
+    function: { ...head.function, name: headName },
+  };
   const result = toolResults.find((result) => result.tool_call_id === head.id);
   const contextFiles = head.id ? contextFilesByToolId[head.id] : undefined;
   const diffs = head.id ? diffsByToolId[head.id] : undefined;
 
-  if (head.function.name === "cat") {
+  if (headName === "cat") {
     const elem = (
       <ReadTool
         key={`read-tool-${processed.length}`}
@@ -392,7 +431,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "tree") {
+  if (headName === "tree") {
     const elem = (
       <ListTool
         key={`list-tool-${processed.length}`}
@@ -410,7 +449,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_pattern") {
+  if (headName === "search_pattern") {
     const elem = (
       <SearchTool
         key={`search-pattern-tool-${processed.length}`}
@@ -429,7 +468,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_semantic") {
+  if (headName === "search_semantic") {
     const elem = (
       <SearchTool
         key={`search-semantic-tool-${processed.length}`}
@@ -448,7 +487,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_symbol_definition") {
+  if (headName === "search_symbol_definition") {
     const elem = (
       <SearchTool
         key={`search-symbol-tool-${processed.length}`}
@@ -467,7 +506,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "shell") {
+  if (headName === "shell") {
     const elem = (
       <NewShellTool key={`shell-tool-${processed.length}`} toolCall={head} />
     );
@@ -481,7 +520,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "shell_service") {
+  if (headName === "shell_service") {
     const elem = (
       <NewShellServiceTool
         key={`shell-service-tool-${processed.length}`}
@@ -498,7 +537,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "subagent") {
+  if (headName === "subagent") {
     const elem = (
       <NewSubagentTool
         key={`subagent-tool-${processed.length}`}
@@ -515,7 +554,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "strategic_planning") {
+  if (headName === "strategic_planning") {
     const elem = (
       <PlanningTool
         key={`strategic-planning-tool-${processed.length}`}
@@ -532,7 +571,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "code_review") {
+  if (headName === "code_review") {
     const elem = (
       <NewCodeReviewTool
         key={`code-review-tool-${processed.length}`}
@@ -549,7 +588,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "deep_research") {
+  if (headName === "deep_research") {
     const elem = (
       <ResearchTool
         key={`deep-research-tool-${processed.length}`}
@@ -566,7 +605,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "knowledge") {
+  if (headName === "knowledge") {
     const elem = (
       <KnowledgeTool
         key={`knowledge-tool-${processed.length}`}
@@ -585,7 +624,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_trajectories") {
+  if (headName === "search_trajectories") {
     const elem = (
       <KnowledgeTool
         key={`trajectories-tool-${processed.length}`}
@@ -604,7 +643,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "get_trajectory_context") {
+  if (headName === "get_trajectory_context") {
     const elem = (
       <KnowledgeTool
         key={`trajectory-context-tool-${processed.length}`}
@@ -623,7 +662,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "create_knowledge") {
+  if (headName === "create_knowledge") {
     const elem = (
       <KnowledgeTool
         key={`create-knowledge-tool-${processed.length}`}
@@ -642,7 +681,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "activate_skill") {
+  if (headName === "activate_skill") {
     return processToolCalls(
       tail,
       toolResults,
@@ -653,7 +692,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "web") {
+  if (headName === "web") {
     const elem = (
       <WebTool
         key={`web-tool-${processed.length}`}
@@ -672,7 +711,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "web_search") {
+  if (headName === "web_search") {
     const elem = (
       <WebTool
         key={`web-search-tool-${processed.length}`}
@@ -691,11 +730,11 @@ function processToolCalls(
     );
   }
 
-  if (isRawTextDocToolCall(head)) {
+  if (isRawTextDocToolCall(normalizedHead)) {
     const elem = (
       <EditTool
         key={`edit-tool-${head.function.name}-${processed.length}`}
-        toolCall={head}
+        toolCall={normalizedHead}
         diffs={diffs}
       />
     );
@@ -709,7 +748,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "mv") {
+  if (headName === "mv") {
     const elem = (
       <FileOpTool
         key={`mv-tool-${processed.length}`}
@@ -727,7 +766,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "rm") {
+  if (headName === "rm") {
     const elem = (
       <FileOpTool
         key={`rm-tool-${processed.length}`}
@@ -746,7 +785,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "add_workspace_folder") {
+  if (headName === "add_workspace_folder") {
     const elem = (
       <FileOpTool
         key={`add-workspace-tool-${processed.length}`}
@@ -764,7 +803,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "tasks_set") {
+  if (headName === "tasks_set") {
     const elem = (
       <TasksTool key={`tasks-tool-${processed.length}`} toolCall={head} />
     );
@@ -778,7 +817,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "task_done") {
+  if (headName === "task_done") {
     const elem = (
       <TaskDoneTool
         key={`task-done-tool-${processed.length}`}
@@ -795,7 +834,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "ask_questions") {
+  if (headName === "ask_questions") {
     const elem = (
       <AskQuestionsTool
         key={`ask-questions-tool-${processed.length}`}
@@ -812,8 +851,8 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name?.startsWith("openai_")) {
-    const name = head.function.name;
+  if (headName?.startsWith("openai_")) {
+    const name = headName;
     let elem: React.ReactNode;
     switch (name) {
       case "openai_web_search_call":
@@ -905,6 +944,20 @@ function processToolCalls(
         );
     }
 
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+    );
+  }
+
+  if (headName === "chrome") {
+    const elem = (
+      <ChromeTool key={`chrome-tool-${processed.length}`} toolCall={head} />
+    );
     return processToolCalls(
       tail,
       toolResults,

@@ -711,3 +711,45 @@ messages:
     }
 }
 
+
+#[cfg(test)]
+mod ui_defaults_tests {
+    use super::*;
+
+    #[test]
+    fn test_ui_default_mode_config() {
+        let json = r#"{"schema_version":1,"id":"test_mode","title":"test_mode","description":"","specific":false,"prompt":"","tools":[]}"#;
+        let result: Result<ModeConfig, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "mode default: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_ui_default_subagent_config() {
+        let json = r#"{"schema_version":1,"id":"test_sub","title":"test_sub","description":"","specific":false,"expose_as_tool":true,"has_code":false,"subchat":{"context_mode":"bare"},"messages":{}}"#;
+        let result: Result<SubagentConfig, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "subagent default: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_ui_default_toolbox_command_config() {
+        let json = r#"{"schema_version":1,"id":"test_cmd","description":"","messages":[]}"#;
+        let result: Result<ToolboxCommandConfig, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "toolbox_command default: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_ui_default_code_lens_config() {
+        let json = r#"{"schema_version":1,"id":"test_lens","label":"test_lens","auto_submit":false,"new_tab":false,"messages":[]}"#;
+        let result: Result<CodeLensConfig, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "code_lens default: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_ui_toolbox_selection_needed_array() {
+        // UI sends selection_needed as [1, 10000] - test if tuple deserializes from array
+        let json = r#"{"schema_version":1,"id":"test_cmd","description":"","selection_needed":[1,10000],"messages":[]}"#;
+        let result: Result<ToolboxCommandConfig, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "toolbox selection_needed [1,10000]: {:?}", result.err());
+        assert_eq!(result.unwrap().selection_needed, Some((1, 10000)));
+    }
+}
