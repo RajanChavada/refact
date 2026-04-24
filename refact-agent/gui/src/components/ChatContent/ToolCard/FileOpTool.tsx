@@ -56,9 +56,7 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
     () => selectManyDiffMessageByIds(diffIds),
     [diffIds],
   );
-  const toolDiffs = useAppSelector(
-    selectDiffs,
-  );
+  const toolDiffs = useAppSelector(selectDiffs);
 
   const allDiffs = useMemo((): DiffChunk[] => {
     const fromProps = diffs;

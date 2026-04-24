@@ -26,11 +26,10 @@ vi.mock("react-virtuoso", async () => {
   return {
     Virtuoso: ReactModule.forwardRef<HTMLDivElement, VirtuosoMockProps>(
       ({ data, itemContent, components, ...props }, _ref) => {
-        const calls = (
-          (globalThis as Record<string, unknown>).__VIRTUOSO_CALLS__ as
+        const calls =
+          ((globalThis as Record<string, unknown>).__VIRTUOSO_CALLS__ as
             | unknown[]
-            | undefined
-        ) ?? [];
+            | undefined) ?? [];
         calls.push(props);
         (globalThis as Record<string, unknown>).__VIRTUOSO_CALLS__ = calls;
 

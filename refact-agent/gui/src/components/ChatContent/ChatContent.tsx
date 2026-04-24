@@ -745,8 +745,10 @@ function buildDisplayItemsFromIndex(
         key,
         index: i,
         message: head,
-        contextFilesByToolId:
-          contextFilesByToolId as Record<string, ChatContextFile[]>,
+        contextFilesByToolId: contextFilesByToolId as Record<
+          string,
+          ChatContextFile[]
+        >,
         diffsByToolId: diffsByToolId as Record<string, DiffChunk[]>,
         isStreaming: isStreaming && i === lastAssistantIdx,
       });
@@ -872,7 +874,11 @@ function patchTailDisplayItems(
       }
       return -1;
     })();
-    return updateAssistantStreamingFlags(previousItems, isStreaming, lastAssistantIdx);
+    return updateAssistantStreamingFlags(
+      previousItems,
+      isStreaming,
+      lastAssistantIdx,
+    );
   }
 
   const combined = [...previousItems, ...tailItems];

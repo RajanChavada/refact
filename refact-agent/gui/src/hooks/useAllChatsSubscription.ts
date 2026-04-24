@@ -111,9 +111,7 @@ export function useAllChatsSubscription() {
   );
   const lastActivityDispatchRef = useRef<Map<string, number>>(new Map());
   const lastActivityAtRef = useRef<Map<string, number>>(new Map());
-  const streamDeltaFlushRef = useRef<
-    Map<string, FlushHandle>
-  >(new Map());
+  const streamDeltaFlushRef = useRef<Map<string, FlushHandle>>(new Map());
   const pendingStreamDeltaRef = useRef<
     Map<string, Extract<ChatEventEnvelope, { type: "stream_delta" }>>
   >(new Map());
