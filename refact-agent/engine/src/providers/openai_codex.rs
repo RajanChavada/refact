@@ -323,6 +323,122 @@ impl OpenAICodexProvider {
         "No credentials found".to_string()
     }
 
+    async fn fetch_models_from_chatgpt_api(
+        &self,
+        http_client: &reqwest::Client,
+        model_caps: &HashMap<String, ModelCapabilities>,
+        access_token: &str,
+        chatgpt_account_id: &str,
+    ) -> Vec<AvailableModel> {
+        const CHATGPT_CODEX_MODELS_URL: &str =
+            "https://chatgpt.com/backend-api/codex/models?client_version=999.999.999";
+
+        let mut req = http_client
+            .get(CHATGPT_CODEX_MODELS_URL)
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("originator", "codex_cli_rs");
+        if !chatgpt_account_id.is_empty() {
+            req = req.header("chatgpt-account-id", chatgpt_account_id);
+        }
+
+        let response = match req.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::warn!("OpenAI Codex: failed to reach chatgpt backend /codex/models (network error): {}, using hardcoded list", e);
+                return self.fetch_models_from_hardcoded_list(model_caps);
+            }
+        };
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            tracing::warn!("OpenAI Codex: /codex/models returned {} — OAuth token rejected; falling back to hardcoded list", status);
+            return self.fetch_models_from_hardcoded_list(model_caps);
+        }
+
+        if !status.is_success() {
+            tracing::warn!("OpenAI Codex: /codex/models returned {} (transient), using hardcoded list", status);
+            return self.fetch_models_from_hardcoded_list(model_caps);
+        }
+
+        let json: serde_json::Value = match response.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("OpenAI Codex: failed to parse /codex/models response: {}, using hardcoded list", e);
+                return self.fetch_models_from_hardcoded_list(model_caps);
+            }
+        };
+
+        let models_array = match json.get("models").and_then(|v| v.as_array()) {
+            Some(arr) => arr,
+            None => {
+                tracing::warn!("OpenAI Codex: /codex/models response missing or non-array 'models' field, using hardcoded list");
+                return self.fetch_models_from_hardcoded_list(model_caps);
+            }
+        };
+
+        let enabled_set: HashSet<&str> = self.enabled_models.iter().map(|s| s.as_str()).collect();
+        let mut models_map: HashMap<String, AvailableModel> = HashMap::new();
+
+        for model in models_array {
+            let slug = match model.get("slug").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let supported_in_api = model.get("supported_in_api").and_then(|v| v.as_bool()).unwrap_or(true);
+            if !supported_in_api {
+                continue;
+            }
+            let display_name = model.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let n_ctx = model.get("max_context_window")
+                .or_else(|| model.get("context_window"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let supports_parallel = model.get("supports_parallel_tool_calls")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let supports_multimodality = model.get("input_modalities")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().any(|m| m.as_str() == Some("image")))
+                .unwrap_or(true);
+            let reasoning_levels: Option<Vec<String>> = model
+                .get("supported_reasoning_levels")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|r| r.get("effort").and_then(|e| e.as_str()).map(|s| s.to_string()))
+                        .collect()
+                });
+            let enabled = enabled_set.contains(slug.as_str());
+            let pricing = self.model_pricing(slug.as_str());
+            if let Some(caps) = crate::caps::model_caps::resolve_model_caps(model_caps, &slug) {
+                let mut m = AvailableModel::from_caps(&slug, &caps.caps, enabled, pricing);
+                m.display_name = display_name;
+                models_map.insert(slug.clone(), m);
+            } else {
+                let mut m = self.default_codex_model(slug.clone(), enabled, pricing);
+                m.display_name = display_name;
+                if let Some(ctx) = n_ctx {
+                    m.n_ctx = ctx;
+                }
+                m.supports_parallel_tools = supports_parallel;
+                m.supports_multimodality = supports_multimodality;
+                if let Some(levels) = reasoning_levels {
+                    m.reasoning_effort_options = Some(levels);
+                }
+                models_map.insert(slug.clone(), m);
+            }
+        }
+
+        tracing::info!("OpenAI Codex: {} models available (from chatgpt backend /codex/models)", models_map.len());
+
+        let mut models: Vec<AvailableModel> = models_map.into_values().collect();
+        merge_custom_models(&mut models, &self.custom_models, &enabled_set);
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models
+    }
+
     async fn fetch_models_from_api(
         &self,
         http_client: &reqwest::Client,
@@ -517,10 +633,6 @@ impl ProviderTrait for OpenAICodexProvider {
     }
 
     fn model_filter_regex(&self) -> Option<&'static str> {
-        // Conservative regex covering only codex-named models.
-        // Generic GPT-5 allowlist entries (GENERIC_GPT5_ALLOWLIST) are applied at runtime
-        // via is_codex_model() in fetch_available_models(); they are intentionally omitted here
-        // to avoid false positives in shared caps-based code paths.
         Some(r"(?i)^gpt.*codex")
     }
 
@@ -654,6 +766,9 @@ available:
             }
             CodexAuth::PlatformApiKey { ref api_key } if !api_key.is_empty() => {
                 return self.fetch_models_from_api(http_client, model_caps, api_key).await;
+            }
+            CodexAuth::ChatGptBackendOAuth { ref access_token, ref chatgpt_account_id } => {
+                return self.fetch_models_from_chatgpt_api(http_client, model_caps, access_token, chatgpt_account_id).await;
             }
             _ => {}
         }

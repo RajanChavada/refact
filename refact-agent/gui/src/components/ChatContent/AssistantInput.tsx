@@ -214,7 +214,11 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
       )}
 
       {serverExecutedTools && serverExecutedTools.length > 0 && (
-        <ToolContent toolCalls={serverExecutedTools} />
+        <ToolContent
+          toolCalls={serverExecutedTools}
+          contextFilesByToolId={contextFilesByToolId}
+          diffsByToolId={diffsByToolId}
+        />
       )}
 
       {toolCalls && (

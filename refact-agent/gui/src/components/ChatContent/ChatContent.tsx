@@ -859,6 +859,15 @@ function patchTailDisplayItems(
     if (previousMessages[i] !== nextMessages[i]) return null;
   }
 
+  const firstAppended = nextMessages[sharedLen];
+  if (
+    isChatContextFileMessage(firstAppended) ||
+    isDiffMessage(firstAppended) ||
+    isToolMessage(firstAppended)
+  ) {
+    return null;
+  }
+
   const hidden = computeHiddenQaMessageIndices(nextMessages);
   const tailItems = buildDisplayItemsFromIndex(
     nextMessages,
