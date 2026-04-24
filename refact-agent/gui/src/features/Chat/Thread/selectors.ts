@@ -263,19 +263,22 @@ export const selectToolResultById = createSelector(
   },
 );
 export const selectManyToolResultsByIds = (ids: string[]) =>
-  createSelector(toolMessagesSelector, (messages) =>
-    messages
-      .filter((message) => ids.includes(message.tool_call_id))
-      .map(
-        (msg) =>
-          ({
-            tool_call_id: msg.tool_call_id,
-            content: msg.content,
-            tool_failed: msg.tool_failed,
-            extra: msg.extra,
-          }) as ToolResult,
-      ),
-  );
+  createSelector(toolMessagesSelector, (messages) => {
+    if (ids.length === 0 || messages.length === 0) return [];
+
+    const wanted = new Set(ids);
+    const out: ToolResult[] = [];
+    for (const msg of messages) {
+      if (!wanted.has(msg.tool_call_id)) continue;
+      out.push({
+        tool_call_id: msg.tool_call_id,
+        content: msg.content,
+        tool_failed: msg.tool_failed,
+        extra: msg.extra,
+      } as ToolResult);
+    }
+    return out;
+  });
 
 const selectDiffMessages = createSelector(selectMessages, (messages) =>
   messages.filter(isDiffMessage),
@@ -287,9 +290,11 @@ export const selectDiffMessageById = createSelector(
 );
 
 export const selectManyDiffMessageByIds = (ids: string[]) =>
-  createSelector(selectDiffMessages, (diffs) =>
-    diffs.filter((message) => ids.includes(message.tool_call_id)),
-  );
+  createSelector(selectDiffMessages, (diffs) => {
+    if (ids.length === 0 || diffs.length === 0) return [];
+    const wanted = new Set(ids);
+    return diffs.filter((message) => wanted.has(message.tool_call_id));
+  });
 
 export const getSelectedToolUse = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread.tool_use;

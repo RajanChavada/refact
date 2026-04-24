@@ -81,6 +81,10 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
     return { step: null, text: last };
   }, [status, toolCall.subchat_log]);
 
+  const entertainmentText = entertainmentMessage?.step
+    ? `${entertainmentMessage.step}: ${entertainmentMessage.text}`
+    : entertainmentMessage?.text ?? null;
+
   const entertainmentRef = useRef<HTMLDivElement | null>(null);
   const userScrolledRef = useRef(false);
 
@@ -145,7 +149,7 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
         >
           <div className={styles.entertainmentMarkdown}>
             <Markdown canHaveInteractiveElements={false}>
-              {entertainmentMessage.text}
+              {entertainmentText}
             </Markdown>
           </div>
         </div>

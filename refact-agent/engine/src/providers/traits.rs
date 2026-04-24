@@ -68,6 +68,10 @@ pub struct CustomModelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_tools: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_parallel_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_strict_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_multimodality: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_options: Option<Vec<String>>,
@@ -112,6 +116,10 @@ pub struct AvailableModel {
     pub display_name: Option<String>,
     pub n_ctx: usize,
     pub supports_tools: bool,
+    #[serde(default)]
+    pub supports_parallel_tools: bool,
+    #[serde(default)]
+    pub supports_strict_tools: bool,
     pub supports_multimodality: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_options: Option<Vec<String>>,
@@ -141,6 +149,8 @@ impl AvailableModel {
             display_name: None,
             n_ctx: caps.n_ctx,
             supports_tools: caps.supports_tools,
+            supports_parallel_tools: caps.supports_parallel_tools,
+            supports_strict_tools: caps.supports_strict_tools,
             supports_multimodality: caps.supports_vision,
             reasoning_effort_options: caps.reasoning_effort_options.clone(),
             supports_thinking_budget: caps.supports_thinking_budget,
@@ -162,6 +172,8 @@ impl AvailableModel {
             display_name: None,
             n_ctx: config.n_ctx.unwrap_or(4096),
             supports_tools: config.supports_tools.unwrap_or(false),
+            supports_parallel_tools: config.supports_parallel_tools.unwrap_or(false),
+            supports_strict_tools: config.supports_strict_tools.unwrap_or(false),
             supports_multimodality: config.supports_multimodality.unwrap_or(false),
             reasoning_effort_options: config.reasoning_effort_options.clone(),
             supports_thinking_budget: config.supports_thinking_budget.unwrap_or(false),
@@ -430,6 +442,8 @@ pub fn merge_custom_models(
         if let Some(existing) = models.iter_mut().find(|m| m.id == *id) {
             let has_capability_overrides = config.n_ctx.is_some()
                 || config.supports_tools.is_some()
+                || config.supports_parallel_tools.is_some()
+                || config.supports_strict_tools.is_some()
                 || config.supports_multimodality.is_some()
                 || config.reasoning_effort_options.is_some()
                 || config.supports_thinking_budget.is_some()
@@ -438,6 +452,8 @@ pub fn merge_custom_models(
                 || config.max_output_tokens.is_some();
             if let Some(n_ctx) = config.n_ctx { existing.n_ctx = n_ctx; }
             if let Some(v) = config.supports_tools { existing.supports_tools = v; }
+            if let Some(v) = config.supports_parallel_tools { existing.supports_parallel_tools = v; }
+            if let Some(v) = config.supports_strict_tools { existing.supports_strict_tools = v; }
             if let Some(v) = config.supports_multimodality { existing.supports_multimodality = v; }
             if config.reasoning_effort_options.is_some() { existing.reasoning_effort_options = config.reasoning_effort_options.clone(); }
             if let Some(v) = config.supports_thinking_budget { existing.supports_thinking_budget = v; }

@@ -4,6 +4,7 @@ use serde::{Serialize, Deserialize};
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile, SamplingParameters};
 use crate::nicer_logs::first_n_chars;
 
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompressionStrength {
@@ -16,7 +17,7 @@ pub enum CompressionStrength {
 pub(crate) fn remove_invalid_tool_calls_and_tool_calls_results(messages: &mut Vec<ChatMessage>) {
     let tool_call_ids: HashSet<_> = messages
         .iter()
-        .filter(|m| !m.tool_call_id.is_empty())
+        .filter(|m| (m.role == "tool" || m.role == "diff") && !m.tool_call_id.is_empty())
         .map(|m| &m.tool_call_id)
         .cloned()
         .collect();
@@ -413,7 +414,9 @@ fn validate_chat_history(messages: &Vec<ChatMessage>) -> Result<Vec<ChatMessage>
                         // Look for a following "tool" message whose tool_call_id equals tc.id
                         let mut found = false;
                         for later_msg in messages.iter().skip(idx + 1) {
-                            if later_msg.tool_call_id == tc.id {
+                            if (later_msg.role == "tool" || later_msg.role == "diff")
+                                && later_msg.tool_call_id == tc.id
+                            {
                                 found = true;
                                 break;
                             }
@@ -581,5 +584,64 @@ mod tests {
         remove_invalid_tool_calls_and_tool_calls_results(&mut messages);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].role, "diff");
+    }
+
+    #[test]
+    fn test_context_file_with_matching_id_does_not_satisfy_tool_call() {
+        // A context_file message carrying the same tool_call_id must NOT count
+        // as answering the assistant's tool call — only role=tool/diff qualifies.
+        let mut messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: "call_x".to_string(),
+                    index: Some(0),
+                    function: ChatToolFunction {
+                        name: "cat".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    tool_type: "function".to_string(),
+                    extra_content: None,
+                }]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "context_file".to_string(),
+                tool_call_id: "call_x".to_string(),
+                content: ChatContent::SimpleText("file content".to_string()),
+                ..Default::default()
+            },
+        ];
+        remove_invalid_tool_calls_and_tool_calls_results(&mut messages);
+        // The assistant message with the unanswered tool call must be removed.
+        assert!(
+            messages.iter().all(|m| m.role != "assistant"),
+            "assistant with unanswered tool call should have been removed, got: {:?}",
+            messages.iter().map(|m| &m.role).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_replace_broken_tool_call_messages_converts_garbage_args_to_cd_instruction() {
+        let mut messages = vec![ChatMessage {
+            role: "assistant".to_string(),
+            tool_calls: Some(vec![crate::call_validation::ChatToolCall {
+                id: "call_1".to_string(),
+                index: Some(0),
+                function: crate::call_validation::ChatToolFunction {
+                    name: "shell".to_string(),
+                    arguments: "noise {\"command\":\"pwd\"} tail".to_string(),
+                },
+                tool_type: "function".to_string(),
+                extra_content: None,
+            }]),
+            ..Default::default()
+        }];
+        let mut sampling = SamplingParameters::default();
+
+        replace_broken_tool_call_messages(&mut messages, &mut sampling, 16000);
+
+        assert_eq!(messages[0].role, "cd_instruction");
+        assert!(messages[0].tool_calls.is_none());
     }
 }

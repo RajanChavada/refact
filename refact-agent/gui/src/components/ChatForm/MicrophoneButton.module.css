@@ -60,3 +60,10 @@
     opacity: 0.4;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .recording,
+  .finishing {
+    animation: none;
+  }
+}

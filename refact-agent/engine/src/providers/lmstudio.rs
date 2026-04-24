@@ -39,13 +39,45 @@ impl Default for LMStudioProvider {
 impl LMStudioProvider {
     fn parse_openai_model(model: &serde_json::Value, enabled: bool) -> Option<AvailableModel> {
         let id = model.get("id")?.as_str()?.to_string();
+        let n_ctx = model
+            .get("context_length")
+            .or_else(|| model.get("max_context_length"))
+            .or_else(|| model.get("max_model_len"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(32_768);
+        let max_output_tokens = model
+            .get("max_tokens")
+            .or_else(|| model.get("max_completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let supports_tools = model
+            .get("supports_tools")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                model.get("capabilities")
+                    .and_then(|v| v.as_array())
+                    .map(|caps| caps.iter().any(|c| c.as_str() == Some("tools")))
+            })
+            .unwrap_or(true);
+        let supports_multimodality = model
+            .get("supports_vision")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                model.get("capabilities")
+                    .and_then(|v| v.as_array())
+                    .map(|caps| caps.iter().any(|c| matches!(c.as_str(), Some("vision") | Some("image"))))
+            })
+            .unwrap_or(false);
 
         Some(AvailableModel {
             id,
             display_name: None,
-            n_ctx: 4096,
-            supports_tools: true,
-            supports_multimodality: false,
+            n_ctx,
+            supports_tools,
+            supports_parallel_tools: supports_tools,
+            supports_strict_tools: false,
+            supports_multimodality,
             reasoning_effort_options: None,
             supports_thinking_budget: false,
             supports_adaptive_thinking_budget: false,
@@ -55,7 +87,7 @@ impl LMStudioProvider {
             pricing: None,
             available_providers: Vec::new(),
             selected_provider: None,
-            max_output_tokens: None,
+            max_output_tokens,
             provider_variants: Vec::new(),
         })
     }

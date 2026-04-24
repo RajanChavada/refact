@@ -472,6 +472,8 @@ impl OpenAICodexProvider {
             display_name: None,
             n_ctx: 200_000,
             supports_tools: true,
+            supports_parallel_tools: true,
+            supports_strict_tools: false,
             supports_multimodality: true,
             reasoning_effort_options: Some(vec!["low".to_string(), "medium".to_string(), "high".to_string()]),
             supports_thinking_budget: false,

@@ -25,10 +25,16 @@ export function VirtualizedChatList<T extends { key: string }>({
   const autoFollowRef = useRef(true);
   const userScrolledUpRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const lastUserInputTsRef = useRef(0);
+  const pointerDownRef = useRef(false);
   // Timestamp of the last wheel/touch event that scrolled downward.
   // Used to distinguish real user scroll-down from Virtuoso measurement
   // adjustments that passively change scrollTop.
   const lastActiveScrollDownTsRef = useRef(0);
+
+  const markUserInput = useCallback(() => {
+    lastUserInputTsRef.current = performance.now();
+  }, []);
 
   const handleAtBottomChange = useCallback((bottom: boolean) => {
     if (bottom && userScrolledUpRef.current) {
@@ -85,6 +91,7 @@ export function VirtualizedChatList<T extends { key: string }>({
     >(function VirtuosoScroller(props, ref) {
       const { children, style, onWheel, onScroll, ...restProps } = props;
       const handleWheel: React.WheelEventHandler<HTMLDivElement> = (event) => {
+        markUserInput();
         if (event.deltaY < 0) {
           autoFollowRef.current = false;
           userScrolledUpRef.current = true;
@@ -95,8 +102,52 @@ export function VirtualizedChatList<T extends { key: string }>({
         onWheel?.(event);
       };
 
+      const handleTouchStart: React.TouchEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        markUserInput();
+        restProps.onTouchStart?.(event);
+      };
+
+      const handleTouchMove: React.TouchEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        markUserInput();
+        restProps.onTouchMove?.(event);
+      };
+
+      const handlePointerDown: React.PointerEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        pointerDownRef.current = true;
+        markUserInput();
+        restProps.onPointerDown?.(event);
+      };
+
+      const handlePointerUp: React.PointerEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        pointerDownRef.current = false;
+        restProps.onPointerUp?.(event);
+      };
+
+      const handlePointerCancel: React.PointerEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        pointerDownRef.current = false;
+        restProps.onPointerCancel?.(event);
+      };
+
+      const handlePointerLeave: React.PointerEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        pointerDownRef.current = false;
+        restProps.onPointerLeave?.(event);
+      };
+
       const handleScroll: React.UIEventHandler<HTMLDivElement> = (event) => {
         const nextScrollTop = event.currentTarget.scrollTop;
+        const now = performance.now();
         // Detect upward scroll as a safety net (keyboard, scrollbar drag,
         // touch, etc. — onWheel already covers mouse/trackpad).  Use a +1px
         // tolerance to ignore sub-pixel Virtuoso measurement jitter.
@@ -104,6 +155,13 @@ export function VirtualizedChatList<T extends { key: string }>({
           autoFollowRef.current = false;
           userScrolledUpRef.current = true;
           setShowFollowButton(true);
+          markUserInput();
+        } else if (nextScrollTop > lastScrollTopRef.current + 1) {
+          const recentIntent =
+            pointerDownRef.current || now - lastUserInputTsRef.current < 500;
+          if (recentIntent) {
+            lastActiveScrollDownTsRef.current = now;
+          }
         }
         // NOTE: We intentionally do NOT infer "user scrolling down" from
         // scrollTop increases.  Virtuoso's internal offset corrections during
@@ -125,6 +183,12 @@ export function VirtualizedChatList<T extends { key: string }>({
           className={styles.virtuosoScroller}
           {...restProps}
           onWheel={handleWheel}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          onPointerLeave={handlePointerLeave}
           onScroll={handleScroll}
         >
           {children}
@@ -132,7 +196,7 @@ export function VirtualizedChatList<T extends { key: string }>({
       );
     });
     return ScrollerComponent;
-  }, []);
+  }, [markUserInput]);
 
   const List = useMemo(() => {
     const ListComponent = React.forwardRef<
@@ -173,7 +237,7 @@ export function VirtualizedChatList<T extends { key: string }>({
 
   const viewportPadding = useMemo(
     () =>
-      isStreaming ? { top: 1600, bottom: 2400 } : { top: 3200, bottom: 4400 },
+      isStreaming ? { top: 800, bottom: 1200 } : { top: 1600, bottom: 2200 },
     [isStreaming],
   );
 

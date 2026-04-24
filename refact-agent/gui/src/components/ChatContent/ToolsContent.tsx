@@ -250,10 +250,13 @@ export const SingleModelToolContent: React.FC<{
   const store = useCollapsibleStore();
 
   const toolCallsId = useMemo(() => {
-    return toolCalls.reduce<string[]>((acc, toolCall) => {
-      if (typeof toolCall.id === "string") return [...acc, toolCall.id];
-      return acc;
-    }, []);
+    const out: string[] = [];
+    for (const toolCall of toolCalls) {
+      if (typeof toolCall.id === "string") {
+        out.push(toolCall.id);
+      }
+    }
+    return out;
   }, [toolCalls]);
 
   const toolCallsIdKey = toolCallsId.join("|");
@@ -379,11 +382,22 @@ export const ToolContent: React.FC<ToolContentProps> = ({
   diffsByToolId,
 }) => {
   const features = useAppSelector(selectFeatures);
-  const ids = toolCalls.reduce<string[]>((acc, cur) => {
-    if (cur.id !== undefined) return [...acc, cur.id];
-    return acc;
-  }, []);
-  const allToolResults = useAppSelector(selectManyToolResultsByIds(ids));
+  const ids = useMemo(() => {
+    const out: string[] = [];
+    for (const toolCall of toolCalls) {
+      if (toolCall.id !== undefined) {
+        out.push(toolCall.id);
+      }
+    }
+    return out;
+  }, [toolCalls]);
+  const idsKey = ids.join("|");
+  const selectResults = useMemo(
+    () => selectManyToolResultsByIds(ids),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [idsKey],
+  );
+  const allToolResults = useAppSelector(selectResults);
 
   return processToolCalls(
     toolCalls,

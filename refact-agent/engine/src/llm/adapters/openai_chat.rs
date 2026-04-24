@@ -14,11 +14,76 @@ const PROTECTED_FIELDS: &[&str] = &[
     "stream",
     "tools",
     "tool_choice",
+    "parallel_tool_calls",
     "stream_options",
     "cache_control",
 ];
 
 pub struct OpenAiChatAdapter;
+
+fn normalize_openai_tool_call_delta(tc: &Value, fallback_index: usize) -> Option<Value> {
+    let index = tc.get("index")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(fallback_index);
+
+    let mut out = json!({
+        "index": index,
+        "type": tc.get("type").cloned().unwrap_or_else(|| json!("function")),
+        "function": {},
+    });
+
+    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+        if !id.is_empty() {
+            out["id"] = json!(id);
+        }
+    }
+
+    let func = tc.get("function")?;
+    if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+        if !name.is_empty() {
+            out["function"]["name"] = json!(name);
+        }
+    }
+
+    if let Some(arguments) = func.get("arguments") {
+        if !arguments.is_null() {
+            out["function"]["arguments"] = arguments.clone();
+        }
+    }
+
+    if out["function"].as_object().map(|o| o.is_empty()).unwrap_or(true) && out.get("id").is_none() {
+        return None;
+    }
+
+    Some(out)
+}
+
+fn normalize_legacy_function_call_delta(fc: &Value) -> Option<Value> {
+    let mut out = json!({
+        "index": 0,
+        "type": "function",
+        "function": {},
+    });
+
+    if let Some(name) = fc.get("name").and_then(|v| v.as_str()) {
+        if !name.is_empty() {
+            out["function"]["name"] = json!(name);
+        }
+    }
+
+    if let Some(arguments) = fc.get("arguments") {
+        if !arguments.is_null() {
+            out["function"]["arguments"] = arguments.clone();
+        }
+    }
+
+    if out["function"].as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return None;
+    }
+
+    Some(out)
+}
 
 impl LlmWireAdapter for OpenAiChatAdapter {
     fn build_http(
@@ -217,11 +282,24 @@ impl LlmWireAdapter for OpenAiChatAdapter {
 
                     if let Some(tool_calls) = delta.get("tool_calls") {
                         if let Some(arr) = tool_calls.as_array() {
-                            if !arr.is_empty() {
+                            let normalized: Vec<_> = arr
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(idx, tc)| normalize_openai_tool_call_delta(tc, idx))
+                                .collect();
+                            if !normalized.is_empty() {
                                 deltas.push(LlmStreamDelta::SetToolCalls {
-                                    tool_calls: arr.clone(),
+                                    tool_calls: normalized,
                                 });
                             }
+                        }
+                    }
+
+                    if let Some(function_call) = delta.get("function_call") {
+                        if let Some(tc) = normalize_legacy_function_call_delta(function_call) {
+                            deltas.push(LlmStreamDelta::SetToolCalls {
+                                tool_calls: vec![tc],
+                            });
                         }
                     }
 
@@ -241,6 +319,23 @@ impl LlmWireAdapter for OpenAiChatAdapter {
                     deltas.push(LlmStreamDelta::SetFinishReason {
                         reason: reason.to_string(),
                     });
+                }
+
+                if let Some(message_tool_calls) = choice
+                    .get("message")
+                    .and_then(|m| m.get("tool_calls"))
+                    .and_then(|v| v.as_array())
+                {
+                    let normalized: Vec<_> = message_tool_calls
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, tc)| normalize_openai_tool_call_delta(tc, idx))
+                        .collect();
+                    if !normalized.is_empty() {
+                        deltas.push(LlmStreamDelta::FinalizeToolCalls {
+                            tool_calls: normalized,
+                        });
+                    }
                 }
             }
         }
@@ -691,6 +786,66 @@ mod tests {
 
         assert_eq!(deltas.len(), 1);
         assert!(matches!(deltas[0], LlmStreamDelta::Done));
+    }
+
+    #[test]
+    fn test_parse_stream_chunk_tool_calls_missing_index_are_normalized() {
+        let adapter = OpenAiChatAdapter;
+        let chunk = r#"{"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"name":"shell","arguments":"{\"command\":\"ls\"}"}}]}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        match &deltas[0] {
+            LlmStreamDelta::SetToolCalls { tool_calls } => {
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0]["index"], 0);
+                assert_eq!(tool_calls[0]["id"], "call_1");
+                assert_eq!(tool_calls[0]["function"]["name"], "shell");
+            }
+            _ => panic!("expected SetToolCalls"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_chunk_tool_calls_arguments_only_preserved() {
+        let adapter = OpenAiChatAdapter;
+        let chunk = r#"{"choices":[{"delta":{"tool_calls":[{"index":2,"function":{"arguments":"{\"q\""}}]}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        match &deltas[0] {
+            LlmStreamDelta::SetToolCalls { tool_calls } => {
+                assert_eq!(tool_calls[0]["index"], 2);
+                assert_eq!(tool_calls[0]["function"]["arguments"], "{\"q\"");
+            }
+            _ => panic!("expected SetToolCalls"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_chunk_legacy_function_call_supported() {
+        let adapter = OpenAiChatAdapter;
+        let chunk = r#"{"choices":[{"delta":{"function_call":{"name":"shell","arguments":"{\"command\":\"pwd\"}"}}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        match &deltas[0] {
+            LlmStreamDelta::SetToolCalls { tool_calls } => {
+                assert_eq!(tool_calls[0]["function"]["name"], "shell");
+                assert_eq!(tool_calls[0]["function"]["arguments"], "{\"command\":\"pwd\"}");
+            }
+            _ => panic!("expected SetToolCalls"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stream_chunk_final_message_tool_calls_finalize() {
+        let adapter = OpenAiChatAdapter;
+        let chunk = r#"{"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"call_final","function":{"name":"shell","arguments":"{\"command\":\"pwd\"}"}}]}}]}"#;
+
+        let deltas = adapter.parse_stream_chunk(chunk).unwrap();
+
+        assert!(deltas.iter().any(|d| matches!(d, LlmStreamDelta::FinalizeToolCalls { .. })));
     }
 
     #[test]

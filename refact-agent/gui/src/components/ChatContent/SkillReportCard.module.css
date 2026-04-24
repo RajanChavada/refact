@@ -81,6 +81,7 @@
 .contentWrapper {
   overflow: hidden;
   transform: translateZ(0);
+  will-change: grid-template-rows, opacity;
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
@@ -92,6 +93,10 @@
 .contentWrapperOpen {
   grid-template-rows: 1fr;
   opacity: 1;
+}
+
+.contentWrapper:not(.contentWrapperOpen) {
+  will-change: auto;
 }
 
 .contentInner {

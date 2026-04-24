@@ -223,6 +223,8 @@ impl OpenRouterProvider {
             display_name: model.get("name").and_then(|v| v.as_str()).map(|v| v.to_string()),
             n_ctx: selected_n_ctx.or(fallback_n_ctx).unwrap_or(128_000),
             supports_tools,
+            supports_parallel_tools: supports_tools,
+            supports_strict_tools: false,
             supports_multimodality,
             reasoning_effort_options,
             supports_thinking_budget: false,

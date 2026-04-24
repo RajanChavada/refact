@@ -248,6 +248,8 @@ available:
                         display_name: None,
                         n_ctx: 128_000,
                         supports_tools: true,
+                        supports_parallel_tools: true,
+                        supports_strict_tools: false,
                         supports_multimodality: true,
                         reasoning_effort_options: None,
                         supports_thinking_budget: false,

@@ -23,6 +23,28 @@ import type { ChatEventEnvelope } from "../services/refact/chatSubscription";
 
 const DEFAULT_MAX_CHAT_SSE_SUBSCRIPTIONS = 4;
 
+type FlushHandle =
+  | { type: "timeout"; id: ReturnType<typeof setTimeout> }
+  | { type: "raf"; id: number };
+
+function requestNextFrame(cb: () => void): FlushHandle | null {
+  if (typeof globalThis.requestAnimationFrame !== "function") return null;
+  return {
+    type: "raf",
+    id: globalThis.requestAnimationFrame(() => cb()),
+  };
+}
+
+function cancelScheduledFlush(handle: FlushHandle) {
+  if (handle.type === "raf") {
+    if (typeof globalThis.cancelAnimationFrame === "function") {
+      globalThis.cancelAnimationFrame(handle.id);
+    }
+    return;
+  }
+  clearTimeout(handle.id);
+}
+
 type PickDesiredChatSubscriptionsArgs = {
   openThreadIds: string[];
   activeChatId: string | null | undefined;
@@ -90,7 +112,7 @@ export function useAllChatsSubscription() {
   const lastActivityDispatchRef = useRef<Map<string, number>>(new Map());
   const lastActivityAtRef = useRef<Map<string, number>>(new Map());
   const streamDeltaFlushRef = useRef<
-    Map<string, ReturnType<typeof setTimeout>>
+    Map<string, FlushHandle>
   >(new Map());
   const pendingStreamDeltaRef = useRef<
     Map<string, Extract<ChatEventEnvelope, { type: "stream_delta" }>>
@@ -124,7 +146,7 @@ export function useAllChatsSubscription() {
   const FLUSH_TIER_FAST_BYTES = 8_192;
   const FLUSH_TIER_MEDIUM_BYTES = 200_000;
   // Flush intervals per tier (ms)
-  const FLUSH_MS_FAST = 0; // RAF (~16ms)
+  const FLUSH_MS_FAST = 0;
   const FLUSH_MS_MEDIUM = 150;
   const FLUSH_MS_SLOW = 500;
   const FLUSH_MS_BACKGROUND = 500;
@@ -152,9 +174,9 @@ export function useAllChatsSubscription() {
   }, []);
 
   const clearStreamDeltaFlushForChat = useCallback((chatId: string) => {
-    const timerId = streamDeltaFlushRef.current.get(chatId);
-    if (timerId != null) {
-      clearTimeout(timerId);
+    const handle = streamDeltaFlushRef.current.get(chatId);
+    if (handle != null) {
+      cancelScheduledFlush(handle);
       streamDeltaFlushRef.current.delete(chatId);
     }
   }, []);
@@ -193,8 +215,18 @@ export function useAllChatsSubscription() {
         flushPendingStreamDeltaForChat(chatId);
       };
 
-      const id = setTimeout(flush, Math.max(delayMs, 0));
-      streamDeltaFlushRef.current.set(chatId, id);
+      if (delayMs <= 0) {
+        const frameHandle = requestNextFrame(flush);
+        if (frameHandle) {
+          streamDeltaFlushRef.current.set(chatId, frameHandle);
+          return;
+        }
+      }
+
+      streamDeltaFlushRef.current.set(chatId, {
+        type: "timeout",
+        id: setTimeout(flush, Math.max(delayMs, 0)),
+      });
     },
     [flushPendingStreamDeltaForChat, getFlushDelayMs],
   );
@@ -421,8 +453,8 @@ export function useAllChatsSubscription() {
     for (const timeoutId of timeoutRef.current.values()) {
       clearTimeout(timeoutId);
     }
-    for (const flushId of streamDeltaFlushRef.current.values()) {
-      clearTimeout(flushId);
+    for (const flushHandle of streamDeltaFlushRef.current.values()) {
+      cancelScheduledFlush(flushHandle);
     }
     subscriptionsRef.current.clear();
     seqMapRef.current.clear();

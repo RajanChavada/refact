@@ -336,7 +336,9 @@ pub async fn prepare_chat_passthrough(
         .with_params(common_params)
         .with_tools(openai_tools, tool_choice)
         .with_reasoning(reasoning)
-        .with_parallel_tool_calls(options.parallel_tool_calls.unwrap_or(false))
+        .with_parallel_tool_calls(
+            options.parallel_tool_calls.unwrap_or(false) && model_record.supports_parallel_tools,
+        )
         .with_cache_control(options.cache_control);
 
     if model_record.base.wire_format == WireFormat::OpenaiResponses {

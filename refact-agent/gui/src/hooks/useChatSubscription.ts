@@ -18,6 +18,28 @@ const DEBUG =
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
+type FlushHandle =
+  | { type: "timeout"; id: ReturnType<typeof setTimeout> }
+  | { type: "raf"; id: number };
+
+function requestNextFrame(cb: () => void): FlushHandle | null {
+  if (typeof globalThis.requestAnimationFrame !== "function") return null;
+  return {
+    type: "raf",
+    id: globalThis.requestAnimationFrame(() => cb()),
+  };
+}
+
+function cancelScheduledFlush(handle: FlushHandle) {
+  if (handle.type === "raf") {
+    if (typeof globalThis.cancelAnimationFrame === "function") {
+      globalThis.cancelAnimationFrame(handle.id);
+    }
+    return;
+  }
+  clearTimeout(handle.id);
+}
+
 export type UseChatSubscriptionOptions = {
   /** Enable subscription (default: true) */
   enabled?: boolean;
@@ -79,9 +101,7 @@ export function useChatSubscription(
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const streamDeltaFlushRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const streamDeltaFlushRef = useRef<FlushHandle | null>(null);
   const pendingStreamDeltaRef = useRef<Extract<
     ChatEventEnvelope,
     { type: "stream_delta" }
@@ -97,15 +117,16 @@ export function useChatSubscription(
   // Adaptive flush thresholds (JS string length units, i.e. UTF-16 code units)
   const FLUSH_TIER_FAST_BYTES = 8_192;
   const FLUSH_TIER_MEDIUM_BYTES = 200_000;
+  const FLUSH_MS_FAST = 0;
   const FLUSH_MS_MEDIUM = 150;
   const FLUSH_MS_SLOW = 500;
   // Hard cap: force flush if buffered char-count (UTF-16 units) exceeds this
   const MAX_BUFFERED_BYTES = 2_000_000;
 
   const clearStreamDeltaFlush = useCallback(() => {
-    const timerId = streamDeltaFlushRef.current;
-    if (timerId != null) {
-      clearTimeout(timerId);
+    const handle = streamDeltaFlushRef.current;
+    if (handle != null) {
+      cancelScheduledFlush(handle);
       streamDeltaFlushRef.current = null;
     }
   }, []);
@@ -125,7 +146,7 @@ export function useChatSubscription(
     const bytes = streamedBytesRef.current;
     let delayMs: number;
     if (bytes < FLUSH_TIER_FAST_BYTES) {
-      delayMs = 0;
+      delayMs = FLUSH_MS_FAST;
     } else if (bytes < FLUSH_TIER_MEDIUM_BYTES) {
       delayMs = FLUSH_MS_MEDIUM;
     } else {
@@ -137,7 +158,18 @@ export function useChatSubscription(
       flushPendingStreamDelta();
     };
 
-    streamDeltaFlushRef.current = setTimeout(flush, Math.max(delayMs, 0));
+    if (delayMs <= 0) {
+      const frameHandle = requestNextFrame(flush);
+      if (frameHandle) {
+        streamDeltaFlushRef.current = frameHandle;
+        return;
+      }
+    }
+
+    streamDeltaFlushRef.current = {
+      type: "timeout",
+      id: setTimeout(flush, Math.max(delayMs, 0)),
+    };
   }, [flushPendingStreamDelta]);
 
   const enqueueStreamDelta = useCallback(

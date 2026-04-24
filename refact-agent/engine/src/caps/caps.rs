@@ -131,6 +131,8 @@ pub struct ChatModelRecord {
     #[serde(default)]
     pub max_output_tokens: Option<usize>,
     #[serde(default)]
+    pub supports_parallel_tools: bool,
+    #[serde(default)]
     pub supports_strict_tools: bool,
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
@@ -511,6 +513,8 @@ fn build_chat_model_record(
         tokenizer,
         supports_clicks,
         max_output_tokens,
+        supports_parallel_tools,
+        supports_strict_tools,
     ) = if let Some(ref resolved) = resolved_caps {
         let caps = &resolved.caps;
         if model.is_custom {
@@ -529,6 +533,8 @@ fn build_chat_model_record(
                 tok,
                 caps.supports_clicks,
                 clamped_max_output,
+                model.supports_parallel_tools,
+                model.supports_strict_tools,
             )
         } else {
             let effective_n_ctx = if model.n_ctx > 0 && caps.n_ctx > 0 {
@@ -555,12 +561,17 @@ fn build_chat_model_record(
                 caps.tokenizer.clone(),
                 caps.supports_clicks,
                 effective_max_output,
+                caps.supports_parallel_tools,
+                caps.supports_strict_tools,
             )
         }
     } else {
+        // No registry entry for this model: trust whatever the provider reported.
+        // supports_clicks defaults to false because click support is a UI-level
+        // capability that no local provider currently reports.
         (
             model.n_ctx,
-            false,
+            model.supports_tools,
             model.supports_multimodality,
             model.reasoning_effort_options.clone(),
             model.supports_thinking_budget,
@@ -568,6 +579,8 @@ fn build_chat_model_record(
             model.tokenizer.clone().unwrap_or_else(|| "fake".to_string()),
             false,
             model.max_output_tokens,
+            model.supports_parallel_tools,
+            model.supports_strict_tools,
         )
     };
 
@@ -633,10 +646,11 @@ fn build_chat_model_record(
             .as_ref()
             .and_then(|r| r.caps.default_max_tokens),
         max_output_tokens,
+        supports_parallel_tools,
         supports_strict_tools: resolved_caps
             .as_ref()
-            .map(|r| r.caps.supports_strict_tools)
-            .unwrap_or(false),
+            .map(|r| if model.is_custom { supports_strict_tools } else { r.caps.supports_strict_tools })
+            .unwrap_or(supports_strict_tools),
         supports_temperature: resolved_caps
             .as_ref()
             .map(|r| r.caps.supports_temperature)
@@ -1287,10 +1301,16 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     }
     record.base.supports_max_completion_tokens = caps.supports_max_completion_tokens;
 
-    record.supports_tools = caps.supports_tools;
-    record.supports_strict_tools = caps.supports_strict_tools;
-    record.supports_multimodality = caps.supports_vision;
-    record.supports_clicks = caps.supports_clicks;
+    // For live provider-discovered models (ollama, vllm, lmstudio), the provider
+    // already reported these booleans accurately. The registry should only add
+    // capability knowledge the provider omitted, never remove what the provider reported.
+    // For cloud/catalog models the registry is authoritative, and build_chat_model_record
+    // already set these from registry caps before this point — so ||= is safe for both.
+    record.supports_tools = record.supports_tools || caps.supports_tools;
+    record.supports_parallel_tools = record.supports_parallel_tools || caps.supports_parallel_tools;
+    record.supports_strict_tools = record.supports_strict_tools || caps.supports_strict_tools;
+    record.supports_multimodality = record.supports_multimodality || caps.supports_vision;
+    record.supports_clicks = record.supports_clicks || caps.supports_clicks;
     record.default_temperature = caps.default_temperature;
     record.default_max_tokens = caps.default_max_tokens;
     if caps.max_output_tokens > 0 {
@@ -1306,7 +1326,7 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     record.reasoning_effort_options = caps.reasoning_effort_options.clone();
     record.supports_thinking_budget = caps.supports_thinking_budget;
     record.supports_adaptive_thinking_budget = caps.supports_adaptive_thinking_budget;
-    record.supports_agent = caps.supports_tools;
+    record.supports_agent = record.supports_tools;
     record.supports_temperature = caps.supports_temperature;
     record.base.supports_web_search = caps.supports_web_search;
     record.base.supports_cache_control = caps.supports_cache_control;

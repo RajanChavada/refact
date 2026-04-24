@@ -40,6 +40,11 @@ impl OllamaProvider {
     fn parse_ollama_model(model: &serde_json::Value, enabled: bool) -> Option<AvailableModel> {
         let name = model.get("name")?.as_str()?.to_string();
         let details = model.get("details");
+        let capabilities = model
+            .get("capabilities")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let family = details.and_then(|d| d.get("family")).and_then(|v| v.as_str()).unwrap_or("");
         let families: Vec<String> = details
             .and_then(|d| d.get("families"))
@@ -50,9 +55,17 @@ impl OllamaProvider {
             .and_then(|d| d.get("parameter_size"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let n_ctx = model
+            .get("context_length")
+            .or_else(|| details.and_then(|d| d.get("context_length")))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(32_768);
 
-        let supports_tools = Self::family_supports_tools(family, &families);
-        let supports_multimodality = Self::family_supports_vision(family, &families);
+        let supports_tools = capabilities.iter().any(|c| c.as_str() == Some("tools"))
+            || Self::family_supports_tools(family, &families);
+        let supports_multimodality = capabilities.iter().any(|c| matches!(c.as_str(), Some("vision") | Some("image")))
+            || Self::family_supports_vision(family, &families);
 
         let display_name = if parameter_size.is_empty() {
             None
@@ -63,8 +76,10 @@ impl OllamaProvider {
         Some(AvailableModel {
             id: name,
             display_name,
-            n_ctx: 4096,
+            n_ctx,
             supports_tools,
+            supports_parallel_tools: supports_tools,
+            supports_strict_tools: false,
             supports_multimodality,
             reasoning_effort_options: None,
             supports_thinking_budget: false,

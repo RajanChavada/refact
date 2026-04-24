@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use serde_json::json;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -14,6 +15,7 @@ use crate::stats::event::{
     LlmCallEvent, canonicalize_mode_for_stats, split_model_provider, sum_metering_coins,
 };
 use crate::chat::tool_call_recovery;
+use crate::chat::tool_call_recovery_oss;
 use crate::global_context::GlobalContext;
 use crate::llm::LlmRequest;
 use crate::llm::params::CacheControl;
@@ -1239,6 +1241,27 @@ async fn run_streaming_generation(
             }
         }
 
+        if result.tool_calls_raw.is_empty() && !allowed_tools.is_empty() {
+            if let Some((cleaned_content, recovered_calls, source)) =
+                tool_call_recovery_oss::recover_tool_calls_from_oss_text(
+                    &result.content,
+                    &allowed_tools,
+                )
+            {
+                warn!(
+                    "tool_call_recovery_oss: recovered {} tool call(s) via {}",
+                    recovered_calls.len(),
+                    source
+                );
+                result.extra.insert(
+                    "_tool_call_recovery_source".to_string(),
+                    json!(source),
+                );
+                result.content = cleaned_content;
+                result.tool_calls_raw = recovered_calls;
+            }
+        }
+
         if !result.tool_calls_raw.is_empty() {
             let parsed: Vec<_> = result.tool_calls_raw.iter().filter_map(|tc| normalize_tool_call(tc)).collect();
             if parsed.is_empty() {
@@ -1246,10 +1269,13 @@ async fn run_streaming_generation(
                     || !result.reasoning.trim().is_empty()
                     || !result.server_content_blocks.is_empty()
                     || !result.citations.is_empty();
+                let names: Vec<_> = result.tool_calls_raw.iter()
+                    .filter_map(|tc| tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+                    .collect();
                 tracing::warn!(
-                    "All {} tool calls unparsable: {:?}",
+                    "All {} tool calls unparsable, names={:?}",
                     result.tool_calls_raw.len(),
-                    result.tool_calls_raw,
+                    names,
                 );
                 if !has_content {
                     return Err("Model returned tool_calls but none were parsable".to_string());
@@ -1257,17 +1283,20 @@ async fn run_streaming_generation(
                 // Has useful content — discard unparsable tool calls and continue
                 result.tool_calls_raw.clear();
             } else if parsed.len() < result.tool_calls_raw.len() {
-                let dropped: Vec<_> = result.tool_calls_raw.iter()
+                let dropped_names: Vec<_> = result.tool_calls_raw.iter()
                     .filter(|tc| normalize_tool_call(tc).is_none())
+                    .filter_map(|tc| tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
                     .collect();
                 tracing::warn!(
-                    "Dropped {}/{} tool calls during normalization: {:?}",
-                    dropped.len(),
+                    "Dropped {}/{} tool calls during normalization, names={:?}",
+                    dropped_names.len(),
                     result.tool_calls_raw.len(),
-                    dropped,
+                    dropped_names,
                 );
             }
         }
+
+        maybe_downgrade_bogus_tool_calls_finish_reason(&mut result, "post_tool_normalization");
 
         let (draft_usage_for_success, success_coins) = {
             let session = session_arc.lock().await;
@@ -1432,6 +1461,27 @@ fn is_result_empty(result: &ChoiceFinal) -> bool {
         && result.thinking_blocks.is_empty()
         && result.citations.is_empty()
         && result.server_content_blocks.is_empty()
+}
+
+fn maybe_downgrade_bogus_tool_calls_finish_reason(result: &mut ChoiceFinal, stage: &str) {
+    if result.finish_reason.as_deref() != Some("tool_calls") || !result.tool_calls_raw.is_empty() {
+        return;
+    }
+
+    warn!(
+        "tool_call_guard: finish_reason='tool_calls' without tool calls at stage '{}', downgrading to 'stop'",
+        stage
+    );
+    result.extra.insert(
+        "_tool_call_guard".to_string(),
+        json!({
+            "kind": "tool_calls_finish_without_calls",
+            "stage": stage,
+            "original_finish_reason": "tool_calls",
+            "adjusted_finish_reason": "stop",
+        }),
+    );
+    result.finish_reason = Some("stop".to_string());
 }
 
 #[cfg(test)]
@@ -1672,5 +1722,52 @@ mod tests {
 
         assert!(reached_normal_generation, "Normal generation path must be reached after fork error");
         assert_eq!(loop_count, 2, "Loop must iterate twice: fork error then normal generation");
+    }
+
+    #[test]
+    fn test_downgrade_bogus_tool_calls_finish_reason() {
+        let mut result = ChoiceFinal {
+            finish_reason: Some("tool_calls".to_string()),
+            ..Default::default()
+        };
+
+        maybe_downgrade_bogus_tool_calls_finish_reason(&mut result, "test");
+
+        assert_eq!(result.finish_reason.as_deref(), Some("stop"));
+        assert!(result.extra.contains_key("_tool_call_guard"));
+    }
+
+    #[test]
+    fn test_does_not_downgrade_tool_calls_finish_reason_when_tool_calls_exist() {
+        let mut result = ChoiceFinal {
+            finish_reason: Some("tool_calls".to_string()),
+            tool_calls_raw: vec![json!({
+                "type": "function",
+                "id": "call_123",
+                "function": {
+                    "name": "shell",
+                    "arguments": "{}"
+                }
+            })],
+            ..Default::default()
+        };
+
+        maybe_downgrade_bogus_tool_calls_finish_reason(&mut result, "test");
+
+        assert_eq!(result.finish_reason.as_deref(), Some("tool_calls"));
+        assert!(!result.extra.contains_key("_tool_call_guard"));
+    }
+
+    #[test]
+    fn test_does_not_downgrade_non_tool_calls_finish_reason() {
+        let mut result = ChoiceFinal {
+            finish_reason: Some("stop".to_string()),
+            ..Default::default()
+        };
+
+        maybe_downgrade_bogus_tool_calls_finish_reason(&mut result, "test");
+
+        assert_eq!(result.finish_reason.as_deref(), Some("stop"));
+        assert!(!result.extra.contains_key("_tool_call_guard"));
     }
 }

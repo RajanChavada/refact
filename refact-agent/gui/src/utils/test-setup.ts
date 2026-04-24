@@ -8,23 +8,50 @@ import MatchMediaMock from "vitest-matchmedia-mock";
 import React from "react";
 const matchMediaMock = new MatchMediaMock();
 
-vi.mock("react-virtuoso", () => ({
-  Virtuoso: ({
-    data,
-    itemContent,
-    components,
-  }: {
-    data?: unknown[];
-    itemContent: (index: number, item: unknown) => React.ReactNode;
-    components?: { Footer?: React.ComponentType };
-  }) =>
-    React.createElement(
-      "div",
-      null,
-      ...(data ?? []).map((item, i) => itemContent(i, item)),
-      components?.Footer ? React.createElement(components.Footer) : null,
+type VirtuosoMockProps = {
+  data?: unknown[];
+  itemContent: (index: number, item: unknown) => React.ReactNode;
+  components?: {
+    Scroller?: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>;
+    List?: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>;
+    Footer?: React.ComponentType;
+  };
+};
+
+(globalThis as Record<string, unknown>).__VIRTUOSO_CALLS__ = [];
+
+vi.mock("react-virtuoso", async () => {
+  const ReactModule = await vi.importActual<typeof import("react")>("react");
+
+  return {
+    Virtuoso: ReactModule.forwardRef<HTMLDivElement, VirtuosoMockProps>(
+      ({ data, itemContent, components, ...props }, _ref) => {
+        const calls = (
+          (globalThis as Record<string, unknown>).__VIRTUOSO_CALLS__ as
+            | unknown[]
+            | undefined
+        ) ?? [];
+        calls.push(props);
+        (globalThis as Record<string, unknown>).__VIRTUOSO_CALLS__ = calls;
+
+        const list = ReactModule.createElement(
+          components?.List ?? "div",
+          null,
+          ...(data ?? []).map((item, i) => itemContent(i, item)),
+          components?.Footer
+            ? ReactModule.createElement(components.Footer)
+            : null,
+        );
+
+        return ReactModule.createElement(
+          components?.Scroller ?? "div",
+          null,
+          list,
+        );
+      },
     ),
-}));
+  };
+});
 
 (globalThis as Record<string, unknown>).__REFACT_LSP_PORT__ = 8001;
 

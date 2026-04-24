@@ -132,3 +132,14 @@
     opacity: 0.4;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming::after {
+    animation: none;
+    content: "_[";
+  }
+
+  .waiting .dot {
+    animation: none;
+  }
+}

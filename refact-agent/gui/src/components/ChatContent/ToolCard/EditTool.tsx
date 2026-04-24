@@ -167,8 +167,16 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
     selectToolResultById(state, toolCall.id),
   );
 
+  const diffIds = useMemo(
+    () => (toolCall.id ? [toolCall.id] : []),
+    [toolCall.id],
+  );
+  const selectDiffs = useMemo(
+    () => selectManyDiffMessageByIds(diffIds),
+    [diffIds],
+  );
   const toolDiffs = useAppSelector(
-    selectManyDiffMessageByIds(toolCall.id ? [toolCall.id] : []),
+    selectDiffs,
   );
 
   const allDiffs = useMemo(() => {
