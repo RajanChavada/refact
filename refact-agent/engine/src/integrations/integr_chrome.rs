@@ -360,8 +360,15 @@ impl Tool for ToolChrome {
              The `commands` input is compatibility-only; prefer the typed `request` input for new callers.\n\
              Selectors and expressions can contain any characters — no quoting needed for most commands. \
              For `fill_field`, quote the selector when it contains spaces, e.g. `fill_field 1 \"form input[name=q]\" hello`. \
-             For multiline expressions use heredoc: eval <tab_id> <<EOF\\n...\\nEOF\n\
-             Blank lines and lines starting with // or # are ignored.",
+             For multiline expressions use heredoc: eval <tab_id> <<EOF\\n...\\nEOF\nBlank lines and lines starting with // or # are ignored.\n\
+             \n\
+             Preferred `request` input: pass a JSON object with a `steps` array. Each step is a JSON object \
+             with an `action` field (snake_case) and action-specific fields. \
+             Example steps: {{\"action\": \"open_tab\", \"device\": \"desktop\"}}, \
+             {{\"action\": \"navigate\", \"url\": \"https://example.com\"}}, \
+             {{\"action\": \"screenshot\"}}. \
+             Locators use a `by` field (css/id/name/text/label/role/xpath/placeholder/autocomplete/test_id) and a `value` field \
+             (except role locators which use `role` and optional `name` instead of `value`).",
             supported_commands.join("\n"));
         ToolDesc {
             name: "chrome".to_string(),
@@ -396,7 +403,68 @@ impl Tool for ToolChrome {
                             },
                             "steps": {
                                 "type": "array",
-                                "items": {"type": "object"}
+                                "description": "List of browser steps. Each step must have an 'action' field (snake_case).",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["action"],
+                                    "properties": {
+                                        "action": {
+                                            "type": "string",
+                                            "description": "The browser action to perform.",
+                                            "enum": [
+                                                "navigate", "reload", "go_back", "go_forward",
+                                                "open_tab", "close_tab", "switch_tab", "list_tabs",
+                                                "click", "click_if_exists", "hover", "focus", "blur", "scroll_to",
+                                                "press_key", "fill", "clear", "select_option", "check", "uncheck",
+                                                "wait_for_selector", "wait_for_navigation", "wait_for_url", "wait_for_text",
+                                                "wait_for_network_idle", "wait_for_element_hidden", "wait_for_element_stable", "wait_seconds",
+                                                "get_text", "get_html", "get_attribute", "extract_links", "extract_table",
+                                                "dom_snapshot", "accessibility_snapshot", "screenshot", "screenshot_element",
+                                                "eval", "styles", "tab_log", "dismiss_overlays", "highlight_element"
+                                            ]
+                                        },
+                                        "url": {"type": "string", "description": "URL for navigate action"},
+                                        "device": {"type": "string", "enum": ["desktop", "mobile", "tablet"], "description": "Device type for open_tab"},
+                                        "tab": {
+                                            "type": "object",
+                                            "description": "Tab target for switch_tab",
+                                            "properties": {
+                                                "type": {"type": "string", "enum": ["active", "id"]},
+                                                "id": {"type": "string", "description": "Required when type is 'id'"}
+                                            },
+                                            "required": ["type"]
+                                        },
+                                        "locator": {
+                                            "type": "object",
+                                            "description": "Element locator. Must have 'by' field. For most strategies also include 'value' (e.g. {\"by\":\"css\",\"value\":\"#btn\"}). For 'role' strategy use 'role' and optional 'name' instead of 'value' (e.g. {\"by\":\"role\",\"role\":\"button\",\"name\":\"Submit\"}).",
+                                            "required": ["by"],
+                                            "properties": {
+                                                "by": {"type": "string", "enum": ["css", "id", "name", "text", "label", "role", "xpath", "placeholder", "autocomplete", "test_id"]},
+                                                "value": {"type": "string", "description": "Selector value for all strategies except 'role'"},
+                                                "nth": {"type": "integer", "description": "0-based index when multiple elements match"},
+                                                "within": {"type": "string", "description": "CSS selector to scope the search within"},
+                                                "exact": {"type": "boolean", "description": "Exact match for 'text' strategy"},
+                                                "role": {"type": "string", "description": "ARIA role name for 'role' strategy"},
+                                                "name": {"type": "string", "description": "Accessible name filter for 'role' strategy"}
+                                            }
+                                        },
+                                        "text": {"type": "string", "description": "Text for fill/wait_for_text actions"},
+                                        "key": {"type": "string", "description": "Key name for press_key (e.g. Enter, Tab, Escape)"},
+                                        "modifiers": {"type": "array", "items": {"type": "string"}, "description": "Modifiers for press_key: Alt, Ctrl, Meta, Shift"},
+                                        "expression": {"type": "string", "description": "JavaScript expression for eval action"},
+                                        "selector": {"type": "string", "description": "CSS selector for dom_snapshot action"},
+                                        "contains": {"type": "string", "description": "URL substring to match in wait_for_url"},
+                                        "value": {"type": "string", "description": "Option value for select_option"},
+                                        "attribute": {"type": "string", "description": "Attribute name for get_attribute"},
+                                        "seconds": {"type": "number", "description": "Seconds to wait for wait_seconds"},
+                                        "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds"},
+                                        "limit": {"type": "integer", "description": "Max results for extract_links"},
+                                        "clear_first": {"type": "boolean", "description": "Clear field before filling (default true)"},
+                                        "verify": {"type": "boolean", "description": "Verify fill result (default true)"},
+                                        "max_chars": {"type": "integer", "description": "Max characters for dom_snapshot"},
+                                        "property_filter": {"type": "string", "description": "CSS property filter for styles action"}
+                                    }
+                                }
                             }
                         },
                         "required": ["steps"]

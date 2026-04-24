@@ -583,21 +583,16 @@ pub fn start_generation(
                 })
             };
 
-            let mut injected_budget = false;
             if let Some(effective_n_ctx) = effective_n_ctx {
                 let mut session = session_arc.lock().await;
-                injected_budget = maybe_inject_token_budget_instruction(
+                maybe_inject_token_budget_instruction(
                     &mut session,
                     effective_n_ctx,
                     TOKEN_BUDGET_CADENCE,
                 );
             }
 
-            if injected_budget {
-                maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
-            } else {
-                maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
-            }
+            maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
 
             match process_tool_calls_once(gcx.clone(), session_arc.clone(), &mode_id, model_id_opt).await {
                 ToolStepOutcome::NoToolCalls => {
@@ -613,7 +608,7 @@ pub fn start_generation(
                     }
                     let gcx_stop = gcx.clone();
                     let session_id_stop = chat_id.clone();
-                    tokio::spawn(async move {
+                    let handle = tokio::spawn(async move {
                         let project_dir = get_project_dir_string(gcx_stop.clone()).await;
                         let payload = HookPayload {
                             hook_event_name: "Stop".to_string(),
@@ -627,6 +622,7 @@ pub fn start_generation(
                         };
                         run_hooks(gcx_stop, HookEvent::Stop, payload).await;
                     });
+                    session_arc.lock().await.stop_hook_handle = Some(handle);
                     break;
                 }
                 ToolStepOutcome::Paused => break,

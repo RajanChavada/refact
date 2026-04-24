@@ -109,8 +109,11 @@ impl LlmWireAdapter for RefactAdapter {
                 }
                 "anthropic_effort" => {
                     match &req.reasoning {
-                        crate::llm::params::ReasoningIntent::BudgetTokens(n) => {
-                            body["thinking"] = json!({"type": "enabled", "budget_tokens": *n});
+                        crate::llm::params::ReasoningIntent::BudgetTokens(_n) => {
+                            // Effort-mode models (adaptive thinking) don't support budget_tokens;
+                            // map explicit budget to max effort level.
+                            body["thinking"] = json!({"type": "adaptive"});
+                            body["output_config"] = json!({"effort": "high"});
                         }
                         _ => {
                             if let Some(effort) = req.reasoning.to_anthropic_effort() {

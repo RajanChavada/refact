@@ -21,6 +21,8 @@ const PROTECTED_FIELDS: &[&str] = &[
 
 pub struct OpenAiResponsesAdapter;
 
+const CHATGPT_BACKEND_DEFAULT_INSTRUCTIONS: &str = "You are a helpful assistant.";
+
 const ALL_INCLUDE_FIELDS: &[&str] = &[
     // Tool outputs / results
     "web_search_call.results",
@@ -104,8 +106,14 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
                 body["input"] = input;
             }
         }
-        if let Some(inst) = instructions {
-            body["instructions"] = json!(inst);
+        match instructions.as_deref() {
+            Some(inst) if !inst.trim().is_empty() => {
+                body["instructions"] = json!(inst);
+            }
+            _ if is_chatgpt_backend => {
+                body["instructions"] = json!(CHATGPT_BACKEND_DEFAULT_INSTRUCTIONS);
+            }
+            _ => {}
         }
 
         if !is_chatgpt_backend {
@@ -1059,6 +1067,38 @@ mod tests {
             "ChatGPT backend must not have stop");
         assert_eq!(http.body["store"], false,
             "ChatGPT backend must have store=false");
+    }
+
+    #[test]
+    fn test_chatgpt_backend_adds_default_instructions_without_system() {
+        let adapter = OpenAiResponsesAdapter;
+        let req = LlmRequest::new("gpt-5.3-codex".to_string(), vec![
+            ChatMessage::new("user".to_string(), "Hello".to_string()),
+        ]);
+
+        let http = adapter.build_http(&req, &chatgpt_backend_settings()).unwrap();
+
+        assert_eq!(
+            http.body["instructions"],
+            json!(CHATGPT_BACKEND_DEFAULT_INSTRUCTIONS),
+            "ChatGPT backend requires a non-empty instructions field"
+        );
+    }
+
+    #[test]
+    fn test_chatgpt_backend_keeps_system_instructions() {
+        let adapter = OpenAiResponsesAdapter;
+        let req = LlmRequest::new(
+            "gpt-5.3-codex".to_string(),
+            vec![
+                ChatMessage::new("system".to_string(), "Be precise".to_string()),
+                ChatMessage::new("user".to_string(), "Hello".to_string()),
+            ],
+        );
+
+        let http = adapter.build_http(&req, &chatgpt_backend_settings()).unwrap();
+
+        assert_eq!(http.body["instructions"], json!("Be precise"));
     }
 
     #[test]

@@ -201,7 +201,7 @@ pub struct DocumentsState {
     pub memory_document_map: HashMap<PathBuf, Arc<ARwLock<Document>>>, // if a file is open in IDE, and it's outside workspace dirs, it will be in this map and not in workspace_files
     pub cache_dirty: Arc<AMutex<f64>>,
     pub cache_correction: Arc<CacheCorrection>,
-    pub fs_watcher: Arc<ARwLock<RecommendedWatcher>>,
+    pub fs_watcher: Option<Arc<ARwLock<RecommendedWatcher>>>,
 }
 
 async fn mem_overwrite_or_create_document(
@@ -227,7 +227,6 @@ async fn mem_overwrite_or_create_document(
 
 impl DocumentsState {
     pub async fn new(workspace_dirs: Vec<PathBuf>) -> Self {
-        let watcher = RecommendedWatcher::new(|_| {}, Default::default()).unwrap();
         Self {
             workspace_folders: Arc::new(StdMutex::new(workspace_dirs)),
             workspace_files: Arc::new(StdMutex::new(Vec::new())),
@@ -238,7 +237,7 @@ impl DocumentsState {
             memory_document_map: HashMap::new(),
             cache_dirty: Arc::new(AMutex::<f64>::new(0.0)),
             cache_correction: Arc::new(CacheCorrection::new()),
-            fs_watcher: Arc::new(ARwLock::new(watcher)),
+            fs_watcher: None,
         }
     }
 }
@@ -269,14 +268,12 @@ pub async fn watcher_init(gcx: Arc<ARwLock<GlobalContext>>) {
         let _ = watcher.watch(folder, RecursiveMode::Recursive);
     }
 
-    let mut fs_watcher_on_stack = Arc::new(ARwLock::new(watcher));
-    {
+    let new_watcher = Some(Arc::new(ARwLock::new(watcher)));
+    let old_watcher = {
         let mut gcx_locked = gcx.write().await;
-        std::mem::swap(
-            &mut gcx_locked.documents_state.fs_watcher,
-            &mut fs_watcher_on_stack,
-        ); // avoid destructor under lock
-    }
+        std::mem::replace(&mut gcx_locked.documents_state.fs_watcher, new_watcher)
+    };
+    drop(old_watcher);
 }
 
 async fn read_file_from_disk_without_privacy_check(path: &PathBuf) -> Result<Rope, String> {

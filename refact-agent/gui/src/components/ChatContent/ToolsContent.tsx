@@ -572,7 +572,7 @@ function processToolCalls(
   if (headName === "strategic_planning") {
     const elem = (
       <PlanningTool
-        key={`strategic-planning-tool-${processed.length}`}
+        key={`strategic-planning-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -589,7 +589,7 @@ function processToolCalls(
   if (headName === "code_review") {
     const elem = (
       <NewCodeReviewTool
-        key={`code-review-tool-${processed.length}`}
+        key={`code-review-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -606,7 +606,7 @@ function processToolCalls(
   if (headName === "deep_research") {
     const elem = (
       <ResearchTool
-        key={`deep-research-tool-${processed.length}`}
+        key={`deep-research-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -820,7 +820,10 @@ function processToolCalls(
 
   if (headName === "tasks_set") {
     const elem = (
-      <TasksTool key={`tasks-tool-${processed.length}`} toolCall={head} />
+      <TasksTool
+        key={`tasks-tool-${head.id ?? processed.length}`}
+        toolCall={head}
+      />
     );
     return processToolCalls(
       tail,
@@ -835,7 +838,7 @@ function processToolCalls(
   if (headName === "task_done") {
     const elem = (
       <TaskDoneTool
-        key={`task-done-tool-${processed.length}`}
+        key={`task-done-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -975,7 +978,7 @@ function processToolCalls(
   ) {
     const elem = (
       <CompressReportTool
-        key={`compress-tool-${processed.length}`}
+        key={`compress-tool-${head.id ?? processed.length}`}
         toolCall={head}
         toolType={headName}
       />

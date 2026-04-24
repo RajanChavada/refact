@@ -60,6 +60,7 @@ impl ChatSession {
             skills_available_count: 0,
             skills_included: Vec::new(),
             pending_skill_deactivation: None,
+            stop_hook_handle: None,
         }
     }
 
@@ -105,6 +106,7 @@ impl ChatSession {
             skills_available_count: 0,
             skills_included: Vec::new(),
             pending_skill_deactivation: None,
+            stop_hook_handle: None,
         }
     }
 
@@ -140,6 +142,9 @@ impl ChatSession {
     pub fn close_event_channel(&mut self) {
         self.closed = true;
         self.closed_flag.store(true, Ordering::Relaxed);
+        if let Some(h) = self.stop_hook_handle.take() {
+            h.abort();
+        }
         let (new_tx, _) = broadcast::channel(limits().event_channel_capacity);
         self.event_tx = new_tx;
     }

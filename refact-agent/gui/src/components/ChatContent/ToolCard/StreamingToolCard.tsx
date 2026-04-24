@@ -148,7 +148,7 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
           onScroll={handleEntertainmentScroll}
         >
           <div className={styles.entertainmentMarkdown}>
-            <Markdown canHaveInteractiveElements={false}>
+            <Markdown canHaveInteractiveElements={false} isStreaming={true}>
               {entertainmentText}
             </Markdown>
           </div>

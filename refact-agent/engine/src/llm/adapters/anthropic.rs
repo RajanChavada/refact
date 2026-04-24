@@ -138,17 +138,11 @@ impl LlmWireAdapter for AnthropicAdapter {
         if settings.supports_reasoning {
             if is_effort_mode {
                 match &req.reasoning {
-                    crate::llm::params::ReasoningIntent::BudgetTokens(n) => {
-                        body["thinking"] = json!({"type": "enabled", "budget_tokens": *n});
-                        let current_max = req.params.max_tokens;
-                        if current_max <= *n {
-                            let adjusted_max = *n + std::cmp::max(current_max, 1024);
-                            body["max_tokens"] = json!(adjusted_max);
-                            tracing::debug!(
-                                "Adjusted max_tokens from {} to {} (thinking budget: {})",
-                                current_max, adjusted_max, n
-                            );
-                        }
+                    crate::llm::params::ReasoningIntent::BudgetTokens(_n) => {
+                        // Effort-mode models (adaptive thinking) don't support budget_tokens;
+                        // map explicit budget to max effort level.
+                        body["thinking"] = json!({"type": "adaptive"});
+                        body["output_config"] = json!({"effort": "high"});
                     }
                     _ => {
                         if let Some(effort) = req.reasoning.to_anthropic_effort() {

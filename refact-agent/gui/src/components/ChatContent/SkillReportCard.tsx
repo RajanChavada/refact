@@ -44,6 +44,12 @@ export const SkillReportCard: React.FC<SkillReportCardProps> = ({
   const { newFile } = useEventsBusForIDE();
   const [copied, setCopied] = useState(false);
   const [isOpen, handleToggle] = useStoredOpen(storeKey, true);
+  const [animateContent, setAnimateContent] = useState(false);
+
+  const handleAnimatedToggle = useCallback(() => {
+    setAnimateContent(true);
+    handleToggle();
+  }, [handleToggle]);
 
   const handleCopy = useCallback(
     (e: React.MouseEvent) => {
@@ -70,7 +76,7 @@ export const SkillReportCard: React.FC<SkillReportCardProps> = ({
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(
     isOpen && !!report,
     200,
-    true,
+    animateContent,
   );
 
   const showSaveButton = isIdeHost();
@@ -83,7 +89,7 @@ export const SkillReportCard: React.FC<SkillReportCardProps> = ({
         className={styles.header}
         align="center"
         gap="2"
-        onClick={handleToggle}
+        onClick={handleAnimatedToggle}
       >
         <span className={styles.icon}>
           <LightningBoltIcon />
@@ -121,6 +127,7 @@ export const SkillReportCard: React.FC<SkillReportCardProps> = ({
           className={classNames(
             styles.contentWrapper,
             isAnimatingOpen && styles.contentWrapperOpen,
+            !animateContent && styles.noTransition,
           )}
         >
           <div className={styles.contentInner}>

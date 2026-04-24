@@ -2,8 +2,12 @@
 import React, { useCallback, useRef, useState, useMemo } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
 import { Flex, Container, Box } from "@radix-ui/themes";
+import classNames from "classnames";
 import { ScrollToBottomButton } from "../ScrollArea/ScrollToBottomButton";
 import styles from "./ChatContent.module.css";
+
+const SCROLL_INTENT_MS = 500;
+const PASSIVE_SCROLL_GRACE_MS = 250;
 
 export type VirtualizedChatListProps<T extends { key: string }> = {
   items: T[];
@@ -25,9 +29,12 @@ export function VirtualizedChatList<T extends { key: string }>({
   const autoFollowRef = useRef(true);
   const userScrolledUpRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const lastItemsSignatureRef = useRef<string | null>(null);
   const lastUserInputTsRef = useRef(0);
   const pointerDownRef = useRef(false);
-  // Timestamp of the last wheel/touch event that scrolled downward.
+  const suppressPassiveScrollUntilRef = useRef(0);
+  const recentlyChangedOutputUntilRef = useRef(0);
+  // Timestamp of the last active user input that should scroll downward.
   // Used to distinguish real user scroll-down from Virtuoso measurement
   // adjustments that passively change scrollTop.
   const lastActiveScrollDownTsRef = useRef(0);
@@ -36,6 +43,14 @@ export function VirtualizedChatList<T extends { key: string }>({
     lastUserInputTsRef.current = performance.now();
   }, []);
 
+  const lastItemKey = items.length > 0 ? items[items.length - 1].key : "";
+  const itemsSignature = `${items.length}:${lastItemKey}`;
+  if (lastItemsSignatureRef.current !== itemsSignature) {
+    lastItemsSignatureRef.current = itemsSignature;
+    recentlyChangedOutputUntilRef.current =
+      performance.now() + PASSIVE_SCROLL_GRACE_MS;
+  }
+
   const handleAtBottomChange = useCallback((bottom: boolean) => {
     if (bottom && userScrolledUpRef.current) {
       // Only re-arm auto-follow if the user recently performed an active
@@ -43,7 +58,8 @@ export function VirtualizedChatList<T extends { key: string }>({
       // adjustments can passively shift the scroll position into the
       // atBottomThreshold — that must NOT re-arm follow.
       const recentActiveScroll =
-        performance.now() - lastActiveScrollDownTsRef.current < 500;
+        performance.now() - lastActiveScrollDownTsRef.current <
+        SCROLL_INTENT_MS;
       if (recentActiveScroll) {
         autoFollowRef.current = true;
         userScrolledUpRef.current = false;
@@ -67,9 +83,16 @@ export function VirtualizedChatList<T extends { key: string }>({
 
   const followOutput = useCallback(
     (isAtBottom: boolean) => {
-      if (!isStreaming) return false;
       if (userScrolledUpRef.current) return false;
-      if (isAtBottom && autoFollowRef.current) {
+      if (
+        !isStreaming &&
+        performance.now() > recentlyChangedOutputUntilRef.current
+      ) {
+        return false;
+      }
+      if (isAtBottom || autoFollowRef.current) {
+        suppressPassiveScrollUntilRef.current =
+          performance.now() + PASSIVE_SCROLL_GRACE_MS;
         return "auto";
       }
       return false;
@@ -89,17 +112,49 @@ export function VirtualizedChatList<T extends { key: string }>({
       HTMLDivElement,
       React.HTMLAttributes<HTMLDivElement>
     >(function VirtuosoScroller(props, ref) {
-      const { children, style, onWheel, onScroll, ...restProps } = props;
+      const {
+        children,
+        style,
+        className,
+        onWheel,
+        onScroll,
+        onKeyDown,
+        ...restProps
+      } = props;
       const handleWheel: React.WheelEventHandler<HTMLDivElement> = (event) => {
         markUserInput();
-        if (event.deltaY < 0) {
-          autoFollowRef.current = false;
-          userScrolledUpRef.current = true;
-          setShowFollowButton(true);
-        } else if (event.deltaY > 0) {
+        if (event.deltaY > 0) {
           lastActiveScrollDownTsRef.current = performance.now();
         }
         onWheel?.(event);
+      };
+
+      const handleKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (
+        event,
+      ) => {
+        const scrollsDown =
+          event.key === "End" ||
+          event.key === "PageDown" ||
+          event.key === "ArrowDown" ||
+          (event.key === " " && !event.shiftKey);
+        const scrollsUp =
+          event.key === "Home" ||
+          event.key === "PageUp" ||
+          event.key === "ArrowUp" ||
+          (event.key === " " && event.shiftKey);
+
+        if (scrollsDown) {
+          const now = performance.now();
+          markUserInput();
+          lastActiveScrollDownTsRef.current = now;
+        } else if (scrollsUp) {
+          markUserInput();
+          autoFollowRef.current = false;
+          userScrolledUpRef.current = true;
+          setShowFollowButton(true);
+        }
+
+        onKeyDown?.(event);
       };
 
       const handleTouchStart: React.TouchEventHandler<HTMLDivElement> = (
@@ -148,18 +203,26 @@ export function VirtualizedChatList<T extends { key: string }>({
       const handleScroll: React.UIEventHandler<HTMLDivElement> = (event) => {
         const nextScrollTop = event.currentTarget.scrollTop;
         const now = performance.now();
+        const recentUserIntent =
+          pointerDownRef.current ||
+          now - lastUserInputTsRef.current < SCROLL_INTENT_MS;
+        const isSuppressedPassiveCorrection =
+          now < suppressPassiveScrollUntilRef.current && !recentUserIntent;
+        const isPassiveAdjustment =
+          isSuppressedPassiveCorrection || !recentUserIntent;
         // Detect upward scroll as a safety net (keyboard, scrollbar drag,
         // touch, etc. — onWheel already covers mouse/trackpad).  Use a +1px
         // tolerance to ignore sub-pixel Virtuoso measurement jitter.
-        if (nextScrollTop + 1 < lastScrollTopRef.current) {
+        if (
+          !isPassiveAdjustment &&
+          nextScrollTop + 1 < lastScrollTopRef.current
+        ) {
           autoFollowRef.current = false;
           userScrolledUpRef.current = true;
           setShowFollowButton(true);
           markUserInput();
         } else if (nextScrollTop > lastScrollTopRef.current + 1) {
-          const recentIntent =
-            pointerDownRef.current || now - lastUserInputTsRef.current < 500;
-          if (recentIntent) {
+          if (recentUserIntent) {
             lastActiveScrollDownTsRef.current = now;
           }
         }
@@ -180,9 +243,11 @@ export function VirtualizedChatList<T extends { key: string }>({
             overflowY: "auto",
             overflowX: "hidden",
           }}
-          className={styles.virtuosoScroller}
+          data-testid="chat-virtuoso-scroller"
+          className={classNames(styles.virtuosoScroller, className)}
           {...restProps}
           onWheel={handleWheel}
+          onKeyDown={handleKeyDown}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onPointerDown={handlePointerDown}
@@ -258,6 +323,7 @@ export function VirtualizedChatList<T extends { key: string }>({
         }
         atBottomThreshold={20}
         increaseViewportBy={viewportPadding}
+        skipAnimationFrameInResizeObserver={true}
       />
       {showFollowButton && <ScrollToBottomButton onClick={handleFollowClick} />}
     </Box>

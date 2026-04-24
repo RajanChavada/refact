@@ -99,6 +99,10 @@
   will-change: auto;
 }
 
+.noTransition {
+  transition: none !important;
+}
+
 .contentInner {
   overflow: hidden;
 }

@@ -668,6 +668,7 @@ pub struct ChatSession {
     pub skills_available_count: usize,
     pub skills_included: Vec<String>,
     pub pending_skill_deactivation: Option<PendingSkillDeactivation>,
+    pub stop_hook_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone, Default)]

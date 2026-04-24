@@ -207,6 +207,7 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
                 <Markdown
                   canHaveInteractiveElements={true}
                   onCopyClick={onCopyClick}
+                  isStreaming={isStreaming}
                 >
                   {formattedContent}
                 </Markdown>

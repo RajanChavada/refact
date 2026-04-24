@@ -92,6 +92,12 @@ export const ReportToolCard: React.FC<ReportToolCardProps> = ({
 
   const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
   const [isOpen, handleToggle] = useStoredOpen(storeKey, true);
+  const [animateContent, setAnimateContent] = useState(false);
+
+  const handleAnimatedToggle = useCallback(() => {
+    setAnimateContent(true);
+    handleToggle();
+  }, [handleToggle]);
 
   const summary = reportData?.summary
     ? variant === "taskDone"
@@ -159,7 +165,7 @@ export const ReportToolCard: React.FC<ReportToolCardProps> = ({
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(
     isOpen && !!reportData?.markdown,
     200,
-    true,
+    animateContent,
   );
 
   const showActions = status === "success" && !!reportData?.markdown;
@@ -170,7 +176,7 @@ export const ReportToolCard: React.FC<ReportToolCardProps> = ({
       className={classNames(styles.header)}
       align="center"
       gap="2"
-      onClick={handleToggle}
+      onClick={handleAnimatedToggle}
     >
       <span className={styles.icon}>
         {status === "running" ? <Spinner size="1" /> : icon}
@@ -240,7 +246,7 @@ export const ReportToolCard: React.FC<ReportToolCardProps> = ({
           onScroll={handleEntertainmentScroll}
         >
           <div className={styles.entertainmentMarkdown}>
-            <Markdown canHaveInteractiveElements={false}>
+            <Markdown canHaveInteractiveElements={false} isStreaming={true}>
               {entertainmentText}
             </Markdown>
           </div>
@@ -252,6 +258,7 @@ export const ReportToolCard: React.FC<ReportToolCardProps> = ({
           className={classNames(
             styles.contentWrapper,
             isAnimatingOpen && styles.contentWrapperOpen,
+            !animateContent && styles.noTransition,
           )}
         >
           <div className={styles.contentInner}>
