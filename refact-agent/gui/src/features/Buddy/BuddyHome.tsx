@@ -110,7 +110,7 @@ export const BuddyHome: React.FC = () => {
           <BuddyCanvas
             state={state}
             onEvent={buddy.handleCanvasEvent}
-            style={{ width: 340, height: 340 }}
+            displaySize={320}
           />
         </div>
 

@@ -11,7 +11,7 @@ import {
   selectChatId,
   selectIsBuddyChat,
 } from "../../features/Chat/Thread";
-import { BuddySuggestionBar } from "../../features/Buddy";
+import { BuddySuggestionBar, BuddyChatCompanion } from "../../features/Buddy";
 import { selectBuddySuggestions } from "../../features/Buddy/buddySlice";
 import { DropzoneProvider } from "../Dropzone";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
@@ -137,6 +137,8 @@ export const Chat: React.FC<ChatProps> = ({
               <BuddySuggestionBar />
             </Container>
           )}
+
+          {!isBuddyChat && <BuddyChatCompanion />}
 
           <Container>
             <ChatForm

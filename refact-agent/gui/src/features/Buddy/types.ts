@@ -352,8 +352,7 @@ export type BuddyEvent =
 export interface BuddyCanvasProps {
   state: BuddySemanticState;
   onEvent?: (event: BuddyEvent) => void;
-  width?: number;
-  height?: number;
+  displaySize?: number;
   className?: string;
   style?: React.CSSProperties;
 }

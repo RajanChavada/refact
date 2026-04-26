@@ -10,7 +10,7 @@
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding: var(--space-1) 0 var(--space-1);
+  padding: var(--space-1) 0;
 }
 
 .glowWrap {
@@ -31,119 +31,99 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   width: 100%;
 }
 
 .nameRow {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   justify-content: center;
+  width: 100%;
+}
+
+.name {
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
 .stageBadge {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 9999px;
   font-size: 10px;
   font-weight: 600;
-}
-
-.statusText {
-  font-size: 11px;
-  color: var(--gray-11);
-  text-align: center;
-}
-
-.xpRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-}
-
-.xpLabel {
-  font-size: 10px;
-  color: var(--gray-9);
-  white-space: nowrap;
   flex-shrink: 0;
 }
 
-.xpBar {
+.xpBarInline {
   flex: 1;
-  height: 4px;
+  height: 3px;
   background: var(--gray-a4);
   border-radius: 2px;
   overflow: hidden;
+  min-width: 20px;
 }
 
-.xpFill {
+.xpFillInline {
   height: 100%;
   border-radius: 2px;
   background: linear-gradient(90deg, var(--accent-9), var(--accent-11));
   transition: width 0.5s ease;
 }
 
+.xpText {
+  font-size: 10px;
+  color: var(--gray-9);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .actions {
   display: flex;
   gap: var(--space-1);
-  width: 100%;
   justify-content: center;
-  flex-wrap: wrap;
-}
-
-.setupChip {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 6px;
-  border-radius: 9999px;
-  font-size: 10px;
-  font-weight: 600;
-  background: var(--amber-a3);
-  color: var(--amber-11);
 }
 
 .statusBubble {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 2px 6px;
   background: var(--gray-a3);
   border: 1px solid var(--gray-a4);
   border-radius: var(--radius-2);
-  font-size: 11px;
+  font-size: 10px;
   max-width: 100%;
   width: 100%;
-  transition: opacity 0.3s;
+  overflow: hidden;
 }
 
 .statusIcon {
   flex-shrink: 0;
-}
-
-.statusContent {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  font-size: 11px;
 }
 
 .statusTitle {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--gray-12);
+  color: var(--gray-11);
 }
 
 .progressBar {
-  height: 3px;
+  height: 2px;
   background: var(--gray-a4);
   border-radius: 2px;
   overflow: hidden;
+  width: 40px;
+  flex-shrink: 0;
 }
 
 .progressBar > div {

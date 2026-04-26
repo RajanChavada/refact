@@ -11,7 +11,7 @@ import {
   selectBuddySnapshot,
   selectIsBuddyEnabled,
 } from "../features/Buddy/buddySlice";
-import { PALETTES, STAGES } from "../features/Buddy/constants";
+import { PALETTES, SIGNALS, STAGES } from "../features/Buddy/constants";
 import { buildColorMap } from "../features/Buddy/canvas/colorMap";
 import type {
   BuddySnapshot,
@@ -244,5 +244,42 @@ describe("loading state and identity hydration", () => {
     expect(loaded?.state.identity.palette_index).toBe(5);
     const settingsJson = JSON.stringify(loaded?.settings ?? {});
     expect(settingsJson).not.toContain("palette_index");
+  });
+});
+
+describe("BuddyChatCompanion triggers", () => {
+  test("chat_error signal is marked as error in SIGNALS", () => {
+    expect(SIGNALS["chat_error"]?.isError).toBe(true);
+  });
+
+  test("tool_failed signal is marked as error in SIGNALS", () => {
+    expect(SIGNALS["tool_failed"]?.isError).toBe(true);
+  });
+
+  test("chat_completed signal is not an error", () => {
+    expect(SIGNALS["chat_completed"]?.isError).toBe(false);
+  });
+
+  test("diagnostic stored in recentDiagnostics on addBuddyDiagnostic", () => {
+    const diag = makeDiagnostic({ error_message: "model not found" });
+    const state = reducer(undefined, addBuddyDiagnostic(diag));
+    expect(state.recentDiagnostics).toHaveLength(1);
+    expect(state.recentDiagnostics[0].error_message).toBe("model not found");
+  });
+});
+
+describe("BuddyCanvas displaySize", () => {
+  test("SIGNALS has isError flag for error types", () => {
+    const errorTypes = ["chat_error", "tool_failed", "balance_low", "connection_lost", "task_failed"];
+    for (const t of errorTypes) {
+      expect(SIGNALS[t]?.isError, `${t} should be error`).toBe(true);
+    }
+  });
+
+  test("SIGNALS has isError=false for success types", () => {
+    const okTypes = ["chat_completed", "edit_applied", "task_completed"];
+    for (const t of okTypes) {
+      expect(SIGNALS[t]?.isError, `${t} should not be error`).toBe(false);
+    }
   });
 });

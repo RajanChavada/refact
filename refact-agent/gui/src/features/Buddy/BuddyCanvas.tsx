@@ -19,11 +19,10 @@ import type {
   BuddyEvent,
 } from "./types";
 
-const CSS_DISPLAY_SIZE = 512;
-
 export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
   state,
   onEvent,
+  displaySize = 512,
   className,
   style,
 }) => {
@@ -157,8 +156,8 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
       width={CANVAS_SIZE}
       height={CANVAS_SIZE}
       style={{
-        width: CSS_DISPLAY_SIZE,
-        height: CSS_DISPLAY_SIZE,
+        width: displaySize,
+        height: displaySize,
         imageRendering: "pixelated",
         display: "block",
         cursor: "pointer",
