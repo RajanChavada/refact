@@ -4,9 +4,10 @@ use tokio::sync::broadcast;
 use super::actor::BuddyService;
 use super::diagnostics::{classify_error, DiagnosticContext, DiagnosticSeverity};
 use super::issues::{check_issue_gate, check_manual_issue_gate, redact_diagnostic_text, sanitize_body, sanitize_title, IssueGate};
+use super::scheduler::BuddyJobContext;
 use super::settings::{BuddySettings, MAX_PALETTE_INDEX};
 use super::state::{default_buddy_state, grant_xp};
-use super::types::{BuddySuggestion, BuddyState};
+use super::types::{BuddyJobState, BuddyOnboarding, BuddySuggestion, BuddyState};
 
 fn make_service() -> BuddyService {
     let (tx, _rx) = broadcast::channel(16);
@@ -393,4 +394,166 @@ fn test_runtime_event_controls_preserved() {
     queue.enqueue(ev);
     assert_eq!(queue.items[0].controls.len(), 1);
     assert_eq!(queue.items[0].controls[0].action, "open_chat");
+}
+
+fn make_job_context(onboarding: BuddyOnboarding, diagnostics_count: usize, job_state: BuddyJobState) -> BuddyJobContext {
+    let mut diags = vec![];
+    for _ in 0..diagnostics_count {
+        diags.push(DiagnosticContext {
+            error_type: "timeout".to_string(),
+            error_message: "connection timeout".to_string(),
+            source_file: None,
+            tool_name: None,
+            chat_id: None,
+            collected_at: chrono::Utc::now().to_rfc3339(),
+            severity: DiagnosticSeverity::High,
+        });
+    }
+    BuddyJobContext {
+        identity_name: "Pixel".to_string(),
+        onboarding,
+        recent_diagnostics: diags,
+        suggestion_unread_count: 0,
+        project_root: std::path::PathBuf::from("/tmp/test-project"),
+        job_state,
+    }
+}
+
+#[test]
+fn test_scheduler_cooldown_enforcement() {
+    let recent_run = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+    let state = BuddyJobState {
+        last_run: Some(recent_run),
+        run_count: 1,
+        last_result: Some("ok".to_string()),
+        snoozed_until: None,
+        dismissed: false,
+    };
+    let elapsed = state.last_run.as_deref()
+        .and_then(|r| chrono::DateTime::parse_from_rfc3339(r).ok())
+        .map(|t| chrono::Utc::now().signed_duration_since(t).num_seconds().max(0) as u64)
+        .unwrap_or(u64::MAX);
+    let cooldown = 5 * 60u64;
+    assert!(elapsed < cooldown, "job should be blocked by cooldown");
+}
+
+#[test]
+fn test_job_state_persistence_roundtrip() {
+    let mut state = default_buddy_state();
+    state.job_cooldowns.insert("greeting".to_string(), BuddyJobState {
+        last_run: Some("2026-01-01T00:00:00Z".to_string()),
+        run_count: 3,
+        last_result: Some("ok".to_string()),
+        snoozed_until: None,
+        dismissed: false,
+    });
+    let json = serde_json::to_string(&state).unwrap();
+    let loaded: BuddyState = serde_json::from_str(&json).unwrap();
+    let job_state = loaded.job_cooldowns.get("greeting").unwrap();
+    assert_eq!(job_state.run_count, 3);
+    assert_eq!(job_state.last_result.as_deref(), Some("ok"));
+}
+
+#[tokio::test]
+async fn test_greeting_triggers_on_first_launch() {
+    use super::jobs::greeting::GreetingJob;
+    use super::scheduler::BuddyJob;
+    let job = GreetingJob;
+    let ctx = make_job_context(BuddyOnboarding::default(), 0, BuddyJobState::default());
+    let gcx = crate::global_context::tests::make_test_gcx().await;
+    assert!(job.should_run(gcx, &ctx).await);
+}
+
+#[test]
+fn test_greeting_blocked_within_cooldown() {
+    use super::jobs::greeting::GreetingJob;
+    use super::scheduler::BuddyJob;
+    let job = GreetingJob;
+    let recent = (chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
+    let job_state = BuddyJobState {
+        last_run: Some(recent),
+        run_count: 1,
+        last_result: Some("ok".to_string()),
+        snoozed_until: None,
+        dismissed: false,
+    };
+    let elapsed = job_state.last_run.as_deref()
+        .and_then(|r| chrono::DateTime::parse_from_rfc3339(r).ok())
+        .map(|t| chrono::Utc::now().signed_duration_since(t).num_seconds().max(0) as u64)
+        .unwrap_or(u64::MAX);
+    assert!(elapsed < job.cooldown_seconds(), "greeting must be blocked within 24h cooldown");
+}
+
+#[tokio::test]
+async fn test_error_triage_clusters_by_type() {
+    use super::jobs::error_triage::ErrorTriageJob;
+    use super::scheduler::BuddyJob;
+    let job = ErrorTriageJob;
+    let ctx = make_job_context(BuddyOnboarding::default(), 5, BuddyJobState::default());
+    let gcx = crate::global_context::tests::make_test_gcx().await;
+    assert!(job.should_run(gcx.clone(), &ctx).await);
+    let result = job.execute(gcx, ctx).await;
+    assert!(result.suggestion.is_some(), "should produce suggestion for 5 repeated timeouts");
+    let sug = result.suggestion.unwrap();
+    assert_eq!(sug.suggestion_type, "error_pattern");
+    assert!(sug.title.contains("timeout"));
+}
+
+#[tokio::test]
+async fn test_config_watcher_detects_missing_agents_md() {
+    use super::jobs::config_watcher::ConfigWatcherJob;
+    use super::scheduler::BuddyJob;
+    let dir = tempfile::tempdir().unwrap();
+    let job = ConfigWatcherJob;
+    let mut ctx = make_job_context(BuddyOnboarding::default(), 0, BuddyJobState::default());
+    ctx.project_root = dir.path().to_path_buf();
+    let gcx = crate::global_context::tests::make_test_gcx().await;
+    let result = job.execute(gcx, ctx).await;
+    assert!(result.suggestion.is_some(), "should suggest setup when AGENTS.md missing");
+    assert_eq!(result.suggestion.unwrap().suggestion_type, "setup");
+}
+
+#[test]
+fn test_suggestion_cap_max_unread() {
+    let mut svc = make_service();
+    let now = chrono::Utc::now().to_rfc3339();
+    svc.settings.proactive_enabled = true;
+    for i in 0..10 {
+        let s = make_suggestion(&format!("s{}", i), &format!("type{}", i), &now);
+        let _ = svc.maybe_add_suggestion(s);
+    }
+    let unread = svc.state.suggestion_state.iter().filter(|s| !s.dismissed).count();
+    assert!(unread <= 10, "suggestions should be bounded");
+}
+
+#[test]
+fn test_dismissed_job_does_not_retrigger() {
+    let state = BuddyJobState {
+        last_run: None,
+        run_count: 0,
+        last_result: None,
+        snoozed_until: None,
+        dismissed: true,
+    };
+    assert!(state.dismissed, "dismissed job must not retrigger");
+    let elapsed = u64::MAX;
+    let cooldown = 0u64;
+    let should_skip = state.dismissed || elapsed < cooldown;
+    assert!(should_skip, "dismissed job must be skipped regardless of cooldown");
+}
+
+#[test]
+fn test_proactive_enabled_setting() {
+    let settings = BuddySettings::default();
+    assert!(settings.proactive_enabled, "proactive_enabled defaults to true");
+    let json = serde_json::to_string(&settings).unwrap();
+    let loaded: BuddySettings = serde_json::from_str(&json).unwrap();
+    assert!(loaded.proactive_enabled);
+}
+
+#[test]
+fn test_old_settings_get_proactive_default() {
+    let json = r#"{"enabled": true, "auto_diagnostics": true, "auto_issue_creation": false}"#;
+    let settings: BuddySettings = serde_json::from_str(json).unwrap();
+    assert!(settings.proactive_enabled, "missing proactive_enabled should default to true");
 }

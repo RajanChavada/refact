@@ -54,6 +54,7 @@ pub fn default_buddy_state() -> BuddyState {
             first_launch_at: now.clone(),
             ..Default::default()
         },
+        job_cooldowns: std::collections::HashMap::new(),
     }
 }
 

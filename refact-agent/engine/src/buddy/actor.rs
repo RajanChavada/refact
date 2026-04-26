@@ -361,6 +361,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
 
     info!("buddy: service started for {:?}", project_root);
 
+    let scheduler = super::scheduler::BuddyScheduler::new();
     let shutdown_flag = gcx.read().await.shutdown_flag.clone();
     let mut last_save = Instant::now();
     let mut expiry_tick: u64 = 0;
@@ -376,6 +377,9 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
             if let Some(svc) = buddy.as_mut() {
                 svc.expire_suggestions();
             }
+        }
+        if expiry_tick % 30 == 0 {
+            scheduler.tick(gcx.clone(), buddy_arc.clone(), &project_root).await;
         }
         let state_to_save = {
             let mut buddy = buddy_arc.lock().await;

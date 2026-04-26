@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -90,6 +91,15 @@ pub struct BuddySuggestion {
     pub dismissed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BuddyJobState {
+    pub last_run: Option<String>,
+    pub last_result: Option<String>,
+    pub run_count: u32,
+    pub snoozed_until: Option<String>,
+    pub dismissed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuddyState {
     pub identity: BuddyIdentity,
@@ -101,6 +111,8 @@ pub struct BuddyState {
     pub suggestion_state: Vec<BuddySuggestion>,
     #[serde(default)]
     pub onboarding: BuddyOnboarding,
+    #[serde(default)]
+    pub job_cooldowns: HashMap<String, BuddyJobState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,6 +11,12 @@ pub struct BuddySettings {
     pub auto_diagnostics: bool,
     pub auto_issue_creation: bool,
     pub personality_prompt: Option<String>,
+    #[serde(default = "default_true")]
+    pub proactive_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for BuddySettings {
@@ -20,6 +26,7 @@ impl Default for BuddySettings {
             auto_diagnostics: true,
             auto_issue_creation: false,
             personality_prompt: None,
+            proactive_enabled: true,
         }
     }
 }
