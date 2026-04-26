@@ -78,7 +78,7 @@ export const BuddyPanel: React.FC = () => {
           <BuddyCanvas
             state={state}
             onEvent={buddy.handleCanvasEvent}
-            style={{ width: 280, height: 280 }}
+            style={{ width: 320, height: 320 }}
           />
         </div>
 
