@@ -1,0 +1,107 @@
+use std::future::Future;
+use std::sync::Arc;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock as ARwLock;
+use tracing::warn;
+
+use crate::global_context::GlobalContext;
+use super::types::BuddyActivity;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowEntry {
+    timestamp: String,
+    input_summary: String,
+    output_summary: String,
+    success: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowTranscript {
+    entries: Vec<WorkflowEntry>,
+}
+
+const MAX_ENTRIES: usize = 100;
+
+pub async fn buddy_wrap_workflow<T, F, Fut>(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    workflow_id: &str,
+    icon: &str,
+    xp: u64,
+    summary_fn: impl Fn(&T) -> String,
+    workflow_fn: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let result = workflow_fn().await;
+
+    let (success, summary) = match &result {
+        Ok(output) => (true, summary_fn(output)),
+        Err(e) => (false, e.clone()),
+    };
+
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+    let project_root = project_dirs.into_iter().next();
+    let workflow_id_owned = workflow_id.to_string();
+    let icon_owned = icon.to_string();
+
+    tokio::spawn(async move {
+        let activity = BuddyActivity {
+            icon: icon_owned,
+            title: summary.clone(),
+            description: String::new(),
+            timestamp: Utc::now().to_rfc3339(),
+            activity_type: "workflow".to_string(),
+        };
+
+        let mut buddy = buddy_arc.lock().await;
+        if let Some(svc) = buddy.as_mut() {
+            if success {
+                svc.workflow_completed(&workflow_id_owned, xp, activity);
+            } else {
+                svc.workflow_failed(&workflow_id_owned, activity);
+            }
+        }
+        drop(buddy);
+
+        if let Some(root) = project_root {
+            let path = root.join(format!(".refact/buddy/chats/workflows/{}.json", workflow_id_owned));
+            append_workflow_entry(&path, &summary, success).await;
+        }
+    });
+
+    result
+}
+
+async fn append_workflow_entry(path: &std::path::Path, output_summary: &str, success: bool) {
+    let entry = WorkflowEntry {
+        timestamp: Utc::now().to_rfc3339(),
+        input_summary: String::new(),
+        output_summary: output_summary.to_string(),
+        success,
+    };
+
+    let mut transcript = match tokio::fs::read_to_string(path).await {
+        Ok(content) => serde_json::from_str::<WorkflowTranscript>(&content)
+            .unwrap_or(WorkflowTranscript { entries: vec![] }),
+        Err(_) => WorkflowTranscript { entries: vec![] },
+    };
+
+    transcript.entries.push(entry);
+    if transcript.entries.len() > MAX_ENTRIES {
+        let drain = transcript.entries.len() - MAX_ENTRIES;
+        transcript.entries.drain(0..drain);
+    }
+
+    match serde_json::to_string(&transcript) {
+        Ok(json) => {
+            if let Err(e) = tokio::fs::write(path, json).await {
+                warn!("buddy: failed to write workflow transcript {:?}: {}", path, e);
+            }
+        }
+        Err(e) => warn!("buddy: failed to serialize workflow transcript: {}", e),
+    }
+}

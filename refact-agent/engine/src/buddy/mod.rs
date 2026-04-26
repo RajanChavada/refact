@@ -5,3 +5,4 @@ pub mod snapshot;
 pub mod state;
 pub mod storage;
 pub mod types;
+pub mod workflows;

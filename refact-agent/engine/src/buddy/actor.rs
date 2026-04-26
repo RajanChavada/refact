@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use chrono::Utc;
 use tokio::sync::{broadcast, RwLock as ARwLock};
 use tracing::{info, warn};
 
@@ -50,6 +51,41 @@ impl BuddyService {
             s.dismissed = true;
         }
         let _ = self.events_tx.send(BuddyEvent::SuggestionDismissed { suggestion_id: id.to_string() });
+    }
+
+    pub fn workflow_completed(&mut self, workflow_id: &str, xp: u64, activity: super::types::BuddyActivity) {
+        self.add_activity(activity);
+        self.grant_xp(xp);
+        let now = Utc::now().to_rfc3339();
+        if let Some(ws) = self.state.workflow_summaries.iter_mut().find(|w| w.workflow_id == workflow_id) {
+            ws.last_run = Some(now);
+            ws.run_count += 1;
+            ws.last_outcome = Some("success".to_string());
+        } else {
+            self.state.workflow_summaries.push(super::types::BuddyWorkflowSummary {
+                workflow_id: workflow_id.to_string(),
+                last_run: Some(now),
+                run_count: 1,
+                last_outcome: Some("success".to_string()),
+            });
+        }
+    }
+
+    pub fn workflow_failed(&mut self, workflow_id: &str, activity: super::types::BuddyActivity) {
+        self.add_activity(activity);
+        let now = Utc::now().to_rfc3339();
+        if let Some(ws) = self.state.workflow_summaries.iter_mut().find(|w| w.workflow_id == workflow_id) {
+            ws.last_run = Some(now);
+            ws.run_count += 1;
+            ws.last_outcome = Some("failed".to_string());
+        } else {
+            self.state.workflow_summaries.push(super::types::BuddyWorkflowSummary {
+                workflow_id: workflow_id.to_string(),
+                last_run: Some(now),
+                run_count: 1,
+                last_outcome: Some("failed".to_string()),
+            });
+        }
     }
 }
 

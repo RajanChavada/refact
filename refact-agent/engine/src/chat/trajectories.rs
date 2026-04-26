@@ -1471,7 +1471,19 @@ fn spawn_title_generation_task(
     trajectories_dir: PathBuf,
 ) {
     tokio::spawn(async move {
-        let generated_title = generate_title_llm(gcx.clone(), &messages).await;
+        let gcx2 = gcx.clone();
+        let messages2 = messages.clone();
+        let generated_title = crate::buddy::workflows::buddy_wrap_workflow(
+            gcx.clone(),
+            "title_generation",
+            "📋",
+            5,
+            |t: &String| format!("Title generated: {}", t),
+            move || async move {
+                generate_title_llm(gcx2, &messages2).await
+                    .ok_or_else(|| "No title generated".to_string())
+            },
+        ).await.ok();
         let title = match generated_title {
             Some(t) => t,
             None => match extract_first_user_message(&messages) {
