@@ -51,6 +51,11 @@ impl BuddyService {
     }
 
     pub fn add_suggestion(&mut self, suggestion: BuddySuggestion) {
+        if self.state.suggestion_state.len() >= 50 {
+            if let Some(pos) = self.state.suggestion_state.iter().position(|s| s.dismissed) {
+                self.state.suggestion_state.remove(pos);
+            }
+        }
         self.state.suggestion_state.push(suggestion.clone());
         self.last_suggestion_at = Some(Instant::now());
         let _ = self.events_tx.send(BuddyEvent::SuggestionAdded { suggestion });
@@ -61,6 +66,12 @@ impl BuddyService {
             if last.elapsed().as_secs() < SUGGESTION_RATE_LIMIT_SECS {
                 return false;
             }
+        }
+        let dupe = self.state.suggestion_state.iter().any(|s| {
+            !s.dismissed && s.suggestion_type == suggestion.suggestion_type && s.title == suggestion.title
+        });
+        if dupe {
+            return false;
         }
         self.add_suggestion(suggestion);
         true
@@ -202,7 +213,18 @@ impl BuddyService {
                 }
             }
         }
-        if changed {
+        let before = self.state.suggestion_state.len();
+        self.state.suggestion_state.retain(|s| {
+            if !s.dismissed {
+                return true;
+            }
+            if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&s.created_at) {
+                now.signed_duration_since(created).num_seconds() < 3600
+            } else {
+                false
+            }
+        });
+        if changed || self.state.suggestion_state.len() != before {
             let _ = self.events_tx.send(BuddyEvent::StateUpdated { state: self.state.clone() });
         }
     }
