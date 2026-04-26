@@ -9,6 +9,7 @@ import {
   selectIsStreaming,
   selectPreventSend,
   selectChatId,
+  selectIsBuddyChat,
 } from "../../features/Chat/Thread";
 import { DropzoneProvider } from "../Dropzone";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
@@ -42,6 +43,9 @@ export const Chat: React.FC<ChatProps> = ({
   const isStreaming = useAppSelector(selectIsStreaming);
 
   const chatId = useAppSelector(selectChatId);
+  const isBuddyChat = useAppSelector((state) =>
+    selectIsBuddyChat(state, chatId),
+  );
   const isBrowserOpen = useAppSelector((state) =>
     selectBrowserUiOpen(state, chatId),
   );
@@ -104,7 +108,7 @@ export const Chat: React.FC<ChatProps> = ({
             <TaskProgressWidget />
           </Container>
 
-          {shouldCheckpointsPopupBeShown && <Checkpoints />}
+          {!isBuddyChat && shouldCheckpointsPopupBeShown && <Checkpoints />}
 
           {browserOversizeInfo && (
             <Container>

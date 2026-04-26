@@ -120,6 +120,7 @@ import {
   removeManualPreviewItem,
   setThreadMode,
   DEFAULT_MODE,
+  selectIsBuddyChat,
 } from "../../features/Chat";
 import { telemetryApi } from "../../services/refact";
 import { push } from "../../features/Pages/pagesSlice";
@@ -154,6 +155,9 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const globalErrorType = useAppSelector(getErrorType);
   const chatError = useAppSelector(selectChatError);
   const chatId = useAppSelector(selectCurrentThreadId);
+  const isBuddyChat = useAppSelector((state) =>
+    selectIsBuddyChat(state, chatId),
+  );
   const information = useAppSelector(getInformationMessage);
   const pauseReasonsWithPause = useAppSelector(selectThreadConfirmation);
   const [helpInfo, setHelpInfo] = React.useState<React.ReactNode | null>(null);
@@ -526,16 +530,18 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 onOpenFile={queryPathThenOpenFile}
               />
               <Flex align="center" gap="2" justify="between" wrap="wrap">
-                <ChatInputTopControls
-                  checkboxes={checkboxes}
-                  onCheckedChange={onToggleCheckbox}
-                  attachedFiles={attachedFiles}
-                />
+                {!isBuddyChat && (
+                  <ChatInputTopControls
+                    checkboxes={checkboxes}
+                    onCheckedChange={onToggleCheckbox}
+                    attachedFiles={attachedFiles}
+                  />
+                )}
                 <Flex align="center" gap="2">
                   <StreamingTokenCounter />
                   <ProviderUsageIndicator />
                   <UsageCounter />
-                  <TrajectoryButton />
+                  {!isBuddyChat && <TrajectoryButton />}
                 </Flex>
               </Flex>
             </Box>
@@ -579,12 +585,14 @@ export const ChatForm: React.FC<ChatFormProps> = ({
             />
           </Box>
           <Flex gap="2" wrap="wrap" py="2" px="3" align="center">
-            <ChatSettingsDropdown />
-            <ModeSelect
-              selectedMode={threadMode ?? DEFAULT_MODE}
-              onModeChange={onSetMode}
-              disabled={isModeDisabled}
-            />
+            {!isBuddyChat && <ChatSettingsDropdown />}
+            {!isBuddyChat && (
+              <ModeSelect
+                selectedMode={threadMode ?? DEFAULT_MODE}
+                onModeChange={onSetMode}
+                disabled={isModeDisabled}
+              />
+            )}
 
             <Flex justify="end" flexGrow="1" wrap="wrap" gap="2" align="center">
               <BrowserToggleButton chatId={chatId} />
