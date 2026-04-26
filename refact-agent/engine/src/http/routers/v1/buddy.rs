@@ -203,6 +203,7 @@ pub async fn handle_v1_buddy_diagnostics_list(
 pub struct IssueCreateRequest {
     pub diagnostic_index: Option<usize>,
     pub error: Option<String>,
+    pub manual: Option<bool>,
 }
 
 pub async fn handle_v1_buddy_issues_create(
@@ -235,8 +236,9 @@ pub async fn handle_v1_buddy_issues_create(
         (ctx, svc.settings.auto_issue_creation, svc.last_issue_at, svc.recent_issue_errors.clone())
     };
 
+    let manual = req.manual.unwrap_or(false);
     let result = crate::buddy::issues::create_issue(
-        gcx.clone(), &ctx, auto_enabled, last_issue_at, &recent_errors,
+        gcx.clone(), &ctx, auto_enabled, manual, last_issue_at, &recent_errors,
     ).await.map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
 
     let (url, activity) = result;

@@ -22,9 +22,33 @@ pub struct IssueGate {
 
 pub fn check_issue_gate(gate: &IssueGate) -> bool {
     gate.has_diagnostics
+        && gate.has_repro_context
         && gate.integration_configured
         && gate.auto_creation_enabled
         && gate.within_rate_limit
+}
+
+pub fn check_manual_issue_gate(gate: &IssueGate) -> bool {
+    gate.has_diagnostics && gate.integration_configured
+}
+
+fn gate_error(gate: &IssueGate, manual: bool) -> String {
+    if !gate.has_diagnostics {
+        return "gate blocked: no diagnostic information (need non-empty error with source file or tool name)".to_string();
+    }
+    if !manual && !gate.has_repro_context {
+        return "gate blocked: no reproduction context (source file or tool name required)".to_string();
+    }
+    if !gate.integration_configured {
+        return "gate blocked: no issue tracker integration configured".to_string();
+    }
+    if !manual && !gate.auto_creation_enabled {
+        return "gate blocked: automatic issue creation is disabled in settings".to_string();
+    }
+    if !manual && !gate.within_rate_limit {
+        return "gate blocked: rate limit active (one issue per hour)".to_string();
+    }
+    "gate blocked: unknown condition".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -108,12 +132,14 @@ pub async fn create_issue(
     gcx: Arc<ARwLock<GlobalContext>>,
     context: &DiagnosticContext,
     auto_creation_enabled: bool,
+    manual: bool,
     last_issue_at: Option<std::time::Instant>,
     recent_errors: &[(String, chrono::DateTime<chrono::Utc>)],
 ) -> Result<(String, BuddyActivity), String> {
     let provider = detect_provider(gcx.clone()).await;
     let gate = IssueGate {
-        has_diagnostics: true,
+        has_diagnostics: !context.error_message.is_empty()
+            && (context.source_file.is_some() || context.tool_name.is_some()),
         has_repro_context: context.source_file.is_some() || context.tool_name.is_some(),
         integration_configured: provider.is_some(),
         auto_creation_enabled,
@@ -122,11 +148,14 @@ pub async fn create_issue(
             .unwrap_or(true),
     };
 
-    if !check_issue_gate(&gate) {
-        return Err(format!(
-            "Issue gate blocked: auto_creation={}, integration={}, rate_limit_ok={}",
-            gate.auto_creation_enabled, gate.integration_configured, gate.within_rate_limit
-        ));
+    let passed = if manual {
+        check_manual_issue_gate(&gate)
+    } else {
+        check_issue_gate(&gate)
+    };
+
+    if !passed {
+        return Err(gate_error(&gate, manual));
     }
 
     let now = chrono::Utc::now();
