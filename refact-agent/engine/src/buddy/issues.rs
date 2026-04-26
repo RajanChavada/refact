@@ -172,7 +172,7 @@ async fn detect_provider(
     })
 }
 
-fn redact_diagnostic_text(text: &str) -> String {
+pub(crate) fn redact_diagnostic_text(text: &str) -> String {
     let patterns: &[(&str, &str)] = &[
         (r"Bearer [A-Za-z0-9._\-]{8,}", "Bearer [REDACTED]"),
         (r"ghp_[A-Za-z0-9]{10,}", "[REDACTED_GH_TOKEN]"),
@@ -196,7 +196,7 @@ fn redact_diagnostic_text(text: &str) -> String {
     result
 }
 
-fn sanitize_title(raw: &str) -> String {
+pub(crate) fn sanitize_title(raw: &str) -> String {
     let single: String = raw.chars().filter(|&c| c != '\n' && c != '\r').collect();
     if single.chars().count() > 120 {
         single.chars().take(120).collect()
@@ -205,7 +205,7 @@ fn sanitize_title(raw: &str) -> String {
     }
 }
 
-fn sanitize_body(raw: &str) -> String {
+pub(crate) fn sanitize_body(raw: &str) -> String {
     let escaped = raw.replace("```", "'''");
     if escaped.chars().count() > 4000 {
         escaped.chars().take(4000).collect()

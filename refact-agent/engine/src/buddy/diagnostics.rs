@@ -50,7 +50,7 @@ pub async fn collect_diagnostics(
     }
 }
 
-fn classify_error(error: &str) -> String {
+pub(crate) fn classify_error(error: &str) -> String {
     let lower = error.to_lowercase();
     if lower.contains("timeout") {
         "timeout".to_string()
