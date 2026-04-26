@@ -108,14 +108,25 @@ pub async fn handle_v1_buddy_conversations_list(
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
+        if chat_id.is_empty() {
+            continue;
+        }
         let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
         let val: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+        if !val.is_object() {
+            continue;
+        }
         let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string();
         let created_at = val.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let last_message_at = val.get("last_message_at").and_then(|v| v.as_str()).map(|s| s.to_string());
         let message_count = val.get("messages").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
         metas.push(BuddyConversationMeta { chat_id, title, created_at, last_message_at, message_count });
     }
+    metas.sort_by(|a, b| {
+        let a_time = a.last_message_at.as_deref().unwrap_or(&a.created_at);
+        let b_time = b.last_message_at.as_deref().unwrap_or(&b.created_at);
+        b_time.cmp(a_time)
+    });
     Ok(axum::Json(metas))
 }
 
@@ -143,7 +154,14 @@ pub async fn handle_v1_buddy_conversations_create(
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    Ok(axum::Json(serde_json::json!({"chat_id": chat_id})))
+    let meta = BuddyConversationMeta {
+        chat_id,
+        title: "New Conversation".to_string(),
+        created_at,
+        last_message_at: None,
+        message_count: 0,
+    };
+    Ok(axum::Json(serde_json::to_value(meta).map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?))
 }
 
 pub async fn handle_v1_buddy_suggestion_dismiss(
