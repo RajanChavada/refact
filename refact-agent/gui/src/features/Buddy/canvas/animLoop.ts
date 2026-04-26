@@ -109,7 +109,7 @@ function startToy(
   toyType: ToyType,
   emit: (e: BuddyEvent) => void,
 ): void {
-  const def: ToyDef | undefined = TOY_DEFS[toyType];
+  const def = TOY_DEFS[toyType] as ToyDef | undefined;
   if (def === undefined) return;
   anim.toyActive = true;
   anim.toyType = toyType;
@@ -245,7 +245,7 @@ export function triggerSignalAnimation(
   signalType: string,
   emit: (e: BuddyEvent) => void,
 ): void {
-  const def: SignalDef | undefined = SIGNALS[signalType];
+  const def = SIGNALS[signalType] as SignalDef | undefined;
   if (def === undefined) return;
 
   if (def.isError) {

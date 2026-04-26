@@ -109,7 +109,7 @@ export function BuddyDemo(): React.ReactElement {
 
   const stage = STAGES[state.progress.stage] ?? STAGES[0];
   const palette = PALETTES[state.paletteIndex] ?? PALETTES[0];
-  const nextStage: Stage | undefined = STAGES[state.progress.stage + 1];
+  const nextStage = STAGES[state.progress.stage + 1] as Stage | undefined;
   const xpFill =
     nextStage !== undefined
       ? ((state.progress.xp - stage.xpThreshold) /

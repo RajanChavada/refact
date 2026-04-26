@@ -177,7 +177,7 @@ export function reduceSemanticState(
 ): BuddySemanticState {
   switch (action.kind) {
     case "signal": {
-      const def: SignalDef | undefined = SIGNALS[action.signalType];
+      const def = SIGNALS[action.signalType] as SignalDef | undefined;
       if (def === undefined) return state;
 
       const xpGain = def.xp;
