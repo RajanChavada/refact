@@ -97,6 +97,7 @@ use crate::http::routers::v1::project_configs::{
 
 mod ast;
 pub mod at_commands;
+pub mod buddy;
 pub mod at_tools;
 pub mod caps;
 pub mod chat_based_handlers;
@@ -709,7 +710,14 @@ pub fn make_v1_router() -> Router {
         .route("/mcp/oauth/callback", get(handle_v1_mcp_oauth_callback))
         .route("/mcp/oauth/logout", post(handle_v1_mcp_oauth_logout))
         .route("/mcp/oauth/status", get(handle_v1_mcp_oauth_status))
-        .route("/mcp/oauth/cancel", post(handle_v1_mcp_oauth_cancel));
+        .route("/mcp/oauth/cancel", post(handle_v1_mcp_oauth_cancel))
+        .route("/buddy", get(buddy::handle_v1_buddy_snapshot))
+        .route("/buddy/settings", get(buddy::handle_v1_buddy_settings_get))
+        .route("/buddy/settings", post(buddy::handle_v1_buddy_settings_update))
+        .route("/buddy/activities", get(buddy::handle_v1_buddy_activities))
+        .route("/buddy/conversations", get(buddy::handle_v1_buddy_conversations_list))
+        .route("/buddy/conversations", post(buddy::handle_v1_buddy_conversations_create))
+        .route("/buddy/suggestions/:id/dismiss", post(buddy::handle_v1_buddy_suggestion_dismiss));
 
     builder.layer(axum::middleware::from_fn(telemetry_middleware))
 }
