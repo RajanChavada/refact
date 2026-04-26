@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use regex::Regex;
 use tokio::process::Command;
 use tokio::sync::RwLock as ARwLock;
 use tracing::info;
@@ -10,6 +11,8 @@ use super::types::BuddyActivity;
 
 const RATE_LIMIT_SECS: u64 = 3600;
 const DEDUP_SECS: i64 = 86400;
+const ALLOWED_GH_BINARIES: &[&str] = &["gh"];
+const ALLOWED_GLAB_BINARIES: &[&str] = &["glab"];
 
 #[derive(Debug)]
 pub struct IssueGate {
@@ -57,57 +60,158 @@ enum IssueProvider {
     GitLab { binary: String, token: String },
 }
 
-async fn detect_provider(gcx: Arc<ARwLock<GlobalContext>>) -> Option<IssueProvider> {
-    let active = crate::files_correction::get_active_project_path(gcx.clone()).await;
-    let (config_dirs, global_config_dir) =
-        crate::integrations::setting_up_integrations::get_config_dirs(gcx.clone(), &active).await;
-
-    let mut search_dirs: Vec<PathBuf> = config_dirs;
-    search_dirs.push(global_config_dir);
-
-    for dir in search_dirs {
-        if let Some(p) = try_read_github(&dir).await {
-            return Some(p);
-        }
-        if let Some(p) = try_read_gitlab(&dir).await {
-            return Some(p);
-        }
+fn validate_binary_name(binary: &str, allowed: &[&str]) -> Result<(), String> {
+    let name = std::path::Path::new(binary)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(binary);
+    if allowed.contains(&name) {
+        Ok(())
+    } else {
+        Err(format!("binary '{}' is not in the allowed list {:?}", binary, allowed))
     }
-    None
 }
 
-async fn try_read_github(config_dir: &PathBuf) -> Option<IssueProvider> {
+async fn try_read_github(config_dir: &PathBuf) -> Result<Option<IssueProvider>, String> {
     let path = config_dir.join("integrations.d").join("github.yaml");
-    let content = tokio::fs::read_to_string(&path).await.ok()?;
-    let val: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
-    let token = val.get("gh_token")?.as_str()?.to_string();
-    if token.is_empty() {
-        return None;
-    }
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let val: serde_yaml::Value = match serde_yaml::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let token = match val.get("gh_token").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => return Ok(None),
+    };
     let binary = val
         .get("gh_binary_path")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("gh")
         .to_string();
-    Some(IssueProvider::GitHub { binary, token })
+    validate_binary_name(&binary, ALLOWED_GH_BINARIES)?;
+    Ok(Some(IssueProvider::GitHub { binary, token }))
 }
 
-async fn try_read_gitlab(config_dir: &PathBuf) -> Option<IssueProvider> {
+async fn try_read_gitlab(config_dir: &PathBuf) -> Result<Option<IssueProvider>, String> {
     let path = config_dir.join("integrations.d").join("gitlab.yaml");
-    let content = tokio::fs::read_to_string(&path).await.ok()?;
-    let val: serde_yaml::Value = serde_yaml::from_str(&content).ok()?;
-    let token = val.get("glab_token")?.as_str()?.to_string();
-    if token.is_empty() {
-        return None;
-    }
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let val: serde_yaml::Value = match serde_yaml::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let token = match val.get("glab_token").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => return Ok(None),
+    };
     let binary = val
         .get("glab_binary_path")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("glab")
         .to_string();
-    Some(IssueProvider::GitLab { binary, token })
+    validate_binary_name(&binary, ALLOWED_GLAB_BINARIES)?;
+    Ok(Some(IssueProvider::GitLab { binary, token }))
+}
+
+async fn detect_remote_host(project_root: &std::path::Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(project_root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if url.contains("github.com") {
+        Some("github.com".to_string())
+    } else if url.contains("gitlab") {
+        Some("gitlab.com".to_string())
+    } else {
+        None
+    }
+}
+
+async fn detect_provider(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    project_root: &std::path::Path,
+) -> Result<Option<IssueProvider>, String> {
+    let remote_host = detect_remote_host(project_root).await;
+
+    let active = crate::files_correction::get_active_project_path(gcx.clone()).await;
+    let (config_dirs, global_config_dir) =
+        crate::integrations::setting_up_integrations::get_config_dirs(gcx.clone(), &active).await;
+    let mut search_dirs: Vec<PathBuf> = config_dirs;
+    search_dirs.push(global_config_dir);
+
+    let mut gh_provider: Option<IssueProvider> = None;
+    let mut gl_provider: Option<IssueProvider> = None;
+
+    for dir in &search_dirs {
+        if gh_provider.is_none() {
+            gh_provider = try_read_github(dir).await?;
+        }
+        if gl_provider.is_none() {
+            gl_provider = try_read_gitlab(dir).await?;
+        }
+    }
+
+    Ok(match remote_host.as_deref() {
+        Some("github.com") => gh_provider.or(gl_provider),
+        Some("gitlab.com") => gl_provider.or(gh_provider),
+        _ => gh_provider.or(gl_provider),
+    })
+}
+
+fn redact_diagnostic_text(text: &str) -> String {
+    let patterns: &[(&str, &str)] = &[
+        (r"Bearer [A-Za-z0-9._\-]{8,}", "Bearer [REDACTED]"),
+        (r"ghp_[A-Za-z0-9]{10,}", "[REDACTED_GH_TOKEN]"),
+        (r"glpat-[A-Za-z0-9_\-]{10,}", "[REDACTED_GL_TOKEN]"),
+        (r"sk-[A-Za-z0-9]{20,}", "[REDACTED_SK_TOKEN]"),
+    ];
+    let mut result = text.to_string();
+    for (pattern, replacement) in patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            result = re.replace_all(&result, *replacement).to_string();
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            result = result.replace(&home, "~");
+        }
+    }
+    if result.chars().count() > 2000 {
+        result = result.chars().take(2000).collect();
+    }
+    result
+}
+
+fn sanitize_title(raw: &str) -> String {
+    let single: String = raw.chars().filter(|&c| c != '\n' && c != '\r').collect();
+    if single.chars().count() > 120 {
+        single.chars().take(120).collect()
+    } else {
+        single
+    }
+}
+
+fn sanitize_body(raw: &str) -> String {
+    let escaped = raw.replace("```", "'''");
+    if escaped.chars().count() > 4000 {
+        escaped.chars().take(4000).collect()
+    } else {
+        escaped
+    }
 }
 
 fn format_issue_body(ctx: &DiagnosticContext) -> String {
@@ -136,7 +240,14 @@ pub async fn create_issue(
     last_issue_at: Option<std::time::Instant>,
     recent_errors: &[(String, chrono::DateTime<chrono::Utc>)],
 ) -> Result<(String, BuddyActivity), String> {
-    let provider = detect_provider(gcx.clone()).await;
+    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+        .await
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no project root".to_string())?;
+
+    let provider = detect_provider(gcx.clone(), &project_root).await?;
+
     let gate = IssueGate {
         has_diagnostics: !context.error_message.is_empty()
             && (context.source_file.is_some() || context.tool_name.is_some()),
@@ -166,14 +277,14 @@ pub async fn create_issue(
         }
     }
 
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
-        .await
-        .into_iter()
-        .next()
-        .ok_or_else(|| "no project root".to_string())?;
+    let mut redacted = context.clone();
+    redacted.error_message = redact_diagnostic_text(&context.error_message);
 
-    let title = format!("[Buddy] {}: {}", context.error_type, &context.error_message.chars().take(80).collect::<String>());
-    let body = format_issue_body(context);
+    let raw_title = format!("[Buddy] {}: {}", context.error_type, &context.error_message.chars().take(80).collect::<String>());
+    let title = sanitize_title(&raw_title);
+    let raw_body = format_issue_body(&redacted);
+    let body = sanitize_body(&raw_body);
+
     let url = run_issue_create(provider.unwrap(), &project_root, &title, &body).await?;
 
     info!("buddy: created issue {}", url);

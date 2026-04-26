@@ -232,6 +232,15 @@ pub async fn handle_v1_buddy_issues_create(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     axum::Json(req): axum::Json<IssueCreateRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
+    let pre_diag = if req.diagnostic_index.is_none() {
+        match &req.error {
+            Some(err) => Some(crate::buddy::diagnostics::collect_diagnostics(gcx.clone(), err).await),
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let (ctx, auto_enabled, last_issue_at, recent_errors) = {
         let buddy_arc = gcx.read().await.buddy.clone();
         let lock = buddy_arc.lock().await;
@@ -239,18 +248,8 @@ pub async fn handle_v1_buddy_issues_create(
 
         let ctx = if let Some(idx) = req.diagnostic_index {
             svc.recent_diagnostics.get(idx).cloned().ok_or_else(|| ScratchError::new(StatusCode::BAD_REQUEST, "diagnostic index out of range".to_string()))?
-        } else if let Some(ref err) = req.error {
-            let mut c = crate::buddy::diagnostics::DiagnosticContext {
-                error_type: "generic".to_string(),
-                error_message: err.clone(),
-                source_file: None,
-                tool_name: None,
-                chat_id: None,
-                collected_at: chrono::Utc::now().to_rfc3339(),
-                severity: crate::buddy::diagnostics::DiagnosticSeverity::Medium,
-            };
-            c.error_type = crate::buddy::diagnostics::collect_diagnostics(gcx.clone(), err).await.error_type;
-            c
+        } else if let Some(diagnosed) = pre_diag {
+            diagnosed
         } else {
             return Err(ScratchError::new(StatusCode::BAD_REQUEST, "provide diagnostic_index or error".to_string()));
         };
