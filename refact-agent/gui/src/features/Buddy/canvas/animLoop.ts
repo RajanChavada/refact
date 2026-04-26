@@ -334,6 +334,9 @@ export function triggerSignalAnimation(
     anim.eyeStyleTimer = 0;
   }
 
+  anim.activeScene = def.scene ?? "";
+  anim.activeSceneVariant = def.animVariant ?? "";
+
   anim.statusText =
     def.statusTexts[Math.floor(Math.random() * def.statusTexts.length)];
   anim.statusTargetOpacity = 1;
@@ -401,6 +404,57 @@ export function triggerSignalAnimation(
       anim.screenFlash = 0.15;
       spawnGroundEffect(anim, "dust", cx, CANVAS_CENTER_Y + 12);
       spawnAfterimage(anim);
+      break;
+  }
+}
+
+export function updateSceneAnimation(
+  anim: BuddyAnimState,
+  scene: string,
+  variant: string,
+): void {
+  switch (scene) {
+    case "working":
+      anim.heat = Math.min(100, anim.heat + 0.4);
+      if (anim.frame % 20 === 0) {
+        if (variant === "typing") {
+          anim.squashTargetX = 1.04 + Math.sin(anim.frame * 0.3) * 0.03;
+          anim.squashTargetY = 0.96 - Math.sin(anim.frame * 0.3) * 0.03;
+        } else if (variant === "sorting" || variant === "building") {
+          anim.squashTargetX = 1.06;
+          anim.squashTargetY = 0.94;
+        }
+      }
+      break;
+    case "alert":
+      if (anim.frame % 40 === 0 && anim.shakeIntensity < 1) {
+        anim.shakeIntensity = 1.5;
+        anim.squashTargetX = 0.92;
+        anim.squashTargetY = 1.08;
+      }
+      break;
+    case "thinking":
+      anim.squashTargetX = 0.96 + Math.sin(anim.frame * 0.025) * 0.03;
+      anim.squashTargetY = 1.04 - Math.sin(anim.frame * 0.025) * 0.03;
+      break;
+    case "celebrate":
+      if (variant === "confetti" && anim.frame % 15 === 0 && anim.celebrationTimer > 0) {
+        anim.squashTargetX = 1.1 + Math.sin(anim.frame * 0.4) * 0.08;
+        anim.squashTargetY = 0.9 - Math.sin(anim.frame * 0.4) * 0.08;
+      }
+      break;
+    case "perk":
+      if (variant === "ears_up") {
+        anim.earState = Math.max(anim.earState, 0.5);
+      } else if (variant === "curious") {
+        anim.headTilt += (0.4 - anim.headTilt) * 0.05;
+      }
+      break;
+    case "greeting":
+      anim.squashTargetX = 1.05 + Math.sin(anim.frame * 0.15) * 0.04;
+      anim.squashTargetY = 0.95 - Math.sin(anim.frame * 0.15) * 0.04;
+      break;
+    default:
       break;
   }
 }
@@ -569,6 +623,10 @@ export function stepAnimFrame(
   }
 
   if (anim.frame % 30 === 0) updateMoodDrift(anim, semantic, emit);
+
+  if (anim.activeScene) {
+    updateSceneAnimation(anim, anim.activeScene, anim.activeSceneVariant);
+  }
 
   if (
     semantic.activity.animationType !== "idle" &&

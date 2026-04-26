@@ -32,7 +32,9 @@ import {
   addBuddyDiagnostic,
   enqueueBuddySignal,
   enqueueRuntimeEvent,
+  setActiveSpeech,
 } from "../features/Buddy/buddySlice";
+import { push } from "../features/Pages/pagesSlice";
 import type { BuddySSEEvent } from "../features/Buddy/types";
 
 function mapBuddyEventToSignal(event: BuddySSEEvent): string | null {
@@ -413,6 +415,13 @@ export function useSidebarSubscription() {
           break;
         case "RuntimeEvent":
           dispatch(enqueueRuntimeEvent(buddy_event.event));
+          break;
+        case "SpeechUpdated":
+          dispatch(setActiveSpeech(buddy_event.speech));
+          break;
+        case "NavigationRequest":
+          if (buddy_event.view === "buddy") dispatch(push({ name: "buddy" }));
+          else if (buddy_event.view === "stats") dispatch(push({ name: "stats dashboard" }));
           break;
       }
       const signal = mapBuddyEventToSignal(buddy_event);

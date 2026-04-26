@@ -573,10 +573,13 @@ pub fn start_generation(
                     &format!("chat_{}", chat_id), "started", None,
                 );
                 crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
-                let ev = crate::buddy::actor::make_runtime_event(
+                let mut ev = crate::buddy::actor::make_runtime_event(
                     "streaming", "Streaming response...", "chat",
                     &format!("chat_{}", chat_id), "streaming", None,
                 );
+                ev.speech_text = Some("Working on your request...".to_string());
+                ev.scene = Some("working".to_string());
+                ev.persistent = true;
                 crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
             }
 

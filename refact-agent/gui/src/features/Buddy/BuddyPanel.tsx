@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from "../../hooks";
 import { push } from "../Pages/pagesSlice";
 import { openBuddyChat, newBuddyChatAction } from "../Chat/Thread";
 import { BuddyCanvas } from "./BuddyCanvas";
+import { BuddySpeechCloud } from "./BuddySpeechCloud";
 import { useBuddyState } from "./hooks/useBuddyState";
 import {
   selectBuddySnapshot,
@@ -75,6 +76,8 @@ export const BuddyPanel: React.FC = () => {
             displaySize={200}
           />
         </div>
+
+        <BuddySpeechCloud />
 
         <div className={styles.info}>
           <div className={styles.nameRow}>

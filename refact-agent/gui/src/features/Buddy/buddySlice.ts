@@ -8,6 +8,7 @@ import type {
   BuddyConversationMeta,
   DiagnosticContext,
   BuddyRuntimeEvent,
+  BuddySpeechItem,
 } from "./types";
 
 interface BuddySignalQueueItem {
@@ -23,6 +24,7 @@ interface BuddySliceState {
   signalQueue: BuddySignalQueueItem[];
   runtimeQueue: BuddyRuntimeEvent[];
   nowPlaying: BuddyRuntimeEvent | null;
+  activeSpeech: BuddySpeechItem | null;
 }
 
 const initialState: BuddySliceState = {
@@ -33,6 +35,7 @@ const initialState: BuddySliceState = {
   signalQueue: [],
   runtimeQueue: [],
   nowPlaying: null,
+  activeSpeech: null,
 };
 
 export const buddySlice = createSlice({
@@ -42,6 +45,7 @@ export const buddySlice = createSlice({
     setBuddySnapshot: (state, action: PayloadAction<BuddySnapshot>) => {
       state.snapshot = action.payload;
       state.loading = false;
+      state.activeSpeech = action.payload.active_speech ?? null;
     },
     updateBuddyState: (state, action: PayloadAction<BuddyState>) => {
       if (state.snapshot) {
@@ -135,6 +139,12 @@ export const buddySlice = createSlice({
         state.nowPlaying.progress = progress;
       }
     },
+    setActiveSpeech: (state, action: PayloadAction<BuddySpeechItem>) => {
+      state.activeSpeech = action.payload;
+    },
+    clearActiveSpeech: (state) => {
+      state.activeSpeech = null;
+    },
   },
   selectors: {
     selectBuddySnapshot: (state) => state.snapshot,
@@ -150,6 +160,7 @@ export const buddySlice = createSlice({
     selectBuddySignalQueue: (state) => state.signalQueue,
     selectRuntimeQueue: (state) => state.runtimeQueue,
     selectNowPlaying: (state) => state.nowPlaying,
+    selectActiveSpeech: (state) => state.activeSpeech,
   },
 });
 
@@ -168,6 +179,8 @@ export const {
   dequeueRuntimeEvent,
   clearNowPlaying,
   updateRuntimeProgress,
+  setActiveSpeech,
+  clearActiveSpeech,
 } = buddySlice.actions;
 
 export const {
@@ -182,4 +195,5 @@ export const {
   selectBuddySignalQueue,
   selectRuntimeQueue,
   selectNowPlaying,
+  selectActiveSpeech,
 } = buddySlice.selectors;

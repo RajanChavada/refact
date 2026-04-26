@@ -10,9 +10,14 @@ import {
   setBuddyConversations,
   selectBuddySnapshot,
   selectIsBuddyEnabled,
+  setActiveSpeech,
+  clearActiveSpeech,
+  enqueueRuntimeEvent,
 } from "../features/Buddy/buddySlice";
 import { PALETTES, SIGNALS, STAGES } from "../features/Buddy/constants";
 import { buildColorMap } from "../features/Buddy/canvas/colorMap";
+import { updateSceneAnimation } from "../features/Buddy/canvas/animLoop";
+import { createInitialAnimState } from "../features/Buddy/state";
 import type {
   BuddySnapshot,
   BuddyState,
@@ -20,6 +25,8 @@ import type {
   BuddySuggestion,
   BuddyConversationMeta,
   DiagnosticContext,
+  BuddySpeechItem,
+  BuddyRuntimeEvent,
 } from "../features/Buddy/types";
 
 const reducer = buddySlice.reducer;
@@ -281,5 +288,155 @@ describe("BuddyCanvas displaySize", () => {
     for (const t of okTypes) {
       expect(SIGNALS[t]?.isError, `${t} should not be error`).toBe(false);
     }
+  });
+});
+describe("speech cloud state", () => {
+  function makeSpeech(overrides?: Partial<BuddySpeechItem>): BuddySpeechItem {
+    return {
+      id: "speech-1",
+      text: "Hello from Buddy!",
+      mood: "happy",
+      scope: "global",
+      persistent: false,
+      ttl_seconds: 10,
+      created_at: "2024-01-01T00:00:00Z",
+      controls: [],
+      ...overrides,
+    };
+  }
+
+  test("initial activeSpeech is null", () => {
+    const state = reducer(undefined, { type: "@@INIT" });
+    expect(state.activeSpeech).toBeNull();
+  });
+
+  test("setActiveSpeech stores speech item", () => {
+    const speech = makeSpeech({ text: "Working on it..." });
+    const state = reducer(undefined, setActiveSpeech(speech));
+    expect(state.activeSpeech?.text).toBe("Working on it...");
+  });
+
+  test("clearActiveSpeech removes speech item", () => {
+    const speech = makeSpeech();
+    const s1 = reducer(undefined, setActiveSpeech(speech));
+    const s2 = reducer(s1, clearActiveSpeech());
+    expect(s2.activeSpeech).toBeNull();
+  });
+
+  test("setActiveSpeech with controls stores controls", () => {
+    const speech = makeSpeech({
+      controls: [{ id: "btn1", label: "Fix", action: "open_chat", style: "primary" }],
+    });
+    const state = reducer(undefined, setActiveSpeech(speech));
+    expect(state.activeSpeech?.controls).toHaveLength(1);
+    expect(state.activeSpeech?.controls[0].action).toBe("open_chat");
+  });
+
+  test("setBuddySnapshot hydrates activeSpeech from snapshot", () => {
+    const speech = makeSpeech({ text: "Snapshot speech" });
+    const snap = makeSnapshot({ active_speech: speech });
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    expect(state.activeSpeech?.text).toBe("Snapshot speech");
+  });
+
+  test("setBuddySnapshot with null active_speech sets null", () => {
+    const speech = makeSpeech();
+    const s1 = reducer(undefined, setActiveSpeech(speech));
+    const snap = makeSnapshot({ active_speech: null });
+    const s2 = reducer(s1, setBuddySnapshot(snap));
+    expect(s2.activeSpeech).toBeNull();
+  });
+});
+
+describe("runtime event new fields", () => {
+  function makeEvent(overrides?: Partial<BuddyRuntimeEvent>): BuddyRuntimeEvent {
+    return {
+      id: "evt-1",
+      signal_type: "streaming",
+      title: "Streaming",
+      source: "chat",
+      status: "started",
+      priority: "normal",
+      created_at: "2024-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  test("runtime event stores speech_text and scene", () => {
+    const evt = makeEvent({ speech_text: "Thinking...", scene: "working", persistent: true });
+    const state = reducer(undefined, enqueueRuntimeEvent(evt));
+    const queue = state.runtimeQueue;
+    expect(queue[0].speech_text).toBe("Thinking...");
+    expect(queue[0].scene).toBe("working");
+    expect(queue[0].persistent).toBe(true);
+  });
+
+  test("runtime event with controls stores controls", () => {
+    const evt = makeEvent({
+      controls: [{ id: "c1", label: "Fix", action: "open_chat", style: "primary" }],
+    });
+    const state = reducer(undefined, enqueueRuntimeEvent(evt));
+    expect(state.runtimeQueue[0].controls).toHaveLength(1);
+  });
+});
+
+describe("SIGNALS scene categories", () => {
+  test("streaming signal is active category", () => {
+    expect(SIGNALS["streaming"]?.category).toBe("active");
+  });
+
+  test("indexing signal is active category", () => {
+    expect(SIGNALS["indexing"]?.category).toBe("active");
+  });
+
+  test("chat_error signal is speech category", () => {
+    expect(SIGNALS["chat_error"]?.category).toBe("speech");
+  });
+
+  test("chat_completed signal is transient category", () => {
+    expect(SIGNALS["chat_completed"]?.category).toBe("transient");
+  });
+
+  test("all signals have scene defined", () => {
+    for (const [key, def] of Object.entries(SIGNALS)) {
+      expect(def.scene, `${key} missing scene`).toBeDefined();
+    }
+  });
+
+  test("6 distinct scene types exist", () => {
+    const scenes = new Set(Object.values(SIGNALS).map((d) => d.scene));
+    expect(scenes.size).toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe("scene animation system", () => {
+  test("updateSceneAnimation working/typing increases heat", () => {
+    const anim = createInitialAnimState();
+    anim.heat = 0;
+    updateSceneAnimation(anim, "working", "typing");
+    expect(anim.heat).toBeGreaterThan(0);
+  });
+
+  test("updateSceneAnimation alert triggers shake on interval", () => {
+    const anim = createInitialAnimState();
+    anim.frame = 40;
+    anim.shakeIntensity = 0;
+    updateSceneAnimation(anim, "alert", "shake_worried");
+    expect(anim.shakeIntensity).toBeGreaterThan(0);
+  });
+
+  test("updateSceneAnimation perk/ears_up sets ear state", () => {
+    const anim = createInitialAnimState();
+    anim.earState = 0;
+    updateSceneAnimation(anim, "perk", "ears_up");
+    expect(anim.earState).toBeGreaterThan(0);
+  });
+
+  test("updateSceneAnimation with empty scene does nothing", () => {
+    const anim = createInitialAnimState();
+    const heatBefore = anim.heat;
+    updateSceneAnimation(anim, "", "");
+    expect(anim.heat).toBe(heatBefore);
+
   });
 });

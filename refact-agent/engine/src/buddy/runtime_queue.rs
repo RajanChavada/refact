@@ -24,6 +24,11 @@ impl RuntimeQueue {
                 existing.description = event.description;
                 existing.progress = event.progress;
                 existing.status = event.status;
+                existing.speech_text = event.speech_text;
+                existing.scene = event.scene;
+                existing.duration_hint = event.duration_hint;
+                existing.persistent = event.persistent;
+                existing.controls = event.controls;
                 return;
             }
         }

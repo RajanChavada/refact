@@ -1,0 +1,48 @@
+.cloud {
+  position: relative;
+  background: var(--gray-a2);
+  border: 1px solid var(--gray-a4);
+  border-radius: var(--radius-3);
+  padding: var(--space-2) var(--space-3);
+  max-height: 160px;
+  overflow-y: auto;
+  width: 100%;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.text {
+  font-size: 13px;
+  color: var(--gray-12);
+  margin: 0 0 var(--space-2) 0;
+  line-height: 1.5;
+}
+
+.controls {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tail {
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 8px solid var(--gray-a4);
+}

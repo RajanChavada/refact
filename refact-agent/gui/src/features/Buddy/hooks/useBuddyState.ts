@@ -14,6 +14,7 @@ import {
   dequeueRuntimeEvent,
   clearNowPlaying,
 } from "../buddySlice";
+import { SIGNALS } from "../constants";
 import type { BuddySemanticState, BuddyEvent } from "../types";
 
 export interface BuddyStateHandle {
@@ -69,8 +70,16 @@ export function useBuddyState(
   useEffect(() => {
     if (!nowPlaying) return;
     dispatch({ kind: "signal", signalType: nowPlaying.signal_type });
-    const ttl =
-      nowPlaying.status === "progress" ? 8000 : (nowPlaying.ttl_ms ?? 4000);
+    const signalDef = SIGNALS[nowPlaying.signal_type];
+    const isActive = signalDef?.category === "active";
+    const isCompleted = nowPlaying.status === "completed" || nowPlaying.status === "failed";
+    if (isActive && !isCompleted) {
+      return;
+    }
+    const ttl = nowPlaying.persistent
+      ? undefined
+      : nowPlaying.ttl_ms ?? signalDef?.duration ?? (nowPlaying.status === "progress" ? 8000 : 4000);
+    if (ttl === undefined) return;
     const timer = setTimeout(() => reduxDispatch(clearNowPlaying()), ttl);
     return () => clearTimeout(timer);
   }, [nowPlaying, reduxDispatch]);

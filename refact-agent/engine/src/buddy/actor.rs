@@ -284,6 +284,11 @@ pub fn make_runtime_event(
         priority: priority.unwrap_or("normal").to_string(),
         created_at: Utc::now().to_rfc3339(),
         ttl_ms: None,
+        speech_text: None,
+        scene: None,
+        duration_hint: None,
+        persistent: false,
+        controls: Vec::new(),
     }
 }
 

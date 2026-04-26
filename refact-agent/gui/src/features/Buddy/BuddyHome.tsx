@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from "../../hooks";
 import { pop, push } from "../Pages/pagesSlice";
 import { BuddyCanvas } from "./BuddyCanvas";
 import { BuddyRecentChats } from "./BuddyRecentChats";
+import { BuddySpeechCloud } from "./BuddySpeechCloud";
 import { useBuddyState } from "./hooks/useBuddyState";
 import {
   selectBuddySnapshot,
@@ -113,6 +114,8 @@ export const BuddyHome: React.FC = () => {
             displaySize={320}
           />
         </div>
+
+        <BuddySpeechCloud />
 
         <div
           className={styles.stageBadge}

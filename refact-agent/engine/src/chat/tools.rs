@@ -1726,10 +1726,12 @@ pub async fn execute_tools(
         .map(|tc| (tc.id.clone(), format!("tool_{}_{}", chat_id, tc.function.name)))
         .collect();
     for (tc, (_, dedupe_key)) in tool_calls.iter().zip(tool_meta.iter()) {
-        let ev = crate::buddy::actor::make_runtime_event(
+        let mut ev = crate::buddy::actor::make_runtime_event(
             "tool_used", &format!("Running tool: {}", tc.function.name), "tool",
             dedupe_key, "started", None,
         );
+        ev.speech_text = Some(format!("Running {}...", tc.function.name));
+        ev.scene = Some("working".to_string());
         crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
     }
 

@@ -27,6 +27,10 @@ export interface SignalDef {
   statusTexts: string[];
   isError: boolean;
   isWin: boolean;
+  scene?: string;
+  category?: "transient" | "active" | "speech";
+  duration?: number;
+  animVariant?: string;
 }
 
 export interface SkillDef {
@@ -257,6 +261,26 @@ export interface SignalHistoryEntry {
   timestamp: number;
 }
 
+export interface BuddyControl {
+  id: string;
+  label: string;
+  action: string;
+  action_param?: string;
+  style: string;
+}
+
+export interface BuddySpeechItem {
+  id: string;
+  text: string;
+  mood: string;
+  scope: string;
+  persistent: boolean;
+  ttl_seconds: number;
+  dedupe_key?: string;
+  created_at: string;
+  controls: BuddyControl[];
+}
+
 export interface BuddyAnimState {
   frame: number;
   blinkTick: number;
@@ -326,6 +350,8 @@ export interface BuddyAnimState {
   statusText: string;
   statusOpacity: number;
   statusTargetOpacity: number;
+  activeScene: string;
+  activeSceneVariant: string;
 }
 
 export interface ColorMap {
@@ -428,6 +454,7 @@ export interface BuddySnapshot {
   state: BuddyState;
   settings: BuddySettings;
   enabled: boolean;
+  active_speech?: BuddySpeechItem | null;
 }
 
 export interface BuddyConversationMeta {
@@ -460,12 +487,17 @@ export interface BuddyRuntimeEvent {
   title: string;
   description?: string;
   source: string;
-  status: "started" | "progress" | "completed" | "failed" | "info";
+  status: "started" | "progress" | "completed" | "failed" | "info" | "streaming";
   progress?: number;
   dedupe_key?: string;
   priority: string;
   created_at: string;
   ttl_ms?: number;
+  speech_text?: string;
+  scene?: string;
+  duration_hint?: number;
+  persistent?: boolean;
+  controls?: BuddyControl[];
 }
 
 export type BuddySSEEvent =
@@ -475,4 +507,6 @@ export type BuddySSEEvent =
   | { event_type: "SuggestionDismissed"; suggestion_id: string }
   | { event_type: "SettingsChanged"; settings: BuddySettings }
   | { event_type: "DiagnosticAdded"; diagnostic: DiagnosticContext }
-  | { event_type: "RuntimeEvent"; event: BuddyRuntimeEvent };
+  | { event_type: "RuntimeEvent"; event: BuddyRuntimeEvent }
+  | { event_type: "SpeechUpdated"; speech: BuddySpeechItem }
+  | { event_type: "NavigationRequest"; view: string; params?: unknown };

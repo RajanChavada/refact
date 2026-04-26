@@ -115,6 +115,8 @@ export function createInitialAnimState(): BuddyAnimState {
     statusText: "",
     statusOpacity: 0,
     statusTargetOpacity: 0,
+    activeScene: "",
+    activeSceneVariant: "",
   };
 }
 

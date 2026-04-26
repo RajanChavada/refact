@@ -344,3 +344,53 @@ fn test_buddy_controls_schema() {
     assert!(valid_actions.contains(&"dismiss"));
     assert!(!valid_actions.contains(&"invalid_action"));
 }
+
+#[test]
+fn test_runtime_event_speech_text_preserved() {
+    use super::runtime_queue::RuntimeQueue;
+    let mut queue = RuntimeQueue::new();
+    let mut ev = super::actor::make_runtime_event("streaming", "Test", "chat", "chat_1", "started", None);
+    ev.speech_text = Some("Thinking...".to_string());
+    ev.scene = Some("working".to_string());
+    ev.persistent = true;
+    queue.enqueue(ev);
+    let stored = &queue.items[0];
+    assert_eq!(stored.speech_text.as_deref(), Some("Thinking..."));
+    assert_eq!(stored.scene.as_deref(), Some("working"));
+    assert!(stored.persistent);
+}
+
+#[test]
+fn test_persistent_event_fields_coalesced() {
+    use super::runtime_queue::RuntimeQueue;
+    let mut queue = RuntimeQueue::new();
+    let mut ev1 = super::actor::make_runtime_event("streaming", "First", "chat", "key_1", "started", None);
+    ev1.speech_text = Some("Initial".to_string());
+    ev1.persistent = true;
+    queue.enqueue(ev1);
+    let mut ev2 = super::actor::make_runtime_event("streaming", "Updated", "chat", "key_1", "progress", None);
+    ev2.speech_text = Some("Updated text".to_string());
+    ev2.persistent = true;
+    queue.enqueue(ev2);
+    assert_eq!(queue.items.len(), 1);
+    assert_eq!(queue.items[0].speech_text.as_deref(), Some("Updated text"));
+    assert_eq!(queue.items[0].status, "progress");
+}
+
+#[test]
+fn test_runtime_event_controls_preserved() {
+    use super::runtime_queue::RuntimeQueue;
+    use super::types::BuddyControl;
+    let mut queue = RuntimeQueue::new();
+    let mut ev = super::actor::make_runtime_event("chat_error", "Error", "chat", "err_1", "info", Some("high"));
+    ev.controls = vec![BuddyControl {
+        id: "fix".to_string(),
+        label: "Fix".to_string(),
+        action: "open_chat".to_string(),
+        action_param: None,
+        style: "primary".to_string(),
+    }];
+    queue.enqueue(ev);
+    assert_eq!(queue.items[0].controls.len(), 1);
+    assert_eq!(queue.items[0].controls[0].action, "open_chat");
+}

@@ -21,6 +21,16 @@ pub struct BuddyRuntimeEvent {
     pub priority: String,
     pub created_at: String,
     pub ttl_ms: Option<u64>,
+    #[serde(default)]
+    pub speech_text: Option<String>,
+    #[serde(default)]
+    pub scene: Option<String>,
+    #[serde(default)]
+    pub duration_hint: Option<u32>,
+    #[serde(default)]
+    pub persistent: bool,
+    #[serde(default)]
+    pub controls: Vec<BuddyControl>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
