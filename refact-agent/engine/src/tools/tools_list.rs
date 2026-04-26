@@ -298,11 +298,29 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         }),
     ];
 
-    let interaction_tools: Vec<Box<dyn Tool + Send>> = vec![Box::new(
-        crate::tools::tool_ask_questions::ToolAskQuestions {
+    let interaction_tools: Vec<Box<dyn Tool + Send>> = vec![
+        Box::new(crate::tools::tool_ask_questions::ToolAskQuestions {
             config_path: config_path.clone(),
-        },
-    )];
+        }),
+        Box::new(crate::tools::tool_buddy_say::ToolBuddySay {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_say::ToolBuddyRenderControls {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_get_logs::ToolBuddyGetLogs {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_get_context::ToolBuddyGetContext {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_open_view::ToolBuddyOpenView {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_open_setup_flow::ToolBuddyOpenSetupFlow {
+            config_path: config_path.clone(),
+        }),
+    ];
 
     let chat_management_tools: Vec<Box<dyn Tool + Send>> = vec![
         Box::new(crate::tools::tool_compress_chat::ToolCompressChatProbe {

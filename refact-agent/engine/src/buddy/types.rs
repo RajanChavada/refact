@@ -99,3 +99,49 @@ pub struct BuddyThreadMeta {
     pub buddy_chat_kind: String,
     pub workflow_id: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuddyControl {
+    pub id: String,
+    pub label: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_param: Option<String>,
+    #[serde(default = "default_control_style")]
+    pub style: String,
+}
+
+fn default_control_style() -> String {
+    "secondary".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuddySpeechItem {
+    pub id: String,
+    pub text: String,
+    #[serde(default = "default_mood")]
+    pub mood: String,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub persistent: bool,
+    #[serde(default = "default_ttl")]
+    pub ttl_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub controls: Vec<BuddyControl>,
+}
+
+fn default_mood() -> String {
+    "neutral".to_string()
+}
+
+fn default_scope() -> String {
+    "global".to_string()
+}
+
+fn default_ttl() -> u64 {
+    10
+}

@@ -58,6 +58,12 @@ tools:
   - undo_textdoc
   - shell
   - ask_questions
+  - buddy_say
+  - buddy_render_controls
+  - buddy_get_logs
+  - buddy_get_internal_context
+  - buddy_open_view
+  - buddy_open_setup_flow
 
 tool_confirm:
   rules:
@@ -74,6 +80,18 @@ tool_confirm:
     - match: "web*"
       action: auto
     - match: "ask_questions"
+      action: auto
+    - match: "buddy_say"
+      action: auto
+    - match: "buddy_render_controls"
+      action: auto
+    - match: "buddy_get_logs"
+      action: auto
+    - match: "buddy_get_internal_context"
+      action: auto
+    - match: "buddy_open_view"
+      action: auto
+    - match: "buddy_open_setup_flow"
       action: auto
     - match: "*"
       action: ask

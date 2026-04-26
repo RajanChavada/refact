@@ -11,7 +11,7 @@ use super::events::BuddyEvent;
 use super::runtime_queue::RuntimeQueue;
 use super::settings::BuddySettings;
 use super::snapshot::BuddySnapshot;
-use super::types::{BuddyActivity, BuddyRuntimeEvent, BuddyState, BuddySuggestion};
+use super::types::{BuddyActivity, BuddyRuntimeEvent, BuddySpeechItem, BuddyState, BuddySuggestion};
 
 const SAVE_INTERVAL_SECS: u64 = 60;
 const SUGGESTION_RATE_LIMIT_SECS: u64 = 30;
@@ -27,11 +27,12 @@ pub struct BuddyService {
     pub recent_issue_errors: Vec<(String, chrono::DateTime<chrono::Utc>)>,
     pub runtime_queue: RuntimeQueue,
     pub dirty: bool,
+    pub active_speech: Option<BuddySpeechItem>,
 }
 
 impl BuddyService {
     pub fn new(state: BuddyState, settings: BuddySettings, events_tx: broadcast::Sender<BuddyEvent>) -> Self {
-        Self { state, settings, events_tx, last_suggestion_at: None, recent_diagnostics: Vec::new(), last_issue_at: None, recent_issue_errors: Vec::new(), runtime_queue: RuntimeQueue::new(), dirty: false }
+        Self { state, settings, events_tx, last_suggestion_at: None, recent_diagnostics: Vec::new(), last_issue_at: None, recent_issue_errors: Vec::new(), runtime_queue: RuntimeQueue::new(), dirty: false, active_speech: None }
     }
 
     pub fn snapshot(&self) -> BuddySnapshot {
@@ -41,7 +42,26 @@ impl BuddyService {
             enabled: self.settings.enabled,
             runtime_queue: self.runtime_queue.items.iter().cloned().collect(),
             now_playing: self.runtime_queue.now_playing.clone(),
+            active_speech: self.active_speech.clone(),
         }
+    }
+
+    pub fn update_speech(&mut self, speech: BuddySpeechItem) {
+        if let Some(key) = &speech.dedupe_key {
+            if let Some(existing) = &self.active_speech {
+                if existing.dedupe_key.as_deref() == Some(key.as_str()) {
+                    self.active_speech = Some(speech.clone());
+                    let _ = self.events_tx.send(BuddyEvent::SpeechUpdated { speech });
+                    return;
+                }
+            }
+        }
+        self.active_speech = Some(speech.clone());
+        let _ = self.events_tx.send(BuddyEvent::SpeechUpdated { speech });
+    }
+
+    pub fn send_navigation(&self, view: String, params: Option<serde_json::Value>) {
+        let _ = self.events_tx.send(BuddyEvent::NavigationRequest { view, params });
     }
 
     pub fn enqueue_runtime_event(&mut self, event: BuddyRuntimeEvent) {

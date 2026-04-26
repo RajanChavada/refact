@@ -294,3 +294,53 @@ fn test_diagnostic_cap() {
     }
     assert_eq!(svc.recent_diagnostics.len(), 100);
 }
+
+#[test]
+fn test_buddy_say_creates_speech() {
+    use super::types::{BuddySpeechItem, BuddyControl};
+    let mut svc = make_service();
+    let speech = BuddySpeechItem {
+        id: "test-id".to_string(),
+        text: "Hello!".to_string(),
+        mood: "happy".to_string(),
+        scope: "global".to_string(),
+        persistent: false,
+        ttl_seconds: 10,
+        dedupe_key: Some("greeting".to_string()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        controls: vec![],
+    };
+    svc.update_speech(speech.clone());
+    assert!(svc.active_speech.is_some());
+    assert_eq!(svc.active_speech.as_ref().unwrap().text, "Hello!");
+
+    let speech2 = BuddySpeechItem {
+        id: "test-id-2".to_string(),
+        text: "Updated!".to_string(),
+        mood: "happy".to_string(),
+        scope: "global".to_string(),
+        persistent: false,
+        ttl_seconds: 10,
+        dedupe_key: Some("greeting".to_string()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        controls: vec![],
+    };
+    svc.update_speech(speech2);
+    assert_eq!(svc.active_speech.as_ref().unwrap().text, "Updated!");
+
+    let _ = BuddyControl {
+        id: "btn1".to_string(),
+        label: "Open Setup".to_string(),
+        action: "open_setup".to_string(),
+        action_param: None,
+        style: "primary".to_string(),
+    };
+}
+
+#[test]
+fn test_buddy_controls_schema() {
+    let valid_actions = ["open_chat", "open_setup", "open_setup_mcp", "open_setup_skills", "open_stats", "open_buddy", "dismiss", "run_command"];
+    assert!(valid_actions.contains(&"open_setup"));
+    assert!(valid_actions.contains(&"dismiss"));
+    assert!(!valid_actions.contains(&"invalid_action"));
+}

@@ -11,4 +11,6 @@ pub enum BuddyEvent {
     SettingsChanged { settings: super::settings::BuddySettings },
     DiagnosticAdded { diagnostic: super::diagnostics::DiagnosticContext },
     RuntimeEvent { event: BuddyRuntimeEvent },
+    SpeechUpdated { speech: super::types::BuddySpeechItem },
+    NavigationRequest { view: String, params: Option<serde_json::Value> },
 }
