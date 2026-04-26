@@ -29,6 +29,7 @@ import {
   addBuddySuggestion,
   dismissBuddySuggestion,
   updateBuddySettings,
+  addBuddyDiagnostic,
 } from "../features/Buddy/buddySlice";
 
 import {
@@ -390,6 +391,9 @@ export function useSidebarSubscription() {
           break;
         case "SettingsChanged":
           dispatch(updateBuddySettings(buddy_event.settings));
+          break;
+        case "DiagnosticAdded":
+          dispatch(addBuddyDiagnostic(buddy_event.diagnostic));
           break;
       }
     },

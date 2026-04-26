@@ -74,8 +74,9 @@ impl BuddyService {
     }
 
     pub fn workflow_completed(&mut self, workflow_id: &str, xp: u64, activity: super::types::BuddyActivity) {
-        self.add_activity(activity);
-        self.grant_xp(xp);
+        super::state::add_activity(&mut self.state, activity.clone());
+        let _ = self.events_tx.send(BuddyEvent::ActivityAdded { activity });
+        super::state::grant_xp(&mut self.state, xp);
         let now = Utc::now().to_rfc3339();
         if let Some(ws) = self.state.workflow_summaries.iter_mut().find(|w| w.workflow_id == workflow_id) {
             ws.last_run = Some(now);
@@ -89,6 +90,7 @@ impl BuddyService {
                 last_outcome: Some("success".to_string()),
             });
         }
+        let _ = self.events_tx.send(BuddyEvent::StateUpdated { state: self.state.clone() });
     }
 
     pub fn workflow_failed(&mut self, workflow_id: &str, activity: super::types::BuddyActivity) {
@@ -106,13 +108,15 @@ impl BuddyService {
                 last_outcome: Some("failed".to_string()),
             });
         }
+        let _ = self.events_tx.send(BuddyEvent::StateUpdated { state: self.state.clone() });
     }
 
     pub fn add_diagnostic(&mut self, ctx: super::diagnostics::DiagnosticContext) {
-        self.recent_diagnostics.push(ctx);
+        self.recent_diagnostics.push(ctx.clone());
         if self.recent_diagnostics.len() > 100 {
             self.recent_diagnostics.remove(0);
         }
+        let _ = self.events_tx.send(BuddyEvent::DiagnosticAdded { diagnostic: ctx });
     }
 
     pub fn record_issue_created(&mut self, error_message: String) {

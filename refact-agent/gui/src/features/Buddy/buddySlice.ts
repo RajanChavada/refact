@@ -6,18 +6,21 @@ import type {
   BuddySuggestion,
   BuddySettings,
   BuddyConversationMeta,
+  DiagnosticContext,
 } from "./types";
 
 interface BuddySliceState {
   snapshot: BuddySnapshot | null;
   loading: boolean;
   conversations: BuddyConversationMeta[];
+  recentDiagnostics: DiagnosticContext[];
 }
 
 const initialState: BuddySliceState = {
   snapshot: null,
   loading: false,
   conversations: [],
+  recentDiagnostics: [],
 };
 
 export const buddySlice = createSlice({
@@ -63,6 +66,12 @@ export const buddySlice = createSlice({
     ) => {
       state.conversations = action.payload;
     },
+    addBuddyDiagnostic: (state, action: PayloadAction<DiagnosticContext>) => {
+      state.recentDiagnostics.unshift(action.payload);
+      if (state.recentDiagnostics.length > 100) {
+        state.recentDiagnostics.splice(100);
+      }
+    },
   },
   selectors: {
     selectBuddySnapshot: (state) => state.snapshot,
@@ -74,6 +83,7 @@ export const buddySlice = createSlice({
       state.snapshot?.state.suggestion_state ?? [],
     selectBuddyConversations: (state) => state.conversations,
     selectIsBuddyEnabled: (state) => state.snapshot?.enabled ?? false,
+    selectBuddyDiagnostics: (state) => state.recentDiagnostics,
   },
 });
 
@@ -85,6 +95,7 @@ export const {
   dismissBuddySuggestion,
   updateBuddySettings,
   setBuddyConversations,
+  addBuddyDiagnostic,
 } = buddySlice.actions;
 
 export const {
@@ -95,4 +106,5 @@ export const {
   selectBuddySuggestions,
   selectBuddyConversations,
   selectIsBuddyEnabled,
+  selectBuddyDiagnostics,
 } = buddySlice.selectors;

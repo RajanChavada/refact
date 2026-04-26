@@ -446,9 +446,20 @@ export interface BuddyThreadMeta {
   workflow_id: string | null;
 }
 
+export interface DiagnosticContext {
+  error_type: string;
+  error_message: string;
+  source_file: string | null;
+  tool_name: string | null;
+  chat_id: string | null;
+  collected_at: string;
+  severity: "low" | "medium" | "high" | "critical";
+}
+
 export type BuddySSEEvent =
   | { event_type: "StateUpdated"; state: BuddyState }
   | { event_type: "ActivityAdded"; activity: BuddyActivityEntry }
   | { event_type: "SuggestionAdded"; suggestion: BuddySuggestion }
   | { event_type: "SuggestionDismissed"; suggestion_id: string }
-  | { event_type: "SettingsChanged"; settings: BuddySettings };
+  | { event_type: "SettingsChanged"; settings: BuddySettings }
+  | { event_type: "DiagnosticAdded"; diagnostic: DiagnosticContext };
