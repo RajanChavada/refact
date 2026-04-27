@@ -18,6 +18,7 @@ use crate::yaml_configs::customization_types::*;
 use crate::yaml_configs::project_configs_bootstrap::{
     global_configs_try_create_all, project_configs_ensure_dirs,
 };
+use crate::buddy::types::DraftKind;
 
 fn json_error(status: StatusCode, msg: &str) -> Result<Response<Body>, ScratchError> {
     let body = serde_json::json!({"error": msg});
@@ -56,6 +57,47 @@ async fn invalidate_registry_cache(gcx: Arc<ARwLock<GlobalContext>>, scope: Conf
             invalidate_all_registry_caches(gcx).await;
         }
     }
+}
+
+fn customization_kind_to_draft_kind(kind: &str) -> Option<DraftKind> {
+    match kind {
+        "modes" => Some(DraftKind::Mode),
+        "subagents" => Some(DraftKind::Subagent),
+        _ => None,
+    }
+}
+
+fn draft_kind_str(kind: &DraftKind) -> &'static str {
+    match kind {
+        DraftKind::Skill => "skill",
+        DraftKind::Command => "command",
+        DraftKind::Subagent => "subagent",
+        DraftKind::Mode => "mode",
+        DraftKind::AgentsMd => "agents_md",
+        DraftKind::DefaultsModel => "defaults_model",
+        DraftKind::Hook => "hook",
+    }
+}
+
+#[derive(Serialize)]
+struct DraftMetadata {
+    draft_id: String,
+    kind: String,
+    title: String,
+    explanation: String,
+    source_opportunity_id: Option<String>,
+    expires_at: String,
+}
+
+#[derive(Serialize)]
+struct DraftConfigResponse {
+    data: serde_json::Value,
+    draft_metadata: DraftMetadata,
+}
+
+#[derive(Serialize)]
+pub struct ConsumedDraft {
+    pub draft_id: String,
 }
 
 #[derive(Serialize)]
@@ -218,6 +260,8 @@ pub async fn handle_v1_customization_registry(
 pub struct GetConfigQuery {
     #[serde(default)]
     pub scope: Option<String>,
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -238,6 +282,51 @@ pub async fn handle_v1_customization_get(
     }
     if let Err(e) = validate_id(&id) {
         return json_error(StatusCode::BAD_REQUEST, &e);
+    }
+
+    if let Some(ref draft_id) = query.draft_id {
+        let expected_kind = customization_kind_to_draft_kind(&kind);
+        let draft_data = {
+            let buddy_arc = gcx.read().await.buddy.clone();
+            let lock = buddy_arc.lock().await;
+            lock.as_ref().and_then(|svc| {
+                let draft = svc.draft_store.get(draft_id)?;
+                if expected_kind.as_ref() != Some(&draft.kind) {
+                    return None;
+                }
+                Some((
+                    draft.id.clone(),
+                    draft.kind.clone(),
+                    draft.title.clone(),
+                    draft.explanation.clone(),
+                    draft.expires_at,
+                    draft.yaml_or_json.clone(),
+                ))
+            })
+        };
+        return match draft_data {
+            None => json_error(StatusCode::NOT_FOUND, "draft_not_found_or_kind_mismatch"),
+            Some((did, dkind, title, explanation, expires_at, yaml_or_json)) => {
+                let data: serde_json::Value = match serde_yaml::from_str(&yaml_or_json) {
+                    Ok(v) => v,
+                    Err(e) => return json_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        &format!("draft_parse_failed: {}", e),
+                    ),
+                };
+                json_response(StatusCode::OK, &DraftConfigResponse {
+                    data,
+                    draft_metadata: DraftMetadata {
+                        draft_id: did,
+                        kind: draft_kind_str(&dkind).to_string(),
+                        title,
+                        explanation,
+                        source_opportunity_id: None,
+                        expires_at: expires_at.to_rfc3339(),
+                    },
+                })
+            }
+        };
     }
 
     let config_dir = gcx.read().await.config_dir.clone();
@@ -297,6 +386,8 @@ pub struct SaveConfigRequest {
     pub config: serde_json::Value,
     #[serde(default)]
     pub scope: Option<String>,
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -305,6 +396,8 @@ pub struct SaveConfigResponse {
     pub file_path: String,
     pub scope: String,
     pub errors: Vec<ErrorItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumed_draft: Option<ConsumedDraft>,
 }
 
 pub async fn handle_v1_customization_save(
@@ -378,6 +471,16 @@ pub async fn handle_v1_customization_save(
         );
     }
 
+    let consumed_draft = if let Some(ref draft_id) = request.draft_id {
+        let buddy_arc = gcx.read().await.buddy.clone();
+        let mut lock = buddy_arc.lock().await;
+        lock.as_mut()
+            .and_then(|svc| svc.consume_draft(draft_id))
+            .map(|d| ConsumedDraft { draft_id: d.id })
+    } else {
+        None
+    };
+
     invalidate_registry_cache(gcx.clone(), scope).await;
     let registry = load_merged_registry(&config_dir, project_root.as_deref()).await;
 
@@ -397,6 +500,7 @@ pub async fn handle_v1_customization_save(
                 error: e.error.clone(),
             })
             .collect(),
+        consumed_draft,
     };
 
     json_response(StatusCode::OK, &response)
@@ -521,6 +625,7 @@ pub async fn handle_v1_customization_create(
                 error: e.error.clone(),
             })
             .collect(),
+        consumed_draft: None,
     };
 
     json_response(StatusCode::CREATED, &response)

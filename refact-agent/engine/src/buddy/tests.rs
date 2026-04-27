@@ -3155,3 +3155,134 @@ fn buddy_yaml_parses() {
         "buddy.yaml must list buddy_launch_investigation"
     );
 }
+
+// =============================================================================
+// T-10/T-14: Editor draft_id integration tests
+// =============================================================================
+
+#[test]
+fn customization_get_with_draft_id() {
+    use super::drafts::DraftStore;
+    let mut store = DraftStore::new();
+    let draft = store.create(
+        DraftKind::Mode,
+        "My Mode".to_string(),
+        r#"{"id": "my-mode", "schema_version": 1, "title": "My Mode"}"#.to_string(),
+        "A test mode draft".to_string(),
+    );
+    let id = draft.id.clone();
+    let found = store.get(&id).unwrap();
+    assert_eq!(found.kind, DraftKind::Mode, "draft kind must be Mode");
+    let data: serde_json::Value =
+        serde_yaml::from_str(&found.yaml_or_json).expect("yaml_or_json must be parseable");
+    assert_eq!(data["id"], "my-mode");
+    assert_eq!(
+        found.explanation, "A test mode draft",
+        "explanation must be preserved"
+    );
+}
+
+#[test]
+fn customization_get_unknown_draft_id_404() {
+    use super::drafts::DraftStore;
+    let store = DraftStore::new();
+    assert!(
+        store.get("nonexistent-id").is_none(),
+        "unknown draft_id must return None"
+    );
+}
+
+#[test]
+fn customization_get_kind_mismatch_404() {
+    use super::drafts::DraftStore;
+    let mut store = DraftStore::new();
+    let draft = store.create(
+        DraftKind::Skill,
+        "My Skill".to_string(),
+        "{}".to_string(),
+        "explanation".to_string(),
+    );
+    let id = draft.id.clone();
+    let found = store.get(&id).unwrap();
+    assert_ne!(
+        found.kind,
+        DraftKind::Mode,
+        "Skill draft used on modes route must be detectable as mismatch"
+    );
+}
+
+#[test]
+fn customization_save_consumes_draft() {
+    let mut svc = make_service();
+    let mut rx = svc.events_tx.subscribe();
+    let draft = svc.draft_store.create(
+        DraftKind::Mode,
+        "My Mode".to_string(),
+        "{}".to_string(),
+        "explanation".to_string(),
+    );
+    let id = draft.id.clone();
+    let consumed = svc.consume_draft(&id);
+    assert!(consumed.is_some(), "consume_draft must return the draft");
+    assert!(
+        svc.draft_store.get(&id).is_none(),
+        "draft must be gone after consume"
+    );
+    let event = rx.try_recv().expect("must receive DraftConsumed event");
+    assert!(
+        matches!(event, super::events::BuddyEvent::DraftConsumed { .. }),
+        "event must be DraftConsumed"
+    );
+}
+
+#[test]
+fn customization_save_failed_does_not_consume() {
+    use super::drafts::DraftStore;
+    let mut store = DraftStore::new();
+    let draft = store.create(
+        DraftKind::Mode,
+        "My Mode".to_string(),
+        "{}".to_string(),
+        "explanation".to_string(),
+    );
+    let id = draft.id.clone();
+    assert!(
+        store.get(&id).is_some(),
+        "draft must remain unconsumed when save fails (not consumed)"
+    );
+}
+
+#[test]
+fn ext_skill_get_with_draft_id() {
+    use super::drafts::DraftStore;
+    let mut store = DraftStore::new();
+    let draft = store.create(
+        DraftKind::Skill,
+        "My Skill".to_string(),
+        "name: my-skill\ndescription: A test skill".to_string(),
+        "explanation".to_string(),
+    );
+    let id = draft.id.clone();
+    let found = store.get(&id).unwrap();
+    assert_eq!(found.kind, DraftKind::Skill, "draft kind must be Skill");
+    let data: serde_json::Value =
+        serde_yaml::from_str(&found.yaml_or_json).expect("yaml_or_json must be parseable");
+    assert_eq!(data["name"], "my-skill");
+    assert_eq!(data["description"], "A test skill");
+}
+
+#[test]
+fn ext_skill_save_consumes_draft() {
+    let mut svc = make_service();
+    let draft = svc.draft_store.create(
+        DraftKind::Skill,
+        "My Skill".to_string(),
+        "name: my-skill\ndescription: A test skill".to_string(),
+        "explanation".to_string(),
+    );
+    let id = draft.id.clone();
+    let consumed = svc.consume_draft(&id);
+    assert!(consumed.is_some(), "skill draft must be consumable");
+    assert_eq!(consumed.unwrap().kind, DraftKind::Skill);
+    assert!(svc.draft_store.get(&id).is_none(), "draft must be gone after consume");
+}

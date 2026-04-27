@@ -15,6 +15,40 @@ use crate::ext::slash_commands::{load_slash_commands, parse_frontmatter_and_body
 use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
 use crate::http::routers::v1::at_commands::invalidate_slash_cache;
+use crate::buddy::types::DraftKind;
+
+fn draft_kind_str(kind: &DraftKind) -> &'static str {
+    match kind {
+        DraftKind::Skill => "skill",
+        DraftKind::Command => "command",
+        DraftKind::Subagent => "subagent",
+        DraftKind::Mode => "mode",
+        DraftKind::AgentsMd => "agents_md",
+        DraftKind::DefaultsModel => "defaults_model",
+        DraftKind::Hook => "hook",
+    }
+}
+
+#[derive(serde::Serialize)]
+struct DraftMetadata {
+    draft_id: String,
+    kind: String,
+    title: String,
+    explanation: String,
+    source_opportunity_id: Option<String>,
+    expires_at: String,
+}
+
+#[derive(serde::Serialize)]
+struct DraftExtResponse {
+    data: serde_json::Value,
+    draft_metadata: DraftMetadata,
+}
+
+#[derive(serde::Serialize)]
+struct ConsumedDraft {
+    draft_id: String,
+}
 
 fn json_error(status: StatusCode, msg: &str) -> Result<Response<Body>, ScratchError> {
     let body = serde_json::json!({"error": msg});
@@ -577,6 +611,8 @@ pub async fn handle_v1_ext_registry(
 pub struct ScopeQuery {
     #[serde(default)]
     pub scope: Option<String>,
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -604,6 +640,41 @@ pub async fn handle_v1_ext_skill_get(
     if let Err(e) = validate_name(&name) {
         return json_error(StatusCode::BAD_REQUEST, &e);
     }
+
+    if let Some(ref draft_id) = query.draft_id {
+        let draft_data = {
+            let buddy_arc = gcx.read().await.buddy.clone();
+            let lock = buddy_arc.lock().await;
+            lock.as_ref().and_then(|svc| {
+                let draft = svc.draft_store.get(draft_id)?;
+                if draft.kind != DraftKind::Skill {
+                    return None;
+                }
+                Some((draft.id.clone(), draft.kind.clone(), draft.title.clone(), draft.explanation.clone(), draft.expires_at, draft.yaml_or_json.clone()))
+            })
+        };
+        return match draft_data {
+            None => json_error(StatusCode::NOT_FOUND, "draft_not_found_or_kind_mismatch"),
+            Some((did, dkind, title, explanation, expires_at, yaml_or_json)) => {
+                let data: serde_json::Value = match serde_yaml::from_str(&yaml_or_json) {
+                    Ok(v) => v,
+                    Err(e) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, &format!("draft_parse_failed: {}", e)),
+                };
+                json_response(StatusCode::OK, &DraftExtResponse {
+                    data,
+                    draft_metadata: DraftMetadata {
+                        draft_id: did,
+                        kind: draft_kind_str(&dkind).to_string(),
+                        title,
+                        explanation,
+                        source_opportunity_id: None,
+                        expires_at: expires_at.to_rfc3339(),
+                    },
+                })
+            }
+        };
+    }
+
     let config_dir = gcx.read().await.config_dir.clone();
     let ext_dirs = match query.scope.as_deref() {
         Some(s @ "global") | Some(s @ "local") => {
@@ -669,6 +740,8 @@ pub struct SaveSkillRequest {
     pub body: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 pub async fn handle_v1_ext_skill_put(
@@ -759,10 +832,20 @@ pub async fn handle_v1_ext_skill_put(
     }
 
     invalidate_slash_cache().await;
-    json_response(
-        StatusCode::OK,
-        &serde_json::json!({"ok": true, "scope": scope_name, "file_path": file_path.display().to_string()}),
-    )
+    let consumed = if let Some(ref draft_id) = req.draft_id {
+        let buddy_arc = gcx.read().await.buddy.clone();
+        let mut lock = buddy_arc.lock().await;
+        lock.as_mut()
+            .and_then(|svc| svc.consume_draft(draft_id))
+            .map(|d| ConsumedDraft { draft_id: d.id })
+    } else {
+        None
+    };
+    let mut resp = serde_json::json!({"ok": true, "scope": scope_name, "file_path": file_path.display().to_string()});
+    if let Some(c) = consumed {
+        resp["consumed_draft"] = serde_json::to_value(c).unwrap_or_default();
+    }
+    json_response(StatusCode::OK, &resp)
 }
 
 #[derive(Deserialize)]
@@ -914,6 +997,41 @@ pub async fn handle_v1_ext_command_get(
     if let Err(e) = validate_name(&name) {
         return json_error(StatusCode::BAD_REQUEST, &e);
     }
+
+    if let Some(ref draft_id) = query.draft_id {
+        let draft_data = {
+            let buddy_arc = gcx.read().await.buddy.clone();
+            let lock = buddy_arc.lock().await;
+            lock.as_ref().and_then(|svc| {
+                let draft = svc.draft_store.get(draft_id)?;
+                if draft.kind != DraftKind::Command {
+                    return None;
+                }
+                Some((draft.id.clone(), draft.kind.clone(), draft.title.clone(), draft.explanation.clone(), draft.expires_at, draft.yaml_or_json.clone()))
+            })
+        };
+        return match draft_data {
+            None => json_error(StatusCode::NOT_FOUND, "draft_not_found_or_kind_mismatch"),
+            Some((did, dkind, title, explanation, expires_at, yaml_or_json)) => {
+                let data: serde_json::Value = match serde_yaml::from_str(&yaml_or_json) {
+                    Ok(v) => v,
+                    Err(e) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, &format!("draft_parse_failed: {}", e)),
+                };
+                json_response(StatusCode::OK, &DraftExtResponse {
+                    data,
+                    draft_metadata: DraftMetadata {
+                        draft_id: did,
+                        kind: draft_kind_str(&dkind).to_string(),
+                        title,
+                        explanation,
+                        source_opportunity_id: None,
+                        expires_at: expires_at.to_rfc3339(),
+                    },
+                })
+            }
+        };
+    }
+
     let ext_dirs = match query.scope.as_deref() {
         Some(s @ "global") | Some(s @ "local") => {
             match resolve_scope_dir(gcx.clone(), Some(s), true).await {
@@ -964,6 +1082,8 @@ pub struct SaveCommandRequest {
     pub body: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 pub async fn handle_v1_ext_command_put(
@@ -1034,10 +1154,20 @@ pub async fn handle_v1_ext_command_put(
     }
 
     invalidate_slash_cache().await;
-    json_response(
-        StatusCode::OK,
-        &serde_json::json!({"ok": true, "scope": scope_name, "file_path": file_path.display().to_string()}),
-    )
+    let consumed = if let Some(ref draft_id) = req.draft_id {
+        let buddy_arc = gcx.read().await.buddy.clone();
+        let mut lock = buddy_arc.lock().await;
+        lock.as_mut()
+            .and_then(|svc| svc.consume_draft(draft_id))
+            .map(|d| ConsumedDraft { draft_id: d.id })
+    } else {
+        None
+    };
+    let mut resp = serde_json::json!({"ok": true, "scope": scope_name, "file_path": file_path.display().to_string()});
+    if let Some(c) = consumed {
+        resp["consumed_draft"] = serde_json::to_value(c).unwrap_or_default();
+    }
+    json_response(StatusCode::OK, &resp)
 }
 
 #[derive(Deserialize)]
@@ -1159,6 +1289,40 @@ pub async fn handle_v1_ext_hooks_get(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Query(query): Query<ScopeQuery>,
 ) -> Result<Response<Body>, ScratchError> {
+    if let Some(ref draft_id) = query.draft_id {
+        let draft_data = {
+            let buddy_arc = gcx.read().await.buddy.clone();
+            let lock = buddy_arc.lock().await;
+            lock.as_ref().and_then(|svc| {
+                let draft = svc.draft_store.get(draft_id)?;
+                if draft.kind != DraftKind::Hook {
+                    return None;
+                }
+                Some((draft.id.clone(), draft.kind.clone(), draft.title.clone(), draft.explanation.clone(), draft.expires_at, draft.yaml_or_json.clone()))
+            })
+        };
+        return match draft_data {
+            None => json_error(StatusCode::NOT_FOUND, "draft_not_found_or_kind_mismatch"),
+            Some((did, dkind, title, explanation, expires_at, yaml_or_json)) => {
+                let data: serde_json::Value = match serde_yaml::from_str(&yaml_or_json) {
+                    Ok(v) => v,
+                    Err(e) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, &format!("draft_parse_failed: {}", e)),
+                };
+                json_response(StatusCode::OK, &DraftExtResponse {
+                    data,
+                    draft_metadata: DraftMetadata {
+                        draft_id: did,
+                        kind: draft_kind_str(&dkind).to_string(),
+                        title,
+                        explanation,
+                        source_opportunity_id: None,
+                        expires_at: expires_at.to_rfc3339(),
+                    },
+                })
+            }
+        };
+    }
+
     let scope_str_val = query.scope.as_deref().unwrap_or("local");
     let (base_dir, scope_name) =
         match resolve_scope_dir(gcx.clone(), Some(scope_str_val), true).await {
@@ -1191,6 +1355,8 @@ pub struct SaveHooksRequest {
     pub raw_content: Option<String>,
     #[serde(default)]
     pub hooks: Option<Vec<HookConfigFlat>>,
+    #[serde(default)]
+    pub draft_id: Option<String>,
 }
 
 pub async fn handle_v1_ext_hooks_put(
@@ -1241,10 +1407,20 @@ pub async fn handle_v1_ext_hooks_put(
         );
     }
 
-    json_response(
-        StatusCode::OK,
-        &serde_json::json!({"ok": true, "scope": scope_name, "file_path": file_path.display().to_string()}),
-    )
+    let consumed = if let Some(ref draft_id) = req.draft_id {
+        let buddy_arc = gcx.read().await.buddy.clone();
+        let mut lock = buddy_arc.lock().await;
+        lock.as_mut()
+            .and_then(|svc| svc.consume_draft(draft_id))
+            .map(|d| ConsumedDraft { draft_id: d.id })
+    } else {
+        None
+    };
+    let mut resp = serde_json::json!({"ok": true, "scope": scope_name, "file_path": file_path.display().to_string()});
+    if let Some(c) = consumed {
+        resp["consumed_draft"] = serde_json::to_value(c).unwrap_or_default();
+    }
+    json_response(StatusCode::OK, &resp)
 }
 
 pub async fn handle_v1_ext_hooks_delete_by_index(
