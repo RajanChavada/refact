@@ -57,9 +57,15 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
 };
 
 export function isTaskChatLike(
-  x: Partial<Pick<ChatHistoryItem, "task_id" | "task_meta" | "is_task_chat">>,
+  x: Partial<
+    Pick<ChatHistoryItem, "task_id" | "task_meta" | "is_task_chat" | "mode">
+  >,
 ): boolean {
-  return Boolean(x.task_id ?? x.task_meta?.task_id ?? x.is_task_chat);
+  return (
+    Boolean(x.task_id ?? x.task_meta?.task_id ?? x.is_task_chat) ||
+    x.mode === "task_agent" ||
+    x.mode === "task_planner"
+  );
 }
 
 export function isBuddyChatLike(

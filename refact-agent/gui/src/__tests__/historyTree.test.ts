@@ -216,6 +216,30 @@ describe("buildHistoryTree", () => {
       expect(result).toHaveLength(2);
       expect(result.map((r) => r.id).sort()).toEqual(["a", "c"]);
     });
+
+    it("should exclude items with mode task_agent", () => {
+      const chats = {
+        a: createItem("a"),
+        b: createItem("b", { mode: "task_agent" }),
+        c: createItem("c"),
+      };
+      const result = buildHistoryTree(chats);
+
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.id).sort()).toEqual(["a", "c"]);
+    });
+
+    it("should exclude items with mode task_planner", () => {
+      const chats = {
+        a: createItem("a"),
+        b: createItem("b", { mode: "task_planner" }),
+        c: createItem("c"),
+      };
+      const result = buildHistoryTree(chats);
+
+      expect(result).toHaveLength(2);
+      expect(result.map((r) => r.id).sort()).toEqual(["a", "c"]);
+    });
   });
 
   describe("sorting", () => {
