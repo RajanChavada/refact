@@ -455,6 +455,8 @@ export interface BuddySnapshot {
   settings: BuddySettings;
   enabled: boolean;
   active_speech?: BuddySpeechItem | null;
+  runtime_queue?: BuddyRuntimeEvent[];
+  now_playing?: BuddyRuntimeEvent | null;
 }
 
 export interface BuddyConversationMeta {

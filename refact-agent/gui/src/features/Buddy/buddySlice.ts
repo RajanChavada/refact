@@ -46,6 +46,8 @@ export const buddySlice = createSlice({
       state.snapshot = action.payload;
       state.loading = false;
       state.activeSpeech = action.payload.active_speech ?? null;
+      state.runtimeQueue = action.payload.runtime_queue ?? [];
+      state.nowPlaying = action.payload.now_playing ?? null;
     },
     updateBuddyState: (state, action: PayloadAction<BuddyState>) => {
       if (state.snapshot) {

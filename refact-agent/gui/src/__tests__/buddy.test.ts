@@ -227,17 +227,19 @@ describe("recent chats", () => {
 
 describe("loading state and identity hydration", () => {
   test("initial state has snapshot null — loading placeholder", () => {
-    const state = reducer(undefined, { type: "@@INIT" });
-    expect(selectBuddySnapshot.call(null, state)).toBeNull();
-    expect(selectIsBuddyEnabled.call(null, state)).toBe(false);
+    const sliceState = reducer(undefined, { type: "@@INIT" });
+    const rootState = { buddy: sliceState };
+    expect(selectBuddySnapshot(rootState)).toBeNull();
+    expect(selectIsBuddyEnabled(rootState)).toBe(false);
   });
 
   test("snapshot arrival sets correct identity", () => {
     const snap = makeSnapshot();
     snap.state.identity.name = "Byte";
     snap.state.identity.palette_index = 3;
-    const state = reducer(undefined, setBuddySnapshot(snap));
-    const loaded = selectBuddySnapshot.call(null, state);
+    const sliceState = reducer(undefined, setBuddySnapshot(snap));
+    const rootState = { buddy: sliceState };
+    const loaded = selectBuddySnapshot(rootState);
     expect(loaded).not.toBeNull();
     expect(loaded?.state.identity.name).toBe("Byte");
     expect(loaded?.state.identity.palette_index).toBe(3);
@@ -246,11 +248,48 @@ describe("loading state and identity hydration", () => {
   test("palette comes from state.identity not settings", () => {
     const snap = makeSnapshot();
     snap.state.identity.palette_index = 5;
-    const state = reducer(undefined, setBuddySnapshot(snap));
-    const loaded = selectBuddySnapshot.call(null, state);
+    const sliceState = reducer(undefined, setBuddySnapshot(snap));
+    const rootState = { buddy: sliceState };
+    const loaded = selectBuddySnapshot(rootState);
     expect(loaded?.state.identity.palette_index).toBe(5);
     const settingsJson = JSON.stringify(loaded?.settings ?? {});
     expect(settingsJson).not.toContain("palette_index");
+  });
+});
+
+describe("snapshot hydration", () => {
+  function makeRuntimeEvent(overrides?: Partial<BuddyRuntimeEvent>): BuddyRuntimeEvent {
+    return {
+      id: "ev1",
+      signal_type: "indexing",
+      title: "Indexing",
+      source: "indexer",
+      status: "started",
+      priority: "normal",
+      created_at: "2024-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  test("setBuddySnapshot hydrates runtimeQueue from snapshot", () => {
+    const snap = makeSnapshot({ runtime_queue: [makeRuntimeEvent({ id: "ev1" })] });
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    expect(state.runtimeQueue).toHaveLength(1);
+    expect(state.runtimeQueue[0].id).toBe("ev1");
+  });
+
+  test("setBuddySnapshot hydrates nowPlaying from snapshot", () => {
+    const snap = makeSnapshot({ now_playing: makeRuntimeEvent({ id: "np1", signal_type: "working", title: "Working" }) });
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    expect(state.nowPlaying).not.toBeNull();
+    expect(state.nowPlaying?.id).toBe("np1");
+  });
+
+  test("setBuddySnapshot defaults missing runtime fields", () => {
+    const snap = makeSnapshot();
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    expect(state.runtimeQueue).toEqual([]);
+    expect(state.nowPlaying).toBeNull();
   });
 });
 
