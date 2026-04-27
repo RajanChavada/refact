@@ -56,6 +56,7 @@ export const BuddyPanel: React.FC = () => {
     >
       <div className={styles.body}>
         <div className={styles.scene}>
+          <BuddySpeechCloud variant="overlay" />
           <div className={styles.glowWrap}>
             <div
               className={styles.glow}
@@ -65,9 +66,9 @@ export const BuddyPanel: React.FC = () => {
               state={state}
               onEvent={buddy.handleCanvasEvent}
               displaySize={200}
+              speechOverride={nowPlaying?.speech_text ?? null}
             />
           </div>
-          <BuddySpeechCloud variant="overlay" />
         </div>
 
         <div className={styles.info}>
@@ -91,17 +92,15 @@ export const BuddyPanel: React.FC = () => {
             <span className={styles.xpText}>{xp}</span>
           </div>
 
-          {nowPlaying && (
+          {nowPlaying && nowPlaying.progress != null && (
             <div className={styles.statusBubble}>
               <span className={styles.statusIcon}>
                 {SIGNALS[nowPlaying.signal_type]?.icon ?? "⚡"}
               </span>
               <span className={styles.statusTitle}>{nowPlaying.title}</span>
-              {nowPlaying.progress != null && (
-                <div className={styles.progressBar}>
-                  <div style={{ width: `${nowPlaying.progress}%` }} />
-                </div>
-              )}
+              <div className={styles.progressBar}>
+                <div style={{ width: `${nowPlaying.progress}%` }} />
+              </div>
             </div>
           )}
         </div>

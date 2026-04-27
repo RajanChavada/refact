@@ -624,7 +624,9 @@ describe("conversation ledger", () => {
 });
 
 describe("BuddyChatCompanion chat_id scoping", () => {
-  function makeRuntimeEvent(overrides?: Partial<BuddyRuntimeEvent>): BuddyRuntimeEvent {
+  function makeRuntimeEvent(
+    overrides?: Partial<BuddyRuntimeEvent>,
+  ): BuddyRuntimeEvent {
     return {
       id: "ev1",
       signal_type: "chat_error",
@@ -667,7 +669,10 @@ describe("BuddyChatCompanion chat_id scoping", () => {
   });
 
   test("runtime event preserves chat_id field", () => {
-    const ev = makeRuntimeEvent({ chat_id: "chat-xyz", title: "Error in 'Test'" });
+    const ev = makeRuntimeEvent({
+      chat_id: "chat-xyz",
+      title: "Error in 'Test'",
+    });
     const state = reducer(undefined, enqueueRuntimeEvent(ev));
     expect(state.runtimeQueue[0].chat_id).toBe("chat-xyz");
     expect(state.runtimeQueue[0].title).toBe("Error in 'Test'");

@@ -25,6 +25,12 @@ import type {
   SignalDef,
 } from "../types";
 
+function setStatus(anim: BuddyAnimState, text: string, frames = 180): void {
+  anim.statusText = text;
+  anim.statusTargetOpacity = 1;
+  anim.statusTimer = frames;
+}
+
 function selectIdleAction(
   anim: BuddyAnimState,
   semantic: BuddySemanticState,
@@ -58,6 +64,15 @@ function selectIdleAction(
         action: "confidentPose" as IdleActionType,
         weight: p.confidence > 40 ? p.confidence * 0.09 : 0,
       },
+      {
+        action: "wave" as IdleActionType,
+        weight: m.affection > 15 ? 4 + m.affection * 0.06 : 3,
+      },
+      {
+        action: "spin" as IdleActionType,
+        weight: p.playfulness > 35 && m.energy > 45 ? 4 : 0,
+      },
+      { action: "type_code" as IdleActionType, weight: 7 },
     ] as { action: IdleActionType; weight: number }[]
   ).filter((c) => c.weight > 0.4);
 
@@ -85,6 +100,9 @@ function getIdleActionDuration(action: IdleActionType): number {
     readScroll: 130,
     doze: 250,
     confidentPose: 90,
+    wave: 80,
+    spin: 55,
+    type_code: 120 + Math.random() * 80,
   };
   return durations[action] ?? 60;
 }
@@ -115,8 +133,7 @@ function startToy(
   anim.toyType = toyType;
   anim.toyAnimPhase = 0;
   anim.toyDurationTimer = 140 + Math.random() * 40;
-  anim.statusText = def.statusMessage;
-  anim.statusTargetOpacity = 1;
+  setStatus(anim, def.statusMessage, 160);
   if (def.xp > 0) emit({ type: "xp_gained", amount: def.xp, newTotal: 0 });
   spawnFloatingEmoji(
     anim,
@@ -334,12 +351,20 @@ export function triggerSignalAnimation(
     anim.eyeStyleTimer = 0;
   }
 
+  anim.moodType = def.mood;
   anim.activeScene = def.scene ?? "";
   anim.activeSceneVariant = def.animVariant ?? "";
+  // scene lifetime: use signal duration (ms) converted to frames at 60fps, min 120
+  anim.activeSceneTimer =
+    def.duration != null
+      ? Math.max(120, Math.round((def.duration / 1000) * 60))
+      : 300;
 
-  anim.statusText =
-    def.statusTexts[Math.floor(Math.random() * def.statusTexts.length)];
-  anim.statusTargetOpacity = 1;
+  setStatus(
+    anim,
+    def.statusTexts[Math.floor(Math.random() * def.statusTexts.length)],
+    220,
+  );
 
   const cx = CANVAS_CENTER_X + anim.walkOffsetX;
   switch (def.animationType) {
@@ -405,6 +430,31 @@ export function triggerSignalAnimation(
       spawnGroundEffect(anim, "dust", cx, CANVAS_CENTER_Y + 12);
       spawnAfterimage(anim);
       break;
+  }
+
+  if (signalType === "stage_up") {
+    anim.activeSceneTimer = 360;
+    anim.celebrationTimer = 360;
+    spawnRainbowSparks(anim, 60);
+    spawnFloatingEmoji(anim, "🌟", undefined, CANVAS_CENTER_Y - 30, 5);
+    spawnFloatingEmoji(anim, "⬆", undefined, CANVAS_CENTER_Y - 20, 4);
+    spawnFloatingEmoji(anim, "✨", cx - 20, CANVAS_CENTER_Y - 10, 3);
+    spawnFloatingEmoji(anim, "✨", cx + 20, CANVAS_CENTER_Y - 10, 3);
+    anim.squashTargetX = 1.6;
+    anim.squashTargetY = 0.4;
+    anim.screenFlash = 1.0;
+    spawnAfterimage(anim);
+    spawnAfterimage(anim);
+    spawnAfterimage(anim);
+    spawnAfterimage(anim);
+    spawnSpeedLines(anim, 20, 0, -1);
+    spawnGroundEffect(anim, "impact", cx, CANVAS_CENTER_Y + 12);
+    spawnGroundEffect(anim, "dust", cx - 18, CANVAS_CENTER_Y + 10);
+    spawnGroundEffect(anim, "dust", cx + 18, CANVAS_CENTER_Y + 10);
+    anim.eyeStyle = "star";
+    anim.eyeStyleTimer = 600;
+    anim.shakeIntensity = 18;
+    setStatus(anim, "EVOLVED! ✨", 400);
   }
 }
 
@@ -507,9 +557,20 @@ export function stepAnimFrame(
   anim.headTilt += (anim.cursorTargetX * 0.6 - anim.headTilt) * 0.08;
   anim.hoverGlow += ((anim.mouseOnBuddy ? 1 : 0) - anim.hoverGlow) * 0.1;
   anim.breathScale = Math.sin(anim.frame * 0.04) * 0.008;
+  if (anim.statusTimer > 0) {
+    anim.statusTimer--;
+    if (anim.statusTimer === 0) anim.statusTargetOpacity = 0;
+  } else if (anim.statusTargetOpacity > 0 && anim.statusText) {
+    anim.statusTimer = 180;
+  }
   anim.statusOpacity += (anim.statusTargetOpacity - anim.statusOpacity) * 0.07;
+  if (anim.statusOpacity < 0.02 && anim.statusTargetOpacity === 0) {
+    anim.statusOpacity = 0;
+    anim.statusText = "";
+  }
 
   const stage = semantic.progress.stage;
+  anim.moodType = semantic.activity.mood;
   anim.levitationOffset = stage >= 5 ? Math.sin(anim.frame * 0.03) * 3 : 0;
   anim.auraPulseIntensity =
     stage >= 5 ? 0.5 + Math.sin(anim.frame * 0.04) * 0.5 : 0;
@@ -531,8 +592,7 @@ export function stepAnimFrame(
           type: "mischief",
           duration: 2000,
           onStart: () => {
-            anim.statusText = "hehehe...";
-            anim.statusTargetOpacity = 1;
+            setStatus(anim, "hehehe...", 160);
           },
         },
       ],
@@ -547,8 +607,7 @@ export function stepAnimFrame(
               alpha: 0.4,
               life: 0.8,
             };
-            anim.statusText = "shadow clone!";
-            anim.statusTargetOpacity = 1;
+            setStatus(anim, "shadow clone!", 180);
           },
         },
       ],
@@ -557,8 +616,7 @@ export function stepAnimFrame(
           type: "meditate",
           duration: 3000,
           onStart: () => {
-            anim.statusText = "om...";
-            anim.statusTargetOpacity = 1;
+            setStatus(anim, "om...", 220);
             anim.eyeStyle = "squint";
             anim.eyeStyleTimer = 180;
           },
@@ -571,12 +629,15 @@ export function stepAnimFrame(
       anim.quirkActive = true;
       anim.quirkType = q.type;
       anim.stageQuirkTick = 0;
+      anim.quirkEndFrame = anim.frame + Math.round((q.duration / 1000) * 60);
       q.onStart?.();
-      setTimeout(() => {
-        anim.quirkActive = false;
-        anim.quirkType = "";
-      }, q.duration);
     }
+  }
+
+  // expire quirk by frame count (no setTimeout leak)
+  if (anim.quirkActive && anim.frame >= anim.quirkEndFrame) {
+    anim.quirkActive = false;
+    anim.quirkType = "";
   }
 
   if (anim.shadowClone) {
@@ -607,8 +668,7 @@ export function stepAnimFrame(
         anim.squashTargetX = 1.1;
         anim.squashTargetY = 0.9;
         if (Math.random() < 0.3) spawnSparks(anim, 2, "#F472B6");
-        anim.statusText = "( ˘ ³˘)♥";
-        anim.statusTargetOpacity = 1;
+        setStatus(anim, "( ˘ ³˘)♥", 90);
         emit({
           type: "semantic_update",
           patch: {
@@ -629,7 +689,15 @@ export function stepAnimFrame(
   if (anim.frame % 30 === 0) updateMoodDrift(anim, semantic, emit);
 
   if (anim.activeScene) {
-    updateSceneAnimation(anim, anim.activeScene, anim.activeSceneVariant);
+    if (anim.activeSceneTimer > 0) {
+      anim.activeSceneTimer--;
+    } else {
+      anim.activeScene = "";
+      anim.activeSceneVariant = "";
+    }
+    if (anim.activeScene) {
+      updateSceneAnimation(anim, anim.activeScene, anim.activeSceneVariant);
+    }
   }
 
   if (
@@ -697,6 +765,40 @@ export function stepAnimFrame(
     }
   }
 
+  if (anim.idleAction === "fidget" && anim.frame % 18 === 0) {
+    anim.squashTargetX = 0.88 + Math.random() * 0.24;
+    anim.squashTargetY = 1.12 - Math.random() * 0.24;
+  }
+  if (anim.idleAction === "wave") {
+    const wm = Math.sin(anim.frame * 0.28) * 0.08;
+    anim.squashTargetX = 0.94 + wm;
+    anim.squashTargetY = 1.06 - wm;
+  }
+  if (anim.idleAction === "spin") {
+    anim.squashTargetX = 1.14 + Math.sin(anim.frame * 0.45) * 0.16;
+    anim.squashTargetY = 0.86 - Math.sin(anim.frame * 0.45) * 0.16;
+    if (anim.frame % 5 === 0) {
+      spawnGroundEffect(
+        anim,
+        "dust",
+        CANVAS_CENTER_X + anim.walkOffsetX + (Math.random() - 0.5) * 24,
+        CANVAS_CENTER_Y + 12,
+      );
+    }
+  }
+  if (anim.idleAction === "type_code") {
+    const tp = Math.abs(Math.sin(anim.frame * 0.38));
+    anim.squashTargetX = 1.02 + tp * 0.05;
+    anim.squashTargetY = 0.98 - tp * 0.05;
+  }
+  if (anim.idleAction === "doze" && anim.frame % 90 === 0) {
+    setStatus(
+      anim,
+      ["zzz...", "zZz...", "( -_-)zzz"][Math.floor(Math.random() * 3)],
+      100,
+    );
+  }
+
   if (
     anim.idleAction === "none" &&
     anim.mouseProximity < 0.2 &&
@@ -721,17 +823,50 @@ export function stepAnimFrame(
     if (action === "playBug") startToy(anim, "bug", emit);
     if (action === "readScroll") startToy(anim, "scroll", emit);
     if (action === "doze") {
-      anim.statusText = "zzz...";
-      anim.statusTargetOpacity = 1;
+      setStatus(anim, "zzz...", 100);
     }
     if (action === "confidentPose") {
-      anim.statusText = "( ᵔ ᴥ ᵔ )";
-      anim.statusTargetOpacity = 1;
+      setStatus(anim, "( ᵔ ᴥ ᵔ )", 100);
       anim.eyeStyle = "squint";
       anim.eyeStyleTimer = 90;
     }
     if (action === "fidget") {
-      void 0;
+      anim.squashTargetX = 0.88 + Math.random() * 0.24;
+      anim.squashTargetY = 1.12 - Math.random() * 0.24;
+      setStatus(
+        anim,
+        ["( ._. )", "(o_O)", "*twitch*", ">_<"][Math.floor(Math.random() * 4)],
+        60,
+      );
+    }
+    if (action === "wave") {
+      anim.earState = 1;
+      setStatus(
+        anim,
+        ["Hello! :D", "Hi there~", "o/", "*waves*"][
+          Math.floor(Math.random() * 4)
+        ],
+        90,
+      );
+    }
+    if (action === "spin") {
+      spawnRainbowSparks(anim, 7);
+      anim.squashTargetX = 1.25;
+      anim.squashTargetY = 0.75;
+      setStatus(
+        anim,
+        ["wheee!", "( *°▽°*)❣", "spin!"][Math.floor(Math.random() * 3)],
+        60,
+      );
+    }
+    if (action === "type_code") {
+      setStatus(
+        anim,
+        ["typing...", "coding...", "hacking...", "print('hi')", "git commit"][
+          Math.floor(Math.random() * 5)
+        ],
+        150,
+      );
     }
   }
 
@@ -766,21 +901,20 @@ export function handlePet(
   anim.errorStreak = Math.max(0, anim.errorStreak - 1);
 
   if (anim.petCount % 10 === 0) {
-    anim.statusText = "uwu";
+    setStatus(anim, "uwu", 120);
     anim.eyeStyle = "uwu";
     anim.eyeStyleTimer = 240;
   } else if (anim.petCount % 5 === 0) {
-    anim.statusText = "That tickles!";
+    setStatus(anim, "That tickles!", 90);
     anim.eyeStyle = "squint";
     anim.eyeStyleTimer = 150;
   } else if (anim.petCount % 3 === 0) {
-    anim.statusText = "Hehe~";
+    setStatus(anim, "Hehe~", 90);
     anim.eyeStyle = "heart";
     anim.eyeStyleTimer = 120;
   } else {
-    anim.statusText = "*happy*";
+    setStatus(anim, "*happy*", 75);
   }
-  anim.statusTargetOpacity = 1;
 
-  emit({ type: "semantic_update", patch: {} });
+  emit({ type: "petted" });
 }

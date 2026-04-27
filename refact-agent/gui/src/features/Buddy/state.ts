@@ -98,6 +98,7 @@ export function createInitialAnimState(): BuddyAnimState {
     stageQuirkTick: 0,
     quirkActive: false,
     quirkType: "",
+    quirkEndFrame: 0,
     phaseAlpha: 1,
     shadowClone: null,
     levitationOffset: 0,
@@ -112,11 +113,14 @@ export function createInitialAnimState(): BuddyAnimState {
     toyType: null,
     toyAnimPhase: 0,
     toyDurationTimer: 0,
+    moodType: "idle",
     statusText: "",
     statusOpacity: 0,
     statusTargetOpacity: 0,
+    statusTimer: 0,
     activeScene: "",
     activeSceneVariant: "",
+    activeSceneTimer: 0,
   };
 }
 

@@ -90,45 +90,16 @@ impl Tool for ToolTaskWaitForAgents {
         }
 
         let running: Vec<_> = statuses.iter().filter(|s| s.column == "doing").collect();
-        let completed: Vec<_> = statuses.iter().filter(|s| s.column == "done").collect();
-        let failed: Vec<_> = statuses.iter().filter(|s| s.column == "failed").collect();
 
-        let mut result = format!(
-            "# Agent Status Summary\n\n**Total:** {} agents | 🔄 Running: {} | ✅ Done: {} | ❌ Failed: {}\n\n",
-            statuses.len(), running.len(), completed.len(), failed.len()
-        );
+        let mut result = String::new();
 
-        if !running.is_empty() {
-            result.push_str("## 🔄 Running\n\n");
+        if running.is_empty() {
+            result.push_str("No agents are currently running.\n");
+        } else {
             for status in &running {
                 result.push_str(&format_agent_status(status));
                 result.push_str("\n---\n\n");
             }
-        }
-
-        if !completed.is_empty() {
-            result.push_str("## ✅ Completed\n\n");
-            for status in &completed {
-                result.push_str(&format_agent_status(status));
-                result.push_str("\n---\n\n");
-            }
-        }
-
-        if !failed.is_empty() {
-            result.push_str("## ❌ Failed\n\n");
-            for status in &failed {
-                result.push_str(&format_agent_status(status));
-                result.push_str("\n---\n\n");
-            }
-        }
-
-        if running.is_empty() && !completed.is_empty() && failed.is_empty() {
-            result.push_str("🎉 **All agents have completed successfully!**\n");
-        } else if !failed.is_empty() {
-            result.push_str(
-                "⚠️ **Some agents have failed.** Review their reports and consider replanning.\n",
-            );
-        } else if !running.is_empty() {
             result.push_str("⏳ **Agents are still working.** Do not check again, wait for the completion message to arrive.\n");
         }
 

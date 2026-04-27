@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 import { useAppDispatch, useAppSelector } from "../../../hooks";
 import {
   createInitialSemanticState,
@@ -14,7 +14,7 @@ import {
   dequeueRuntimeEvent,
   clearNowPlaying,
 } from "../buddySlice";
-import { SIGNALS } from "../constants";
+import { SIGNALS, STAGES, SKILLS } from "../constants";
 import type { BuddySemanticState, BuddyEvent } from "../types";
 
 export interface BuddyStateHandle {
@@ -26,10 +26,12 @@ export interface BuddyStateHandle {
   nextPalette: () => void;
   reset: () => void;
   handleCanvasEvent: (event: BuddyEvent) => void;
+  onBuddyEvent?: (event: BuddyEvent) => void;
 }
 
 export function useBuddyState(
   initialState?: BuddySemanticState,
+  onBuddyEvent?: (event: BuddyEvent) => void,
 ): BuddyStateHandle {
   const [state, dispatch] = useReducer(
     (s: BuddySemanticState, a: SemanticAction) => reduceSemanticState(s, a),
@@ -41,6 +43,13 @@ export function useBuddyState(
   const signalQueue = useAppSelector(selectBuddySignalQueue);
   const runtimeQueue = useAppSelector(selectRuntimeQueue);
   const nowPlaying = useAppSelector(selectNowPlaying);
+  const prevSnapshotStageRef = useRef<number | null>(null);
+  const prevLocalStageRef = useRef<number>(state.progress.stage);
+  const prevLocalSkillsRef = useRef<string[]>(state.skills);
+  const onBuddyEventRef = useRef(onBuddyEvent);
+  useEffect(() => {
+    onBuddyEventRef.current = onBuddyEvent;
+  }, [onBuddyEvent]);
 
   useEffect(() => {
     if (!reduxSnapshot) return;
@@ -56,6 +65,62 @@ export function useBuddyState(
     reduxSnapshot?.state.identity.name,
     reduxSnapshot?.state.identity.palette_index,
   ]);
+
+  useEffect(() => {
+    if (!reduxSnapshot) return;
+    const { progression, skills } = reduxSnapshot.state;
+    const curr = progression.stage;
+    const prev = prevSnapshotStageRef.current;
+    prevSnapshotStageRef.current = curr;
+
+    // Sync XP + stage into local canvas semantic state
+    dispatch({
+      kind: "patch",
+      patch: {
+        progress: { xp: progression.xp, stage: curr },
+        skills: skills.unlocked,
+      },
+    });
+
+    if (prev !== null && curr > prev) {
+      dispatch({ kind: "signal", signalType: "stage_up" });
+    }
+  }, [
+    reduxSnapshot?.state.progression.stage,
+    reduxSnapshot?.state.progression.xp,
+  ]);
+
+  // Emit stage_evolved and skill_unlocked events when local canvas state changes
+  useEffect(() => {
+    const prev = prevLocalStageRef.current;
+    const curr = state.progress.stage;
+    prevLocalStageRef.current = curr;
+    if (curr > prev) {
+      const stageDef = STAGES[curr];
+      onBuddyEventRef.current?.({
+        type: "stage_evolved",
+        stage: curr,
+        name: stageDef?.name ?? String(curr),
+      });
+    }
+  }, [state.progress.stage]);
+
+  useEffect(() => {
+    const prev = prevLocalSkillsRef.current;
+    const curr = state.skills;
+    prevLocalSkillsRef.current = curr;
+    const newSkills = curr.filter((s) => !prev.includes(s));
+    for (const skillId of newSkills) {
+      const def = SKILLS.find((s) => s.id === skillId);
+      if (def) {
+        onBuddyEventRef.current?.({
+          type: "skill_unlocked",
+          skillId: def.id,
+          skillName: def.name,
+        });
+      }
+    }
+  }, [state.skills]);
 
   useEffect(() => {
     if (signalQueue.length === 0) return;
@@ -111,6 +176,8 @@ export function useBuddyState(
       dispatch({ kind: "add_xp", amount: event.amount });
     } else if (event.type === "semantic_update") {
       dispatch({ kind: "patch", patch: event.patch });
+    } else if (event.type === "petted") {
+      dispatch({ kind: "pet" });
     }
   }, []);
 
@@ -123,5 +190,6 @@ export function useBuddyState(
     nextPalette,
     reset,
     handleCanvasEvent,
+    onBuddyEvent,
   };
 }

@@ -25,12 +25,20 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
   displaySize = 512,
   className,
   style,
+  speechOverride,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<BuddyAnimState>(createInitialAnimState());
   const semanticRef = useRef<BuddySemanticState>(state);
   const prevSignalTimeRef = useRef<number>(0);
   const frameIdRef = useRef<number>(0);
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  const bubbleTextRef = useRef<string>("");
+  const speechOverrideRef = useRef<string | null | undefined>(speechOverride);
+
+  useEffect(() => {
+    speechOverrideRef.current = speechOverride;
+  }, [speechOverride]);
 
   useEffect(() => {
     semanticRef.current = state;
@@ -62,6 +70,26 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
         const sem = semanticRef.current;
         stepAnimFrame(animRef.current, sem, emit);
         renderFrame(ctx, animRef.current, sem);
+        if (bubbleRef.current) {
+          const anim = animRef.current;
+          // speechOverride (backend/runtime) takes priority; falls back to canvas statusText
+          const overrideText = speechOverrideRef.current ?? "";
+          const text = overrideText || anim.statusText || "";
+          const opacity = overrideText ? 1 : anim.statusOpacity;
+          if (text !== bubbleTextRef.current) {
+            bubbleTextRef.current = text;
+            const span = bubbleRef.current
+              .firstElementChild as HTMLElement | null;
+            if (span) span.textContent = text;
+          }
+          if (opacity > 0.02 && text) {
+            bubbleRef.current.style.opacity = String(Math.min(1, opacity));
+            bubbleRef.current.style.visibility = "visible";
+          } else {
+            bubbleRef.current.style.opacity = "0";
+            bubbleRef.current.style.visibility = "hidden";
+          }
+        }
       }
       frameIdRef.current = requestAnimationFrame(loop);
     };
@@ -151,24 +179,75 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
   );
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={CANVAS_SIZE}
-      height={CANVAS_SIZE}
+    <div
+      className={className}
       style={{
+        position: "relative",
+        display: "inline-block",
         width: displaySize,
         height: displaySize,
-        imageRendering: "pixelated",
-        display: "block",
-        cursor: "pointer",
+        flexShrink: 0,
         ...style,
       }}
-      className={className}
-      onMouseMove={onMouseMove}
-      onMouseLeave={onMouseLeave}
-      onMouseDown={onMouseDown}
-      onMouseUp={onMouseUp}
-      onClick={onClick}
-    />
+    >
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_SIZE}
+        height={CANVAS_SIZE}
+        style={{
+          width: displaySize,
+          height: displaySize,
+          imageRendering: "pixelated",
+          display: "block",
+          cursor: "pointer",
+        }}
+        onMouseMove={onMouseMove}
+        onMouseLeave={onMouseLeave}
+        onMouseDown={onMouseDown}
+        onMouseUp={onMouseUp}
+        onClick={onClick}
+      />
+      {displaySize >= 100 && (
+        <div
+          ref={bubbleRef}
+          style={{
+            position: "absolute",
+            bottom: "68%",
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: "var(--color-panel-solid, rgba(18,18,24,0.96))",
+            border: "1.5px solid var(--gray-a6, rgba(255,255,255,0.18))",
+            borderRadius: "10px",
+            padding: "3px 9px",
+            fontSize: "11px",
+            fontFamily: "'ui-monospace','SFMono-Regular',monospace",
+            fontWeight: 500,
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+            color: "var(--gray-12, #e8e8f0)",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.25)",
+            zIndex: 5,
+            visibility: "hidden",
+            opacity: 0,
+          }}
+        >
+          <span />
+          <div
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: 0,
+              height: 0,
+              borderLeft: "5px solid transparent",
+              borderRight: "5px solid transparent",
+              borderTop:
+                "5px solid var(--color-panel-solid, rgba(18,18,24,0.96))",
+            }}
+          />
+        </div>
+      )}
+    </div>
   );
 };

@@ -118,11 +118,6 @@ pub(crate) fn format_agent_status(status: &AgentStatus) -> String {
         state_emoji, status.card_title, status.card_id, state_text, status.column
     );
 
-    result.push_str(&format!(
-        "📎 [View Agent Chat](refact://chat/{})\n",
-        status.agent_chat_id
-    ));
-
     if let Some(report) = &status.final_report {
         let preview: String = report.chars().take(300).collect();
         let preview = if preview.len() < report.len() {

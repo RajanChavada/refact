@@ -73,7 +73,9 @@ const SuggestionCard: React.FC<SuggestionCardProps> = ({ suggestion }) => {
 
 export const BuddySuggestionBar: React.FC = () => {
   const suggestions = useAppSelector(selectBuddySuggestions);
-  const active = suggestions.filter((s) => !s.dismissed).slice(0, 1);
+  const active = suggestions
+    .filter((s) => !s.dismissed && s.suggestion_type !== "error_pattern")
+    .slice(0, 1);
 
   if (active.length === 0) return null;
 

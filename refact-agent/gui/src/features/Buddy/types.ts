@@ -100,7 +100,10 @@ export type IdleActionType =
   | "playBug"
   | "readScroll"
   | "doze"
-  | "confidentPose";
+  | "confidentPose"
+  | "wave"
+  | "spin"
+  | "type_code";
 
 export type ToyType = "duck" | "dice" | "coffee" | "bug" | "scroll";
 
@@ -136,7 +139,8 @@ export type SignalType =
   | "connection_lost"
   | "connection_restored"
   | "git_changes"
-  | "idle_timeout";
+  | "idle_timeout"
+  | "stage_up";
 
 export interface MoodStats {
   happiness: number;
@@ -334,6 +338,7 @@ export interface BuddyAnimState {
   stageQuirkTick: number;
   quirkActive: boolean;
   quirkType: string;
+  quirkEndFrame: number;
   phaseAlpha: number;
   shadowClone: ShadowClone | null;
   levitationOffset: number;
@@ -348,11 +353,14 @@ export interface BuddyAnimState {
   toyType: ToyType | null;
   toyAnimPhase: number;
   toyDurationTimer: number;
+  moodType: MoodType;
   statusText: string;
   statusOpacity: number;
   statusTargetOpacity: number;
+  statusTimer: number;
   activeScene: string;
   activeSceneVariant: string;
+  activeSceneTimer: number;
 }
 
 export interface ColorMap {
@@ -374,6 +382,7 @@ export type BuddyEvent =
   | { type: "xp_gained"; amount: number; newTotal: number }
   | { type: "stage_evolved"; stage: number; name: string }
   | { type: "skill_unlocked"; skillId: string; skillName: string }
+  | { type: "petted" }
   | { type: "semantic_update"; patch: Partial<BuddySemanticState> };
 
 export interface BuddyCanvasProps {
@@ -382,6 +391,8 @@ export interface BuddyCanvasProps {
   displaySize?: number;
   className?: string;
   style?: React.CSSProperties;
+  /** Override speech bubble text (from runtime/backend), takes priority over canvas statusText */
+  speechOverride?: string | null;
 }
 
 export interface BuddyIdentity {

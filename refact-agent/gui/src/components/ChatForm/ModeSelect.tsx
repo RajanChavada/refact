@@ -1,4 +1,10 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, {
+  useRef,
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   Flex,
   Text,
@@ -18,9 +24,24 @@ import {
   selectMessages,
   selectCurrentThreadId,
 } from "../../features/Chat/Thread";
-import { push } from "../../features/Pages/pagesSlice";
+import { push, selectCurrentPage } from "../../features/Pages/pagesSlice";
 import { ModeTransitionDialog } from "./ModeTransitionDialog";
+import { TaskPlannerDialog } from "./TaskPlannerDialog";
 import styles from "./ModeSelect.module.css";
+
+const TASK_PLANNER_SYNTHETIC: ChatModeInfo = {
+  id: "task_planner",
+  title: "Task Planner",
+  description: "Create a new task and manage it with structured planning",
+  tools_count: 0,
+  ui: { order: 999, tags: ["tasks", "planning"] },
+  thread_defaults: {
+    include_project_info: false,
+    checkpoints_enabled: false,
+    auto_approve_editing_tools: false,
+    auto_approve_dangerous_commands: false,
+  },
+};
 
 type ModeSelectProps = {
   selectedMode: string;
@@ -40,14 +61,29 @@ export const ModeSelect: React.FC<ModeSelectProps> = ({
   const { data, isLoading, isError } = useGetChatModesQuery(undefined);
   const messages = useAppSelector(selectMessages);
   const currentChatId = useAppSelector(selectCurrentThreadId);
+  const currentPage = useAppSelector(selectCurrentPage);
 
-  const modes = data?.modes ?? [];
+  const rawModes = data?.modes ?? [];
+  const taskId =
+    currentPage?.name === "task workspace" ? currentPage.taskId : undefined;
+
+  const effectiveModes = useMemo(() => {
+    const hasTp = rawModes.some((m) => m.id === "task_planner");
+    const withTp = hasTp ? rawModes : [...rawModes, TASK_PLANNER_SYNTHETIC];
+    if (taskId) {
+      return [
+        ...withTp.filter((m) => m.id === "task_planner"),
+        ...withTp.filter((m) => m.id !== "task_planner"),
+      ];
+    }
+    return withTp;
+  }, [rawModes, taskId]);
+
   const effectiveMode = selectedMode || DEFAULT_MODE;
-  const currentMode = modes.find((m) => m.id === effectiveMode);
+  const currentMode = effectiveModes.find((m) => m.id === effectiveMode);
   const currentTitle = currentMode?.title ?? effectiveMode;
   const toolsCount = currentMode?.tools_count ?? 0;
 
-  // Mode transition is needed when there are messages
   const hasMessages = messages.length > 0;
   const isModeDisabled = disabled ?? false;
 
@@ -55,20 +91,22 @@ export const ModeSelect: React.FC<ModeSelectProps> = ({
   const [transitionDialogOpen, setTransitionDialogOpen] = useState(false);
   const [targetModeForTransition, setTargetModeForTransition] =
     useState<ChatModeInfo | null>(null);
+  const [taskPlannerDialogOpen, setTaskPlannerDialogOpen] = useState(false);
   const selectedModeRef = useRef<HTMLButtonElement>(null);
   const modeListRef = useRef<HTMLDivElement>(null);
 
   const handleModeSelect = useCallback(
     (mode: ChatModeInfo) => {
+      setIsOpen(false);
+      if (mode.id === "task_planner") {
+        setTaskPlannerDialogOpen(true);
+        return;
+      }
       if (hasMessages) {
-        // Open transition dialog for mode switch with context (including self-switch)
         setTargetModeForTransition(mode);
         setTransitionDialogOpen(true);
-        setIsOpen(false);
       } else {
-        // Direct mode change (no messages)
         onModeChange(mode.id, mode.thread_defaults);
-        setIsOpen(false);
       }
     },
     [hasMessages, onModeChange],
@@ -124,7 +162,7 @@ export const ModeSelect: React.FC<ModeSelectProps> = ({
     );
   }
 
-  if (isError || modes.length === 0) {
+  if (isError || rawModes.length === 0) {
     return (
       <div className={`${styles.trigger} ${styles.disabled}`}>
         <Text size="1" color="gray">
@@ -177,7 +215,7 @@ export const ModeSelect: React.FC<ModeSelectProps> = ({
           sideOffset={8}
         >
           <div className={styles.modeList} ref={modeListRef}>
-            {modes.map((mode, index) => {
+            {effectiveModes.map((mode, index) => {
               const isSelected = effectiveMode === mode.id;
               return (
                 <React.Fragment key={mode.id}>
@@ -219,6 +257,14 @@ export const ModeSelect: React.FC<ModeSelectProps> = ({
           targetModeDescription={targetModeForTransition.description}
         />
       )}
+
+      <TaskPlannerDialog
+        open={taskPlannerDialogOpen}
+        onOpenChange={setTaskPlannerDialogOpen}
+        chatId={currentChatId ?? ""}
+        hasMessages={hasMessages}
+        taskId={taskId}
+      />
     </>
   );
 };

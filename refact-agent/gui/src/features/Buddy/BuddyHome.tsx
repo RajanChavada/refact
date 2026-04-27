@@ -114,6 +114,7 @@ export const BuddyHome: React.FC = () => {
               state={state}
               onEvent={buddy.handleCanvasEvent}
               displaySize={320}
+              speechOverride={nowPlaying?.speech_text ?? null}
             />
           </div>
           <BuddySpeechCloud variant="overlay" />

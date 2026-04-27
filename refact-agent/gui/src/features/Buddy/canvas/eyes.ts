@@ -39,7 +39,7 @@ export function drawEyes(
     return;
   }
 
-  if (anim.idleAction === "doze" || anim.statusText === "zzz...") {
+  if (anim.idleAction === "doze" || anim.moodType === "sleepy") {
     for (let i = 0; i < size; i++) {
       fillPixel(ctx, leftX + i, leftY + 1, 1, 1, m.eyeDark);
       fillPixel(ctx, rightX + i, rightY + 1, 1, 1, m.eyeDark);
@@ -295,7 +295,7 @@ export function drawMouth(
   width: number,
   anim: BuddyAnimState,
 ): void {
-  const mood = anim.statusText;
+  const mood = anim.moodType;
   const style = anim.eyeStyle;
   const frame = anim.frame;
 
@@ -327,10 +327,24 @@ export function drawMouth(
     return;
   }
 
-  if (style === "teary" || mood === "concerned") {
+  if (style === "teary" || mood === "concerned" || mood === "alert") {
     fillRect(ctx, mx, my + 1, width, 1, m.eyeDark);
     fillPixel(ctx, mx - 1, my + 2, 1, 1, m.eyeDark);
     fillPixel(ctx, mx + width, my + 2, 1, 1, m.eyeDark);
+    return;
+  }
+
+  // focused/working: slightly open determined mouth
+  if (mood === "working" || mood === "focused" || mood === "thinking") {
+    fillRect(ctx, mx + 1, my + 1, width - 2, 1, m.eyeDark);
+    return;
+  }
+
+  // learning/curious: open mouth (slight excitement)
+  if (mood === "learning" || mood === "curious") {
+    fillPixel(ctx, mx, my, 1, 1, m.eyeDark);
+    fillRect(ctx, mx + 1, my + 1, width - 2, 1, m.eyeDark);
+    fillPixel(ctx, mx + width - 1, my, 1, 1, m.eyeDark);
     return;
   }
 

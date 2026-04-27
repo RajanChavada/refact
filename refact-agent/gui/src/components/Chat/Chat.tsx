@@ -63,7 +63,9 @@ export const Chat: React.FC<ChatProps> = ({
   const onEnableSend = () => dispatch(enableSend({ id: chatId }));
 
   const suggestions = useAppSelector(selectBuddySuggestions);
-  const hasActiveSuggestions = suggestions.some((s) => !s.dismissed);
+  const hasActiveSuggestions = suggestions.some(
+    (s) => !s.dismissed && s.suggestion_type !== "error_pattern",
+  );
 
   const handleSubmit = useCallback(
     (value: string, sendPolicy?: "immediate" | "after_flow") => {

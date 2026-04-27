@@ -204,6 +204,35 @@ export function renderFrame(
     ctx.globalAlpha = 1;
   }
 
+  if (anim.idleAction === "wave" && !isSleeping) {
+    const wavePhase = Math.sin(anim.frame * 0.28);
+    const armBaseX = ox + spriteW + 1;
+    const armBaseY = Math.round(oy + spriteH / 3);
+    const handX = armBaseX + Math.round(wavePhase * 3);
+    const handY = armBaseY - Math.round(Math.abs(wavePhase) * 4);
+    ctx.globalAlpha = 0.85;
+    fillRect(ctx, armBaseX, armBaseY, 1, 4, pal.body);
+    fillRect(ctx, handX, handY, 2, 2, pal.light);
+    ctx.globalAlpha = 1;
+  }
+
+  if (anim.idleAction === "type_code" && !isSleeping) {
+    const keyPhase = Math.floor(anim.frame / 6) % 4;
+    const kbX = ox + spriteW / 2 - 5;
+    const kbY = oy + spriteH + 2;
+    ctx.globalAlpha = 0.5;
+    fillRect(ctx, kbX, kbY, 10, 3, pal.dark);
+    ctx.globalAlpha = 0.9;
+    fillRect(ctx, kbX + keyPhase * 2, kbY, 2, 2, pal.accent);
+    ctx.globalAlpha = 1;
+  }
+
+  if (anim.idleAction === "spin" && anim.frame % 3 === 0) {
+    ctx.globalAlpha = 0.18 + Math.sin(anim.frame * 0.4) * 0.12;
+    strokeRect(ctx, ox - 3, oy - 3, spriteW + 6, spriteH + 6, pal.accent);
+    ctx.globalAlpha = 1;
+  }
+
   if (anim.celebrationTimer > 0 || anim.idleAction === "doze") {
     for (let i = 0; i < 3; i++) {
       const ddx = ox - 3 - i * 3;

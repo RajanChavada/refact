@@ -3,7 +3,12 @@ import { Button } from "@radix-ui/themes";
 import { useAppDispatch, useAppSelector } from "../../hooks";
 import { push } from "../Pages/pagesSlice";
 import { clearActiveSpeech, selectActiveSpeech } from "./buddySlice";
-import { openChatInModeAndStart } from "../Chat/Thread/actions";
+import {
+  openBuddyChat,
+  newBuddyChatAction,
+  openChatInModeAndStart,
+} from "../Chat/Thread";
+import { useCreateBuddyConversationMutation } from "../../services/refact/buddy";
 import type { BuddyControl } from "./types";
 import styles from "./BuddySpeechCloud.module.css";
 
@@ -14,9 +19,10 @@ interface Props {
 export const BuddySpeechCloud: React.FC<Props> = ({ variant = "block" }) => {
   const dispatch = useAppDispatch();
   const speech = useAppSelector(selectActiveSpeech);
+  const [createConversation] = useCreateBuddyConversationMutation();
 
   const handleControl = useCallback(
-    (ctrl: BuddyControl) => {
+    async (ctrl: BuddyControl) => {
       switch (ctrl.action) {
         case "dismiss":
           dispatch(clearActiveSpeech());
@@ -33,11 +39,24 @@ export const BuddySpeechCloud: React.FC<Props> = ({ variant = "block" }) => {
           dispatch(push({ name: "buddy" }));
           dispatch(clearActiveSpeech());
           break;
+        case "investigate_error": {
+          dispatch(clearActiveSpeech());
+          const result = await createConversation(undefined);
+          if ("data" in result && result.data) {
+            const meta = result.data;
+            dispatch(newBuddyChatAction({ chat_id: meta.chat_id }));
+            dispatch(
+              openBuddyChat({ chat_id: meta.chat_id, title: meta.title }),
+            );
+            dispatch(push({ name: "chat" }));
+          }
+          break;
+        }
         default:
           dispatch(clearActiveSpeech());
       }
     },
-    [dispatch],
+    [dispatch, createConversation],
   );
 
   if (!speech) return null;
@@ -55,7 +74,7 @@ export const BuddySpeechCloud: React.FC<Props> = ({ variant = "block" }) => {
             key={ctrl.id}
             size="1"
             variant={ctrl.style === "primary" ? "solid" : "soft"}
-            onClick={() => handleControl(ctrl)}
+            onClick={() => void handleControl(ctrl)}
           >
             {ctrl.label}
           </Button>

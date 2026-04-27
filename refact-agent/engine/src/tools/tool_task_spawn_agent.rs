@@ -9,9 +9,9 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::tools::tools_description::{
-    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+    Tool, ToolDesc, ToolSource, ToolSourceType,
 };
-use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
+use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile};
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::tasks::storage;
 use crate::tasks::types::StatusUpdate;
@@ -69,6 +69,7 @@ struct PreparedWorktree {
     branch_name: String,
     worktree_name: String,
     worktree_path: std::path::PathBuf,
+    workspace_root: std::path::PathBuf,
     git_dir: std::path::PathBuf,
     base_branch: Option<String>,
     spawned_with_dirty_tree: bool,
@@ -158,6 +159,7 @@ async fn prepare_agent_worktree(
         branch_name,
         worktree_name,
         worktree_path,
+        workspace_root,
         git_dir,
         base_branch,
         spawned_with_dirty_tree,
@@ -218,7 +220,25 @@ impl Tool for ToolTaskSpawnAgent {
             experimental: false,
             allow_parallel: false,
             description: "Spawn an agent to work on a specific task card. The agent runs in the background as a real chat session. Returns immediately with a hyperlink to view the agent's progress. The agent will call task_agent_finish() when done.".to_string(),
-            input_schema: json_schema_from_params(&[("card_id", "string", "Card ID to work on"), ("suggested_steps", "integer", "Suggested step budget for the agent (default: 30). This is a hint, not enforced.")], &["card_id"]),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "card_id": {
+                        "type": "string",
+                        "description": "Card ID to work on"
+                    },
+                    "suggested_steps": {
+                        "type": "integer",
+                        "description": "Suggested step budget for the agent (default: 30). This is a hint, not enforced."
+                    },
+                    "files_to_open": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of file paths to open immediately when the agent starts. The agent will see these files as context at the beginning of its session."
+                    }
+                },
+                "required": ["card_id"]
+            }),
             output_schema: None,
             annotations: None,
         }
@@ -251,6 +271,15 @@ impl Tool for ToolTaskSpawnAgent {
             .get("card_id")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'card_id'")?;
+        let files_to_open: Vec<String> = args
+            .get("files_to_open")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let suggested_steps: usize = match args
             .get("suggested_steps")
             .or_else(|| args.get("max_steps"))
@@ -547,6 +576,45 @@ impl Tool for ToolTaskSpawnAgent {
             };
             session.add_message(user_msg);
 
+            if !files_to_open.is_empty() {
+                let mut context_files: Vec<ContextFile> = Vec::new();
+                for path_str in &files_to_open {
+                    let resolved = if let Some(ref pw) = prepared_worktree {
+                        let orig = std::path::Path::new(path_str);
+                        match orig.strip_prefix(&pw.workspace_root) {
+                            Ok(rel) => pw.worktree_path.join(rel),
+                            Err(_) => pw.worktree_path.join(path_str.trim_start_matches('/')),
+                        }
+                    } else {
+                        std::path::PathBuf::from(path_str)
+                    };
+                    match tokio::fs::read_to_string(&resolved).await {
+                        Ok(content) => {
+                            let line_count = content.lines().count().max(1);
+                            context_files.push(ContextFile {
+                                file_name: resolved.to_string_lossy().to_string(),
+                                file_content: content,
+                                line1: 1,
+                                line2: line_count,
+                                ..Default::default()
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("task_spawn_agent: could not read file {:?}: {}", resolved, e);
+                        }
+                    }
+                }
+                if !context_files.is_empty() {
+                    let ctx_msg = ChatMessage {
+                        role: "context_file".to_string(),
+                        content: ChatContent::ContextFiles(context_files),
+                        tool_call_id: "initial_files".to_string(),
+                        ..Default::default()
+                    };
+                    session.add_message(ctx_msg);
+                }
+            }
+
             session.increment_version();
         }
 
@@ -603,10 +671,8 @@ impl Tool for ToolTaskSpawnAgent {
 **Model:** {}
 **Status:** Running in background
 
-📎 [View Agent Chat](refact://chat/{})
-
 The agent will call `task_agent_finish()` when done. Use `task_check_agents` to monitor progress.{}"#,
-            card_title, card_id, agent_id, model, agent_chat_id, dirty_note
+            card_title, card_id, agent_id, model, dirty_note
         );
 
         Ok((
