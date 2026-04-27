@@ -32,6 +32,9 @@ export function createInitialSemanticState(): BuddySemanticState {
       confidence: 20,
       clinginess: 30,
       resilience: 20,
+      chaos: 25,
+      sociability: 35,
+      curiosity: 45,
     },
     progress: { xp: 0, stage: 0 },
     activity: {

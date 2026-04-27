@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::path::Path;
 use std::time::Instant;
 use chrono::Utc;
 use tokio::sync::{broadcast, RwLock as ARwLock};
@@ -12,8 +13,8 @@ use super::runtime_queue::RuntimeQueue;
 use super::settings::BuddySettings;
 use super::snapshot::BuddySnapshot;
 use super::types::{
-    BuddyActivity, BuddyCareAction, BuddyRuntimeEvent, BuddySpeechItem, BuddyState,
-    BuddySuggestion,
+    BuddyActivity, BuddyCareAction, BuddyQuest, BuddyRuntimeEvent, BuddySpeechItem,
+    BuddyState, BuddySuggestion,
 };
 
 const SUGGESTION_RATE_LIMIT_SECS: u64 = 300;
@@ -56,6 +57,7 @@ pub struct BuddyService {
     pub state: BuddyState,
     pub settings: BuddySettings,
     pub events_tx: broadcast::Sender<BuddyEvent>,
+    pub project_root: std::path::PathBuf,
     pub last_suggestion_at: Option<Instant>,
     pub recent_diagnostics: Vec<super::diagnostics::DiagnosticContext>,
     pub last_issue_at: Option<Instant>,
@@ -67,16 +69,19 @@ pub struct BuddyService {
 
 impl BuddyService {
     pub fn new(
+        project_root: std::path::PathBuf,
         state: BuddyState,
         settings: BuddySettings,
+        recent_diagnostics: Vec<super::diagnostics::DiagnosticContext>,
         events_tx: broadcast::Sender<BuddyEvent>,
     ) -> Self {
         Self {
+            project_root,
             state,
             settings,
             events_tx,
             last_suggestion_at: None,
-            recent_diagnostics: Vec::new(),
+            recent_diagnostics,
             last_issue_at: None,
             recent_issue_errors: Vec::new(),
             runtime_queue: RuntimeQueue::new(),
@@ -90,6 +95,7 @@ impl BuddyService {
             state: self.state.clone(),
             settings: self.settings.clone(),
             enabled: self.settings.enabled,
+            recent_diagnostics: self.recent_diagnostics.clone(),
             runtime_queue: self.runtime_queue.items.iter().cloned().collect(),
             now_playing: self.runtime_queue.now_playing.clone(),
             active_speech: self.active_speech.clone(),
@@ -159,8 +165,101 @@ impl BuddyService {
         let _ = self.events_tx.send(BuddyEvent::ActivityAdded { activity });
     }
 
+    fn refresh_active_quest(&mut self) {
+        let progressed = super::state::refresh_active_quest_progress(&mut self.state);
+        let completed = self
+            .state
+            .active_quest
+            .as_ref()
+            .map(|quest| quest.status == "active" && quest.progress >= quest.goal)
+            .unwrap_or(false);
+
+        if !completed {
+            if progressed {
+                self.dirty = true;
+                let _ = self.events_tx.send(BuddyEvent::StateUpdated {
+                    state: self.state.clone(),
+                });
+            }
+            return;
+        }
+
+        let Some(quest) = super::state::complete_active_quest(&mut self.state) else {
+            return;
+        };
+
+        let reward = quest.reward_xp;
+        let title = quest.title.clone();
+        let icon = quest.icon.clone();
+        self.dirty = true;
+        let _ = self.events_tx.send(BuddyEvent::StateUpdated {
+            state: self.state.clone(),
+        });
+
+        self.add_activity(BuddyActivity {
+            icon,
+            title: format!("Quest complete: {title}"),
+            description: format!("Buddy wrapped up '{title}' and earned a growth boost."),
+            timestamp: Utc::now().to_rfc3339(),
+            activity_type: "quest_completed".to_string(),
+        });
+        self.update_speech(BuddySpeechItem {
+            id: format!("quest-complete-{}", quest.id),
+            text: format!("Quest complete: {title}! Tiny victory dance?"),
+            mood: "happy".to_string(),
+            scope: "global".to_string(),
+            persistent: false,
+            ttl_seconds: 12,
+            dedupe_key: Some(format!("quest_complete_{}", quest.quest_type)),
+            created_at: Utc::now().to_rfc3339(),
+            controls: vec![],
+            chat_id: None,
+        });
+        self.enqueue_runtime_event(BuddyRuntimeEvent {
+            speech_text: Some(format!("Quest complete: {title}")),
+            scene: Some("celebrate".to_string()),
+            duration_hint: Some(10),
+            persistent: false,
+            controls: vec![],
+            chat_id: None,
+            ..make_runtime_event(
+                "task_completed",
+                &format!("Quest complete: {title}"),
+                "buddy_quest",
+                &format!("quest_complete_{}", quest.quest_type),
+                "completed",
+                Some("high"),
+            )
+        });
+        if reward > 0 {
+            self.grant_xp(reward);
+        }
+    }
+
+    pub fn accept_quest(&mut self, quest: BuddyQuest) {
+        let title = quest.title.clone();
+        super::state::activate_quest(&mut self.state, quest.clone());
+        self.dirty = true;
+        let _ = self.events_tx.send(BuddyEvent::StateUpdated {
+            state: self.state.clone(),
+        });
+        self.update_speech(BuddySpeechItem {
+            id: format!("quest-accept-{}", quest.id),
+            text: format!("Quest accepted: {title}. I’ll keep score from here."),
+            mood: "happy".to_string(),
+            scope: "global".to_string(),
+            persistent: false,
+            ttl_seconds: 12,
+            dedupe_key: Some(format!("quest_accept_{}", quest.quest_type)),
+            created_at: Utc::now().to_rfc3339(),
+            controls: quest.controls,
+            chat_id: None,
+        });
+    }
+
     pub fn grant_xp(&mut self, amount: u64) {
         super::state::grant_xp(&mut self.state, amount);
+        self.refresh_active_quest();
         self.dirty = true;
         let _ = self.events_tx.send(BuddyEvent::StateUpdated {
             state: self.state.clone(),
@@ -169,6 +268,7 @@ impl BuddyService {
 
     pub fn apply_care_action(&mut self, action: BuddyCareAction, toy: Option<&str>) -> String {
         let (_, message) = super::state::apply_care_action(&mut self.state, action.clone(), toy);
+        self.refresh_active_quest();
         self.dirty = true;
         let _ = self.events_tx.send(BuddyEvent::StateUpdated {
             state: self.state.clone(),
@@ -178,6 +278,7 @@ impl BuddyService {
 
     pub fn reroll_personality(&mut self) {
         super::state::reroll_personality(&mut self.state);
+        self.refresh_active_quest();
         self.dirty = true;
         let _ = self.events_tx.send(BuddyEvent::StateUpdated {
             state: self.state.clone(),
@@ -191,6 +292,7 @@ impl BuddyService {
         if !super::state::apply_pet_tick(&mut self.state, elapsed_seconds) {
             return;
         }
+        self.refresh_active_quest();
         self.dirty = true;
         let _ = self.events_tx.send(BuddyEvent::StateUpdated {
             state: self.state.clone(),
@@ -268,6 +370,7 @@ impl BuddyService {
                     last_outcome: Some("success".to_string()),
                 });
         }
+        self.refresh_active_quest();
         self.dirty = true;
         let _ = self.events_tx.send(BuddyEvent::StateUpdated {
             state: self.state.clone(),
@@ -296,6 +399,7 @@ impl BuddyService {
                     last_outcome: Some("failed".to_string()),
                 });
         }
+        self.refresh_active_quest();
         self.dirty = true;
         let _ = self.events_tx.send(BuddyEvent::StateUpdated {
             state: self.state.clone(),
@@ -307,9 +411,36 @@ impl BuddyService {
         if self.recent_diagnostics.len() > 100 {
             self.recent_diagnostics.remove(0);
         }
+        let project_root = self.project_root.clone();
+        let ctx_for_disk = ctx.clone();
+        tokio::spawn(async move {
+            if let Err(err) = super::storage::append_diagnostic(&project_root, &ctx_for_disk).await {
+                warn!("buddy: failed to persist diagnostic history: {}", err);
+            }
+        });
         let _ = self
             .events_tx
             .send(BuddyEvent::DiagnosticAdded { diagnostic: ctx });
+    }
+
+    pub fn diagnostic_by_collected_at(
+        &self,
+        collected_at: &str,
+    ) -> Option<super::diagnostics::DiagnosticContext> {
+        self.recent_diagnostics
+            .iter()
+            .find(|diag| diag.collected_at == collected_at)
+            .cloned()
+    }
+
+    pub fn diagnostic_by_id(
+        &self,
+        id: &str,
+    ) -> Option<super::diagnostics::DiagnosticContext> {
+        self.recent_diagnostics
+            .iter()
+            .find(|diag| super::diagnostics::diagnostic_id(diag) == id)
+            .cloned()
     }
 
     pub fn record_issue_created(&mut self, error_message: String) {
@@ -462,6 +593,121 @@ pub async fn buddy_enqueue_event(gcx: Arc<ARwLock<GlobalContext>>, event: BuddyR
     }
 }
 
+pub async fn report_error_persisted(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    error_type: &str,
+    error_msg: &str,
+    source: Option<&str>,
+    chat_id: Option<&str>,
+) {
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let mut lock = buddy_arc.lock().await;
+    if let Some(svc) = lock.as_mut() {
+        svc.report_error(error_type, error_msg, source, chat_id);
+    }
+}
+
+pub async fn latest_project_root(
+    gcx: Arc<ARwLock<GlobalContext>>,
+) -> Result<std::path::PathBuf, String> {
+    crate::files_correction::get_project_dirs(gcx)
+        .await
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no project root".to_string())
+}
+
+pub async fn load_diagnostics_for_service(
+    project_root: &Path,
+) -> Vec<super::diagnostics::DiagnosticContext> {
+    match super::storage::load_recent_diagnostics(project_root, 100).await {
+        Ok(diags) => diags,
+        Err(err) => {
+            warn!("buddy: failed to load diagnostic history: {}", err);
+            Vec::new()
+        }
+    }
+}
+
+pub async fn resolve_diagnostic(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    diagnostic_index: Option<usize>,
+    diagnostic_id: Option<&str>,
+    collected_at: Option<&str>,
+    fallback: Option<super::diagnostics::DiagnosticContext>,
+) -> Result<super::diagnostics::DiagnosticContext, String> {
+    let project_root = latest_project_root(gcx.clone()).await?;
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let lock = buddy_arc.lock().await;
+    let svc = lock
+        .as_ref()
+        .ok_or_else(|| "buddy service not initialized".to_string())?;
+    let by_id = diagnostic_id.and_then(|id| svc.diagnostic_by_id(id));
+    let by_time = collected_at.and_then(|ts| svc.diagnostic_by_collected_at(ts));
+    let recent = svc.recent_diagnostics.clone();
+    drop(lock);
+
+    if let Some(id) = diagnostic_id {
+        if let Some(ctx) = by_id {
+            return Ok(ctx);
+        }
+        let diags = super::storage::load_diagnostics(&project_root).await?;
+        if let Some(ctx) = diags
+            .into_iter()
+            .find(|diag| super::diagnostics::diagnostic_id(diag) == id)
+        {
+            return Ok(ctx);
+        }
+        return Err("diagnostic id not found".to_string());
+    }
+
+    if let Some(ts) = collected_at {
+        if let Some(ctx) = by_time {
+            return Ok(ctx);
+        }
+        let diags = super::storage::load_diagnostics(&project_root).await?;
+        if let Some(ctx) = diags.into_iter().find(|diag| diag.collected_at == ts) {
+            return Ok(ctx);
+        }
+        return Err("diagnostic timestamp not found".to_string());
+    }
+
+    if let Some(idx) = diagnostic_index {
+        let diags = if recent.is_empty() {
+            super::storage::load_recent_diagnostics(&project_root, 100).await?
+        } else {
+            recent
+        };
+        return diags
+            .get(idx)
+            .cloned()
+            .ok_or_else(|| "diagnostic index out of range".to_string());
+    }
+
+    fallback.ok_or_else(|| "provide diagnostic reference or error".to_string())
+}
+
+pub fn same_day_log_filter(line: &str, collected_at: &str) -> bool {
+    let Some(prefix) = line.get(0..6) else {
+        return false;
+    };
+    let Some(target) = chrono::DateTime::parse_from_rfc3339(collected_at)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+    else {
+        return true;
+    };
+    let Ok(time) = chrono::NaiveTime::parse_from_str(prefix, "%H%M%S") else {
+        return false;
+    };
+    let candidate = target.date_naive().and_time(time).and_utc();
+    target
+        .signed_duration_since(candidate)
+        .num_seconds()
+        .abs()
+        <= 24 * 3600
+}
+
 
 pub struct BuddyMutation {
     pub runtime_event: Option<BuddyRuntimeEvent>,
@@ -522,6 +768,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
 
     let state = super::state::load_state(&project_root).await;
     let settings = super::settings::load_settings(&project_root).await;
+    let recent_diagnostics = load_diagnostics_for_service(&project_root).await;
 
     let events_tx = gcx
         .read()
@@ -529,7 +776,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
         .buddy_events_tx
         .clone()
         .expect("buddy_events_tx must be set");
-    let service = BuddyService::new(state, settings, events_tx);
+    let service = BuddyService::new(project_root.clone(), state, settings, recent_diagnostics, events_tx);
 
     let buddy_arc = gcx.read().await.buddy.clone();
     *buddy_arc.lock().await = Some(service);
@@ -554,6 +801,8 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
                             .to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                     dismissed: false,
+                    controls: vec![],
+                    quest: None,
                 };
                 svc.add_suggestion(suggestion);
             }

@@ -60,7 +60,13 @@ import { Dashboard } from "./Dashboard";
 import { BuddyHome } from "./Buddy/BuddyHome";
 import { BuddyErrorBoundary } from "./Buddy/BuddyErrorBoundary";
 import { ChatLoading } from "../components/ChatContent/ChatLoading";
-import { reportBuddyFrontendError } from "./Buddy/reportBuddyFrontendError";
+import {
+  beginBuddyCrashSession,
+  buildBuddyCrashRecoveryError,
+  closeBuddyCrashSession,
+  reportBuddyFrontendError,
+  touchBuddyCrashSession,
+} from "./Buddy/reportBuddyFrontendError";
 
 import styles from "./App.module.css";
 import classNames from "classnames";
@@ -77,6 +83,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
   const dispatch = useAppDispatch();
   const rootRef = useRef<HTMLDivElement>(null);
   const sawZeroHeightRef = useRef(false);
+  const crashSessionStartedRef = useRef(false);
 
   const pages = useAppSelector(selectPages);
   const isStreaming = useAppSelector(selectIsStreaming);
@@ -109,6 +116,49 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
   }, []);
 
   const config = useConfig();
+
+  useEffect(() => {
+    if (crashSessionStartedRef.current) return;
+    crashSessionStartedRef.current = true;
+
+    const previous = beginBuddyCrashSession({
+      host: config.host,
+      page: pages[pages.length - 1]?.name,
+      chatId,
+      isStreaming,
+    });
+
+    if (previous) {
+      void reportBuddyFrontendError({
+        source: "possible_renderer_crash",
+        error: buildBuddyCrashRecoveryError(previous),
+        sourceFile: "frontend/possible_renderer_crash",
+        toolName: "renderer_crash_recovery",
+        chatId: previous.chatId,
+      });
+    }
+
+    const onPageHide = () => {
+      closeBuddyCrashSession("pagehide");
+    };
+
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide);
+      closeBuddyCrashSession("unmount");
+    };
+  }, [chatId, config.host, isStreaming, pages]);
+
+  useEffect(() => {
+    touchBuddyCrashSession({
+      host: config.host,
+      page: pages[pages.length - 1]?.name,
+      chatId,
+      isStreaming,
+    });
+  }, [config.host, pages, chatId, isStreaming]);
 
   const checkIdeRootLayout = useCallback(() => {
     if (config.host !== "jetbrains" && config.host !== "ide") return;
@@ -158,6 +208,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
         source: "window_error",
         error: event.error ?? event.message,
         sourceFile: event.filename || "frontend/window_error",
+        chatId,
       });
     };
 
@@ -166,6 +217,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
         source: "unhandledrejection",
         error: event.reason,
         sourceFile: "frontend/unhandledrejection",
+        chatId,
       });
     };
 
@@ -175,7 +227,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
     };
-  }, []);
+  }, [chatId]);
 
   const desiredPage = pages[pages.length - 1];
   const [renderedPage, setRenderedPage] = useState(desiredPage);
@@ -442,18 +494,20 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
 // TODO: move this to the `app` directory.
 export const App = () => {
   return (
-    <Provider store={store}>
-      <UrqlProvider>
-        <PersistGate persistor={persistor}>
-          <Theme>
-            <AbortControllerProvider>
-              <BuddyErrorBoundary>
-                <InnerApp />
-              </BuddyErrorBoundary>
-            </AbortControllerProvider>
-          </Theme>
-        </PersistGate>
-      </UrqlProvider>
-    </Provider>
+    <BuddyErrorBoundary>
+      <Provider store={store}>
+        <UrqlProvider>
+          <PersistGate persistor={persistor}>
+            <Theme>
+              <AbortControllerProvider>
+                <BuddyErrorBoundary>
+                  <InnerApp />
+                </BuddyErrorBoundary>
+              </AbortControllerProvider>
+            </Theme>
+          </PersistGate>
+        </UrqlProvider>
+      </Provider>
+    </BuddyErrorBoundary>
   );
 };

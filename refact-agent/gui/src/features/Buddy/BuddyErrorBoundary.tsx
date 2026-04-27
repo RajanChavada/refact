@@ -22,7 +22,7 @@ export class BuddyErrorBoundary extends React.Component<Props, State> {
 
   override componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     const details = errorInfo.componentStack
-      ? `${error.stack || error.message}\n\nComponent stack:\n${
+      ? `${error.stack ?? error.message}\n\nComponent stack:\n${
           errorInfo.componentStack
         }`
       : error;
@@ -53,5 +53,26 @@ export class BuddyErrorBoundary extends React.Component<Props, State> {
     }
 
     return this.props.children;
+  }
+}
+
+export function withBuddyErrorReport<T>(
+  fn: () => T,
+  args: {
+    source: "react_root_render" | "react_recoverable";
+    sourceFile: string;
+    toolName: string;
+  },
+): T {
+  try {
+    return fn();
+  } catch (error) {
+    void reportBuddyFrontendError({
+      source: args.source,
+      error,
+      sourceFile: args.sourceFile,
+      toolName: args.toolName,
+    });
+    throw error;
   }
 }

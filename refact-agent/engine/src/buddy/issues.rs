@@ -217,6 +217,7 @@ pub async fn has_github_mcp(gcx: Arc<ARwLock<GlobalContext>>) -> bool {
 pub async fn investigation_logs(
     gcx: Arc<ARwLock<GlobalContext>>,
     error: &str,
+    collected_at: Option<&str>,
 ) -> Result<String, String> {
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new(
@@ -239,7 +240,26 @@ pub async fn investigation_logs(
     args.insert("lines".to_string(), serde_json::json!(80));
     args.insert("errors_only".to_string(), serde_json::json!(true));
     let (_, out) = tool.tool_execute(ccx, &"buddy_logs".to_string(), &args).await?;
-    Ok(extract_tool_text(out, "Investigation logs were unavailable."))
+    let text = extract_tool_text(out, "Investigation logs were unavailable.");
+    let Some(collected_at) = collected_at else {
+        return Ok(text);
+    };
+
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        if line.starts_with("Log lines (")
+            || line.trim().is_empty()
+            || crate::buddy::actor::same_day_log_filter(line, collected_at)
+        {
+            kept.push(line.to_string());
+        }
+    }
+
+    if kept.len() <= 1 {
+        return Ok("No log lines found matching the diagnostic timestamp window.".to_string());
+    }
+
+    Ok(kept.join("\n"))
 }
 
 pub async fn investigation_internal_context(
@@ -344,6 +364,8 @@ pub async fn create_issue_via_mcp(
 pub async fn create_issue_via_native(
     gcx: Arc<ARwLock<GlobalContext>>,
     diagnostic_index: Option<usize>,
+    diagnostic_id: Option<String>,
+    collected_at: Option<String>,
     error: Option<String>,
 ) -> Result<BuddyIssueCreateResult, String> {
     let pre_diag = if diagnostic_index.is_none() {
@@ -355,26 +377,23 @@ pub async fn create_issue_via_native(
         None
     };
 
-    let (ctx, auto_enabled, last_issue_at, recent_errors) = {
+    let ctx = crate::buddy::actor::resolve_diagnostic(
+        gcx.clone(),
+        diagnostic_index,
+        diagnostic_id.as_deref(),
+        collected_at.as_deref(),
+        pre_diag,
+    )
+    .await?;
+
+    let (auto_enabled, last_issue_at, recent_errors) = {
         let buddy_arc = gcx.read().await.buddy.clone();
         let lock = buddy_arc.lock().await;
         let svc = lock
             .as_ref()
             .ok_or_else(|| "buddy service not initialized".to_string())?;
 
-        let ctx = if let Some(idx) = diagnostic_index {
-            svc.recent_diagnostics
-                .get(idx)
-                .cloned()
-                .ok_or_else(|| "diagnostic index out of range".to_string())?
-        } else if let Some(diagnosed) = pre_diag {
-            diagnosed
-        } else {
-            return Err("provide diagnostic_index or error".to_string());
-        };
-
         (
-            ctx,
             svc.settings.auto_issue_creation,
             svc.last_issue_at,
             svc.recent_issue_errors.clone(),

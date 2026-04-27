@@ -5,6 +5,7 @@ import {
   setBuddySnapshot,
   dequeueRuntimeEvent,
 } from "../features/Buddy/buddySlice";
+import { registerBuddySpeechTtlListener } from "../features/Buddy/buddySpeechTtl";
 import type { RootState, AppDispatch } from "./store";
 import {
   createListenerMiddleware,
@@ -58,6 +59,7 @@ import {
   setError,
   setIsAuthError,
 } from "../features/Errors/errorsSlice";
+import { reportBuddyFrontendError } from "../features/Buddy/reportBuddyFrontendError";
 import { setThemeMode, updateConfig } from "../features/Config/configSlice";
 import { nextTip } from "../features/TipOfTheDay";
 import { telemetryApi } from "../services/refact/telemetry";
@@ -92,6 +94,21 @@ const startListening = listenerMiddleware.startListening.withTypes<
   RootState,
   AppDispatch
 >();
+
+startListening({
+  actionCreator: setError,
+  effect: (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const chatId = state.chat.current_thread_id || undefined;
+    void reportBuddyFrontendError({
+      source: "ui_error_state",
+      error: action.payload,
+      sourceFile: "frontend/ui_error_state",
+      toolName: "ui_error_state",
+      chatId,
+    });
+  },
+});
 
 startListening({
   actionCreator: newChatAction,
@@ -1306,3 +1323,10 @@ listenerMiddleware.startListening({
     }
   },
 });
+
+// ─── Buddy speech TTL ──────────────────────────────────────────────────────
+// The engine emits BuddySpeechItem with `persistent: bool` and `ttl_seconds`,
+// but nothing clears non-persistent speeches client-side, so they hang in the
+// cloud until the user dismisses them or another speech overwrites them.
+// `registerBuddySpeechTtlListener` honors the TTL — see `buddySpeechTtl.ts`.
+registerBuddySpeechTtlListener(listenerMiddleware);

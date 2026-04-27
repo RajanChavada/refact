@@ -46,6 +46,14 @@ impl Tool for ToolBuddyCreateIssue {
                         "type": "number",
                         "description": "Optional Buddy diagnostic index to associate with the issue helper fallback path."
                     },
+                    "diagnostic_id": {
+                        "type": "string",
+                        "description": "Optional stable Buddy diagnostic identifier."
+                    },
+                    "collected_at": {
+                        "type": "string",
+                        "description": "Optional Buddy diagnostic collected_at timestamp in RFC3339 format."
+                    },
                     "error": {
                         "type": "string",
                         "description": "Optional diagnostic error text when no diagnostic index is available."
@@ -102,6 +110,14 @@ impl Tool for ToolBuddyCreateIssue {
             .get("diagnostic_index")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
+        let diagnostic_id = args
+            .get("diagnostic_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let collected_at = args
+            .get("collected_at")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let labels = args
             .get("labels")
             .and_then(|v| v.as_array())
@@ -127,6 +143,8 @@ impl Tool for ToolBuddyCreateIssue {
             crate::buddy::issues::create_issue_via_native(
                 gcx.clone(),
                 diagnostic_index,
+                diagnostic_id,
+                collected_at,
                 error,
             )
             .await

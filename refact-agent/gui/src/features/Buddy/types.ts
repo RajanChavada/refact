@@ -163,6 +163,9 @@ export interface PersonalityStats {
   confidence: number;
   clinginess: number;
   resilience: number;
+  chaos: number;
+  sociability: number;
+  curiosity: number;
 }
 
 export interface LogEntry {
@@ -505,6 +508,25 @@ export interface BuddySuggestion {
   description: string;
   created_at: string;
   dismissed: boolean;
+  controls: BuddyControl[];
+  quest?: BuddyQuest | null;
+}
+
+export interface BuddyQuest {
+  id: string;
+  quest_type: string;
+  title: string;
+  description: string;
+  icon: string;
+  created_at: string;
+  accepted_at: string;
+  status: string;
+  completed_at?: string | null;
+  progress: number;
+  goal: number;
+  baseline: number;
+  reward_xp: number;
+  controls: BuddyControl[];
 }
 
 export interface BuddyState {
@@ -517,6 +539,7 @@ export interface BuddyState {
   suggestion_state: BuddySuggestion[];
   pet: BuddyPetState;
   personality: BuddyPersonalityProfile;
+  active_quest?: BuddyQuest | null;
 }
 
 export interface BuddySettings {
@@ -531,6 +554,7 @@ export interface BuddySnapshot {
   state: BuddyState;
   settings: BuddySettings;
   enabled: boolean;
+  recent_diagnostics?: DiagnosticContext[];
   active_speech?: BuddySpeechItem | null;
   runtime_queue?: BuddyRuntimeEvent[];
   now_playing?: BuddyRuntimeEvent | null;
@@ -550,6 +574,11 @@ export interface BuddyCareResponse {
 
 export interface BuddyPersonalityRerollResponse {
   snapshot: BuddySnapshot;
+}
+
+export interface BuddyQuestAcceptResponse {
+  snapshot: BuddySnapshot;
+  suggestion: BuddySuggestion;
 }
 
 export interface BuddyConversationMeta {
@@ -584,6 +613,7 @@ export interface DiagnosticContext {
   source_file: string | null;
   tool_name: string | null;
   chat_id: string | null;
+  diagnostic_id?: string;
   collected_at: string;
   severity: "low" | "medium" | "high" | "critical";
 }

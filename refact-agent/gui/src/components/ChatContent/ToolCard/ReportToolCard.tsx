@@ -20,6 +20,10 @@ import { useEventsBusForIDE } from "../../../hooks";
 import { isIdeHost } from "../../../utils/isIdeHost";
 import { basename } from "./utils";
 import { useStreamingMarkdown } from "../../Markdown/useStreamingMarkdown";
+import {
+  addBuddyCrashBreadcrumb,
+  setBuddyCrashHotSlot,
+} from "../../../features/Buddy/reportBuddyFrontendError";
 import styles from "./ReportToolCard.module.css";
 
 const MAX_MD_RENDER_CHARS = 50_000;
@@ -206,6 +210,38 @@ export const ReportToolCard: React.FC<ReportToolCardProps> = ({
       el.scrollTop = el.scrollHeight;
     }
   }, [status, deferredEntertainmentText]);
+
+  useEffect(() => {
+    if (status === "running") {
+      if (deferredEntertainmentText) {
+        addBuddyCrashBreadcrumb("report_progress", deferredEntertainmentText);
+      }
+      return;
+    }
+
+    if (variant === "taskDone") {
+      setBuddyCrashHotSlot(
+        "report",
+        deferredReportMarkdown ??
+          reportData?.summary ??
+          defaultSummary?.toString() ??
+          null,
+      );
+      if (deferredReportMarkdown) {
+        addBuddyCrashBreadcrumb("task_done", deferredReportMarkdown);
+      }
+      return;
+    }
+
+    setBuddyCrashHotSlot("report", null);
+  }, [
+    defaultSummary,
+    deferredEntertainmentText,
+    deferredReportMarkdown,
+    reportData?.summary,
+    status,
+    variant,
+  ]);
 
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(
     isOpen && !!deferredReportMarkdown && bodyReady,

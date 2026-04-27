@@ -82,11 +82,14 @@ impl Tool for ToolMCP {
         if session_maybe.is_none() {
             let msg = format!("No session for {:?}, MCP server may not be running", session_key);
             tracing::error!("{}", msg);
-            let buddy_arc = gcx.read().await.buddy.clone();
-            let mut lock = buddy_arc.lock().await;
-            if let Some(svc) = lock.as_mut() {
-                svc.report_error("mcp_no_session", &msg, Some("mcp/tool_mcp.rs"), None);
-            }
+            crate::buddy::actor::report_error_persisted(
+                gcx.clone(),
+                "mcp_no_session",
+                &msg,
+                Some("mcp/tool_mcp.rs"),
+                None,
+            )
+            .await;
             return Err(format!("No session for {:?}", session_key));
         }
         let session = session_maybe.unwrap();
@@ -112,11 +115,14 @@ impl Tool for ToolMCP {
                         "MCP server '{}' is reconnecting, please try again shortly",
                         self.mcp_tool.name
                     );
-                    let buddy_arc = gcx.read().await.buddy.clone();
-                    let mut lock = buddy_arc.lock().await;
-                    if let Some(svc) = lock.as_mut() {
-                        svc.report_error("mcp_reconnecting", &msg, Some("mcp/tool_mcp.rs"), None);
-                    }
+                    crate::buddy::actor::report_error_persisted(
+                        gcx.clone(),
+                        "mcp_reconnecting",
+                        &msg,
+                        Some("mcp/tool_mcp.rs"),
+                        None,
+                    )
+                    .await;
                     return Err(msg);
                 }
                 MCPConnectionStatus::Failed { message } => {
@@ -124,16 +130,14 @@ impl Tool for ToolMCP {
                         "MCP server '{}' connection failed: {}",
                         self.mcp_tool.name, message
                     );
-                    let buddy_arc = gcx.read().await.buddy.clone();
-                    let mut lock = buddy_arc.lock().await;
-                    if let Some(svc) = lock.as_mut() {
-                        svc.report_error(
-                            "mcp_connection_failed",
-                            &msg,
-                            Some("mcp/tool_mcp.rs"),
-                            None,
-                        );
-                    }
+                    crate::buddy::actor::report_error_persisted(
+                        gcx.clone(),
+                        "mcp_connection_failed",
+                        &msg,
+                        Some("mcp/tool_mcp.rs"),
+                        None,
+                    )
+                    .await;
                     return Err(msg);
                 }
                 _ => {}
@@ -180,11 +184,14 @@ impl Tool for ToolMCP {
                 Some(client) => client.peer().clone(),
                 None => {
                     let msg = format!("MCP client for '{}' is not available", self.mcp_tool.name);
-                    let buddy_arc = gcx.read().await.buddy.clone();
-                    let mut lock = buddy_arc.lock().await;
-                    if let Some(svc) = lock.as_mut() {
-                        svc.report_error("mcp_client_unavailable", &msg, Some("mcp/tool_mcp.rs"), None);
-                    }
+                    crate::buddy::actor::report_error_persisted(
+                        gcx.clone(),
+                        "mcp_client_unavailable",
+                        &msg,
+                        Some("mcp/tool_mcp.rs"),
+                        None,
+                    )
+                    .await;
                     return Err(msg);
                 }
             }
@@ -220,16 +227,14 @@ impl Tool for ToolMCP {
                         m.record_call_failure(&self.mcp_tool.name, call_start);
                     }
                     {
-                        let buddy_arc = gcx.read().await.buddy.clone();
-                        let mut lock = buddy_arc.lock().await;
-                        if let Some(svc) = lock.as_mut() {
-                            svc.report_error(
-                                "mcp_tool_error",
-                                &error_msg,
-                                Some("mcp/tool_mcp.rs"),
-                                None,
-                            );
-                        }
+                        crate::buddy::actor::report_error_persisted(
+                            gcx.clone(),
+                            "mcp_tool_error",
+                            &error_msg,
+                            Some("mcp/tool_mcp.rs"),
+                            None,
+                        )
+                        .await;
                     }
                     return Err(error_msg);
                 }
@@ -357,16 +362,14 @@ impl Tool for ToolMCP {
                     m.record_call_failure(&self.mcp_tool.name, call_start);
                 }
                 {
-                    let buddy_arc = gcx.read().await.buddy.clone();
-                    let mut lock = buddy_arc.lock().await;
-                    if let Some(svc) = lock.as_mut() {
-                        svc.report_error(
-                            "mcp_tool_error",
-                            &error_msg,
-                            Some("mcp/tool_mcp.rs"),
-                            None,
-                        );
-                    }
+                    crate::buddy::actor::report_error_persisted(
+                        gcx.clone(),
+                        "mcp_tool_error",
+                        &error_msg,
+                        Some("mcp/tool_mcp.rs"),
+                        None,
+                    )
+                    .await;
                 }
                 return Err(e.to_string());
             }

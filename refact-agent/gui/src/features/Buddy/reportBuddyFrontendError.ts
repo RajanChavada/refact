@@ -3,14 +3,20 @@ import { postBuddyErrorRequest } from "../../services/refact/buddy";
 
 const REPORT_DEDUPE_MS = 10000;
 const REPORT_TRIM_LEN = 4000;
+const CRASH_STORAGE_KEY = "refact:buddy:frontend-crash:v1";
+const CRASH_SESSION_VERSION = 1;
+const CRASH_DETAIL_LEN = 500;
+const CRASH_MAX_BREADCRUMBS = 12;
+const CRASH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const recentReports = new Map<string, number>();
+let crashSessionCache: BuddyCrashSession | null = null;
 
-const SECRET_PATTERNS: Array<[RegExp, string]> = [
+const SECRET_PATTERNS: [RegExp, string][] = [
   [/Bearer\s+[^\s"'`]+/gi, "Bearer [REDACTED]"],
   [/sk-[A-Za-z0-9]{20,}/g, "[REDACTED_SK_TOKEN]"],
   [/\bghp_[A-Za-z0-9]{10,}\b/g, "[REDACTED_GH_TOKEN]"],
-  [/\bglpat-[A-Za-z0-9_\-]{10,}\b/g, "[REDACTED_GL_TOKEN]"],
+  [/\bglpat-[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_GL_TOKEN]"],
   [
     /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
     "$1=[REDACTED]",
@@ -25,16 +31,352 @@ export type BuddyFrontendErrorSource =
   | "window_error"
   | "unhandledrejection"
   | "react_error_boundary"
-  | "artifact_iframe";
+  | "react_root_render"
+  | "react_recoverable"
+  | "artifact_iframe"
+  | "ui_error_state"
+  | "mermaid_render"
+  | "possible_renderer_crash";
+
+type BuddyCrashHotSlot = "tool" | "report" | "reasoning" | "tasks";
+
+type BuddyCrashBreadcrumb = {
+  ts: number;
+  label: string;
+  detail: string;
+};
+
+type BuddyCrashSession = {
+  version: number;
+  sessionId: string;
+  status: "running" | "closed";
+  startedAt: number;
+  updatedAt: number;
+  closedAt?: number;
+  host?: string;
+  page?: string;
+  chatId?: string;
+  isStreaming?: boolean;
+  visibility?: string;
+  userAgent?: string;
+  heapUsed?: number;
+  heapLimit?: number;
+  hot?: Partial<Record<BuddyCrashHotSlot, string>>;
+  breadcrumbs: BuddyCrashBreadcrumb[];
+};
+
+type BuddyCrashContext = {
+  host?: string;
+  page?: string;
+  chatId?: string;
+  isStreaming?: boolean;
+};
 
 function clipText(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen - 1).trimEnd()}…`;
 }
 
+function currentVisibility(): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  return document.visibilityState;
+}
+
+function currentUserAgent(): string | undefined {
+  if (typeof navigator === "undefined") return undefined;
+  return navigator.userAgent;
+}
+
+function currentMemory(): { heapUsed?: number; heapLimit?: number } {
+  if (typeof performance === "undefined") return {};
+  const perf = performance as Performance & {
+    memory?: { usedJSHeapSize?: number; jsHeapSizeLimit?: number };
+  };
+  return {
+    heapUsed:
+      typeof perf.memory?.usedJSHeapSize === "number"
+        ? perf.memory.usedJSHeapSize
+        : undefined,
+    heapLimit:
+      typeof perf.memory?.jsHeapSizeLimit === "number"
+        ? perf.memory.jsHeapSizeLimit
+        : undefined,
+  };
+}
+
+function storage(): Storage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readCrashSession(): BuddyCrashSession | null {
+  if (crashSessionCache) return crashSessionCache;
+  const handle = storage();
+  if (!handle) return null;
+
+  try {
+    const raw = handle.getItem(CRASH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<BuddyCrashSession>;
+    if (
+      parsed.version !== CRASH_SESSION_VERSION ||
+      typeof parsed.sessionId !== "string" ||
+      typeof parsed.startedAt !== "number" ||
+      typeof parsed.updatedAt !== "number" ||
+      (parsed.status !== "running" && parsed.status !== "closed")
+    ) {
+      return null;
+    }
+
+    const session: BuddyCrashSession = {
+      version: CRASH_SESSION_VERSION,
+      sessionId: parsed.sessionId,
+      status: parsed.status,
+      startedAt: parsed.startedAt,
+      updatedAt: parsed.updatedAt,
+      closedAt: parsed.closedAt,
+      host: parsed.host,
+      page: parsed.page,
+      chatId: parsed.chatId,
+      isStreaming: parsed.isStreaming,
+      visibility: parsed.visibility,
+      userAgent: parsed.userAgent,
+      heapUsed: parsed.heapUsed,
+      heapLimit: parsed.heapLimit,
+      hot: parsed.hot ?? {},
+      breadcrumbs: Array.isArray(parsed.breadcrumbs) ? parsed.breadcrumbs : [],
+    };
+    crashSessionCache = session;
+    return session;
+  } catch {
+    return null;
+  }
+}
+
+function writeCrashSession(session: BuddyCrashSession | null): void {
+  crashSessionCache = session;
+  const handle = storage();
+  if (!handle) return;
+
+  try {
+    if (!session) {
+      handle.removeItem(CRASH_STORAGE_KEY);
+      return;
+    }
+    handle.setItem(CRASH_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    return;
+  }
+}
+
+function sessionId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  return `crash-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function applyCrashContext(
+  session: BuddyCrashSession,
+  context: BuddyCrashContext,
+): void {
+  if (context.host !== undefined) {
+    session.host = context.host || undefined;
+  }
+  if (context.page !== undefined) {
+    session.page = context.page || undefined;
+  }
+  if (context.chatId !== undefined) {
+    session.chatId = context.chatId || undefined;
+  }
+  if (context.isStreaming !== undefined) {
+    session.isStreaming = context.isStreaming;
+  }
+  session.visibility = currentVisibility();
+  session.userAgent = currentUserAgent();
+  const memory = currentMemory();
+  session.heapUsed = memory.heapUsed;
+  session.heapLimit = memory.heapLimit;
+  session.updatedAt = Date.now();
+}
+
+function pushCrashBreadcrumb(
+  session: BuddyCrashSession,
+  label: string,
+  detail: string,
+): void {
+  const next = clipText(detail, CRASH_DETAIL_LEN);
+  if (!next) return;
+  const last = session.breadcrumbs.at(-1);
+  const now = Date.now();
+  if (last && last.label === label && last.detail === next) {
+    last.ts = now;
+    session.updatedAt = now;
+    return;
+  }
+
+  session.breadcrumbs.push({ ts: now, label, detail: next });
+  if (session.breadcrumbs.length > CRASH_MAX_BREADCRUMBS) {
+    session.breadcrumbs.splice(
+      0,
+      session.breadcrumbs.length - CRASH_MAX_BREADCRUMBS,
+    );
+  }
+  session.updatedAt = now;
+}
+
+function formatBytes(bytes?: number): string | null {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) {
+    return null;
+  }
+  return `${Math.round(bytes / (1024 * 1024))} MiB`;
+}
+
+function recoverableCrashSession(
+  session: BuddyCrashSession | null,
+): BuddyCrashSession | null {
+  if (!session) return null;
+  if (session.status !== "running") return null;
+  if (Date.now() - session.updatedAt > CRASH_MAX_AGE_MS) return null;
+  return session;
+}
+
+export function beginBuddyCrashSession(
+  context: BuddyCrashContext,
+): BuddyCrashSession | null {
+  const previous = recoverableCrashSession(readCrashSession());
+  const now = Date.now();
+  const next: BuddyCrashSession = {
+    version: CRASH_SESSION_VERSION,
+    sessionId: sessionId(),
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    host: context.host,
+    page: context.page,
+    chatId: context.chatId,
+    isStreaming: context.isStreaming,
+    visibility: currentVisibility(),
+    userAgent: currentUserAgent(),
+    ...currentMemory(),
+    hot: {},
+    breadcrumbs: [],
+  };
+  pushCrashBreadcrumb(
+    next,
+    "session_start",
+    `host=${context.host ?? "unknown"} page=${
+      context.page ?? "unknown"
+    } streaming=${String(Boolean(context.isStreaming))}`,
+  );
+  writeCrashSession(next);
+  return previous ? { ...previous } : null;
+}
+
+export function touchBuddyCrashSession(context: BuddyCrashContext): void {
+  const session = readCrashSession();
+  if (!session || session.status !== "running") return;
+  applyCrashContext(session, context);
+  writeCrashSession(session);
+}
+
+export function closeBuddyCrashSession(reason = "pagehide"): void {
+  const session = readCrashSession();
+  if (!session) return;
+  session.status = "closed";
+  session.closedAt = Date.now();
+  pushCrashBreadcrumb(session, "session_end", reason);
+  writeCrashSession(session);
+}
+
+export function setBuddyCrashHotSlot(
+  slot: BuddyCrashHotSlot,
+  detail: string | null,
+): void {
+  const session = readCrashSession();
+  if (!session || session.status !== "running") return;
+  const hot = session.hot ?? {};
+  const normalized = detail
+    ? clipText(redactBuddyFrontendErrorText(detail).trim(), CRASH_DETAIL_LEN)
+    : "";
+  if (!normalized) {
+    session.hot = Object.fromEntries(
+      Object.entries(hot).filter(([key]) => key !== slot),
+    );
+  } else {
+    hot[slot] = normalized;
+    session.hot = hot;
+  }
+  session.updatedAt = Date.now();
+  writeCrashSession(session);
+}
+
+export function addBuddyCrashBreadcrumb(label: string, detail: unknown): void {
+  const session = readCrashSession();
+  if (!session || session.status !== "running") return;
+  const normalized = clipText(
+    redactBuddyFrontendErrorText(errorToText(detail)).trim(),
+    CRASH_DETAIL_LEN,
+  );
+  if (!normalized) return;
+  pushCrashBreadcrumb(session, label, normalized);
+  writeCrashSession(session);
+}
+
+export function buildBuddyCrashRecoveryError(
+  session: BuddyCrashSession,
+): string {
+  const ageSeconds = Math.max(
+    0,
+    Math.round((Date.now() - session.updatedAt) / 1000),
+  );
+  const hotLines = Object.entries(session.hot ?? {})
+    .filter(([, value]) => typeof value === "string" && value.length > 0)
+    .map(([key, value]) => `- ${key}: ${value}`);
+  const breadcrumbLines = session.breadcrumbs.map(
+    (entry) =>
+      `- ${new Date(entry.ts).toISOString()} ${entry.label}: ${entry.detail}`,
+  );
+  const heapUsed = formatBytes(session.heapUsed);
+  const heapLimit = formatBytes(session.heapLimit);
+
+  return [
+    "Possible renderer crash/termination detected before the app restarted.",
+    "Browser JavaScript cannot capture a native SIGILL/SIGKILL stack after the renderer dies, so this report contains the last persisted frontend breadcrumbs instead.",
+    "",
+    `Previous session id: ${session.sessionId}`,
+    `Started at: ${new Date(session.startedAt).toISOString()}`,
+    `Last heartbeat: ${new Date(
+      session.updatedAt,
+    ).toISOString()} (${ageSeconds}s before recovery)`,
+    session.host ? `Host: ${session.host}` : "",
+    session.page ? `Page: ${session.page}` : "",
+    session.chatId ? `Chat ID: ${session.chatId}` : "",
+    `Streaming: ${session.isStreaming ? "yes" : "no"}`,
+    session.visibility ? `Visibility: ${session.visibility}` : "",
+    heapUsed ?? heapLimit
+      ? `JS heap: ${heapUsed ?? "unknown"}${heapLimit ? ` / ${heapLimit}` : ""}`
+      : "",
+    "",
+    "Last hot-path state:",
+    hotLines.length > 0 ? hotLines.join("\n") : "- none",
+    "",
+    "Recent breadcrumbs:",
+    breadcrumbLines.length > 0 ? breadcrumbLines.join("\n") : "- none",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function errorToText(error: unknown): string {
   if (error instanceof Error) {
-    return error.stack || error.message;
+    return error.stack ?? error.message;
   }
   if (typeof error === "string") return error;
   if (typeof error === "object" && error !== null) {
@@ -77,6 +419,7 @@ export function buildBuddyFrontendErrorDedupeKey(
 
 export function resetBuddyFrontendErrorReportCache(): void {
   recentReports.clear();
+  writeCrashSession(null);
 }
 
 function shouldReport(key: string, now: number): boolean {

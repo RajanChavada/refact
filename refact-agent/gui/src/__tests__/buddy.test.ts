@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
+import { configureStore, createListenerMiddleware } from "@reduxjs/toolkit";
 import {
   buddySlice,
   setBuddySnapshot,
@@ -16,10 +17,12 @@ import {
   clearActiveSpeech,
   enqueueRuntimeEvent,
 } from "../features/Buddy/buddySlice";
+import { registerBuddySpeechTtlListener } from "../features/Buddy/buddySpeechTtl";
 import { PALETTES, SIGNALS, STAGES } from "../features/Buddy/constants";
 import { buildColorMap } from "../features/Buddy/canvas/colorMap";
 import { updateSceneAnimation } from "../features/Buddy/canvas/animLoop";
 import { createInitialAnimState } from "../features/Buddy/state";
+import type { BuddyErrorReport } from "../services/refact/buddy";
 import type {
   BuddySnapshot,
   BuddyState,
@@ -31,11 +34,17 @@ import type {
   BuddyRuntimeEvent,
 } from "../features/Buddy/types";
 import { buildBuddyInvestigationPrompt } from "../features/Buddy/investigation";
+import { withBuddyErrorReport } from "../features/Buddy/BuddyErrorBoundary";
 import {
+  addBuddyCrashBreadcrumb,
+  beginBuddyCrashSession,
+  buildBuddyCrashRecoveryError,
+  closeBuddyCrashSession,
   buildBuddyFrontendErrorDedupeKey,
   redactBuddyFrontendErrorText,
   reportBuddyFrontendError,
   resetBuddyFrontendErrorReportCache,
+  setBuddyCrashHotSlot,
 } from "../features/Buddy/reportBuddyFrontendError";
 
 const reducer = buddySlice.reducer;
@@ -100,6 +109,7 @@ function makeState(): BuddyState {
         resilience: 66,
       },
     },
+    active_quest: null,
   };
 }
 
@@ -114,6 +124,7 @@ function makeSnapshot(overrides?: Partial<BuddySnapshot>): BuddySnapshot {
       proactive_enabled: true,
     },
     enabled: true,
+    recent_diagnostics: [],
     ...overrides,
   };
 }
@@ -139,6 +150,7 @@ function makeSuggestion(id: string): BuddySuggestion {
     description: "desc",
     created_at: "2024-01-01T00:00:00Z",
     dismissed: false,
+    controls: [],
   };
 }
 
@@ -151,10 +163,18 @@ function makeDiagnostic(
     source_file: null,
     tool_name: null,
     chat_id: null,
+    diagnostic_id: "diag-1",
     collected_at: "2024-01-01T00:00:00Z",
     severity: "high",
     ...overrides,
   };
+}
+
+function makePostMock() {
+  return vi.fn(
+    (_port: number, _apiKey: string | undefined, _body: BuddyErrorReport) =>
+      Promise.resolve(undefined),
+  );
 }
 
 describe("buddySlice reducers", () => {
@@ -415,6 +435,15 @@ describe("snapshot hydration", () => {
     expect(state.runtimeQueue).toEqual([]);
     expect(state.nowPlaying).toBeNull();
   });
+
+  test("setBuddySnapshot hydrates recent diagnostics from snapshot", () => {
+    const snap = makeSnapshot({
+      recent_diagnostics: [makeDiagnostic({ diagnostic_id: "diag-22" })],
+    });
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    expect(state.recentDiagnostics).toHaveLength(1);
+    expect(state.recentDiagnostics[0].diagnostic_id).toBe("diag-22");
+  });
 });
 
 describe("BuddyChatCompanion triggers", () => {
@@ -516,6 +545,133 @@ describe("speech cloud state", () => {
     const snap = makeSnapshot({ active_speech: null });
     const s2 = reducer(s1, setBuddySnapshot(snap));
     expect(s2.activeSpeech).toBeNull();
+  });
+});
+
+describe("buddy speech TTL listener", () => {
+  function makeSpeech(overrides?: Partial<BuddySpeechItem>): BuddySpeechItem {
+    return {
+      id: "speech-1",
+      text: "Played together with bug. Mischief pressure reduced.",
+      mood: "happy",
+      scope: "global",
+      persistent: false,
+      ttl_seconds: 8,
+      created_at: new Date().toISOString(),
+      controls: [],
+      ...overrides,
+    };
+  }
+
+  function makeStore() {
+    const lm = createListenerMiddleware();
+    registerBuddySpeechTtlListener(lm);
+    const store = configureStore({
+      reducer: { buddy: buddySlice.reducer },
+      middleware: (getDefault) => getDefault().prepend(lm.middleware),
+    });
+    return store;
+  }
+
+  test("non-persistent speech is cleared after ttl_seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      store.dispatch(
+        setActiveSpeech(makeSpeech({ persistent: false, ttl_seconds: 8 })),
+      );
+      expect(store.getState().buddy.activeSpeech?.id).toBe("speech-1");
+
+      // 1 ms before expiry: still present.
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(store.getState().buddy.activeSpeech?.id).toBe("speech-1");
+
+      // After expiry: cleared.
+      await vi.advanceTimersByTimeAsync(2);
+      expect(store.getState().buddy.activeSpeech).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("persistent speech is never auto-cleared", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      store.dispatch(
+        setActiveSpeech(makeSpeech({ persistent: true, ttl_seconds: 1 })),
+      );
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.getState().buddy.activeSpeech?.id).toBe("speech-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a new speech cancels the previous TTL timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      store.dispatch(
+        setActiveSpeech(
+          makeSpeech({ id: "first", ttl_seconds: 5, persistent: false }),
+        ),
+      );
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      store.dispatch(
+        setActiveSpeech(
+          makeSpeech({ id: "second", ttl_seconds: 10, persistent: false }),
+        ),
+      );
+
+      // Original TTL would fire at +5s — verify it does NOT clear the new
+      // speech.
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(store.getState().buddy.activeSpeech?.id).toBe("second");
+
+      // New TTL fires at +12s overall.
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(store.getState().buddy.activeSpeech).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("snapshot with stale created_at clears immediately", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      const stale = makeSpeech({
+        ttl_seconds: 8,
+        persistent: false,
+        // Created 60s ago — well past the 8s TTL.
+        created_at: new Date(Date.now() - 60_000).toISOString(),
+      });
+      store.dispatch(setBuddySnapshot(makeSnapshot({ active_speech: stale })));
+
+      // The listener uses async delay; flush microtasks.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getState().buddy.activeSpeech).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("ttl_seconds=0 keeps the speech up (treated as no expiry)", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      store.dispatch(
+        setActiveSpeech(makeSpeech({ persistent: false, ttl_seconds: 0 })),
+      );
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(store.getState().buddy.activeSpeech?.id).toBe("speech-1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -859,7 +1015,7 @@ describe("Buddy frontend error reporting helpers", () => {
   });
 
   test("reportBuddyFrontendError swallows reporter failures", async () => {
-    const post = vi.fn().mockRejectedValue(new Error("offline"));
+    const post = makePostMock().mockRejectedValue(new Error("offline"));
 
     await expect(
       reportBuddyFrontendError(
@@ -880,7 +1036,7 @@ describe("Buddy frontend error reporting helpers", () => {
   });
 
   test("reportBuddyFrontendError dedupes only matching chat scope", async () => {
-    const post = vi.fn().mockResolvedValue(undefined);
+    const post = makePostMock().mockResolvedValue(undefined);
     const deps = {
       getState: () => ({ config: { apiKey: "key", lspPort: 8001 } }),
       post,
@@ -913,5 +1069,133 @@ describe("Buddy frontend error reporting helpers", () => {
     );
 
     expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  test("beginBuddyCrashSession recovers previous unfinished session", () => {
+    const first = beginBuddyCrashSession({
+      host: "web",
+      page: "chat",
+      chatId: "chat-a",
+      isStreaming: true,
+    });
+    expect(first).toBeNull();
+
+    addBuddyCrashBreadcrumb("tool_progress", "1/4: reading files");
+    setBuddyCrashHotSlot("tool", "1/4: reading files");
+
+    const recovered = beginBuddyCrashSession({
+      host: "web",
+      page: "chat",
+      chatId: "chat-b",
+      isStreaming: false,
+    });
+
+    expect(recovered).not.toBeNull();
+    expect(recovered?.chatId).toBe("chat-a");
+    expect(recovered?.hot?.tool).toContain("reading files");
+  });
+
+  test("closeBuddyCrashSession prevents false recovery report", () => {
+    beginBuddyCrashSession({
+      host: "web",
+      page: "chat",
+      chatId: "chat-a",
+      isStreaming: false,
+    });
+    closeBuddyCrashSession("pagehide");
+
+    const recovered = beginBuddyCrashSession({
+      host: "web",
+      page: "chat",
+      chatId: "chat-b",
+      isStreaming: false,
+    });
+
+    expect(recovered).toBeNull();
+  });
+
+  test("buildBuddyCrashRecoveryError explains SIGILL limitation and includes breadcrumbs", () => {
+    beginBuddyCrashSession({
+      host: "jetbrains",
+      page: "chat",
+      chatId: "chat-a",
+      isStreaming: true,
+    });
+    setBuddyCrashHotSlot("reasoning", "Thinking about tool result");
+    addBuddyCrashBreadcrumb("task_done", "Task completed");
+
+    const recovered = beginBuddyCrashSession({
+      host: "jetbrains",
+      page: "chat",
+      chatId: "chat-b",
+      isStreaming: false,
+    });
+
+    expect(recovered).not.toBeNull();
+    expect(recovered).not.toBeNull();
+    if (!recovered) {
+      throw new Error("expected recovered crash session");
+    }
+    const report = buildBuddyCrashRecoveryError(recovered);
+    expect(report).toContain("cannot capture a native SIGILL/SIGKILL stack");
+    expect(report).toContain("Last hot-path state:");
+    expect(report).toContain("reasoning");
+    expect(report).toContain("Recent breadcrumbs:");
+    expect(report).toContain("task_done");
+  });
+
+  test("reportBuddyFrontendError supports ui error state source", async () => {
+    const post = makePostMock().mockResolvedValue(undefined);
+
+    await reportBuddyFrontendError(
+      {
+        source: "ui_error_state",
+        error: "Failed to start OAuth",
+        chatId: "chat-a",
+      },
+      {
+        getState: () => ({ config: { apiKey: "key", lspPort: 8001 } }),
+        post,
+        now: () => 100,
+      },
+    );
+
+    expect(post).toHaveBeenCalledTimes(1);
+    const call = post.mock.calls[0];
+    expect(call[0]).toBe(8001);
+    expect(call[1]).toBe("key");
+    expect(call[2].chat_id).toBe("chat-a");
+    expect(call[2].error).toContain("[frontend:ui_error_state]");
+  });
+
+  test("withBuddyErrorReport reports and rethrows root render errors", async () => {
+    const err = new Error("boom");
+    const mod = await import("../features/Buddy/reportBuddyFrontendError");
+    const spy = vi
+      .spyOn(mod, "reportBuddyFrontendError")
+      .mockResolvedValue(undefined);
+
+    expect(() =>
+      withBuddyErrorReport(
+        () => {
+          throw err;
+        },
+        {
+          source: "react_root_render",
+          sourceFile: "frontend/react_root_render",
+          toolName: "react_root_render",
+        },
+      ),
+    ).toThrow("boom");
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "react_root_render",
+        sourceFile: "frontend/react_root_render",
+        toolName: "react_root_render",
+      }),
+    );
+
+    spy.mockRestore();
   });
 });

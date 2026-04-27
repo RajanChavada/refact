@@ -58,6 +58,8 @@ impl BuddyJob for HealthWatcherJob {
                     description: "I couldn't find any completion or chat models. Head to Provider Settings to add one.".to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                     dismissed: false,
+                    controls: vec![],
+                    quest: None,
                 })
             };
             let event: BuddyRuntimeEvent = make_runtime_event(

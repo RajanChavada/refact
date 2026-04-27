@@ -7,6 +7,7 @@ import type {
   BuddyConversationEntry,
   BuddyCareRequest,
   BuddyCareResponse,
+  BuddyQuestAcceptResponse,
   BuddyPersonalityRerollResponse,
 } from "../../features/Buddy/types";
 
@@ -30,6 +31,8 @@ export type BuddyErrorReport = {
   source_file?: string;
   tool_name?: string;
   chat_id?: string;
+  diagnostic_id?: string;
+  collected_at?: string;
 };
 
 export type BuddyInvestigationContextRequest = BuddyErrorReport;
@@ -171,6 +174,19 @@ export const buddyApi = createApi({
         return { data: result.data as BuddyCareResponse };
       },
     }),
+    acceptBuddyQuest: builder.mutation<BuddyQuestAcceptResponse, string>({
+      queryFn: async (suggestionId, api, _opts, baseQuery) => {
+        const state = api.getState() as BuddyApiState;
+        const port = state.config.lspPort;
+        const result = await baseQuery({
+          url: `http://127.0.0.1:${port}/v1/buddy/quest/accept`,
+          method: "POST",
+          body: { suggestion_id: suggestionId },
+        });
+        if (result.error) return { error: result.error };
+        return { data: result.data as BuddyQuestAcceptResponse };
+      },
+    }),
     rerollBuddyPersonality: builder.mutation<
       BuddyPersonalityRerollResponse,
       undefined
@@ -307,6 +323,7 @@ export const {
   useGetBuddySettingsQuery,
   useUpdateBuddySettingsMutation,
   useCareBuddyMutation,
+  useAcceptBuddyQuestMutation,
   useRerollBuddyPersonalityMutation,
   useGetBuddyActivitiesQuery,
   useGetBuddyConversationsQuery,

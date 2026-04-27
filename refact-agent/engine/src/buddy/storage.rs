@@ -1,10 +1,19 @@
-use std::path::Path;
+use std::collections::VecDeque;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use serde::Serialize;
-use tokio::fs;
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
+use tracing::warn;
 
+use super::diagnostics::DiagnosticContext;
 use super::state::default_buddy_state;
 
 const DEFAULT_MAIN_PROMPT: &str = "You are Buddy, a persistent project companion inside Refact.\nYou help with code tasks, project setup, diagnostics, and keeping things running smoothly.\nYou are friendly, concise, and focused on being genuinely useful.\n";
+
+fn diagnostics_history_path(project_root: &Path) -> PathBuf {
+    project_root.join(".refact/buddy/diagnostics.jsonl")
+}
 
 pub async fn atomic_write_json<T: Serialize>(path: &Path, data: &T) -> Result<(), String> {
     let tmp_path = path.with_extension("json.tmp");
@@ -21,6 +30,93 @@ pub async fn atomic_write_json<T: Serialize>(path: &Path, data: &T) -> Result<()
     fs::rename(&tmp_path, path)
         .await
         .map_err(|e| format!("Failed to rename: {}", e))
+}
+
+pub async fn append_diagnostic(project_root: &Path, ctx: &DiagnosticContext) -> Result<(), String> {
+    let path = diagnostics_history_path(project_root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create dir {:?}: {}", parent, e))?;
+    }
+
+    let line = format!(
+        "{}\n",
+        serde_json::to_string(ctx).map_err(|e| format!("Failed to serialize diagnostic: {}", e))?
+    );
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await
+        .map_err(|e| format!("Failed to open diagnostics history {:?}: {}", path, e))?;
+    file.write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to append diagnostics history {:?}: {}", path, e))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Failed to flush diagnostics history {:?}: {}", path, e))?;
+    Ok(())
+}
+
+pub async fn load_diagnostics(project_root: &Path) -> Result<Vec<DiagnosticContext>, String> {
+    Ok(load_diagnostics_inner(project_root, None).await?.into_iter().collect())
+}
+
+pub async fn load_recent_diagnostics(
+    project_root: &Path,
+    limit: usize,
+) -> Result<Vec<DiagnosticContext>, String> {
+    Ok(load_diagnostics_inner(project_root, Some(limit))
+        .await?
+        .into_iter()
+        .collect())
+}
+
+async fn load_diagnostics_inner(
+    project_root: &Path,
+    limit: Option<usize>,
+) -> Result<VecDeque<DiagnosticContext>, String> {
+    let path = diagnostics_history_path(project_root);
+    let content = match fs::read_to_string(&path).await {
+        Ok(content) => content,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(VecDeque::new()),
+        Err(err) => {
+            return Err(format!(
+                "Failed to read diagnostics history {:?}: {}",
+                path, err
+            ));
+        }
+    };
+
+    let mut out = VecDeque::new();
+    for (index, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<DiagnosticContext>(line) {
+            Ok(ctx) => {
+                out.push_back(ctx);
+                if let Some(limit) = limit {
+                    while out.len() > limit {
+                        out.pop_front();
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "buddy: failed to parse diagnostic history line {} in {:?}: {}",
+                    index + 1,
+                    path,
+                    err
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub async fn bootstrap_buddy_storage(project_root: &Path) -> Result<(), String> {

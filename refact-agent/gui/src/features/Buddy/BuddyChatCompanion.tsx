@@ -185,7 +185,9 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
         id: activeSuggestion.id,
         text: `${activeSuggestion.title}: ${activeSuggestion.description}`,
         source: "suggestion",
-        controls: suggestionControls,
+        controls: activeSuggestion.controls?.length
+          ? activeSuggestion.controls
+          : suggestionControls,
         timestamp: new Date(activeSuggestion.created_at).getTime(),
         diagnostic: null,
       };
@@ -251,6 +253,20 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
 
       if (ctrl.action.startsWith("care_")) {
         await executeBuddyAction(ctrl, dispatch);
+        setDismissedIds((prev) => new Set(prev).add(notification.id));
+        return;
+      }
+
+      if (ctrl.action === "accept_quest") {
+        await executeBuddyAction(ctrl, dispatch, {
+          triggerText: notification.text,
+          triggerSource: notification.source,
+          sourceChatId: chatId,
+          diagnostic: notification.diagnostic,
+        });
+        if (notification.source === "suggestion") {
+          dispatch(dismissBuddySuggestion(notification.id));
+        }
         setDismissedIds((prev) => new Set(prev).add(notification.id));
         return;
       }

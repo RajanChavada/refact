@@ -218,6 +218,33 @@ pub struct BuddyActivity {
     pub activity_type: String,
 }
 
+fn default_quest_status() -> String {
+    "active".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuddyQuest {
+    pub id: String,
+    pub quest_type: String,
+    pub title: String,
+    pub description: String,
+    pub icon: String,
+    pub created_at: String,
+    pub accepted_at: String,
+    #[serde(default = "default_quest_status")]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub progress: u32,
+    pub goal: u32,
+    #[serde(default)]
+    pub baseline: u32,
+    pub reward_xp: u64,
+    #[serde(default)]
+    pub controls: Vec<BuddyControl>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuddySuggestion {
     pub id: String,
@@ -226,6 +253,10 @@ pub struct BuddySuggestion {
     pub description: String,
     pub created_at: String,
     pub dismissed: bool,
+    #[serde(default)]
+    pub controls: Vec<BuddyControl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quest: Option<BuddyQuest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -254,6 +285,8 @@ pub struct BuddyState {
     pub onboarding: BuddyOnboarding,
     #[serde(default)]
     pub job_cooldowns: HashMap<String, BuddyJobState>,
+    #[serde(default)]
+    pub active_quest: Option<BuddyQuest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -592,6 +592,8 @@ export const startBuddyInvestigation = createAsyncThunk<
         source_file: diagnostic?.source_file ?? undefined,
         tool_name: diagnostic?.tool_name ?? undefined,
         chat_id: sourceChatId ?? diagnostic?.chat_id ?? undefined,
+        diagnostic_id: diagnostic?.diagnostic_id,
+        collected_at: diagnostic?.collected_at ?? undefined,
       }).catch(() => ({
         logs: "Investigation logs were unavailable.",
         internal_context: "Internal setup/config context was unavailable.",

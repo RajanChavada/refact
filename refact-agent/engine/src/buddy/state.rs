@@ -8,9 +8,9 @@ use tracing::warn;
 use crate::buddy::settings::MAX_PALETTE_INDEX;
 
 use super::types::{
-    BuddyActivity, BuddyCareAction, BuddyIdentity, BuddyOnboarding, BuddyPersonalityProfile,
-    BuddyPersonalityTraits, BuddyPetState, BuddyProgression, BuddySemanticSnapshot,
-    BuddySkillLedger, BuddyState,
+    BuddyActivity, BuddyCareAction, BuddyControl, BuddyIdentity, BuddyOnboarding,
+    BuddyPersonalityProfile, BuddyPersonalityTraits, BuddyPetState, BuddyProgression,
+    BuddyQuest, BuddySemanticSnapshot, BuddySkillLedger, BuddyState,
 };
 
 const BUDDY_NAMES: &[&str] = &[
@@ -181,9 +181,54 @@ pub fn default_buddy_state() -> BuddyState {
             ..Default::default()
         },
         job_cooldowns: std::collections::HashMap::new(),
+        active_quest: None,
     };
     sync_state(&mut state);
     state
+}
+
+fn default_quest_controls(kind: &str) -> Vec<BuddyControl> {
+    let primary = match kind {
+        "start_setup" => BuddyControl {
+            id: "quest-setup".to_string(),
+            label: "Start Setup".to_string(),
+            action: "open_setup".to_string(),
+            action_param: None,
+            style: "primary".to_string(),
+        },
+        "care_buddy" => BuddyControl {
+            id: "quest-care".to_string(),
+            label: "Play".to_string(),
+            action: "care_play".to_string(),
+            action_param: Some("bug".to_string()),
+            style: "primary".to_string(),
+        },
+        "run_workflow" => BuddyControl {
+            id: "quest-workflow".to_string(),
+            label: "Open Buddy".to_string(),
+            action: "open_buddy".to_string(),
+            action_param: None,
+            style: "primary".to_string(),
+        },
+        _ => BuddyControl {
+            id: "quest-open-buddy".to_string(),
+            label: "Open Buddy".to_string(),
+            action: "open_buddy".to_string(),
+            action_param: None,
+            style: "primary".to_string(),
+        },
+    };
+
+    vec![
+        primary,
+        BuddyControl {
+            id: format!("quest-dismiss-{kind}"),
+            label: "Later".to_string(),
+            action: "dismiss".to_string(),
+            action_param: None,
+            style: "secondary".to_string(),
+        },
+    ]
 }
 
 fn roll_trait(rng: &mut impl Rng, range: (u8, u8)) -> u8 {
@@ -297,7 +342,20 @@ fn sync_conditions_keep_sleep(state: &mut BuddyState) {
 fn sync_semantic(state: &mut BuddyState) {
     let condition = &state.pet.condition;
     let vibe = state.personality.vibe.clone();
-    let (mood, focus, headline) = if condition.sleeping {
+    let quest_headline = state
+        .active_quest
+        .as_ref()
+        .filter(|quest| quest.status == "active")
+        .map(|quest| {
+            (
+                "Questing",
+                quest.quest_type.as_str(),
+                format!("{} Quest ready: {}", vibe, quest.title),
+            )
+        });
+    let (mood, focus, headline) = if let Some((mood, focus, headline)) = quest_headline {
+        (mood, focus, headline)
+    } else if condition.sleeping {
         (
             "Sleepy",
             "dreaming",
@@ -353,6 +411,7 @@ fn sync_semantic(state: &mut BuddyState) {
 }
 
 pub fn sync_state(state: &mut BuddyState) {
+    let sleeping = state.pet.condition.sleeping;
     state.identity.palette_index = state.identity.palette_index.min(MAX_PALETTE_INDEX);
     if state.onboarding.first_launch_at.is_empty() {
         state.onboarding.first_launch_at = if state.identity.created_at.is_empty() {
@@ -366,6 +425,18 @@ pub fn sync_state(state: &mut BuddyState) {
     }
     sync_progression(state);
     sync_conditions(state);
+    if sleeping {
+        state.pet.condition.sleeping = true;
+    }
+    if let Some(quest) = state.active_quest.as_mut() {
+        if quest.goal == 0 {
+            quest.goal = 1;
+        }
+        quest.progress = quest.progress.min(quest.goal);
+        if quest.controls.is_empty() {
+            quest.controls = default_quest_controls(&quest.quest_type);
+        }
+    }
     sync_semantic(state);
 }
 
@@ -428,6 +499,70 @@ pub fn add_activity(state: &mut BuddyState, activity: BuddyActivity) {
     state.recent_activities.truncate(50);
 }
 
+pub fn activate_quest(state: &mut BuddyState, mut quest: BuddyQuest) {
+    quest.status = "active".to_string();
+    if quest.goal == 0 {
+        quest.goal = 1;
+    }
+    if quest.controls.is_empty() {
+        quest.controls = default_quest_controls(&quest.quest_type);
+    }
+    quest.progress = quest.progress.min(quest.goal);
+    state.active_quest = Some(quest);
+    sync_state(state);
+}
+
+pub fn clear_active_quest(state: &mut BuddyState) {
+    state.active_quest = None;
+    sync_state(state);
+}
+
+pub fn refresh_active_quest_progress(state: &mut BuddyState) -> bool {
+    let Some(quest_kind) = (state.active_quest.as_ref().map(|quest| {
+        (
+            quest.quest_type.clone(),
+            quest.status.clone(),
+            quest.baseline,
+            quest.progress,
+            quest.goal,
+        )
+    })) else {
+        return false;
+    };
+
+    let (quest_type, status, baseline, current, goal) = quest_kind;
+    if status != "active" {
+        return false;
+    }
+
+    let progress = match quest_type.as_str() {
+        "run_workflow" => state.workflow_summaries.iter().map(|w| w.run_count).sum::<u64>() as u32,
+        "start_setup" => u32::from(state.onboarding.tour_completed),
+        "care_buddy" => state.pet.evolution.care_score.min(u64::from(u32::MAX)) as u32,
+        _ => current,
+    };
+    let next = progress.saturating_sub(baseline).min(goal);
+    if next == current {
+        return false;
+    }
+    let Some(quest) = state.active_quest.as_mut() else {
+        return false;
+    };
+    quest.progress = next;
+    sync_state(state);
+    true
+}
+
+pub fn complete_active_quest(state: &mut BuddyState) -> Option<BuddyQuest> {
+    let mut quest = state.active_quest.take()?;
+    quest.progress = quest.goal.max(1);
+    quest.status = "completed".to_string();
+    quest.completed_at = Some(Utc::now().to_rfc3339());
+    state.semantic.last_active = Utc::now().to_rfc3339();
+    sync_state(state);
+    Some(quest)
+}
+
 pub fn grant_xp(state: &mut BuddyState, amount: u64) {
     if amount > 0 {
         state.progression.xp = state.progression.xp.saturating_add(amount);
@@ -438,7 +573,7 @@ pub fn grant_xp(state: &mut BuddyState, amount: u64) {
 }
 
 pub fn apply_pet_tick(state: &mut BuddyState, elapsed_seconds: u64) -> bool {
-    if elapsed_seconds == 0 {
+    if elapsed_seconds < PET_TICK_SECONDS {
         return false;
     }
 

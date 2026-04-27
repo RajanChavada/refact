@@ -168,16 +168,14 @@ impl Tool for ToolChrome {
         {
             Ok(log) => log,
             Err(e) => {
-                let buddy_arc = gcx.read().await.buddy.clone();
-                let mut lock = buddy_arc.lock().await;
-                if let Some(svc) = lock.as_mut() {
-                    svc.report_error(
-                        "browser_error",
-                        &e,
-                        Some("tools/tool_chrome.rs"),
-                        Some(&chat_id),
-                    );
-                }
+                crate::buddy::actor::report_error_persisted(
+                    gcx.clone(),
+                    "browser_error",
+                    &e,
+                    Some("tools/tool_chrome.rs"),
+                    Some(&chat_id),
+                )
+                .await;
                 return Err(e);
             }
         };
@@ -243,11 +241,14 @@ impl Tool for ToolChrome {
                 Err(e) => {
                     let err_msg = format!("Failed to execute typed browser request: {}.", e);
                     tool_log.push(err_msg.clone());
-                    let buddy_arc = gcx.read().await.buddy.clone();
-                    let mut lock = buddy_arc.lock().await;
-                    if let Some(svc) = lock.as_mut() {
-                        svc.report_error("browser_error", &err_msg, Some("tools/tool_chrome.rs"), Some(&chat_id));
-                    }
+                    crate::buddy::actor::report_error_persisted(
+                        gcx.clone(),
+                        "browser_error",
+                        &err_msg,
+                        Some("tools/tool_chrome.rs"),
+                        Some(&chat_id),
+                    )
+                    .await;
                 }
             }
         } else {
@@ -286,12 +287,14 @@ impl Tool for ToolChrome {
                     Err(e) => {
                         let err_msg = format!("Failed to execute command: {}.", e);
                         tool_log.push(err_msg.clone());
-                        let buddy_arc = gcx.read().await.buddy.clone();
-                        let mut lock = buddy_arc.lock().await;
-                        if let Some(svc) = lock.as_mut() {
-                            svc.report_error("browser_error", &err_msg, Some("tools/tool_chrome.rs"), Some(&chat_id));
-                        }
-                        drop(lock);
+                        crate::buddy::actor::report_error_persisted(
+                            gcx.clone(),
+                            "browser_error",
+                            &err_msg,
+                            Some("tools/tool_chrome.rs"),
+                            Some(&chat_id),
+                        )
+                        .await;
                         break;
                     }
                 };

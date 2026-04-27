@@ -65,6 +65,79 @@ export function useBuddyState(
 
   useEffect(() => {
     if (!reduxSnapshot) return;
+    const { personality, pet, semantic } = reduxSnapshot.state;
+    dispatch({
+      kind: "patch",
+      patch: {
+        personality: {
+          playfulness: personality.traits.playfulness,
+          confidence: Math.min(
+            100,
+            Math.round(
+              (personality.traits.resilience +
+                reduxSnapshot.state.progression.level * 8) /
+                2,
+            ),
+          ),
+          clinginess: personality.traits.sociability,
+          resilience: personality.traits.resilience,
+          chaos: personality.traits.chaos,
+          sociability: personality.traits.sociability,
+          curiosity: personality.traits.curiosity,
+        },
+        mood: {
+          happiness: Math.max(
+            20,
+            Math.round(
+              (pet.needs.hunger + pet.needs.energy + pet.needs.affection) / 3,
+            ),
+          ),
+          energy: pet.needs.energy,
+          curiosity: personality.traits.curiosity,
+          anxiety: Math.max(0, Math.round(pet.evolution.neglect_score / 2)),
+          boredom: pet.needs.boredom,
+          affection: pet.needs.affection,
+        },
+        activity: {
+          mood:
+            semantic.mood === "Sleepy"
+              ? "sleepy"
+              : semantic.mood === "Restless"
+                ? "curious"
+                : semantic.mood === "Questing"
+                  ? "focused"
+                  : state.activity.mood,
+          animationType:
+            semantic.focus === "dreaming"
+              ? "sleep"
+              : semantic.focus === "play time"
+                ? "perk"
+                : semantic.focus === "helping"
+                  ? "idle"
+                  : state.activity.animationType,
+          lastSignalTime: state.activity.lastSignalTime,
+          lastSignalType: state.activity.lastSignalType,
+        },
+      },
+    });
+  }, [
+    reduxSnapshot?.state.personality.traits.playfulness,
+    reduxSnapshot?.state.personality.traits.chaos,
+    reduxSnapshot?.state.personality.traits.sociability,
+    reduxSnapshot?.state.personality.traits.curiosity,
+    reduxSnapshot?.state.personality.traits.resilience,
+    reduxSnapshot?.state.pet.needs.hunger,
+    reduxSnapshot?.state.pet.needs.energy,
+    reduxSnapshot?.state.pet.needs.boredom,
+    reduxSnapshot?.state.pet.needs.affection,
+    reduxSnapshot?.state.pet.evolution.neglect_score,
+    reduxSnapshot?.state.semantic.mood,
+    reduxSnapshot?.state.semantic.focus,
+    reduxSnapshot?.state.progression.level,
+  ]);
+
+  useEffect(() => {
+    if (!reduxSnapshot) return;
     const { progression } = reduxSnapshot.state;
     const curr = progression.stage;
     const prev = prevSnapshotStageRef.current;

@@ -718,6 +718,7 @@ pub fn make_v1_router() -> Router {
             post(buddy::handle_v1_buddy_settings_update),
         )
         .route("/buddy/care", post(buddy::handle_v1_buddy_care))
+        .route("/buddy/quest/accept", post(buddy::handle_v1_buddy_quest_accept))
         .route(
             "/buddy/personality/reroll",
             post(buddy::handle_v1_buddy_personality_reroll),

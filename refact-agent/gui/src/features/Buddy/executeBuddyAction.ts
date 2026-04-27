@@ -89,6 +89,16 @@ export async function executeBuddyAction(
       break;
     }
 
+    case "accept_quest": {
+      const suggestionId = ctrl.action_param;
+      if (!suggestionId) break;
+      const result = await dispatch(
+        buddyApi.endpoints.acceptBuddyQuest.initiate(suggestionId),
+      ).unwrap();
+      dispatch(setBuddySnapshot(result.snapshot));
+      break;
+    }
+
     case "reroll_personality": {
       const result = await dispatch(
         buddyApi.endpoints.rerollBuddyPersonality.initiate(undefined),

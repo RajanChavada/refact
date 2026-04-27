@@ -14,7 +14,13 @@ use super::types::{BuddyCareAction, BuddyJobState, BuddyOnboarding, BuddySuggest
 
 fn make_service() -> BuddyService {
     let (tx, _rx) = broadcast::channel(16);
-    BuddyService::new(default_buddy_state(), BuddySettings::default(), tx)
+    BuddyService::new(
+        std::env::temp_dir().join(format!("buddy-test-{}", uuid::Uuid::new_v4())),
+        default_buddy_state(),
+        BuddySettings::default(),
+        Vec::new(),
+        tx,
+    )
 }
 
 fn make_suggestion(id: &str, stype: &str, created_at: &str) -> BuddySuggestion {
@@ -25,6 +31,8 @@ fn make_suggestion(id: &str, stype: &str, created_at: &str) -> BuddySuggestion {
         description: "d".to_string(),
         created_at: created_at.to_string(),
         dismissed: false,
+        controls: vec![],
+        quest: None,
     }
 }
 
@@ -451,6 +459,52 @@ fn test_diagnostic_cap() {
         svc.add_diagnostic(ctx);
     }
     assert_eq!(svc.recent_diagnostics.len(), 100);
+}
+
+#[tokio::test]
+async fn test_diagnostic_history_persists_and_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    super::storage::bootstrap_buddy_storage(root).await.unwrap();
+
+    let ctx1 = DiagnosticContext {
+        error_type: "test".to_string(),
+        error_message: "first".to_string(),
+        source_file: Some("src/a.rs".to_string()),
+        tool_name: None,
+        chat_id: Some("chat-1".to_string()),
+        collected_at: "2026-04-27T10:00:00Z".to_string(),
+        severity: DiagnosticSeverity::High,
+    };
+    let ctx2 = DiagnosticContext {
+        error_type: "test".to_string(),
+        error_message: "second".to_string(),
+        source_file: Some("src/b.rs".to_string()),
+        tool_name: Some("tool".to_string()),
+        chat_id: Some("chat-2".to_string()),
+        collected_at: "2026-04-27T10:01:00Z".to_string(),
+        severity: DiagnosticSeverity::Low,
+    };
+
+    super::storage::append_diagnostic(root, &ctx1).await.unwrap();
+    super::storage::append_diagnostic(root, &ctx2).await.unwrap();
+
+    let loaded = super::storage::load_diagnostics(root).await.unwrap();
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0].error_message, "first");
+    assert_eq!(loaded[1].error_message, "second");
+}
+
+#[test]
+fn test_same_day_log_filter_accepts_same_day_time() {
+    assert!(super::actor::same_day_log_filter(
+        "101530.123 ERROR something failed",
+        "2026-04-27T10:16:00Z",
+    ));
+    assert!(!super::actor::same_day_log_filter(
+        "235959.999 ERROR old failure",
+        "2026-04-27T10:16:00Z",
+    ));
 }
 
 #[test]
@@ -940,6 +994,8 @@ fn test_scheduler_suggestion_dedup() {
         description: "d".to_string(),
         created_at: now,
         dismissed: false,
+        controls: vec![],
+        quest: None,
     };
     assert!(
         svc.maybe_add_suggestion(s1),
@@ -991,6 +1047,7 @@ fn test_report_error_unicode_safe() {
     let mut svc = make_service();
     svc.report_error("test", "emoji 🎉 and CJK 你好 text", None, None);
     assert!(!svc.state.recent_activities.is_empty());
+    assert_eq!(svc.recent_diagnostics.len(), 1);
 }
 
 #[test]

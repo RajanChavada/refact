@@ -13,6 +13,7 @@ import styles from "./Markdown.module.css";
 import diagramStyles from "./DiagramBlock.module.css";
 import classNames from "classnames";
 import { useAppearance } from "../../hooks/useAppearance";
+import { reportBuddyFrontendError } from "../../features/Buddy/reportBuddyFrontendError";
 
 let mermaidInitialized: "dark" | "light" | null = null;
 
@@ -175,7 +176,14 @@ const _MermaidBlock: React.FC<MermaidBlockProps> = ({ code, onCopyClick }) => {
       } catch (err) {
         document.getElementById(`mermaid_${uniqueId}`)?.remove();
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
+          const msg = err instanceof Error ? err.message : String(err);
+          setError(msg);
+          void reportBuddyFrontendError({
+            source: "mermaid_render",
+            error: `${msg}\n\n${code}`,
+            sourceFile: "frontend/mermaid_render",
+            toolName: "mermaid_render",
+          });
           setRawSvg(null);
           setSvgMeta(null);
         }

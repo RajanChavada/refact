@@ -80,6 +80,8 @@ interface BuddyRecentChatsProps {
   maxItems?: number;
   showFilters?: boolean;
   onViewAll?: () => void;
+  title?: string;
+  className?: string;
 }
 
 export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
@@ -87,6 +89,8 @@ export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
   maxItems,
   showFilters = true,
   onViewAll,
+  title,
+  className,
 }) => {
   const dispatch = useAppDispatch();
   const [filter, setFilter] = useState<FilterKind>("all");
@@ -130,7 +134,7 @@ export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
   }, [createConversation, dispatch]);
 
   return (
-    <Flex direction="column" gap="2">
+    <Flex direction="column" gap="2" className={className}>
       <Flex align="center" justify="between">
         <Text
           size="1"
@@ -138,7 +142,7 @@ export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
           color="gray"
           className={styles.sectionLabel}
         >
-          {compact ? "RECENT ACTIVITY" : "CONVERSATIONS"}
+          {title ?? (compact ? "RECENT ACTIVITY" : "CONVERSATIONS")}
         </Text>
         <Flex align="center" gap="1">
           {onViewAll && (
@@ -207,13 +211,17 @@ export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
         </Flex>
       )}
 
-      {conversations.map((entry) => (
-        <EntryRow
-          key={`${entry.kind}-${entry.id}`}
-          entry={entry}
-          onClick={handleOpen}
-        />
-      ))}
+      {conversations.length > 0 && (
+        <div className={styles.entriesScroll}>
+          {conversations.map((entry) => (
+            <EntryRow
+              key={`${entry.kind}-${entry.id}`}
+              entry={entry}
+              onClick={handleOpen}
+            />
+          ))}
+        </div>
+      )}
     </Flex>
   );
 };

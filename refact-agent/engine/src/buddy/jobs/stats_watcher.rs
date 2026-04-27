@@ -61,6 +61,8 @@ impl BuddyJob for StatsWatcherJob {
                     description: "Several errors have been logged recently. Want me to create a GitHub/GitLab issue to track them?".to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                     dismissed: false,
+                    controls: vec![],
+                    quest: None,
                 }),
                 ..Default::default()
             };

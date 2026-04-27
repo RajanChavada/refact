@@ -50,6 +50,7 @@ export const BuddyPanel: React.FC = () => {
   const progression = snapshot?.state.progression;
   const identity = snapshot?.state.identity;
   const pet = snapshot?.state.pet;
+  const activeQuest = snapshot?.state.active_quest;
 
   const stageIdx = progression?.stage ?? state.progress.stage;
   const stage = STAGES[stageIdx] ?? STAGES[0];
@@ -144,6 +145,20 @@ export const BuddyPanel: React.FC = () => {
             <span>⚡ {pet?.needs.energy ?? 0}</span>
             <span>💕 {pet?.needs.affection ?? 0}</span>
           </div>
+
+          {activeQuest && (
+            <div
+              className={styles.questPill}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span>{activeQuest.icon}</span>
+              <span className={styles.questText}>{activeQuest.title}</span>
+              <span className={styles.questMeta}>
+                {Math.min(activeQuest.progress, activeQuest.goal)}/
+                {activeQuest.goal}
+              </span>
+            </div>
+          )}
 
           <div className={styles.careRow} onClick={(e) => e.stopPropagation()}>
             {PANEL_CARE_ACTIONS.map((ctrl) => (

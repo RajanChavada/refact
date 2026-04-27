@@ -7,7 +7,8 @@ import { startBuddyInvestigation } from "../Chat/Thread";
 import { useBuddyState } from "./hooks/useBuddyState";
 import { BuddyCanvas } from "./BuddyCanvas";
 import { PALETTES } from "./constants";
-import type { BuddySuggestion } from "./types";
+import type { BuddyControl, BuddySuggestion } from "./types";
+import { executeBuddyAction } from "./executeBuddyAction";
 import styles from "./BuddySuggestionBar.module.css";
 
 interface SuggestionCardProps {
@@ -42,6 +43,53 @@ const SuggestionCard: React.FC<SuggestionCardProps> = ({ suggestion }) => {
     suggestion.title,
   ]);
 
+  const handleControl = useCallback(
+    async (ctrl: BuddyControl) => {
+      if (ctrl.action === "dismiss") {
+        await handleDismiss();
+        return;
+      }
+      if (ctrl.action === "investigate_error") {
+        await handleInvestigate();
+        return;
+      }
+
+      await executeBuddyAction(ctrl, dispatch, {
+        triggerText: `${suggestion.title}: ${suggestion.description}`,
+        triggerSource: "suggestion",
+      });
+
+      if (ctrl.action === "accept_quest" || suggestion.quest) {
+        dispatch(dismissBuddySuggestion(suggestion.id));
+      }
+    },
+    [
+      dispatch,
+      handleDismiss,
+      handleInvestigate,
+      suggestion.description,
+      suggestion.id,
+      suggestion.title,
+    ],
+  );
+
+  const controls = suggestion.controls?.length
+    ? suggestion.controls
+    : [
+        {
+          id: `${suggestion.id}-investigate`,
+          label: "Investigate",
+          action: "investigate_error",
+          style: "primary",
+        },
+        {
+          id: `${suggestion.id}-dismiss`,
+          label: "Ignore",
+          action: "dismiss",
+          style: "secondary",
+        },
+      ];
+
   return (
     <div className={styles.card} style={{ borderColor: palette.body }}>
       <div className={styles.canvasWrap}>
@@ -60,12 +108,17 @@ const SuggestionCard: React.FC<SuggestionCardProps> = ({ suggestion }) => {
         </Text>
       </div>
       <Flex gap="1" align="center" className={styles.actions}>
-        <Button size="1" variant="soft" onClick={handleInvestigate}>
-          Investigate
-        </Button>
-        <Button size="1" variant="ghost" color="gray" onClick={handleDismiss}>
-          Ignore
-        </Button>
+        {controls.map((ctrl) => (
+          <Button
+            key={ctrl.id}
+            size="1"
+            variant={ctrl.style === "primary" ? "soft" : "ghost"}
+            color={ctrl.style === "primary" ? undefined : "gray"}
+            onClick={() => void handleControl(ctrl)}
+          >
+            {ctrl.label}
+          </Button>
+        ))}
       </Flex>
     </div>
   );

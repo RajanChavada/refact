@@ -76,6 +76,7 @@ function defaultBuddyState(): BuddyState {
         resilience: 66,
       },
     },
+    active_quest: null,
   };
 }
 
@@ -137,6 +138,7 @@ function normalizeBuddyState(state: Partial<BuddyState>): BuddyState {
         ...state.personality?.traits,
       },
     },
+    active_quest: state.active_quest ?? base.active_quest,
   };
 }
 
@@ -148,6 +150,7 @@ function normalizeBuddySnapshot(snapshot: BuddySnapshot): BuddySnapshot {
       ...snapshot.settings,
     },
     state: normalizeBuddyState(snapshot.state),
+    recent_diagnostics: snapshot.recent_diagnostics ?? [],
     runtime_queue: snapshot.runtime_queue ?? [],
     now_playing: snapshot.now_playing ?? null,
     active_speech: snapshot.active_speech ?? null,
@@ -183,6 +186,7 @@ export const buddySlice = createSlice({
       const snapshot = normalizeBuddySnapshot(action.payload);
       state.snapshot = snapshot;
       state.loaded = true;
+      state.recentDiagnostics = snapshot.recent_diagnostics ?? [];
       state.activeSpeech = snapshot.active_speech ?? null;
       state.runtimeQueue = snapshot.runtime_queue ?? [];
       state.nowPlaying = snapshot.now_playing ?? null;
@@ -191,6 +195,7 @@ export const buddySlice = createSlice({
     setBuddyUnavailable: (state) => {
       state.loaded = true;
       state.snapshot = null;
+      state.recentDiagnostics = [];
       state.runtimeQueue = [];
       state.nowPlaying = null;
       state.activeSpeech = null;

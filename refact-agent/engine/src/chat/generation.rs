@@ -620,15 +620,17 @@ pub fn start_generation(
                         let chat_id2 = chat_id.clone();
                         let chat_label2 = chat_label.clone();
                         tokio::spawn(async move {
+                            crate::buddy::actor::report_error_persisted(
+                                gcx2.clone(),
+                                "llm_error",
+                                &err_clone,
+                                Some("chat/generation.rs"),
+                                Some(&chat_id2),
+                            )
+                            .await;
                             let buddy_arc = gcx2.read().await.buddy.clone();
                             let mut lock = buddy_arc.lock().await;
                             if let Some(svc) = lock.as_mut() {
-                                svc.report_error(
-                                    "llm_error",
-                                    &err_clone,
-                                    Some("chat/generation.rs"),
-                                    Some(&chat_id2),
-                                );
                                 let short_err: String = err_clone.chars().take(60).collect();
                                 let mut ev = crate::buddy::actor::make_runtime_event(
                                     "chat_error",

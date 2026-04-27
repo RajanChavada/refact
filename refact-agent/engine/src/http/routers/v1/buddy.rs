@@ -9,7 +9,7 @@ use tokio::sync::RwLock as ARwLock;
 use crate::buddy::diagnostics::DiagnosticContext;
 use crate::buddy::events::BuddyEvent;
 use crate::buddy::settings::MAX_PALETTE_INDEX;
-use crate::buddy::types::{BuddyActivity, BuddyCareAction, BuddyConversationEntry};
+use crate::buddy::types::{BuddyActivity, BuddyCareAction, BuddyConversationEntry, BuddySuggestion};
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 
@@ -41,6 +41,7 @@ pub async fn handle_v1_buddy_snapshot(
             "enabled": false,
             "state": crate::buddy::state::default_buddy_state(),
             "settings": crate::buddy::settings::BuddySettings::default(),
+            "recent_diagnostics": [],
             "runtime_queue": [],
             "now_playing": null,
             "active_speech": null
@@ -162,6 +163,11 @@ pub struct BuddyCareRequest {
     pub toy: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BuddyQuestAcceptRequest {
+    pub suggestion_id: String,
+}
+
 pub async fn handle_v1_buddy_care(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     axum::Json(req): axum::Json<BuddyCareRequest>,
@@ -236,6 +242,49 @@ pub async fn handle_v1_buddy_personality_reroll(
 
     Ok(axum::Json(serde_json::json!({
         "snapshot": svc.snapshot()
+    })))
+}
+
+pub async fn handle_v1_buddy_quest_accept(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+    axum::Json(req): axum::Json<BuddyQuestAcceptRequest>,
+) -> Result<axum::Json<serde_json::Value>, ScratchError> {
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let mut lock = buddy_arc.lock().await;
+    let svc = lock.as_mut().ok_or_else(|| {
+        ScratchError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "buddy service not initialized".to_string(),
+        )
+    })?;
+
+    let suggestion = svc
+        .state
+        .suggestion_state
+        .iter()
+        .find(|suggestion| suggestion.id == req.suggestion_id)
+        .cloned()
+        .ok_or_else(|| {
+            ScratchError::new(
+                StatusCode::NOT_FOUND,
+                format!("suggestion not found: {}", req.suggestion_id),
+            )
+        })?;
+
+    let quest = suggestion.quest.clone().ok_or_else(|| {
+        ScratchError::new(
+            StatusCode::BAD_REQUEST,
+            format!("suggestion is not a quest: {}", req.suggestion_id),
+        )
+    })?;
+
+    svc.accept_quest(quest);
+    svc.dismiss_suggestion(&req.suggestion_id);
+
+    Ok(axum::Json(serde_json::json!({
+        "snapshot": svc.snapshot(),
+        "suggestion": serde_json::to_value::<BuddySuggestion>(suggestion)
+            .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     })))
 }
 
@@ -367,7 +416,11 @@ pub async fn handle_v1_buddy_investigation_context(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     axum::Json(req): axum::Json<DiagnosticsCollectRequest>,
 ) -> Result<axum::Json<BuddyInvestigationContextResponse>, ScratchError> {
-    let log_lines = crate::buddy::issues::investigation_logs(gcx.clone(), &req.error)
+    let log_lines = crate::buddy::issues::investigation_logs(
+        gcx.clone(),
+        &req.error,
+        req.collected_at.as_deref(),
+    )
         .await
         .unwrap_or_else(|e| format!("Investigation logs unavailable: {}", e));
     let internal = crate::buddy::issues::investigation_internal_context(gcx.clone())
@@ -489,6 +542,9 @@ pub struct DiagnosticsCollectRequest {
     pub source_file: Option<String>,
     pub tool_name: Option<String>,
     pub chat_id: Option<String>,
+    #[allow(dead_code)]
+    pub diagnostic_id: Option<String>,
+    pub collected_at: Option<String>,
 }
 
 pub async fn handle_v1_buddy_diagnostics_collect(
@@ -499,6 +555,7 @@ pub async fn handle_v1_buddy_diagnostics_collect(
     ctx.source_file = req.source_file;
     ctx.tool_name = req.tool_name;
     ctx.chat_id = req.chat_id;
+    ctx.collected_at = req.collected_at.unwrap_or(ctx.collected_at);
 
     let buddy_arc = gcx.read().await.buddy.clone();
     let mut lock = buddy_arc.lock().await;
@@ -506,24 +563,37 @@ pub async fn handle_v1_buddy_diagnostics_collect(
         svc.add_diagnostic(ctx.clone());
     }
 
+    let mut payload = serde_json::to_value(&ctx)
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if let serde_json::Value::Object(map) = &mut payload {
+        map.insert(
+            "diagnostic_id".to_string(),
+            serde_json::json!(crate::buddy::diagnostics::diagnostic_id(&ctx)),
+        );
+    }
+    let ctx: DiagnosticContext = serde_json::from_value(payload)
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     Ok(axum::Json(ctx))
 }
 
 pub async fn handle_v1_buddy_diagnostics_list(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
 ) -> Result<axum::Json<Vec<DiagnosticContext>>, ScratchError> {
-    let buddy_arc = gcx.read().await.buddy.clone();
-    let lock = buddy_arc.lock().await;
-    let diags = lock
-        .as_ref()
-        .map(|s| s.recent_diagnostics.clone())
-        .unwrap_or_default();
+    let project_root = crate::buddy::actor::latest_project_root(gcx.clone())
+        .await
+        .map_err(|e| ScratchError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let diags = crate::buddy::storage::load_recent_diagnostics(&project_root, 100)
+        .await
+        .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(axum::Json(diags))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct IssueCreateRequest {
     pub diagnostic_index: Option<usize>,
+    pub diagnostic_id: Option<String>,
+    pub collected_at: Option<String>,
     pub error: Option<String>,
     pub manual: Option<bool>,
 }
@@ -532,7 +602,10 @@ pub async fn handle_v1_buddy_issues_create(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     axum::Json(req): axum::Json<IssueCreateRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let pre_diag = if req.diagnostic_index.is_none() {
+    let pre_diag = if req.diagnostic_index.is_none()
+        && req.diagnostic_id.is_none()
+        && req.collected_at.is_none()
+    {
         match &req.error {
             Some(err) => {
                 Some(crate::buddy::diagnostics::collect_diagnostics(gcx.clone(), err).await)
@@ -543,7 +616,17 @@ pub async fn handle_v1_buddy_issues_create(
         None
     };
 
-    let (ctx, auto_enabled, last_issue_at, recent_errors) = {
+    let ctx = crate::buddy::actor::resolve_diagnostic(
+        gcx.clone(),
+        req.diagnostic_index,
+        req.diagnostic_id.as_deref(),
+        req.collected_at.as_deref(),
+        pre_diag,
+    )
+    .await
+    .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
+
+    let (auto_enabled, last_issue_at, recent_errors) = {
         let buddy_arc = gcx.read().await.buddy.clone();
         let lock = buddy_arc.lock().await;
         let svc = lock.as_ref().ok_or_else(|| {
@@ -553,24 +636,7 @@ pub async fn handle_v1_buddy_issues_create(
             )
         })?;
 
-        let ctx = if let Some(idx) = req.diagnostic_index {
-            svc.recent_diagnostics.get(idx).cloned().ok_or_else(|| {
-                ScratchError::new(
-                    StatusCode::BAD_REQUEST,
-                    "diagnostic index out of range".to_string(),
-                )
-            })?
-        } else if let Some(diagnosed) = pre_diag {
-            diagnosed
-        } else {
-            return Err(ScratchError::new(
-                StatusCode::BAD_REQUEST,
-                "provide diagnostic_index or error".to_string(),
-            ));
-        };
-
         (
-            ctx,
             svc.settings.auto_issue_creation,
             svc.last_issue_at,
             svc.recent_issue_errors.clone(),

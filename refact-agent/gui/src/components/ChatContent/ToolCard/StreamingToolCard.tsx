@@ -9,6 +9,10 @@ import { Markdown, ShikiCodeBlock } from "../../Markdown";
 import { useDelayedUnmount } from "../../shared/useDelayedUnmount";
 import { ToolCallTooltip } from "./ToolCallTooltip";
 import { useStreamingMarkdown } from "../../Markdown/useStreamingMarkdown";
+import {
+  addBuddyCrashBreadcrumb,
+  setBuddyCrashHotSlot,
+} from "../../../features/Buddy/reportBuddyFrontendError";
 import styles from "./StreamingToolCard.module.css";
 
 const MAX_MD_RENDER_CHARS = 50_000;
@@ -110,6 +114,21 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
       el.scrollTop = el.scrollHeight;
     }
   }, [status, deferredEntertainmentText]);
+
+  useEffect(() => {
+    if (status === "running") {
+      setBuddyCrashHotSlot(
+        "tool",
+        deferredEntertainmentText ?? summary?.toString() ?? null,
+      );
+      if (deferredEntertainmentText) {
+        addBuddyCrashBreadcrumb("tool_progress", deferredEntertainmentText);
+      }
+      return;
+    }
+
+    setBuddyCrashHotSlot("tool", null);
+  }, [deferredEntertainmentText, status, summary]);
 
   const header = (
     <Flex

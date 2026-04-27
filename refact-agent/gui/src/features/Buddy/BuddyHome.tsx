@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { Flex, Text, Button, Spinner } from "@radix-ui/themes";
+import { Flex, Text, Button, Spinner, Tooltip } from "@radix-ui/themes";
 import { ArrowLeftIcon, GearIcon } from "@radix-ui/react-icons";
+import classNames from "classnames";
 import { useAppDispatch, useAppSelector } from "../../hooks";
 import { pop, push } from "../Pages/pagesSlice";
 import { BuddyCanvas } from "./BuddyCanvas";
@@ -51,6 +52,19 @@ const CARE_ACTIONS: Array<{
   { action: "clean", label: "Clean", emoji: "🧼" },
 ];
 
+function formatTime(ts: string): string {
+  if (!ts) return "";
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDate(ts: string): string {
+  if (!ts) return "";
+  return new Date(ts).toLocaleDateString();
+}
+
 export const BuddyHome: React.FC = () => {
   const dispatch = useAppDispatch();
   const snapshot = useAppSelector(selectBuddySnapshot);
@@ -83,6 +97,7 @@ export const BuddyHome: React.FC = () => {
   const pet = snapshot?.state.pet;
   const personality = snapshot?.state.personality;
   const settings = snapshot?.settings;
+  const activeQuest = snapshot?.state.active_quest ?? null;
 
   const stage = STAGES[progression?.stage ?? state.progress.stage] ?? STAGES[0];
   const nextStage = STAGES[(progression?.stage ?? state.progress.stage) + 1];
@@ -109,6 +124,13 @@ export const BuddyHome: React.FC = () => {
       }),
     [pet],
   );
+
+  const successRate = useMemo(() => {
+    if (!statsData || statsData.totals.total_calls === 0) return null;
+    return Math.round(
+      (statsData.totals.successful_calls / statsData.totals.total_calls) * 100,
+    );
+  }, [statsData]);
 
   const handleBack = useCallback(() => {
     dispatch(pop());
@@ -189,7 +211,18 @@ export const BuddyHome: React.FC = () => {
     [dispatch, activeSpeech, activeDiagnostic],
   );
 
+  const handleQuestControl = useCallback(
+    async (ctrl: BuddyControl) => {
+      await executeBuddyAction(ctrl, dispatch, {
+        triggerText: activeQuest?.title ?? "Buddy quest",
+        triggerSource: "suggestion",
+      });
+    },
+    [activeQuest?.title, dispatch],
+  );
+
   const unlockedSkills = skills?.unlocked ?? state.skills;
+  const workflowSummaries = snapshot?.state.workflow_summaries ?? [];
 
   if (!loaded) {
     return (
@@ -327,278 +360,353 @@ export const BuddyHome: React.FC = () => {
         </div>
       </div>
 
-      <div className={styles.needsCard}>
-        <Text
-          size="1"
-          weight="bold"
-          color="gray"
-          className={styles.sectionLabel}
-        >
-          CARE LOOP
-        </Text>
-        <div className={styles.needsGrid}>
-          {needRows.map((item) => (
-            <div key={item.key} className={styles.needRow}>
-              <div className={styles.needHeader}>
-                <span>{item.label}</span>
-                <span>{item.value}</span>
-              </div>
-              <div className={styles.needBar}>
-                <div
-                  className={styles.needFill}
-                  style={{ width: `${item.fill}%` }}
-                />
-              </div>
-            </div>
-          ))}
+      {/* Compact summary strip — replaces the legacy STATUS card. */}
+      <div className={styles.summaryStrip}>
+        <div className={styles.statItem}>
+          <Text size="1" color="gray">
+            Stage
+          </Text>
+          <Text size="2" weight="bold">
+            {stage.emoji} {stage.name}
+          </Text>
         </div>
+        <div className={classNames(styles.statItem, styles.statItemGrow)}>
+          <div className={styles.statItemHeader}>
+            <Text size="1" color="gray">
+              Growth
+            </Text>
+            <Text size="1" weight="bold">
+              {xp}
+              {xpNext ? ` / ${xpNext}` : " (max)"}
+            </Text>
+          </div>
+          <div className={styles.xpBar}>
+            <div className={styles.xpFill} style={{ width: `${xpFill}%` }} />
+          </div>
+        </div>
+        {pet && (
+          <div className={styles.statItem}>
+            <Text size="1" color="gray">
+              Care
+            </Text>
+            <Text size="2" weight="bold">
+              {pet.evolution.care_score}
+            </Text>
+          </div>
+        )}
+        {pet && (
+          <div className={styles.statItem}>
+            <Text size="1" color="gray">
+              Neglect
+            </Text>
+            <Text size="2" weight="bold">
+              {pet.evolution.neglect_score}
+            </Text>
+          </div>
+        )}
+        {statsData && (
+          <>
+            <div className={styles.statItemDivider} aria-hidden />
+            <div className={styles.statItem}>
+              <Text size="1" color="gray">
+                Messages
+              </Text>
+              <Text size="2" weight="bold">
+                {statsData.totals.total_calls.toLocaleString()}
+              </Text>
+            </div>
+            <div className={styles.statItem}>
+              <Text size="1" color="gray">
+                Tokens
+              </Text>
+              <Text size="2" weight="bold">
+                {(statsData.totals.total_tokens / 1000).toFixed(1)}k
+              </Text>
+            </div>
+            <div className={styles.statItem}>
+              <Text size="1" color="gray">
+                Success
+              </Text>
+              <Text size="2" weight="bold">
+                {successRate ?? 0}%
+              </Text>
+            </div>
+          </>
+        )}
+        <div className={styles.statSpacer} aria-hidden />
+        {statsData && (
+          <Button size="1" variant="ghost" onClick={handleViewStats}>
+            View Full Stats →
+          </Button>
+        )}
       </div>
 
-      <div className={styles.personalityCard}>
-        <div className={styles.personalityHeader}>
-          <div>
+      {/* Row 1 — Care loop + Personality */}
+      <div className={styles.row}>
+        <div className={styles.panel}>
+          <div className={styles.panelHeader}>
             <Text
               size="1"
               weight="bold"
               color="gray"
               className={styles.sectionLabel}
             >
-              PERSONALITY
-            </Text>
-            <Text size="2" weight="bold">
-              {personality?.archetype_label ?? "Buddy"}
-            </Text>
-            <Text size="1" color="gray">
-              {personality?.vibe ?? "Playful, quirky, helpful"}
+              CARE LOOP
             </Text>
           </div>
-          <Button size="1" variant="soft" onClick={() => void handleReroll()}>
-            Reroll
-          </Button>
+          <div className={styles.needsGrid}>
+            {needRows.map((item) => (
+              <div key={item.key} className={styles.needRow}>
+                <div className={styles.needHeader}>
+                  <span>{item.label}</span>
+                  <span>{item.value}</span>
+                </div>
+                <div className={styles.needBar}>
+                  <div
+                    className={styles.needFill}
+                    style={{ width: `${item.fill}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <Text size="1" className={styles.personalitySummary}>
-          {personality?.summary}
-        </Text>
-
-        <div className={styles.traitsGrid}>
-          {Object.entries(personality?.traits ?? {}).map(([key, value]) => (
-            <div key={key} className={styles.traitRow}>
-              <span className={styles.traitName}>{key}</span>
-              <span className={styles.traitValue}>{value}</span>
+        <div className={styles.panel}>
+          <div className={styles.panelHeader}>
+            <div className={styles.panelTitleGroup}>
+              <Text
+                size="1"
+                weight="bold"
+                color="gray"
+                className={styles.sectionLabel}
+              >
+                PERSONALITY
+              </Text>
+              <Text size="2" weight="bold">
+                {personality?.archetype_label ?? "Buddy"}
+              </Text>
+              <Text size="1" color="gray">
+                {personality?.vibe ?? "Playful, quirky, helpful"}
+              </Text>
             </div>
-          ))}
-        </div>
-
-        <div className={styles.settingsRow}>
-          <Button
-            size="1"
-            variant={settings?.proactive_enabled ? "soft" : "outline"}
-            onClick={handleSettings}
-            disabled={isSavingSettings}
-          >
-            {settings?.proactive_enabled ? "Proactive On" : "Proactive Off"}
-          </Button>
-          <Button
-            size="1"
-            variant="outline"
-            onClick={() =>
-              void handlePromptChange(
-                settings?.personality_prompt
-                  ? null
-                  : personality?.prompt ?? null,
-              )
-            }
-            disabled={isSavingSettings}
-          >
-            {settings?.personality_prompt ? "Use Random Vibe" : "Use Current Vibe"}
-          </Button>
-        </div>
-      </div>
-
-      {statsData && (
-        <div className={styles.statsSummary}>
-          <div className={styles.statItem}>
-            <Text size="1" color="gray">
-              Messages
-            </Text>
-            <Text size="2" weight="bold">
-              {statsData.totals.total_calls.toLocaleString()}
-            </Text>
+            <Button size="1" variant="soft" onClick={() => void handleReroll()}>
+              Reroll
+            </Button>
           </div>
-          <div className={styles.statItem}>
-            <Text size="1" color="gray">
-              Tokens
-            </Text>
-            <Text size="2" weight="bold">
-              {(statsData.totals.total_tokens / 1000).toFixed(1)}k
-            </Text>
-          </div>
-          <div className={styles.statItem}>
-            <Text size="1" color="gray">
-              Success
-            </Text>
-            <Text size="2" weight="bold">
-              {statsData.totals.total_calls > 0
-                ? Math.round(
-                    (statsData.totals.successful_calls /
-                      statsData.totals.total_calls) *
-                      100,
-                  )
-                : 0}
-              %
-            </Text>
-          </div>
-          <Button size="1" variant="ghost" onClick={handleViewStats}>
-            View Full Stats →
-          </Button>
-        </div>
-      )}
 
-      <div className={styles.setupActions}>
-        <Text
-          size="1"
-          weight="bold"
-          color="gray"
-          className={styles.sectionLabel}
-        >
-          PROJECT SETUP
-        </Text>
-        <div className={styles.setupActionButtons}>
-          {SETUP_MODES.map((m) => (
-            <button
-              key={m.mode}
-              type="button"
-              className={styles.setupActionButton}
-              onClick={() => handleRunMode(m.mode)}
-            >
-              <Text size="1">{m.label}</Text>
-            </button>
-          ))}
-        </div>
-      </div>
+          {personality?.summary && (
+            <Text size="1" className={styles.personalitySummary}>
+              {personality.summary}
+            </Text>
+          )}
 
-      <div className={styles.infoGrid}>
-        <div className={styles.infoPanel}>
-          <Text
-            size="1"
-            weight="bold"
-            color="gray"
-            className={styles.sectionLabel}
-          >
-            STATUS
-          </Text>
+          <div className={styles.traitsGrid}>
+            {Object.entries(personality?.traits ?? {}).map(([key, value]) => (
+              <div key={key} className={styles.traitRow}>
+                <span className={styles.traitName}>{key}</span>
+                <span className={styles.traitValue}>{value}</span>
+              </div>
+            ))}
+          </div>
+
           <Flex direction="column" gap="1">
-            <Flex justify="between">
-              <Text size="1" color="gray">
-                Stage
-              </Text>
-              <Text size="1" weight="bold">
-                {stage.name}
-              </Text>
-            </Flex>
-            <Flex justify="between">
-              <Text size="1" color="gray">
-                Growth
-              </Text>
-              <Text size="1" weight="bold">
-                {xp} {xpNext ? `/ ${xpNext}` : "(max)"}
-              </Text>
-            </Flex>
-            {pet && (
-              <Flex justify="between">
-                <Text size="1" color="gray">
-                  Care score
-                </Text>
-                <Text size="1" weight="bold">
-                  {pet.evolution.care_score}
-                </Text>
-              </Flex>
-            )}
-            {pet && (
-              <Flex justify="between">
-                <Text size="1" color="gray">
-                  Neglect
-                </Text>
-                <Text size="1" weight="bold">
-                  {pet.evolution.neglect_score}
-                </Text>
-              </Flex>
-            )}
-          </Flex>
-          <div className={styles.xpBar}>
-            <div className={styles.xpFill} style={{ width: `${xpFill}%` }} />
-          </div>
-          <Text
-            size="1"
-            weight="bold"
-            color="gray"
-            className={styles.sectionLabel}
-            style={{ marginTop: "var(--space-1)" }}
-          >
-            SKILLS
-          </Text>
-          <Flex wrap="wrap" gap="1">
-            {unlockedSkills.length === 0 && (
-              <Text size="1" color="gray">
-                None yet
-              </Text>
-            )}
-            {unlockedSkills.map((id) => {
-              const skill = SKILLS.find((s) => s.id === id);
-              return skill ? (
-                <span key={id} className={styles.skillChip}>
-                  {skill.icon} {skill.name}
-                </span>
-              ) : null;
-            })}
-          </Flex>
-          {semantic?.last_active && (
-            <Flex justify="between">
-              <Text size="1" color="gray">
-                Last active
-              </Text>
-              <Text size="1">
-                {new Date(semantic.last_active).toLocaleDateString()}
-              </Text>
-            </Flex>
-          )}
-        </div>
-
-        <div className={styles.infoPanel}>
-          <Text
-            size="1"
-            weight="bold"
-            color="gray"
-            className={styles.sectionLabel}
-          >
-            ACTIVITY
-          </Text>
-          {activities.length === 0 && (
-            <Text size="1" color="gray">
-              No recent activity
+            <Text
+              size="1"
+              weight="bold"
+              color="gray"
+              className={styles.sectionLabel}
+            >
+              SKILLS
             </Text>
-          )}
-          {activities.slice(0, 6).map((a, i) => (
-            <div key={i} className={styles.activityItem}>
-              <span className={styles.activityIcon}>{a.icon}</span>
-              <span className={styles.activityDesc}>{a.title}</span>
-              <span className={styles.activityTime}>
-                {a.timestamp
-                  ? new Date(a.timestamp).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : ""}
-              </span>
+            <div className={styles.skillsRow}>
+              {unlockedSkills.length === 0 && (
+                <Text size="1" color="gray">
+                  None yet
+                </Text>
+              )}
+              {unlockedSkills.map((id) => {
+                const skill = SKILLS.find((s) => s.id === id);
+                return skill ? (
+                  <span key={id} className={styles.skillChip}>
+                    {skill.icon} {skill.name}
+                  </span>
+                ) : null;
+              })}
             </div>
-          ))}
+          </Flex>
+
+          <div className={styles.settingsRow}>
+            <Button
+              size="1"
+              variant={settings?.proactive_enabled ? "soft" : "outline"}
+              onClick={handleSettings}
+              disabled={isSavingSettings}
+            >
+              {settings?.proactive_enabled ? "Proactive On" : "Proactive Off"}
+            </Button>
+            <Button
+              size="1"
+              variant="outline"
+              onClick={() =>
+                void handlePromptChange(
+                  settings?.personality_prompt
+                    ? null
+                    : personality?.prompt ?? null,
+                )
+              }
+              disabled={isSavingSettings}
+            >
+              {settings?.personality_prompt
+                ? "Use Random Vibe"
+                : "Use Current Vibe"}
+            </Button>
+          </div>
+
+          {activeQuest && (
+            <div className={styles.questCard}>
+              <div className={styles.questHeader}>
+                <div>
+                  <Text
+                    size="1"
+                    weight="bold"
+                    color="gray"
+                    className={styles.sectionLabel}
+                  >
+                    ACTIVE QUEST
+                  </Text>
+                  <Text size="2" weight="bold">
+                    {activeQuest.icon} {activeQuest.title}
+                  </Text>
+                </div>
+                <Text size="1" color="gray">
+                  +{activeQuest.reward_xp} growth
+                </Text>
+              </div>
+
+              <Text size="1" className={styles.questDescription}>
+                {activeQuest.description}
+              </Text>
+
+              <div className={styles.questProgressRow}>
+                <Text size="1" color="gray">
+                  Progress
+                </Text>
+                <Text size="1" weight="bold">
+                  {Math.min(activeQuest.progress, activeQuest.goal)} /{" "}
+                  {activeQuest.goal}
+                </Text>
+              </div>
+              <div className={styles.questProgressBar}>
+                <div
+                  className={styles.questProgressFill}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (Math.max(0, activeQuest.progress) /
+                        Math.max(1, activeQuest.goal)) *
+                        100,
+                    )}%`,
+                  }}
+                />
+              </div>
+
+              <div className={styles.questControls}>
+                {activeQuest.controls.map((ctrl) => (
+                  <Button
+                    key={ctrl.id}
+                    size="1"
+                    variant={ctrl.style === "primary" ? "soft" : "outline"}
+                    onClick={() => void handleQuestControl(ctrl)}
+                  >
+                    {ctrl.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {snapshot?.state.workflow_summaries &&
-        snapshot.state.workflow_summaries.length > 0 && (
-          <div className={styles.workflowsSection}>
+      {/* Row 2 — Project setup + Activity (activity scrolls internally) */}
+      <div className={classNames(styles.row, styles.rowFlex)}>
+        <div className={styles.panel}>
+          <div className={styles.panelHeader}>
+            <Text
+              size="1"
+              weight="bold"
+              color="gray"
+              className={styles.sectionLabel}
+            >
+              PROJECT SETUP
+            </Text>
+          </div>
+          <div className={styles.setupChipsList}>
+            {SETUP_MODES.map((m) => (
+              <button
+                key={m.mode}
+                type="button"
+                className={classNames(styles.setupChip, {
+                  [styles.setupChipPrimary]: m.mode === "setup",
+                })}
+                onClick={() => handleRunMode(m.mode)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={classNames(styles.panel, styles.panelScroll)}>
+          <div className={styles.panelHeader}>
+            <Text
+              size="1"
+              weight="bold"
+              color="gray"
+              className={styles.sectionLabel}
+            >
+              ACTIVITY
+            </Text>
+          </div>
+          <div className={styles.scrollList}>
+            {activities.length === 0 && (
+              <Text size="1" className={styles.emptyText}>
+                No recent activity
+              </Text>
+            )}
+            {activities.map((a, i) => {
+              const tooltip = a.description || a.title;
+              return (
+                <Tooltip
+                  key={`${a.activity_type}-${a.timestamp}-${i}`}
+                  content={tooltip}
+                  delayDuration={150}
+                >
+                  <div
+                    className={styles.listRow}
+                    tabIndex={0}
+                    role="listitem"
+                    aria-label={tooltip}
+                  >
+                    <span className={styles.listIcon}>{a.icon}</span>
+                    <div className={styles.listContent}>
+                      <span className={styles.listTitle}>{a.title}</span>
+                    </div>
+                    <span className={styles.listMeta}>
+                      {formatTime(a.timestamp)}
+                    </span>
+                  </div>
+                </Tooltip>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Row 3 — Recent workflows + Recent chats (both scroll internally) */}
+      <div className={classNames(styles.row, styles.rowFlex)}>
+        <div className={classNames(styles.panel, styles.panelScroll)}>
+          <div className={styles.panelHeader}>
             <Text
               size="1"
               weight="bold"
@@ -607,31 +715,40 @@ export const BuddyHome: React.FC = () => {
             >
               RECENT WORKFLOWS
             </Text>
-            {snapshot.state.workflow_summaries.map((w) => (
-              <div key={w.workflow_id} className={styles.workflowItem}>
-                <span className={styles.workflowIcon}>
+          </div>
+          <div className={styles.scrollList}>
+            {workflowSummaries.length === 0 && (
+              <Text size="1" className={styles.emptyText}>
+                No recent workflows
+              </Text>
+            )}
+            {workflowSummaries.map((w) => (
+              <div key={w.workflow_id} className={styles.listRow}>
+                <span className={styles.listIcon}>
                   {w.last_outcome === "success"
                     ? "✅"
                     : w.last_outcome === "failed"
                       ? "❌"
                       : "⚙️"}
                 </span>
-                <span className={styles.workflowName}>
-                  {w.workflow_id.replace(/_/g, " ")}
-                </span>
-                <span className={styles.workflowMeta}>
+                <div className={styles.listContent}>
+                  <span className={styles.listTitle}>
+                    {w.workflow_id.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <span className={styles.listMeta}>
                   ×{w.run_count}
-                  {w.last_run
-                    ? ` · ${new Date(w.last_run).toLocaleDateString()}`
-                    : ""}
+                  {w.last_run ? ` · ${formatDate(w.last_run)}` : ""}
                 </span>
               </div>
             ))}
           </div>
-        )}
+        </div>
 
-      <div className={styles.chatsSection}>
-        <BuddyRecentChats />
+        <BuddyRecentChats
+          className={classNames(styles.panel, styles.panelScroll)}
+          title="RECENT CHATS"
+        />
       </div>
     </div>
   );

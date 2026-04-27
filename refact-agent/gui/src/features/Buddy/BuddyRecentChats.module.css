@@ -62,7 +62,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 180px;
+  min-width: 0;
 }
 
 .entryMeta {
@@ -90,4 +90,28 @@
   gap: var(--space-2);
   padding: var(--space-4) var(--space-2);
   color: var(--gray-9);
+}
+
+/* Scrollable entries area inside a panel. Header + filter row stay
+ * pinned at the top while the conversation list scrolls vertically.
+ * overflow-x is explicit because UAs promote `visible` to `auto` once
+ * overflow-y is auto, which would otherwise produce a stray horizontal
+ * scrollbar on long chat titles. */
+.entriesScroll {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@media (max-width: 720px) {
+  .entriesScroll {
+    flex: 0 0 auto;
+    overflow-y: visible;
+  }
 }

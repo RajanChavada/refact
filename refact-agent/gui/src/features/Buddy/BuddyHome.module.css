@@ -1,9 +1,18 @@
+/* -------------------------------------------------------------------------
+ * Buddy homepage layout
+ * - transparent page background to inherit the host window
+ * - fixed-shell pattern: the page itself never scrolls; only list cards do
+ * - on narrow IDE/webview widths the page falls back to natural scrolling
+ *   so all stacked cards remain reachable
+ * ------------------------------------------------------------------------- */
+
 .page {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow-y: auto;
-  background: var(--color-background);
+  overflow: hidden;
+  background: transparent;
 }
 
 .topBar {
@@ -13,12 +22,15 @@
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--gray-a4);
   flex-shrink: 0;
+  background: transparent;
 }
 
 .topTitle {
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+
+/* ---------- Hero ---------- */
 
 .hero {
   display: flex;
@@ -67,113 +79,6 @@
   min-height: 16px;
 }
 
-.palettePicker {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.paletteDot {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  cursor: pointer;
-  transition:
-    transform 0.15s,
-    border-color 0.15s;
-  flex-shrink: 0;
-}
-
-.paletteDot:hover {
-  transform: scale(1.2);
-}
-
-.paletteDotActive {
-  border-color: var(--gray-12);
-  transform: scale(1.2);
-}
-
-.infoGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-  padding: 0 var(--space-3) var(--space-3);
-  flex-shrink: 0;
-}
-
-.infoPanel {
-  background: var(--gray-a2);
-  border: 1px solid var(--gray-a4);
-  border-radius: var(--radius-3);
-  padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.sectionLabel {
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 10px;
-}
-
-.xpBar {
-  height: 6px;
-  background: var(--gray-a4);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.xpFill {
-  height: 100%;
-  border-radius: 3px;
-  background: linear-gradient(90deg, var(--accent-9), var(--accent-11));
-  transition: width 0.5s ease;
-}
-
-.skillChip {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: 9999px;
-  background: var(--gray-a3);
-  font-size: 11px;
-}
-
-.activityItem {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-  padding: var(--space-1) 0;
-  border-bottom: 1px solid var(--gray-a3);
-}
-
-.activityItem:last-child {
-  border-bottom: none;
-}
-
-.activityIcon {
-  flex-shrink: 0;
-  font-size: 14px;
-}
-
-.activityDesc {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.activityTime {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--gray-9);
-}
-
 .setupChips {
   display: flex;
   gap: var(--space-2);
@@ -193,101 +98,24 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 4px 10px;
   border-radius: 9999px;
   border: 1px solid var(--gray-a4);
   background: var(--gray-a2);
   color: var(--gray-12);
   font-size: 11px;
   cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
 }
 
-.needsCard,
-.personalityCard {
-  margin: 0 var(--space-3) var(--space-2);
-  padding: var(--space-3);
-  background: var(--gray-a2);
-  border: 1px solid var(--gray-a4);
-  border-radius: var(--radius-3);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.needsGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.needRow {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.needHeader {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--gray-11);
-}
-
-.needBar {
-  height: 6px;
-  background: var(--gray-a4);
-  border-radius: 9999px;
-  overflow: hidden;
-}
-
-.needFill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent-9), var(--accent-11));
-  border-radius: 9999px;
-}
-
-.personalityHeader {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-.personalitySummary {
-  line-height: 1.5;
-}
-
-.traitsGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.traitRow {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-1);
-  padding: 4px 6px;
+.careButton:hover {
   background: var(--gray-a3);
-  border-radius: var(--radius-2);
+  border-color: var(--gray-a6);
 }
 
-.traitName {
-  font-size: 11px;
-  color: var(--gray-11);
-  text-transform: capitalize;
-}
-
-.traitValue {
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.settingsRow {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
+/* ---------- Now-playing status bubble ---------- */
 
 .statusBubble {
   display: flex;
@@ -336,13 +164,16 @@
   transition: width 0.3s ease;
 }
 
-.statsSummary {
+/* ---------- Compact summary strip (replaces STATUS card) ---------- */
+
+.summaryStrip {
   display: flex;
   align-items: center;
-  justify-content: space-around;
+  flex-wrap: wrap;
   gap: var(--space-3);
+  row-gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  margin: 0 var(--space-3) var(--space-2);
+  margin: 0 var(--space-3) var(--space-3);
   background: var(--gray-a2);
   border: 1px solid var(--gray-a4);
   border-radius: var(--radius-3);
@@ -352,115 +183,422 @@
 .statItem {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 56px;
+}
+
+.statItemGrow {
+  flex: 0 1 180px;
+  min-width: 140px;
+}
+
+.statItemHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.statItemDivider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--gray-a4);
+  flex-shrink: 0;
+}
+
+.statSpacer {
+  flex: 1 1 auto;
+}
+
+/* ---------- Layout rows (responsive 2-column) ---------- */
+
+.row {
+  display: grid;
+  /* minmax(0, 1fr) lets columns shrink below their intrinsic min-content
+   * size so long titles/chips never push the grid wider than the page. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
+  flex-shrink: 0;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Stretching row: takes the remaining vertical space and lets its
+ * children clip + scroll internally. Applied to rows that contain lists. */
+.rowFlex {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* ---------- Shared panel (used by every card on the page) ---------- */
+
+.panel {
+  background: var(--gray-a2);
+  border: 1px solid var(--gray-a4);
+  border-radius: var(--radius-3);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Marker class: the panel itself acts as a clipping context so its inner
+ * .scrollList becomes the only scrollable region. */
+.panelScroll {
+  overflow: hidden;
+}
+
+/* Scrollable list area inside a panel — keeps the panel header fixed and
+ * lets only the entries scroll, sharing the same scrollbar treatment as
+ * the rest of the app. overflow-x must be explicit because UAs promote
+ * `visible` to `auto` whenever overflow-y is auto/scroll, which would
+ * otherwise produce a stray horizontal scrollbar. */
+.scrollList {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   gap: 2px;
 }
 
-.setupActions {
-  padding: 0 var(--space-3) var(--space-2);
+/* Narrow IDE/webview widths: stack pairs into one column and let the page
+ * scroll naturally so nothing gets clipped. */
+@media (max-width: 720px) {
+  .page {
+    overflow-y: auto;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rowFlex {
+    flex: 0 0 auto;
+  }
+  .panelScroll {
+    overflow: visible;
+  }
+  .scrollList {
+    overflow-y: visible;
+    overflow-x: hidden;
+    flex: 0 0 auto;
+  }
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.panelTitleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sectionLabel {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+}
+
+/* ---------- Care loop card content ---------- */
+
+.needsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+
+.needRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.needHeader {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--gray-11);
+}
+
+.needBar {
+  height: 6px;
+  background: var(--gray-a4);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.needFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-9), var(--accent-11));
+  border-radius: 9999px;
+  transition: width 0.4s ease;
+}
+
+/* ---------- Personality card content ---------- */
+
+.personalitySummary {
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.questCard {
+  margin-top: var(--space-2);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  flex-shrink: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--accent-a5);
+  border-radius: var(--radius-3);
+  background: linear-gradient(180deg, var(--accent-a2), transparent);
 }
 
-.setupActionButtons {
+.questHeader {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
-.setupActionButton {
-  display: inline-flex;
+.questDescription {
+  line-height: 1.45;
+}
+
+.questProgressRow {
+  display: flex;
   align-items: center;
-  padding: 3px var(--space-2);
-  border-radius: var(--radius-2);
-  background: var(--gray-a2);
-  border: 1px solid var(--gray-a4);
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--gray-12);
-  transition: background 0.1s;
-  white-space: nowrap;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
-.setupActionButton:hover {
+.questProgressBar {
+  height: 6px;
+  border-radius: 9999px;
+  overflow: hidden;
   background: var(--gray-a4);
 }
 
-.workflowsSection {
-  padding: 0 var(--space-3) var(--space-3);
+.questProgressFill {
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--accent-9), var(--accent-11));
+  transition: width 0.35s ease;
+}
+
+.questControls {
   display: flex;
-  flex-direction: column;
   gap: var(--space-2);
-  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
-.workflowItem {
+.traitsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-1);
+}
+
+.traitRow {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) 0;
-  border-bottom: 1px solid var(--gray-a3);
-}
-
-.workflowItem:last-child {
-  border-bottom: none;
-}
-
-.workflowIcon {
-  flex-shrink: 0;
-  font-size: 13px;
-}
-
-.workflowName {
-  flex: 1;
+  justify-content: space-between;
+  gap: var(--space-1);
+  padding: 4px 8px;
+  background: var(--gray-a3);
+  border-radius: var(--radius-2);
   min-width: 0;
+}
+
+.traitName {
   font-size: 11px;
+  color: var(--gray-11);
   text-transform: capitalize;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workflowMeta {
+.traitValue {
+  font-size: 11px;
+  font-weight: 600;
   flex-shrink: 0;
-  font-size: 10px;
-  color: var(--gray-9);
 }
 
-.chatsSection {
-  padding: 0 var(--space-3) var(--space-4);
-  flex: 1;
+.skillsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
-.emptyChats {
-  color: var(--gray-9);
+.skillChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--gray-a3);
+  font-size: 11px;
 }
 
-.chatItem {
-  display: block;
+.settingsRow {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* ---------- XP bar (used in summary strip) ---------- */
+
+.xpBar {
+  height: 6px;
+  background: var(--gray-a4);
+  border-radius: 3px;
+  overflow: hidden;
   width: 100%;
-  text-align: left;
+}
+
+.xpFill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent-9), var(--accent-11));
+  transition: width 0.5s ease;
+}
+
+/* ---------- Project setup card content ---------- */
+
+.setupChipsList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.setupChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 9999px;
   background: var(--gray-a2);
   border: 1px solid var(--gray-a4);
-  border-radius: var(--radius-2);
-  padding: var(--space-2);
   cursor: pointer;
-  transition: background 0.1s;
+  font-size: 11px;
+  color: var(--gray-12);
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+  white-space: nowrap;
+  text-align: left;
 }
 
-.chatItem:hover {
+.setupChip:hover {
   background: var(--gray-a3);
+  border-color: var(--gray-a6);
 }
 
-.chatTitle {
-  display: block;
+.setupChipPrimary {
+  background: var(--accent-a3);
+  border-color: var(--accent-a6);
+  color: var(--accent-11);
+  font-weight: 600;
+}
+
+.setupChipPrimary:hover {
+  background: var(--accent-a4);
+  border-color: var(--accent-a7);
+}
+
+/* ---------- Shared list rows (activity / workflows) ---------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 8px;
+  border-radius: var(--radius-2);
+  min-width: 0;
+  background: transparent;
+  transition: background 0.12s;
+  cursor: default;
+  text-align: left;
+  border: none;
+  width: 100%;
+  color: inherit;
+  font: inherit;
+}
+
+.listRow[data-clickable] {
+  cursor: pointer;
+}
+
+.listRow:hover,
+.listRow:focus-visible {
+  background: var(--gray-a3);
+  outline: none;
+}
+
+.listIcon {
+  flex-shrink: 0;
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}
+
+.listContent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.listTitle {
+  font-size: 12px;
+  color: var(--gray-12);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.listSubtitle {
+  font-size: 10px;
+  color: var(--gray-10);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chatTime {
+.listMeta {
+  flex-shrink: 0;
   font-size: 10px;
+  color: var(--gray-9);
+  white-space: nowrap;
 }
+
+.emptyText {
+  color: var(--gray-9);
+  font-size: 11px;
+  padding: var(--space-2) var(--space-1);
+}
+
+/* Recent chats panel uses the shared .panel; its internals already render
+   their own header/filters/rows from BuddyRecentChats. */

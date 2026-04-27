@@ -5,8 +5,8 @@ use tokio::sync::Mutex as AMutex;
 use crate::global_context::GlobalContext;
 use super::actor::BuddyService;
 use super::types::{
-    BuddyJobState, BuddySpeechItem, BuddySuggestion, BuddyActivity, BuddyRuntimeEvent,
-    BuddyOnboarding,
+    BuddyActivity, BuddyJobState, BuddyOnboarding, BuddyPetState, BuddyRuntimeEvent,
+    BuddySpeechItem, BuddySuggestion,
 };
 use super::diagnostics::DiagnosticContext;
 
@@ -17,6 +17,9 @@ pub struct BuddyJobContext {
     pub project_root: std::path::PathBuf,
     pub job_state: BuddyJobState,
     pub total_workflow_runs: u64,
+    pub suggestion_state: Vec<BuddySuggestion>,
+    pub pet: BuddyPetState,
+    pub active_quest: Option<super::types::BuddyQuest>,
 }
 
 pub struct BuddyJobResult {
@@ -78,6 +81,7 @@ impl BuddyScheduler {
             .push(Box::new(super::jobs::stats_watcher::StatsWatcherJob));
         s.jobs
             .push(Box::new(super::jobs::health_watcher::HealthWatcherJob));
+        s.jobs.push(Box::new(super::jobs::quest_prompt::QuestPromptJob));
         s.jobs.push(Box::new(
             super::jobs::proactive_suggestions::ProactiveSuggestionsJob,
         ));
@@ -150,6 +154,9 @@ impl BuddyScheduler {
                 project_root: project_root.to_path_buf(),
                 job_state: job_state.clone(),
                 total_workflow_runs,
+                suggestion_state: state.suggestion_state.clone(),
+                pet: state.pet.clone(),
+                active_quest: state.active_quest.clone(),
             };
             if !job.should_run(gcx.clone(), &ctx).await {
                 continue;
