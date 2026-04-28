@@ -74,7 +74,20 @@ export const noCommandPreview: HttpHandler = http.post(
 
 export const goodUser: HttpHandler = http.get(
   "http://127.0.0.1:8001/v1/providers",
-  () => HttpResponse.json({ providers: [] }),
+  () =>
+    HttpResponse.json({
+      providers: [
+        {
+          name: "openai",
+          display_name: "OpenAI",
+          enabled: true,
+          readonly: false,
+          has_credentials: true,
+          status: "active",
+          model_count: 5,
+        },
+      ],
+    }),
 );
 
 export const chatLinks: HttpHandler = http.post(

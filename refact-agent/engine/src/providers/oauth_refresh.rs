@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock as ARwLock;
@@ -11,8 +13,42 @@ const REFRESH_BEFORE_EXPIRY_MS: i64 = 5 * 60 * 1000; // 5 minutes before expiry
 static CLAUDE_CODE_OAUTH_FAILED: AtomicBool = AtomicBool::new(false);
 static OPENAI_CODEX_OAUTH_FAILED: AtomicBool = AtomicBool::new(false);
 
+lazy_static::lazy_static! {
+    static ref INVALID_REFRESH_TOKENS: std::sync::Mutex<HashSet<String>> =
+        std::sync::Mutex::new(HashSet::new());
+}
+
+pub fn is_permanent_refresh_error(error: &str) -> bool {
+    error.contains("invalid_grant")
+}
+
+pub fn mark_invalid_refresh_token(provider_name: &str, refresh_token: &str) {
+    if refresh_token.is_empty() {
+        return;
+    }
+    if let Ok(mut tokens) = INVALID_REFRESH_TOKENS.lock() {
+        tokens.insert(refresh_token_key(provider_name, refresh_token));
+    }
+}
+
+fn is_invalid_refresh_token(provider_name: &str, refresh_token: &str) -> bool {
+    if refresh_token.is_empty() {
+        return false;
+    }
+    INVALID_REFRESH_TOKENS
+        .lock()
+        .map(|tokens| tokens.contains(&refresh_token_key(provider_name, refresh_token)))
+        .unwrap_or(false)
+}
+
+fn refresh_token_key(provider_name: &str, refresh_token: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    provider_name.hash(&mut hasher);
+    refresh_token.hash(&mut hasher);
+    format!("{}:{:x}", provider_name, hasher.finish())
+}
+
 pub async fn oauth_token_refresh_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
-    let _ = try_refresh_all_providers(&gcx).await;
     loop {
         let shutdown_flag = gcx.read().await.shutdown_flag.clone();
         tokio::select! {
@@ -71,6 +107,10 @@ async fn try_refresh_claude_code(
         return;
     }
 
+    if is_invalid_refresh_token("claude_code", &oauth_tokens.refresh_token) {
+        return;
+    }
+
     tracing::info!(
         "Claude Code: refreshing OAuth token (expires_at={})",
         oauth_tokens.expires_at
@@ -109,17 +149,52 @@ async fn try_refresh_claude_code(
             }
         }
         Err(e) => {
-            tracing::warn!("Claude Code: OAuth token refresh failed: {}", e);
-            CLAUDE_CODE_OAUTH_FAILED.store(true, Ordering::SeqCst);
-            let ev = crate::buddy::actor::make_runtime_event(
-                "connection_lost",
-                "Claude Code: OAuth refresh failed",
-                "provider",
-                "oauth_claude_code",
-                "failed",
-                Some("high"),
-            );
-            crate::buddy::actor::buddy_enqueue_event((*gcx).clone(), ev).await;
+            let first_failure = !CLAUDE_CODE_OAUTH_FAILED.swap(true, Ordering::SeqCst);
+            if is_permanent_refresh_error(&e) {
+                mark_invalid_refresh_token("claude_code", &oauth_tokens.refresh_token);
+                if first_failure {
+                    tracing::warn!(
+                        "Claude Code: OAuth refresh token is invalid; clearing saved OAuth tokens. Please log in again: {}",
+                        e
+                    );
+                } else {
+                    tracing::debug!("Claude Code: OAuth refresh token is still invalid: {}", e);
+                }
+                if let Err(save_err) =
+                    save_refreshed_tokens(gcx, config_dir, "claude_code", "", "", 0).await
+                {
+                    tracing::warn!(
+                        "Claude Code: failed to clear invalid OAuth tokens: {}",
+                        save_err
+                    );
+                }
+                if first_failure {
+                    let ev = crate::buddy::actor::make_runtime_event(
+                        "connection_lost",
+                        "Claude Code OAuth expired — please log in again",
+                        "provider",
+                        "oauth_claude_code",
+                        "failed",
+                        Some("high"),
+                    );
+                    crate::buddy::actor::buddy_enqueue_event((*gcx).clone(), ev).await;
+                }
+                return;
+            }
+            if first_failure {
+                tracing::warn!("Claude Code: OAuth token refresh failed: {}", e);
+                let ev = crate::buddy::actor::make_runtime_event(
+                    "connection_lost",
+                    "Claude Code: OAuth refresh failed",
+                    "provider",
+                    "oauth_claude_code",
+                    "failed",
+                    Some("high"),
+                );
+                crate::buddy::actor::buddy_enqueue_event((*gcx).clone(), ev).await;
+            } else {
+                tracing::debug!("Claude Code: OAuth token refresh still failing: {}", e);
+            }
         }
     }
 }
@@ -149,6 +224,10 @@ async fn try_refresh_openai_codex(
     }
 
     if !needs_refresh(oauth_tokens.expires_at) {
+        return;
+    }
+
+    if is_invalid_refresh_token("openai_codex", &oauth_tokens.refresh_token) {
         return;
     }
 
@@ -190,17 +269,52 @@ async fn try_refresh_openai_codex(
             }
         }
         Err(e) => {
-            tracing::warn!("OpenAI Codex: OAuth token refresh failed: {}", e);
-            OPENAI_CODEX_OAUTH_FAILED.store(true, Ordering::SeqCst);
-            let ev = crate::buddy::actor::make_runtime_event(
-                "connection_lost",
-                "OpenAI Codex: OAuth refresh failed",
-                "provider",
-                "oauth_openai_codex",
-                "failed",
-                Some("high"),
-            );
-            crate::buddy::actor::buddy_enqueue_event((*gcx).clone(), ev).await;
+            let first_failure = !OPENAI_CODEX_OAUTH_FAILED.swap(true, Ordering::SeqCst);
+            if is_permanent_refresh_error(&e) {
+                mark_invalid_refresh_token("openai_codex", &oauth_tokens.refresh_token);
+                if first_failure {
+                    tracing::warn!(
+                        "OpenAI Codex: OAuth refresh token is invalid; clearing saved refresh token. Please log in again if Codex stops working: {}",
+                        e
+                    );
+                } else {
+                    tracing::debug!("OpenAI Codex: OAuth refresh token is still invalid: {}", e);
+                }
+                if let Err(save_err) =
+                    save_refreshed_tokens(gcx, config_dir, "openai_codex", "", "", 0).await
+                {
+                    tracing::warn!(
+                        "OpenAI Codex: failed to clear invalid OAuth refresh token: {}",
+                        save_err
+                    );
+                }
+                if first_failure {
+                    let ev = crate::buddy::actor::make_runtime_event(
+                        "connection_lost",
+                        "OpenAI Codex OAuth expired — please log in again if needed",
+                        "provider",
+                        "oauth_openai_codex",
+                        "failed",
+                        Some("high"),
+                    );
+                    crate::buddy::actor::buddy_enqueue_event((*gcx).clone(), ev).await;
+                }
+                return;
+            }
+            if first_failure {
+                tracing::warn!("OpenAI Codex: OAuth token refresh failed: {}", e);
+                let ev = crate::buddy::actor::make_runtime_event(
+                    "connection_lost",
+                    "OpenAI Codex: OAuth refresh failed",
+                    "provider",
+                    "oauth_openai_codex",
+                    "failed",
+                    Some("high"),
+                );
+                crate::buddy::actor::buddy_enqueue_event((*gcx).clone(), ev).await;
+            } else {
+                tracing::debug!("OpenAI Codex: OAuth token refresh still failing: {}", e);
+            }
         }
     }
 }
@@ -310,4 +424,21 @@ async fn save_refreshed_tokens(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn permanent_refresh_error_detects_invalid_grant() {
+        assert!(super::is_permanent_refresh_error(
+            r#"Token refresh failed (400 Bad Request): {"error":"invalid_grant"}"#
+        ));
+    }
+
+    #[test]
+    fn permanent_refresh_error_ignores_transient_failure() {
+        assert!(!super::is_permanent_refresh_error(
+            "Token refresh request failed: operation timed out"
+        ));
+    }
 }

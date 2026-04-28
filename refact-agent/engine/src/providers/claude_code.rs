@@ -621,11 +621,28 @@ available:
         }
 
         tracing::info!("Claude Code: refreshing OAuth token on startup");
-        let refreshed = crate::providers::claude_code_oauth::refresh_access_token(
+        let refreshed = match crate::providers::claude_code_oauth::refresh_access_token(
             http_client,
             &self.oauth_tokens.refresh_token,
         )
-        .await?;
+        .await
+        {
+            Ok(refreshed) => refreshed,
+            Err(e) if crate::providers::oauth_refresh::is_permanent_refresh_error(&e) => {
+                crate::providers::oauth_refresh::mark_invalid_refresh_token(
+                    "claude_code",
+                    &self.oauth_tokens.refresh_token,
+                );
+                tracing::warn!(
+                    "Claude Code: OAuth refresh token is invalid; clearing saved OAuth tokens. Please log in again: {}",
+                    e
+                );
+                self.oauth_tokens = OAuthTokens::default();
+                self.save_oauth_tokens_config(config_dir).await?;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
 
         self.oauth_tokens.access_token = refreshed.access_token;
         if !refreshed.refresh_token.is_empty() {

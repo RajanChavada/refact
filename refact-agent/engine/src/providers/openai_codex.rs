@@ -922,11 +922,30 @@ available:
         }
 
         tracing::info!("OpenAI Codex: refreshing OAuth token on startup");
-        let mut refreshed = crate::providers::openai_codex_oauth::refresh_access_token(
+        let mut refreshed = match crate::providers::openai_codex_oauth::refresh_access_token(
             http_client,
             &self.oauth_tokens.refresh_token,
         )
-        .await?;
+        .await
+        {
+            Ok(refreshed) => refreshed,
+            Err(e) if crate::providers::oauth_refresh::is_permanent_refresh_error(&e) => {
+                crate::providers::oauth_refresh::mark_invalid_refresh_token(
+                    "openai_codex",
+                    &self.oauth_tokens.refresh_token,
+                );
+                tracing::warn!(
+                    "OpenAI Codex: OAuth refresh token is invalid; clearing saved refresh token. Please log in again if Codex stops working: {}",
+                    e
+                );
+                self.oauth_tokens.access_token.clear();
+                self.oauth_tokens.refresh_token.clear();
+                self.oauth_tokens.expires_at = 0;
+                self.save_oauth_tokens_config(config_dir).await?;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
 
         if refreshed.openai_api_key.is_empty() {
             refreshed.openai_api_key = self.oauth_tokens.openai_api_key.clone();
