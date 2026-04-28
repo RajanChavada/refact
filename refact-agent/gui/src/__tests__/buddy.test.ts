@@ -24,6 +24,7 @@ import {
   addDraft,
   consumeDraft,
   selectUnreadOpportunities,
+  defaultBuddyPulse,
 } from "../features/Buddy/buddySlice";
 import { registerBuddySpeechTtlListener } from "../features/Buddy/buddySpeechTtl";
 import { PALETTES, SIGNALS, STAGES } from "../features/Buddy/constants";
@@ -1281,6 +1282,7 @@ describe("buddy opportunities, pulse, and drafts", () => {
       confidence: 0.8,
       fact_keys: [],
       cooldown_key: "opp-1",
+      cooldown_secs: 1800,
       status: "new",
       proposed_actions: [],
       humor_allowed: false,
@@ -1397,7 +1399,7 @@ describe("buddy opportunities, pulse, and drafts", () => {
   test("setBuddySnapshot without pulse defaults defensively", () => {
     const snap = makeSnapshot();
     const state = reducer(undefined, setBuddySnapshot(snap));
-    expect(state.pulse).toBeNull();
+    expect(state.pulse).toEqual(defaultBuddyPulse());
     expect(state.activeDrafts).toEqual([]);
   });
 

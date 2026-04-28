@@ -112,7 +112,7 @@ function defaultBuddySettings(): BuddySettings {
   };
 }
 
-function defaultBuddyPulse(): BuddyPulse {
+export function defaultBuddyPulse(): BuddyPulse {
   return {
     generated_at: null,
     tasks: { total: 0, stuck: 0, abandoned: 0, by_status: {} },
@@ -237,8 +237,8 @@ export const buddySlice = createSlice({
       state.runtimeQueue = snapshot.runtime_queue ?? [];
       state.nowPlaying = snapshot.now_playing ?? null;
       state.opportunities = snapshot.state.opportunities;
-      state.pulse = raw.pulse ?? null;
-      state.activeDrafts = raw.active_drafts ?? [];
+      state.pulse = snapshot.pulse ?? defaultBuddyPulse();
+      state.activeDrafts = snapshot.active_drafts ?? [];
     },
     /** Called when SSE snapshot reports buddy as disabled/not-ready (no state). */
     setBuddyUnavailable: (state) => {

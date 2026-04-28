@@ -63,6 +63,7 @@ function makeOpportunity(
     confidence: 0.9,
     fact_keys: [],
     cooldown_key: "opp-1",
+    cooldown_secs: 1800,
     status: "new",
     proposed_actions: [],
     humor_allowed: false,
@@ -171,7 +172,7 @@ describe("BuddyPulseCard_renders_pulse", () => {
 
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
     );
 
@@ -194,7 +195,7 @@ describe("BuddyOpportunityCard_renders_actions", () => {
   it("each action variant produces a button", () => {
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
       http.post("http://127.0.0.1:8001/v1/buddy/opportunities/:id/accept", () =>
         HttpResponse.json({ accepted: true }),
@@ -248,7 +249,7 @@ describe("BuddyOpportunityCard_dismiss_calls_mutation", () => {
     let dismissed = false;
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
       http.post(
         "http://127.0.0.1:8001/v1/buddy/opportunities/:id/dismiss",
@@ -285,7 +286,7 @@ describe("BuddyHome_renders_all_sections", () => {
 
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
     );
 
@@ -375,7 +376,7 @@ describe("useExecuteBuddyAction_open_page", () => {
   it("useExecuteBuddyAction hook pushes page via buddy navigation", async () => {
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
     );
 
@@ -404,7 +405,7 @@ describe("BuddyPanel_opportunity_notifications", () => {
   it("renders unread opportunities as Buddy speech controls without a badge", async () => {
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
     );
 
@@ -432,7 +433,7 @@ describe("BuddyPanel_opportunity_notifications", () => {
   it("does not render badge chrome when no unread opportunities", () => {
     server.use(
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
-        HttpResponse.json([]),
+        HttpResponse.json({ opportunities: [] }),
       ),
     );
 

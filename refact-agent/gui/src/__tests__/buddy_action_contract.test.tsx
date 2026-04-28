@@ -125,6 +125,7 @@ function makeOpportunity(
     confidence: 0.9,
     fact_keys: [],
     cooldown_key: "opp-1",
+    cooldown_secs: 1800,
     status: "new",
     proposed_actions: [],
     humor_allowed: false,

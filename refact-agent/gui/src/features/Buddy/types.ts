@@ -146,7 +146,8 @@ export type SignalType =
   | "care_sleep"
   | "care_clean"
   | "idle_timeout"
-  | "stage_up";
+  | "stage_up"
+  | "error";
 
 export interface MoodStats {
   happiness: number;
@@ -705,6 +706,7 @@ export interface BuddyOpportunity {
   confidence: number;
   fact_keys: string[];
   cooldown_key: string;
+  cooldown_secs: number;
   status: OpportunityStatus;
   proposed_actions: BuddyAction[];
   humor?: string | null;
@@ -712,6 +714,7 @@ export interface BuddyOpportunity {
   related: BuddyOpportunityLinks;
   created_at: string;
   expires_at: string;
+  resolved_at?: string | null;
 }
 
 export type BuddyActionResult =

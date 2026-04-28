@@ -16,6 +16,7 @@ import type {
   BuddyOpportunityAcceptResponse,
   InvestigationContext,
 } from "../../features/Buddy/types";
+import { replaceOpportunities } from "../../features/Buddy/buddySlice";
 
 type BuddyApiState = {
   config: {
@@ -138,7 +139,12 @@ export async function fetchBuddyInvestigationContextRequest(
 
 export const buddyApi = createApi({
   reducerPath: "buddyApi",
-  tagTypes: ["BuddyOpportunities", "BuddySnapshot"],
+  tagTypes: [
+    "BuddySnapshot",
+    "BuddyOpportunities",
+    "BuddyPulse",
+    "BuddyDrafts",
+  ],
   baseQuery: fetchBaseQuery({
     prepareHeaders: (headers, { getState }) => {
       const token = (getState() as BuddyApiState).config.apiKey;
@@ -157,6 +163,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddySnapshotResponse as BuddySnapshot };
       },
+      providesTags: ["BuddySnapshot"],
     }),
     getBuddySettings: builder.query<BuddySettings, undefined>({
       queryFn: async (_args, api, _opts, baseQuery) => {
@@ -168,6 +175,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddySettings };
       },
+      providesTags: ["BuddySnapshot"],
     }),
     updateBuddySettings: builder.mutation<
       BuddySettings,
@@ -184,6 +192,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddySettings };
       },
+      invalidatesTags: ["BuddySnapshot"],
     }),
     careBuddy: builder.mutation<BuddyCareResponse, BuddyCareRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -368,7 +377,17 @@ export const buddyApi = createApi({
           : `http://127.0.0.1:${port}/v1/buddy/opportunities`;
         const result = await baseQuery(url);
         if (result.error) return { error: result.error };
-        return { data: result.data as BuddyOpportunity[] };
+        const data = result.data as { opportunities: BuddyOpportunity[] };
+        return { data: data.opportunities };
+      },
+      providesTags: ["BuddyOpportunities"],
+      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          dispatch(replaceOpportunities(data));
+        } catch {
+          return;
+        }
       },
     }),
     acceptOpportunity: builder.mutation<
@@ -403,6 +422,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: { dismissed: true } };
       },
+      invalidatesTags: ["BuddyOpportunities", "BuddySnapshot"],
     }),
     getPulse: builder.query<BuddyPulse, undefined>({
       queryFn: async (_args, api, _opts, baseQuery) => {
@@ -414,6 +434,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyPulse };
       },
+      providesTags: ["BuddyPulse"],
     }),
     createSkillDraft: builder.mutation<BuddyDraft, CreateDraftRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -427,6 +448,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     createCommandDraft: builder.mutation<BuddyDraft, CreateDraftRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -440,6 +462,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     createSubagentDraft: builder.mutation<BuddyDraft, CreateDraftRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -453,6 +476,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     createModeDraft: builder.mutation<BuddyDraft, CreateDraftRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -466,6 +490,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     createAgentsMdDraft: builder.mutation<BuddyDraft, CreateDraftRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -479,6 +504,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     createDefaultsDraft: builder.mutation<BuddyDraft, CreateDraftRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
@@ -492,6 +518,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     getDraft: builder.query<BuddyDraft, string>({
       queryFn: async (id, api, _opts, baseQuery) => {
@@ -503,6 +530,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as BuddyDraft };
       },
+      providesTags: ["BuddyDrafts"],
     }),
     deleteDraft: builder.mutation<undefined, string>({
       queryFn: async (id, api, _opts, baseQuery) => {
@@ -517,6 +545,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: undefined };
       },
+      invalidatesTags: ["BuddyDrafts", "BuddySnapshot"],
     }),
     launchInvestigation: builder.mutation<
       LaunchInvestigationResponse,
@@ -533,6 +562,7 @@ export const buddyApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as LaunchInvestigationResponse };
       },
+      invalidatesTags: ["BuddySnapshot"],
     }),
     reportFrontendError: builder.mutation<undefined, FrontendErrorReport>({
       queryFn: async (body, api) => {
