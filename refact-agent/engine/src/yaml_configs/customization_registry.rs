@@ -752,7 +752,8 @@ mod tests {
                 if let Some(ref model_type) = config.subchat.model_type {
                     let valid = model_type.eq_ignore_ascii_case("light")
                         || model_type.eq_ignore_ascii_case("default")
-                        || model_type.eq_ignore_ascii_case("thinking");
+                        || model_type.eq_ignore_ascii_case("thinking")
+                        || model_type.eq_ignore_ascii_case("buddy");
                     assert!(
                         valid,
                         "Subagent '{}' has invalid model_type: {}",
