@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { executeBuddyNavigation } from "../features/Buddy/executeBuddyAction";
+import { pagesSlice, push } from "../features/Pages/pagesSlice";
 import * as fs from "fs";
 import * as path from "path";
 import { configureStore, createListenerMiddleware } from "@reduxjs/toolkit";
@@ -1466,5 +1468,79 @@ describe("buddy opportunities, pulse, and drafts", () => {
         expect(page.task_id).toBe("task-123");
       }
     }
+  });
+});
+
+describe("executeBuddyNavigation dispatches for each BuddyPage variant", () => {
+  test("dispatches correct page for every BuddyPage variant", () => {
+    const cases: [BuddyPage, string][] = [
+      [{ type: "buddy" }, "buddy"],
+      [{ type: "stats" }, "stats dashboard"],
+      [{ type: "customization" }, "customization"],
+      [{ type: "providers" }, "providers page"],
+      [{ type: "default_models" }, "default models"],
+      [{ type: "integrations" }, "integrations page"],
+      [{ type: "extensions" }, "extensions"],
+      [{ type: "marketplace_hub" }, "marketplace hub"],
+      [{ type: "mcp_marketplace" }, "mcp marketplace"],
+      [{ type: "skills_marketplace" }, "skills marketplace"],
+      [{ type: "commands_marketplace" }, "commands marketplace"],
+      [{ type: "subagents_marketplace" }, "subagents marketplace"],
+      [{ type: "tasks_list" }, "tasks list"],
+      [{ type: "knowledge_graph" }, "knowledge graph"],
+    ];
+
+    for (const [page, expectedName] of cases) {
+      const dispatch = vi.fn();
+      executeBuddyNavigation(page, dispatch as never);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      const action = dispatch.mock.calls[0][0] as ReturnType<typeof push>;
+      expect(action.payload).toMatchObject({ name: expectedName });
+    }
+  });
+
+  test("dispatches task_workspace with taskId from page.task_id", () => {
+    const dispatch = vi.fn();
+    executeBuddyNavigation(
+      { type: "task_workspace", task_id: "task-abc" },
+      dispatch as never,
+    );
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const action = dispatch.mock.calls[0][0] as ReturnType<typeof push>;
+    expect(action.payload).toEqual({
+      name: "task workspace",
+      taskId: "task-abc",
+    });
+  });
+});
+
+describe("pagesSlice handles new page entries", () => {
+  const reducer = pagesSlice.reducer;
+
+  test("push task workspace stores taskId", () => {
+    const state = reducer(
+      undefined,
+      push({ name: "task workspace", taskId: "abc" }),
+    );
+    const last = state[state.length - 1];
+    expect(last.name).toBe("task workspace");
+    if (last.name === "task workspace") {
+      expect(last.taskId).toBe("abc");
+    }
+  });
+
+  test("push knowledge graph stores page name", () => {
+    const state = reducer(undefined, push({ name: "knowledge graph" }));
+    expect(state[state.length - 1].name).toBe("knowledge graph");
+  });
+
+  test("push marketplace hub stores page name", () => {
+    const state = reducer(undefined, push({ name: "marketplace hub" }));
+    expect(state[state.length - 1].name).toBe("marketplace hub");
+  });
+
+  test("push subagents marketplace stores page name", () => {
+    const state = reducer(undefined, push({ name: "subagents marketplace" }));
+    expect(state[state.length - 1].name).toBe("subagents marketplace");
   });
 });

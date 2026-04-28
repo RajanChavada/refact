@@ -131,19 +131,43 @@ export function executeBuddyNavigation(
       break;
 
     case "customization":
-    case "providers":
-    case "default_models":
-    case "extensions":
       dispatch(push({ name: "customization" }));
       break;
 
+    case "providers":
+      dispatch(push({ name: "providers page" }));
+      break;
+
+    case "default_models":
+      dispatch(push({ name: "default models" }));
+      break;
+
     case "integrations":
-    case "marketplace_hub":
-    case "mcp_marketplace":
-    case "skills_marketplace":
-    case "commands_marketplace":
-    case "subagents_marketplace":
       dispatch(push({ name: "integrations page" }));
+      break;
+
+    case "extensions":
+      dispatch(push({ name: "extensions" }));
+      break;
+
+    case "marketplace_hub":
+      dispatch(push({ name: "marketplace hub" }));
+      break;
+
+    case "mcp_marketplace":
+      dispatch(push({ name: "mcp marketplace" }));
+      break;
+
+    case "skills_marketplace":
+      dispatch(push({ name: "skills marketplace" }));
+      break;
+
+    case "commands_marketplace":
+      dispatch(push({ name: "commands marketplace" }));
+      break;
+
+    case "subagents_marketplace":
+      dispatch(push({ name: "subagents marketplace" }));
       break;
 
     case "tasks_list":
@@ -157,5 +181,10 @@ export function executeBuddyNavigation(
     case "knowledge_graph":
       dispatch(push({ name: "knowledge graph" }));
       break;
+
+    default: {
+      const _never: never = page;
+      void _never;
+    }
   }
 }
