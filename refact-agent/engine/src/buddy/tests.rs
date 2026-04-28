@@ -3424,6 +3424,212 @@ fn per_rule_cooldown_honored() {
     assert!(q2.cooldown_active("ck-long-cd"), "1h cooldown must block");
 }
 
+// =============================================================================
+// Observer↔Detector schema contract tests
+// =============================================================================
+
+#[test]
+fn provider_health_payload_keys_match_detector() {
+    use super::facts::FactStore;
+    use super::observers::provider_health::detect_provider_health_facts;
+    use super::opportunities::{OpportunityDetector, OpportunityQueue};
+    use crate::caps::DefaultModels;
+    let now = chrono::Utc::now();
+    let defaults = DefaultModels {
+        completion_default_model: String::new(),
+        chat_default_model: "openai/gpt-4o".to_string(),
+        chat_thinking_model: String::new(),
+        chat_light_model: String::new(),
+        chat_buddy_model: String::new(),
+    };
+    let available = vec!["openai/gpt-4o".to_string()];
+    let facts = detect_provider_health_facts(&defaults, &available, now);
+    assert!(facts.iter().any(|f| f.kind == BuddyFactKind::DefaultModelMissing));
+    let mut store = FactStore::new();
+    for f in facts {
+        store.ingest(f);
+    }
+    let defaults2 = DefaultModels {
+        completion_default_model: String::new(),
+        chat_default_model: "openai/gpt-4o".to_string(),
+        chat_thinking_model: String::new(),
+        chat_light_model: String::new(),
+        chat_buddy_model: String::new(),
+    };
+    let available2 = vec![];
+    let facts2 = detect_provider_health_facts(&defaults2, &available2, now);
+    for f in facts2 {
+        store.ingest(f);
+    }
+    let pulse = BuddyPulse::default();
+    let queue = OpportunityQueue::new();
+    let opps = OpportunityDetector::new().detect(&store, &pulse, &queue);
+    let provider_opps: Vec<_> = opps
+        .iter()
+        .filter(|(o, _)| o.kind == BuddyOpportunityKind::ProviderTuning)
+        .collect();
+    assert!(!provider_opps.is_empty(), "must emit ProviderTuning opportunity");
+    for (opp, _) in &provider_opps {
+        assert!(!opp.cooldown_key.is_empty(), "cooldown_key must not be empty");
+    }
+    let broken_opp = opps
+        .iter()
+        .find(|(o, _)| o.kind == BuddyOpportunityKind::ProviderTuning
+            && o.summary.contains("not available"));
+    if let Some((opp, _)) = broken_opp {
+        let action_has_model = opp.proposed_actions.iter().any(|a| {
+            if let BuddyAction::DraftDefaultsChange { .. } = a {
+                true
+            } else if let BuddyAction::OpenPage { .. } = a {
+                true
+            } else {
+                false
+            }
+        });
+        assert!(action_has_model, "broken_ref opp must have DefaultsChange or OpenPage action");
+    }
+}
+
+#[test]
+fn mcp_auth_payload_keys_match_detector() {
+    use super::facts::FactStore;
+    use super::observers::mcp_auth::{detect_mcp_auth_facts, McpSessionSnapshot};
+    use super::opportunities::{OpportunityDetector, OpportunityQueue};
+    use crate::integrations::mcp::session_mcp::MCPAuthStatus;
+    let now = chrono::Utc::now();
+    let expires_12h = now.timestamp_millis() + 12 * 3600 * 1000;
+    let snaps = vec![
+        McpSessionSnapshot {
+            id: "github-mcp".to_string(),
+            auth_status: MCPAuthStatus::Authenticated,
+            failed_calls: 0,
+            expires_at_ms: Some(expires_12h),
+            smartlink_id: None,
+        },
+        McpSessionSnapshot {
+            id: "linear-mcp".to_string(),
+            auth_status: MCPAuthStatus::NotApplicable,
+            failed_calls: 5,
+            expires_at_ms: None,
+            smartlink_id: None,
+        },
+    ];
+    let facts = detect_mcp_auth_facts(&snaps, now);
+    assert!(facts.iter().any(|f| f.kind == BuddyFactKind::McpAuthExpired));
+    assert!(facts.iter().any(|f| f.kind == BuddyFactKind::IntegrationFailing));
+    for fact in &facts {
+        match fact.kind {
+            BuddyFactKind::McpAuthExpired | BuddyFactKind::IntegrationFailing => {
+                let mcp_id = fact.payload.get("mcp_id").and_then(|v| v.as_str());
+                assert!(
+                    mcp_id.is_some() && !mcp_id.unwrap().is_empty(),
+                    "mcp_id must be present and non-empty in {:?}", fact.kind
+                );
+            }
+            _ => {}
+        }
+    }
+    let mut store = FactStore::new();
+    for f in facts {
+        store.ingest(f);
+    }
+    let pulse = BuddyPulse::default();
+    let queue = OpportunityQueue::new();
+    let opps = OpportunityDetector::new().detect(&store, &pulse, &queue);
+    let fix_opps: Vec<_> = opps
+        .iter()
+        .filter(|(o, _)| o.kind == BuddyOpportunityKind::IntegrationFix)
+        .collect();
+    assert!(!fix_opps.is_empty(), "must emit IntegrationFix opportunity");
+    for (opp, _) in &fix_opps {
+        assert!(
+            !opp.cooldown_key.is_empty() && opp.cooldown_key != "integration:mcp_auth:unknown",
+            "cooldown_key must contain real mcp_id, got: {}",
+            opp.cooldown_key
+        );
+    }
+}
+
+#[test]
+fn mode_overlap_payload_keys_match_detector() {
+    use super::facts::FactStore;
+    use super::opportunities::{OpportunityDetector, OpportunityQueue};
+    let now = chrono::Utc::now();
+    let mut store = FactStore::new();
+    store.ingest(BuddyFact {
+        kind: BuddyFactKind::ModePromptOverlap,
+        key: "customization:mode_overlap:alpha:beta".to_string(),
+        source: "test",
+        payload: serde_json::json!({
+            "mode_id": "beta",
+            "peer_id": "alpha",
+            "similarity": 0.92f32,
+        }),
+        seen_at: now,
+        confidence: 0.8,
+    });
+    let pulse = BuddyPulse::default();
+    let queue = OpportunityQueue::new();
+    let opps = OpportunityDetector::new().detect(&store, &pulse, &queue);
+    let drift_opps: Vec<_> = opps
+        .iter()
+        .filter(|(o, _)| o.kind == BuddyOpportunityKind::ConfigDrift)
+        .collect();
+    assert!(!drift_opps.is_empty(), "must emit ConfigDrift opportunity for ModePromptOverlap");
+    let (opp, _) = &drift_opps[0];
+    assert!(
+        !opp.cooldown_key.is_empty() && opp.cooldown_key != "config_drift:mode_overlap:",
+        "cooldown_key must include real mode_id, got: {}",
+        opp.cooldown_key
+    );
+    let has_customization_action = opp.proposed_actions.iter().any(|a| {
+        matches!(a, BuddyAction::DraftCustomizationChange { .. })
+    });
+    assert!(has_customization_action, "opp must have DraftCustomizationChange action");
+    if let Some(BuddyAction::DraftCustomizationChange { id, .. }) = opp
+        .proposed_actions
+        .iter()
+        .find(|a| matches!(a, BuddyAction::DraftCustomizationChange { .. }))
+    {
+        assert_eq!(id, "beta", "action id must match mode_id from payload");
+    }
+}
+
+#[tokio::test]
+async fn accept_synthesizes_real_draft() {
+    let (tx, _rx) = broadcast::channel(32);
+    let mut svc = BuddyService::new(
+        std::env::temp_dir().join(format!("buddy-test-{}", uuid::Uuid::new_v4())),
+        default_buddy_state(),
+        BuddySettings::default(),
+        Vec::new(),
+        super::runtime_queue::RuntimeQueue::new(),
+        tx,
+        None,
+    );
+    let mut opp = make_opportunity("opp-synth", "ck-synth");
+    opp.proposed_actions = vec![BuddyAction::DraftAgentsMdPatch { diff: String::new() }];
+    svc.add_opportunity(opp);
+    let synth_opp = svc.opportunity_queue.get("opp-synth").cloned().unwrap();
+    let action = &synth_opp.proposed_actions[0];
+    if let BuddyAction::DraftAgentsMdPatch { diff } = action {
+        assert!(diff.is_empty(), "action has empty diff placeholder");
+    }
+    let draft = svc.draft_store.create(
+        DraftKind::AgentsMd,
+        "AGENTS.md".to_string(),
+        "# AGENTS.md\n\nThis file provides guidance to AI agents.".to_string(),
+        String::new(),
+    );
+    assert!(!draft.id.is_empty(), "synthesized draft must have non-empty id");
+    assert!(!draft.yaml_or_json.is_empty(), "synthesized draft must have non-empty content");
+    assert_eq!(draft.kind, DraftKind::AgentsMd);
+    assert!(
+        svc.draft_store.get(&draft.id).is_some(),
+        "synthesized draft must be stored"
+    );
+}
+
 #[test]
 fn terminal_opp_retention_uses_resolved_at() {
     use super::opportunities::OpportunityQueue;

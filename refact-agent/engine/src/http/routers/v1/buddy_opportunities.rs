@@ -9,7 +9,7 @@ use tokio::sync::RwLock as ARwLock;
 use uuid::Uuid;
 
 use crate::buddy::events::BuddyEvent;
-use crate::buddy::types::{BuddyAction, InvestigationContext, OpportunityStatus};
+use crate::buddy::types::{BuddyAction, BuddyDraft, DraftKind, InvestigationContext, OpportunityStatus};
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 
@@ -129,11 +129,59 @@ async fn dispatch_action(
         BuddyAction::DraftSkill { draft_id, label }
         | BuddyAction::DraftCommand { draft_id, label }
         | BuddyAction::DraftSubagent { draft_id, label }
-        | BuddyAction::DraftMode { draft_id, label } => Ok(serde_json::json!({
-            "kind": "draft",
-            "draft_id": draft_id,
-            "label": label
-        })),
+        | BuddyAction::DraftMode { draft_id, label } => {
+            let (kind, final_id) = if draft_id.is_empty() {
+                let (dk, title, content) = match action {
+                    BuddyAction::DraftSkill { .. } => (DraftKind::Skill, label.as_str(), "name: my-skill\ndescription: Describe when to use this skill\ncontext: Add context here"),
+                    BuddyAction::DraftCommand { .. } => (DraftKind::Command, label.as_str(), "name: my-command\ndescription: Describe this command"),
+                    BuddyAction::DraftSubagent { .. } => (DraftKind::Subagent, label.as_str(), "name: my-subagent\ndescription: Describe this subagent"),
+                    _ => (DraftKind::Mode, label.as_str(), "title: My Mode\nprompt: Describe this mode"),
+                };
+                let draft = synthesize_draft(gcx.clone(), dk, title.to_string(), content.to_string()).await?;
+                let id = draft.id.clone();
+                (dk, id)
+            } else {
+                let dk = match action {
+                    BuddyAction::DraftSkill { .. } => DraftKind::Skill,
+                    BuddyAction::DraftCommand { .. } => DraftKind::Command,
+                    BuddyAction::DraftSubagent { .. } => DraftKind::Subagent,
+                    _ => DraftKind::Mode,
+                };
+                (dk, draft_id.clone())
+            };
+            Ok(serde_json::json!({
+                "kind": "draft",
+                "draft_kind": serde_json::to_value(kind).unwrap_or_default(),
+                "draft_id": final_id,
+                "label": label
+            }))
+        }
+        BuddyAction::DraftAgentsMdPatch { diff } => {
+            let content = if diff.is_empty() {
+                "# AGENTS.md\n\nThis file provides guidance to AI agents when working with this repository.\n\n## Development Commands\n\n- **Build**: `make build`\n- **Test**: `make test`\n\n## Architecture\n\nDescribe the project architecture here.\n"
+            } else {
+                diff.as_str()
+            };
+            let draft = synthesize_draft(gcx.clone(), DraftKind::AgentsMd, "AGENTS.md".to_string(), content.to_string()).await?;
+            Ok(serde_json::json!({
+                "kind": "draft",
+                "draft_kind": "agents_md",
+                "draft_id": draft.id
+            }))
+        }
+        BuddyAction::DraftDefaultsChange { defaults_kind, patch } => {
+            let content = if patch != &serde_json::json!({}) {
+                serde_json::to_string_pretty(patch).unwrap_or_default()
+            } else {
+                "{\n  \"chat_default_model\": \"your-provider/model-name\"\n}".to_string()
+            };
+            let draft = synthesize_draft(gcx.clone(), DraftKind::DefaultsModel, "Default Models".to_string(), content).await?;
+            Ok(serde_json::json!({
+                "kind": "draft",
+                "draft_kind": serde_json::to_value(defaults_kind).unwrap_or_default(),
+                "draft_id": draft.id
+            }))
+        }
         BuddyAction::Dismiss => {
             let buddy_arc = gcx.read().await.buddy.clone();
             let mut lock = buddy_arc.lock().await;
@@ -144,6 +192,22 @@ async fn dispatch_action(
         }
         _ => Ok(serde_json::json!({ "kind": "no_op" })),
     }
+}
+
+async fn synthesize_draft(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    kind: DraftKind,
+    title: String,
+    content: String,
+) -> Result<BuddyDraft, ScratchError> {
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let mut lock = buddy_arc.lock().await;
+    let svc = lock.as_mut().ok_or_else(|| {
+        ScratchError::new(StatusCode::SERVICE_UNAVAILABLE, "buddy not initialized".into())
+    })?;
+    let draft = svc.draft_store.create(kind, title, content, String::new());
+    let _ = svc.events_tx.send(BuddyEvent::DraftCreated { draft: draft.clone() });
+    Ok(draft)
 }
 
 async fn create_investigation_chat(

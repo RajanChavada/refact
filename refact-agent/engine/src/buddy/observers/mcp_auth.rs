@@ -45,7 +45,7 @@ pub fn detect_mcp_auth_facts(snaps: &[McpSessionSnapshot], now: DateTime<Utc>) -
                 key: format!("mcp:auth_expiring:{}", snap.id),
                 source: "mcp_auth",
                 payload: serde_json::json!({
-                    "integration_id": snap.id,
+                    "mcp_id": snap.id,
                     "expires_at": expires_iso,
                     "failure_count": snap.failed_calls,
                 }),
@@ -59,7 +59,7 @@ pub fn detect_mcp_auth_facts(snaps: &[McpSessionSnapshot], now: DateTime<Utc>) -
                 key: format!("integration:failing:{}", snap.id),
                 source: "mcp_auth",
                 payload: serde_json::json!({
-                    "integration_id": snap.id,
+                    "mcp_id": snap.id,
                     "failure_count": snap.failed_calls,
                 }),
                 seen_at: now,
@@ -74,7 +74,7 @@ pub fn detect_mcp_auth_facts(snaps: &[McpSessionSnapshot], now: DateTime<Utc>) -
                     key: format!("integration:smartlink:{}", snap.id),
                     source: "mcp_auth",
                     payload: serde_json::json!({
-                        "integration_id": snap.id,
+                        "mcp_id": snap.id,
                         "smartlink_id": smartlink_id,
                     }),
                     seen_at: now,

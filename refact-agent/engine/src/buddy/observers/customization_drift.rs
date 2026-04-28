@@ -112,8 +112,8 @@ async fn detect_mode_overlap(
                     key: format!("customization:mode_overlap:{}:{}", a, b),
                     source: "customization_drift",
                     payload: serde_json::json!({
-                        "mode_a": a,
-                        "mode_b": b,
+                        "mode_id": b,
+                        "peer_id": a,
                         "similarity": sim,
                     }),
                     seen_at: now,

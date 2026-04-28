@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::buddy::types::{
     BuddyAction, BuddyFactKind, BuddyOpportunity, BuddyOpportunityKind, BuddyOpportunityLinks,
     BuddyPage, BuddyPriority, BuddyPulse, CustomizationKind, DefaultsKind, DismissEntry,
-    InvestigationContext, MarketKind, OpportunityStatus, PulseScope,
+    InvestigationContext, OpportunityStatus, PulseScope,
 };
 
 pub const MAX_OPPORTUNITIES: usize = 200;
@@ -210,11 +210,6 @@ const RULES: &[Rule] = &[
         build: rules::trajectory_cleanup,
     },
     Rule {
-        name: "workflow_distill",
-        cooldown_secs: 86400,
-        build: rules::workflow_distill,
-    },
-    Rule {
         name: "default_model_missing",
         cooldown_secs: 7200,
         build: rules::provider_tuning_missing,
@@ -255,11 +250,6 @@ const RULES: &[Rule] = &[
         build: rules::config_drift_mode_overlap,
     },
     Rule {
-        name: "skill_underused",
-        cooldown_secs: 172800,
-        build: rules::config_drift_skill_underused,
-    },
-    Rule {
         name: "skill_trigger_weak",
         cooldown_secs: 172800,
         build: rules::config_drift_skill_trigger,
@@ -278,11 +268,6 @@ const RULES: &[Rule] = &[
         name: "integration_failing",
         cooldown_secs: 7200,
         build: rules::integration_failing,
-    },
-    Rule {
-        name: "smartlink_match",
-        cooldown_secs: 3600,
-        build: rules::integration_smartlink,
     },
     Rule {
         name: "chat_recap",
@@ -415,47 +400,6 @@ mod rules {
                     vec![
                         BuddyAction::CreatePulseReport {
                             scope: PulseScope::Trajectories,
-                        },
-                        BuddyAction::Dismiss,
-                    ],
-                    now,
-                )
-            })
-            .collect()
-    }
-
-    pub fn workflow_distill(
-        store: &crate::buddy::facts::FactStore,
-        _pulse: &BuddyPulse,
-        _queue: &OpportunityQueue,
-        now: DateTime<Utc>,
-    ) -> Vec<BuddyOpportunity> {
-        store
-            .recent(
-                BuddyFactKind::RecurringWorkflowCandidate,
-                Duration::hours(24),
-            )
-            .into_iter()
-            .map(|fact| {
-                opp(
-                    BuddyOpportunityKind::WorkflowDistill,
-                    "Recurring pattern could become a workflow",
-                    BuddyPriority::Normal,
-                    fact.confidence,
-                    vec![fact.key.clone()],
-                    format!("workflow_distill:{}", &fact.key),
-                    vec![
-                        BuddyAction::DraftSkill {
-                            draft_id: String::new(),
-                            label: "Create Skill".to_string(),
-                        },
-                        BuddyAction::DraftCommand {
-                            draft_id: String::new(),
-                            label: "Create Command".to_string(),
-                        },
-                        BuddyAction::DraftSubagent {
-                            draft_id: String::new(),
-                            label: "Create Subagent".to_string(),
                         },
                         BuddyAction::Dismiss,
                     ],
@@ -770,37 +714,6 @@ mod rules {
             .collect()
     }
 
-    pub fn config_drift_skill_underused(
-        store: &crate::buddy::facts::FactStore,
-        _pulse: &BuddyPulse,
-        _queue: &OpportunityQueue,
-        now: DateTime<Utc>,
-    ) -> Vec<BuddyOpportunity> {
-        store
-            .recent(BuddyFactKind::SkillUnderused, Duration::hours(48))
-            .into_iter()
-            .take(1)
-            .map(|fact| {
-                opp(
-                    BuddyOpportunityKind::ConfigDrift,
-                    "A skill is underused",
-                    BuddyPriority::Normal,
-                    fact.confidence,
-                    vec![fact.key.clone()],
-                    format!("config_drift:skill_underused:{}", &fact.key),
-                    vec![
-                        BuddyAction::OpenPage {
-                            page: BuddyPage::Customization,
-                            params: None,
-                        },
-                        BuddyAction::Dismiss,
-                    ],
-                    now,
-                )
-            })
-            .collect()
-    }
-
     pub fn config_drift_skill_trigger(
         store: &crate::buddy::facts::FactStore,
         _pulse: &BuddyPulse,
@@ -945,42 +858,6 @@ mod rules {
             .collect()
     }
 
-    pub fn integration_smartlink(
-        store: &crate::buddy::facts::FactStore,
-        _pulse: &BuddyPulse,
-        _queue: &OpportunityQueue,
-        now: DateTime<Utc>,
-    ) -> Vec<BuddyOpportunity> {
-        store
-            .recent(BuddyFactKind::IntegrationSmartlinkMatch, Duration::hours(4))
-            .into_iter()
-            .map(|fact| {
-                let item_id = fact
-                    .payload
-                    .get("smartlink_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                opp(
-                    BuddyOpportunityKind::MarketplaceSuggestion,
-                    "Integration available in marketplace",
-                    BuddyPriority::Normal,
-                    fact.confidence,
-                    vec![fact.key.clone()],
-                    format!("integration:smartlink:{}", &fact.key),
-                    vec![
-                        BuddyAction::OfferMarketplaceInstall {
-                            market_kind: MarketKind::Mcp,
-                            item_id,
-                        },
-                        BuddyAction::Dismiss,
-                    ],
-                    now,
-                )
-            })
-            .collect()
-    }
-
     pub fn chat_recap_retry_streak(
         store: &crate::buddy::facts::FactStore,
         _pulse: &BuddyPulse,
@@ -1073,7 +950,7 @@ pub fn primary_fact_kind_for_opportunity(opp: &BuddyOpportunity) -> BuddyFactKin
         BuddyOpportunityKind::ChatRecap => BuddyFactKind::ChatRetryStreak,
         BuddyOpportunityKind::MemoryGarden => BuddyFactKind::MemoryOrphan,
         BuddyOpportunityKind::ConfigDrift => BuddyFactKind::ModePromptOverlap,
-        BuddyOpportunityKind::WorkflowDistill => BuddyFactKind::RecurringWorkflowCandidate,
+        BuddyOpportunityKind::WorkflowDistill => BuddyFactKind::SkillTriggerWeak,
         BuddyOpportunityKind::AgentsMdGap => BuddyFactKind::AgentsMdGapDetected,
         BuddyOpportunityKind::ProviderTuning => BuddyFactKind::DefaultModelMissing,
         BuddyOpportunityKind::IntegrationFix => BuddyFactKind::McpAuthExpired,

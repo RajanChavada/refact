@@ -27,7 +27,7 @@ pub fn detect_provider_health_facts(
                 kind: BuddyFactKind::DefaultModelMissing,
                 key: format!("provider:default_missing:{}", field),
                 source: "provider_health",
-                payload: serde_json::json!({ "field": field, "missing_model_id": null }),
+                payload: serde_json::json!({ "field": field, "model_id": null }),
                 seen_at: now,
                 confidence: 0.95,
             });
@@ -36,7 +36,7 @@ pub fn detect_provider_health_facts(
                 kind: BuddyFactKind::BrokenModelReference,
                 key: format!("provider:broken_ref:{}", field),
                 source: "provider_health",
-                payload: serde_json::json!({ "field": field, "missing_model_id": model_id }),
+                payload: serde_json::json!({ "field": field, "model_id": model_id }),
                 seen_at: now,
                 confidence: 0.9,
             });
