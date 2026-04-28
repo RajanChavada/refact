@@ -154,7 +154,7 @@ export function executeBuddyNavigation(
       dispatch(push({ name: "marketplace hub" }));
       break;
 
-    case "mcp_marketplace":
+    case "marketplace":
       dispatch(push({ name: "mcp marketplace" }));
       break;
 
@@ -166,7 +166,7 @@ export function executeBuddyNavigation(
       dispatch(push({ name: "commands marketplace" }));
       break;
 
-    case "subagents_marketplace":
+    case "delegates_marketplace":
       dispatch(push({ name: "subagents marketplace" }));
       break;
 

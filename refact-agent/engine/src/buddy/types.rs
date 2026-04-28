@@ -504,7 +504,7 @@ pub enum BuddyAction {
         draft_id: String,
         label: String,
     },
-    DraftSubagent {
+    DraftDelegate {
         draft_id: String,
         label: String,
     },
@@ -549,7 +549,7 @@ pub enum CustomizationKind {
     Mode,
     Skill,
     Command,
-    Subagent,
+    Delegate,
     Hook,
 }
 
@@ -559,7 +559,7 @@ pub enum MarketKind {
     Mcp,
     Skill,
     Command,
-    Subagent,
+    Delegate,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -587,10 +587,10 @@ pub enum BuddyPage {
     Integrations,
     Extensions,
     MarketplaceHub,
-    McpMarketplace,
+    Marketplace,
     SkillsMarketplace,
     CommandsMarketplace,
-    SubagentsMarketplace,
+    DelegatesMarketplace,
     TasksList,
     TaskWorkspace { task_id: String },
     KnowledgeGraph,
@@ -684,7 +684,7 @@ pub struct BuddyDraft {
 pub enum DraftKind {
     Skill,
     Command,
-    Subagent,
+    Delegate,
     Mode,
     AgentsMd,
     DefaultsModel,

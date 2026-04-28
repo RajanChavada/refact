@@ -623,10 +623,10 @@ export type CustomizationKind =
   | "mode"
   | "skill"
   | "command"
-  | "subagent"
+  | "delegate"
   | "hook";
 
-export type MarketKind = "mcp" | "skill" | "command" | "subagent";
+export type MarketKind = "mcp" | "skill" | "command" | "delegate";
 
 export type PulseScope =
   | "all"
@@ -648,10 +648,10 @@ export type BuddyPage =
   | { type: "integrations" }
   | { type: "extensions" }
   | { type: "marketplace_hub" }
-  | { type: "mcp_marketplace" }
+  | { type: "marketplace" }
   | { type: "skills_marketplace" }
   | { type: "commands_marketplace" }
-  | { type: "subagents_marketplace" }
+  | { type: "delegates_marketplace" }
   | { type: "tasks_list" }
   | { type: "task_workspace"; task_id: string }
   | { type: "knowledge_graph" };
@@ -669,7 +669,7 @@ export type BuddyAction =
   | { kind: "launch_investigation_chat"; preload: InvestigationContext }
   | { kind: "draft_skill"; draft_id: string; label: string }
   | { kind: "draft_command"; draft_id: string; label: string }
-  | { kind: "draft_subagent"; draft_id: string; label: string }
+  | { kind: "draft_delegate"; draft_id: string; label: string }
   | { kind: "draft_mode"; draft_id: string; label: string }
   | { kind: "draft_agents_md_patch"; diff: string }
   | {
@@ -782,7 +782,7 @@ export interface BuddyPulse {
 export type DraftKind =
   | "skill"
   | "command"
-  | "subagent"
+  | "delegate"
   | "mode"
   | "agents_md"
   | "defaults_model"

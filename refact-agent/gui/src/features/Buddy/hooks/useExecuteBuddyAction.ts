@@ -54,7 +54,7 @@ export function useExecuteBuddyAction() {
           );
           break;
 
-        case "draft_subagent":
+        case "draft_delegate":
           dispatch(
             push({
               name: "customization",

@@ -1483,10 +1483,10 @@ describe("executeBuddyNavigation dispatches for each BuddyPage variant", () => {
       [{ type: "integrations" }, "integrations page"],
       [{ type: "extensions" }, "extensions"],
       [{ type: "marketplace_hub" }, "marketplace hub"],
-      [{ type: "mcp_marketplace" }, "mcp marketplace"],
+      [{ type: "marketplace" }, "mcp marketplace"],
       [{ type: "skills_marketplace" }, "skills marketplace"],
       [{ type: "commands_marketplace" }, "commands marketplace"],
-      [{ type: "subagents_marketplace" }, "subagents marketplace"],
+      [{ type: "delegates_marketplace" }, "subagents marketplace"],
       [{ type: "tasks_list" }, "tasks list"],
       [{ type: "knowledge_graph" }, "knowledge graph"],
     ];

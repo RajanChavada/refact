@@ -157,13 +157,13 @@ pub(crate) async fn dispatch_action(
         }
         BuddyAction::DraftSkill { draft_id, label }
         | BuddyAction::DraftCommand { draft_id, label }
-        | BuddyAction::DraftSubagent { draft_id, label }
+        | BuddyAction::DraftDelegate { draft_id, label }
         | BuddyAction::DraftMode { draft_id, label } => {
             let (kind, final_id) = if draft_id.is_empty() {
                 let (dk, title, content) = match action {
                     BuddyAction::DraftSkill { .. } => (DraftKind::Skill, label.as_str(), "name: my-skill\ndescription: Describe when to use this skill\ncontext: Add context here"),
                     BuddyAction::DraftCommand { .. } => (DraftKind::Command, label.as_str(), "name: my-command\ndescription: Describe this command"),
-                    BuddyAction::DraftSubagent { .. } => (DraftKind::Subagent, label.as_str(), "name: my-subagent\ndescription: Describe this subagent"),
+                    BuddyAction::DraftDelegate { .. } => (DraftKind::Delegate, label.as_str(), "name: my-delegate\ndescription: Describe this delegate"),
                     _ => (DraftKind::Mode, label.as_str(), "title: My Mode\nprompt: Describe this mode"),
                 };
                 let draft =
@@ -175,7 +175,7 @@ pub(crate) async fn dispatch_action(
                 let dk = match action {
                     BuddyAction::DraftSkill { .. } => DraftKind::Skill,
                     BuddyAction::DraftCommand { .. } => DraftKind::Command,
-                    BuddyAction::DraftSubagent { .. } => DraftKind::Subagent,
+                    BuddyAction::DraftDelegate { .. } => DraftKind::Delegate,
                     _ => DraftKind::Mode,
                 };
                 (dk, draft_id.clone())

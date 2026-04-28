@@ -62,7 +62,7 @@ async fn invalidate_registry_cache(gcx: Arc<ARwLock<GlobalContext>>, scope: Conf
 fn customization_kind_to_draft_kind(kind: &str) -> Option<DraftKind> {
     match kind {
         "modes" => Some(DraftKind::Mode),
-        "subagents" => Some(DraftKind::Subagent),
+        "subagents" => Some(DraftKind::Delegate),
         _ => None,
     }
 }
@@ -71,7 +71,7 @@ fn draft_kind_str(kind: &DraftKind) -> &'static str {
     match kind {
         DraftKind::Skill => "skill",
         DraftKind::Command => "command",
-        DraftKind::Subagent => "subagent",
+        DraftKind::Delegate => "delegate",
         DraftKind::Mode => "mode",
         DraftKind::AgentsMd => "agents_md",
         DraftKind::DefaultsModel => "defaults_model",

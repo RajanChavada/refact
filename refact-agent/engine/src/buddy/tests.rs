@@ -1798,9 +1798,9 @@ fn buddy_action_round_trip() {
             draft_id: "d2".to_string(),
             label: "My Command".to_string(),
         },
-        BuddyAction::DraftSubagent {
+        BuddyAction::DraftDelegate {
             draft_id: "d3".to_string(),
-            label: "My Subagent".to_string(),
+            label: "My Delegate".to_string(),
         },
         BuddyAction::DraftMode {
             draft_id: "d4".to_string(),
@@ -1846,10 +1846,10 @@ fn buddy_page_round_trip() {
         BuddyPage::Integrations,
         BuddyPage::Extensions,
         BuddyPage::MarketplaceHub,
-        BuddyPage::McpMarketplace,
+        BuddyPage::Marketplace,
         BuddyPage::SkillsMarketplace,
         BuddyPage::CommandsMarketplace,
-        BuddyPage::SubagentsMarketplace,
+        BuddyPage::DelegatesMarketplace,
         BuddyPage::TasksList,
         BuddyPage::TaskWorkspace {
             task_id: "task-abc".to_string(),
@@ -1866,6 +1866,353 @@ fn buddy_page_round_trip() {
     })
     .unwrap();
     assert!(task_json.contains("task-abc"), "task_id must be serialized");
+}
+
+fn serialized_string<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .expect("serialize")
+        .as_str()
+        .expect("string")
+        .to_string()
+}
+
+fn serialized_tag<T: serde::Serialize>(value: &T, tag: &str) -> String {
+    serde_json::to_value(value)
+        .expect("serialize")
+        .get(tag)
+        .and_then(|v| v.as_str())
+        .expect("tag")
+        .to_string()
+}
+
+#[test]
+fn schema_contract_buddy_page_variants() {
+    let cases = vec![
+        (BuddyPage::Buddy, "buddy"),
+        (BuddyPage::Stats, "stats"),
+        (BuddyPage::Customization, "customization"),
+        (BuddyPage::Providers, "providers"),
+        (BuddyPage::DefaultModels, "default_models"),
+        (BuddyPage::Integrations, "integrations"),
+        (BuddyPage::Extensions, "extensions"),
+        (BuddyPage::MarketplaceHub, "marketplace_hub"),
+        (BuddyPage::Marketplace, "marketplace"),
+        (BuddyPage::SkillsMarketplace, "skills_marketplace"),
+        (BuddyPage::CommandsMarketplace, "commands_marketplace"),
+        (BuddyPage::DelegatesMarketplace, "delegates_marketplace"),
+        (BuddyPage::TasksList, "tasks_list"),
+        (
+            BuddyPage::TaskWorkspace {
+                task_id: "task-1".to_string(),
+            },
+            "task_workspace",
+        ),
+        (BuddyPage::KnowledgeGraph, "knowledge_graph"),
+    ];
+    for (page, expected) in cases {
+        let json = serde_json::to_value(&page).expect("serialize");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some(expected));
+        if expected == "task_workspace" {
+            assert_eq!(json.get("task_id").and_then(|v| v.as_str()), Some("task-1"));
+        }
+    }
+}
+
+#[test]
+fn schema_contract_buddy_action_variants() {
+    let actions = vec![
+        (
+            BuddyAction::OpenPage {
+                page: BuddyPage::Buddy,
+                params: None,
+            },
+            "open_page",
+        ),
+        (
+            BuddyAction::LaunchInvestigationChat {
+                preload: InvestigationContext {
+                    fact_keys: vec![],
+                    diagnostic_ids: vec![],
+                    log_excerpt: String::new(),
+                    config_summary: String::new(),
+                    initial_user_message: "investigate".to_string(),
+                },
+            },
+            "launch_investigation_chat",
+        ),
+        (
+            BuddyAction::DraftSkill {
+                draft_id: "d1".to_string(),
+                label: "Skill".to_string(),
+            },
+            "draft_skill",
+        ),
+        (
+            BuddyAction::DraftCommand {
+                draft_id: "d2".to_string(),
+                label: "Command".to_string(),
+            },
+            "draft_command",
+        ),
+        (
+            BuddyAction::DraftDelegate {
+                draft_id: "d3".to_string(),
+                label: "Delegate".to_string(),
+            },
+            "draft_delegate",
+        ),
+        (
+            BuddyAction::DraftMode {
+                draft_id: "d4".to_string(),
+                label: "Mode".to_string(),
+            },
+            "draft_mode",
+        ),
+        (
+            BuddyAction::DraftAgentsMdPatch {
+                diff: String::new(),
+            },
+            "draft_agents_md_patch",
+        ),
+        (
+            BuddyAction::DraftDefaultsChange {
+                defaults_kind: DefaultsKind::ChatModel,
+                patch: serde_json::json!({}),
+            },
+            "draft_defaults_change",
+        ),
+        (
+            BuddyAction::DraftCustomizationChange {
+                customization_kind: CustomizationKind::Delegate,
+                id: "delegate-1".to_string(),
+                patch: serde_json::json!({}),
+            },
+            "draft_customization_change",
+        ),
+        (
+            BuddyAction::OfferMarketplaceInstall {
+                market_kind: MarketKind::Delegate,
+                item_id: "item-1".to_string(),
+            },
+            "offer_marketplace_install",
+        ),
+        (
+            BuddyAction::CreatePulseReport {
+                scope: PulseScope::All,
+            },
+            "create_pulse_report",
+        ),
+        (BuddyAction::Dismiss, "dismiss"),
+    ];
+    for (action, expected) in actions {
+        assert_eq!(serialized_tag(&action, "kind"), expected);
+    }
+}
+
+#[test]
+fn schema_contract_buddy_fact_kind_variants() {
+    let cases = vec![
+        (BuddyFactKind::TaskStuck, "task_stuck"),
+        (BuddyFactKind::TaskAbandoned, "task_abandoned"),
+        (
+            BuddyFactKind::TaskClusterDuplicate,
+            "task_cluster_duplicate",
+        ),
+        (BuddyFactKind::TrajectoryClutter, "trajectory_clutter"),
+        (BuddyFactKind::ChatRetryStreak, "chat_retry_streak"),
+        (BuddyFactKind::MemoryOrphan, "memory_orphan"),
+        (BuddyFactKind::MemoryStaleConflict, "memory_stale_conflict"),
+        (
+            BuddyFactKind::MemoryRecurringLesson,
+            "memory_recurring_lesson",
+        ),
+        (BuddyFactKind::ModePromptOverlap, "mode_prompt_overlap"),
+        (BuddyFactKind::SkillTriggerWeak, "skill_trigger_weak"),
+        (BuddyFactKind::AgentsMdGapDetected, "agents_md_gap_detected"),
+        (BuddyFactKind::DefaultModelMissing, "default_model_missing"),
+        (
+            BuddyFactKind::BrokenModelReference,
+            "broken_model_reference",
+        ),
+        (BuddyFactKind::McpAuthExpired, "mcp_auth_expired"),
+        (BuddyFactKind::IntegrationFailing, "integration_failing"),
+        (
+            BuddyFactKind::IntegrationSmartlinkMatch,
+            "integration_smartlink_match",
+        ),
+        (BuddyFactKind::DiagnosticCluster, "diagnostic_cluster"),
+        (BuddyFactKind::FrontendErrorBurst, "frontend_error_burst"),
+        (BuddyFactKind::GitDiffWidening, "git_diff_widening"),
+        (BuddyFactKind::UncommittedPressure, "uncommitted_pressure"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_buddy_opportunity_kind_variants() {
+    let cases = vec![
+        (BuddyOpportunityKind::TaskHealth, "task_health"),
+        (
+            BuddyOpportunityKind::TrajectoryCleanup,
+            "trajectory_cleanup",
+        ),
+        (BuddyOpportunityKind::ChatRecap, "chat_recap"),
+        (BuddyOpportunityKind::MemoryGarden, "memory_garden"),
+        (BuddyOpportunityKind::ConfigDrift, "config_drift"),
+        (BuddyOpportunityKind::WorkflowDistill, "workflow_distill"),
+        (BuddyOpportunityKind::AgentsMdGap, "agents_md_gap"),
+        (BuddyOpportunityKind::ProviderTuning, "provider_tuning"),
+        (BuddyOpportunityKind::IntegrationFix, "integration_fix"),
+        (
+            BuddyOpportunityKind::DiagnosticInvestigation,
+            "diagnostic_investigation",
+        ),
+        (BuddyOpportunityKind::GitHygiene, "git_hygiene"),
+        (
+            BuddyOpportunityKind::MarketplaceSuggestion,
+            "marketplace_suggestion",
+        ),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_buddy_priority_variants() {
+    let cases = vec![
+        (BuddyPriority::Low, "low"),
+        (BuddyPriority::Normal, "normal"),
+        (BuddyPriority::High, "high"),
+        (BuddyPriority::Critical, "critical"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_opportunity_status_variants() {
+    let cases = vec![
+        (OpportunityStatus::New, "new"),
+        (OpportunityStatus::Shown, "shown"),
+        (OpportunityStatus::Dismissed, "dismissed"),
+        (OpportunityStatus::Accepted, "accepted"),
+        (OpportunityStatus::Completed, "completed"),
+        (OpportunityStatus::Expired, "expired"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_defaults_kind_variants() {
+    let cases = vec![
+        (DefaultsKind::ChatModel, "chat_model"),
+        (DefaultsKind::ChatBuddyModel, "chat_buddy_model"),
+        (DefaultsKind::ChatThinkingModel, "chat_thinking_model"),
+        (DefaultsKind::EmbeddingModel, "embedding_model"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_customization_kind_variants() {
+    let cases = vec![
+        (CustomizationKind::Mode, "mode"),
+        (CustomizationKind::Skill, "skill"),
+        (CustomizationKind::Command, "command"),
+        (CustomizationKind::Delegate, "delegate"),
+        (CustomizationKind::Hook, "hook"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_market_kind_variants() {
+    let cases = vec![
+        (MarketKind::Mcp, "mcp"),
+        (MarketKind::Skill, "skill"),
+        (MarketKind::Command, "command"),
+        (MarketKind::Delegate, "delegate"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_draft_kind_variants() {
+    let cases = vec![
+        (DraftKind::Skill, "skill"),
+        (DraftKind::Command, "command"),
+        (DraftKind::Delegate, "delegate"),
+        (DraftKind::Mode, "mode"),
+        (DraftKind::AgentsMd, "agents_md"),
+        (DraftKind::DefaultsModel, "defaults_model"),
+        (DraftKind::Hook, "hook"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_pulse_scope_variants() {
+    let cases = vec![
+        (PulseScope::All, "all"),
+        (PulseScope::Tasks, "tasks"),
+        (PulseScope::Trajectories, "trajectories"),
+        (PulseScope::Memory, "memory"),
+        (PulseScope::Providers, "providers"),
+        (PulseScope::Mcp, "mcp"),
+        (PulseScope::Customization, "customization"),
+        (PulseScope::Diagnostics, "diagnostics"),
+        (PulseScope::Git, "git"),
+    ];
+    for (value, expected) in cases {
+        assert_eq!(serialized_string(&value), expected);
+    }
+}
+
+#[test]
+fn schema_contract_no_old_names_exist() {
+    let values = vec![
+        serde_json::to_value(BuddyPage::Marketplace).expect("serialize"),
+        serde_json::to_value(BuddyPage::DelegatesMarketplace).expect("serialize"),
+        serde_json::to_value(BuddyAction::DraftDelegate {
+            draft_id: "d1".to_string(),
+            label: "Delegate".to_string(),
+        })
+        .expect("serialize"),
+        serde_json::to_value(CustomizationKind::Delegate).expect("serialize"),
+        serde_json::to_value(MarketKind::Delegate).expect("serialize"),
+        serde_json::to_value(DraftKind::Delegate).expect("serialize"),
+    ];
+    for value in values {
+        let json = value.to_string();
+        let old_names = [
+            format!("\"{}{}\"", "mcp", "_marketplace"),
+            format!("\"{}{}{}\"", "sub", "agents", "_marketplace"),
+            format!("\"{}{}{}\"", "draft_", "sub", "agent"),
+            format!("\"{}{}\"", "sub", "agent"),
+        ];
+        for old in old_names {
+            assert!(
+                !json.contains(&old),
+                "old schema name present: {} in {}",
+                old,
+                json
+            );
+        }
+    }
 }
 
 #[test]
@@ -3005,10 +3352,10 @@ fn tool_buddy_open_view_each_page() {
         BuddyPage::Integrations,
         BuddyPage::Extensions,
         BuddyPage::MarketplaceHub,
-        BuddyPage::McpMarketplace,
+        BuddyPage::Marketplace,
         BuddyPage::SkillsMarketplace,
         BuddyPage::CommandsMarketplace,
-        BuddyPage::SubagentsMarketplace,
+        BuddyPage::DelegatesMarketplace,
         BuddyPage::TasksList,
         BuddyPage::TaskWorkspace {
             task_id: "task-xyz".to_string(),

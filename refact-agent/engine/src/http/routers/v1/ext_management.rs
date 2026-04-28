@@ -21,7 +21,7 @@ fn draft_kind_str(kind: &DraftKind) -> &'static str {
     match kind {
         DraftKind::Skill => "skill",
         DraftKind::Command => "command",
-        DraftKind::Subagent => "subagent",
+        DraftKind::Delegate => "delegate",
         DraftKind::Mode => "mode",
         DraftKind::AgentsMd => "agents_md",
         DraftKind::DefaultsModel => "defaults_model",

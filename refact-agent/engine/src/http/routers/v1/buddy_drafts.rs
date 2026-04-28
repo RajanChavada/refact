@@ -35,7 +35,7 @@ pub async fn handle_v1_buddy_draft_create_subagent(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     axum::Json(req): axum::Json<DraftCreateRequest>,
 ) -> Result<axum::Json<BuddyDraft>, ScratchError> {
-    create_draft(gcx, req, DraftKind::Subagent).await
+    create_draft(gcx, req, DraftKind::Delegate).await
 }
 
 pub async fn handle_v1_buddy_draft_create_mode(

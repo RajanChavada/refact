@@ -39,8 +39,8 @@ impl Tool for ToolBuddyOpenView {
                                 "enum": [
                                     "buddy", "stats", "customization", "providers",
                                     "default_models", "integrations", "extensions",
-                                    "marketplace_hub", "mcp_marketplace", "skills_marketplace",
-                                    "commands_marketplace", "subagents_marketplace",
+                                    "marketplace_hub", "marketplace", "skills_marketplace",
+                                    "commands_marketplace", "delegates_marketplace",
                                     "tasks_list", "task_workspace", "knowledge_graph"
                                 ]
                             },

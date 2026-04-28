@@ -26,14 +26,14 @@ impl Tool for ToolBuddyCreateDraft {
             },
             experimental: false,
             allow_parallel: false,
-            description: "Create a Buddy draft (skill, command, subagent, mode, agents_md, defaults_model, hook). Returns a draft_id the user can navigate to in the corresponding editor for review/save.".to_string(),
+            description: "Create a Buddy draft (skill, command, delegate, mode, agents_md, defaults_model, hook). Returns a draft_id the user can navigate to in the corresponding editor for review/save.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "kind": {
                         "type": "string",
                         "description": "Draft type.",
-                        "enum": ["skill", "command", "subagent", "mode", "agents_md", "defaults_model", "hook"]
+                        "enum": ["skill", "command", "delegate", "mode", "agents_md", "defaults_model", "hook"]
                     },
                     "title": {
                         "type": "string",

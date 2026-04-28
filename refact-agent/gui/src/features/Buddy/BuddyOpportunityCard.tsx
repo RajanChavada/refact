@@ -13,7 +13,7 @@ function actionLabel(action: BuddyAction): string {
       return "Investigate";
     case "draft_skill":
     case "draft_command":
-    case "draft_subagent":
+    case "draft_delegate":
     case "draft_mode":
       return action.label;
     case "draft_agents_md_patch":
@@ -49,14 +49,14 @@ function humanizePage(page: BuddyPage): string {
       return "Extensions";
     case "marketplace_hub":
       return "Marketplace";
-    case "mcp_marketplace":
+    case "marketplace":
       return "MCP Marketplace";
     case "skills_marketplace":
       return "Skills Marketplace";
     case "commands_marketplace":
       return "Commands Marketplace";
-    case "subagents_marketplace":
-      return "Subagents Marketplace";
+    case "delegates_marketplace":
+      return "Delegates Marketplace";
     case "tasks_list":
       return "Tasks";
     case "task_workspace":
