@@ -36,7 +36,10 @@ pub fn detect_task_health_facts(entries: &[TaskHealthEntry], now: DateTime<Utc>)
     let abandon_threshold = chrono::Duration::days(7);
 
     for entry in entries {
-        let terminal = matches!(entry.meta.status, TaskStatus::Completed | TaskStatus::Abandoned);
+        let terminal = matches!(
+            entry.meta.status,
+            TaskStatus::Completed | TaskStatus::Abandoned
+        );
         if terminal {
             continue;
         }

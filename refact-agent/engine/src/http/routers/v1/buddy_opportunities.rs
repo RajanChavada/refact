@@ -137,7 +137,9 @@ async fn dispatch_action(
                     BuddyAction::DraftSubagent { .. } => (DraftKind::Subagent, label.as_str(), "name: my-subagent\ndescription: Describe this subagent"),
                     _ => (DraftKind::Mode, label.as_str(), "title: My Mode\nprompt: Describe this mode"),
                 };
-                let draft = synthesize_draft(gcx.clone(), dk, title.to_string(), content.to_string()).await?;
+                let draft =
+                    synthesize_draft(gcx.clone(), dk, title.to_string(), content.to_string())
+                        .await?;
                 let id = draft.id.clone();
                 (dk, id)
             } else {
@@ -162,20 +164,35 @@ async fn dispatch_action(
             } else {
                 diff.as_str()
             };
-            let draft = synthesize_draft(gcx.clone(), DraftKind::AgentsMd, "AGENTS.md".to_string(), content.to_string()).await?;
+            let draft = synthesize_draft(
+                gcx.clone(),
+                DraftKind::AgentsMd,
+                "AGENTS.md".to_string(),
+                content.to_string(),
+            )
+            .await?;
             Ok(serde_json::json!({
                 "kind": "draft",
                 "draft_kind": "agents_md",
                 "draft_id": draft.id
             }))
         }
-        BuddyAction::DraftDefaultsChange { defaults_kind, patch } => {
+        BuddyAction::DraftDefaultsChange {
+            defaults_kind,
+            patch,
+        } => {
             let content = if patch != &serde_json::json!({}) {
                 serde_json::to_string_pretty(patch).unwrap_or_default()
             } else {
                 "{\n  \"chat_default_model\": \"your-provider/model-name\"\n}".to_string()
             };
-            let draft = synthesize_draft(gcx.clone(), DraftKind::DefaultsModel, "Default Models".to_string(), content).await?;
+            let draft = synthesize_draft(
+                gcx.clone(),
+                DraftKind::DefaultsModel,
+                "Default Models".to_string(),
+                content,
+            )
+            .await?;
             Ok(serde_json::json!({
                 "kind": "draft",
                 "draft_kind": serde_json::to_value(defaults_kind).unwrap_or_default(),
@@ -203,10 +220,15 @@ async fn synthesize_draft(
     let buddy_arc = gcx.read().await.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     let svc = lock.as_mut().ok_or_else(|| {
-        ScratchError::new(StatusCode::SERVICE_UNAVAILABLE, "buddy not initialized".into())
+        ScratchError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "buddy not initialized".into(),
+        )
     })?;
     let draft = svc.draft_store.create(kind, title, content, String::new());
-    let _ = svc.events_tx.send(BuddyEvent::DraftCreated { draft: draft.clone() });
+    let _ = svc.events_tx.send(BuddyEvent::DraftCreated {
+        draft: draft.clone(),
+    });
     Ok(draft)
 }
 

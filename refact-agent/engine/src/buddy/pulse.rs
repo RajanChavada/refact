@@ -109,7 +109,9 @@ async fn build_mcp_pulse(gcx: Arc<RwLock<GlobalContext>>, fact_store: &FactStore
 
 async fn build_customization_pulse(gcx: Arc<RwLock<GlobalContext>>) -> CustomizationPulse {
     let mut pulse = CustomizationPulse::default();
-    let reg = match crate::yaml_configs::customization_registry::get_project_registry(gcx.clone()).await {
+    let reg = match crate::yaml_configs::customization_registry::get_project_registry(gcx.clone())
+        .await
+    {
         Some(r) => r,
         None => return pulse,
     };

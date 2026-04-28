@@ -2832,9 +2832,9 @@ async fn actor_humor_attached_when_allowed() {
     }
     let gcx = crate::global_context::tests::make_test_gcx().await;
     let mut svc = make_service();
-    svc.humor_service = Arc::new(tokio::sync::Mutex::new(
-        HumorService::new_with_generator(std::sync::Arc::new(MockGen)),
-    ));
+    svc.humor_service = Arc::new(tokio::sync::Mutex::new(HumorService::new_with_generator(
+        std::sync::Arc::new(MockGen),
+    )));
     let mut opp = make_opportunity("humor-opp", "humor-opp-key");
     opp.humor_allowed = true;
     opp.priority = BuddyPriority::Normal;
@@ -3451,7 +3451,9 @@ fn provider_health_payload_keys_match_detector() {
     };
     let available = vec!["openai/gpt-4o".to_string()];
     let facts = detect_provider_health_facts(&defaults, &available, now);
-    assert!(facts.iter().any(|f| f.kind == BuddyFactKind::DefaultModelMissing));
+    assert!(facts
+        .iter()
+        .any(|f| f.kind == BuddyFactKind::DefaultModelMissing));
     let mut store = FactStore::new();
     for f in facts {
         store.ingest(f);
@@ -3475,14 +3477,19 @@ fn provider_health_payload_keys_match_detector() {
         .iter()
         .filter(|(o, _)| o.kind == BuddyOpportunityKind::ProviderTuning)
         .collect();
-    assert!(!provider_opps.is_empty(), "must emit ProviderTuning opportunity");
+    assert!(
+        !provider_opps.is_empty(),
+        "must emit ProviderTuning opportunity"
+    );
     for (opp, _) in &provider_opps {
-        assert!(!opp.cooldown_key.is_empty(), "cooldown_key must not be empty");
+        assert!(
+            !opp.cooldown_key.is_empty(),
+            "cooldown_key must not be empty"
+        );
     }
-    let broken_opp = opps
-        .iter()
-        .find(|(o, _)| o.kind == BuddyOpportunityKind::ProviderTuning
-            && o.summary.contains("not available"));
+    let broken_opp = opps.iter().find(|(o, _)| {
+        o.kind == BuddyOpportunityKind::ProviderTuning && o.summary.contains("not available")
+    });
     if let Some((opp, _)) = broken_opp {
         let action_has_model = opp.proposed_actions.iter().any(|a| {
             if let BuddyAction::DraftDefaultsChange { .. } = a {
@@ -3493,7 +3500,10 @@ fn provider_health_payload_keys_match_detector() {
                 false
             }
         });
-        assert!(action_has_model, "broken_ref opp must have DefaultsChange or OpenPage action");
+        assert!(
+            action_has_model,
+            "broken_ref opp must have DefaultsChange or OpenPage action"
+        );
     }
 }
 
@@ -3522,15 +3532,20 @@ fn mcp_auth_payload_keys_match_detector() {
         },
     ];
     let facts = detect_mcp_auth_facts(&snaps, now);
-    assert!(facts.iter().any(|f| f.kind == BuddyFactKind::McpAuthExpired));
-    assert!(facts.iter().any(|f| f.kind == BuddyFactKind::IntegrationFailing));
+    assert!(facts
+        .iter()
+        .any(|f| f.kind == BuddyFactKind::McpAuthExpired));
+    assert!(facts
+        .iter()
+        .any(|f| f.kind == BuddyFactKind::IntegrationFailing));
     for fact in &facts {
         match fact.kind {
             BuddyFactKind::McpAuthExpired | BuddyFactKind::IntegrationFailing => {
                 let mcp_id = fact.payload.get("mcp_id").and_then(|v| v.as_str());
                 assert!(
                     mcp_id.is_some() && !mcp_id.unwrap().is_empty(),
-                    "mcp_id must be present and non-empty in {:?}", fact.kind
+                    "mcp_id must be present and non-empty in {:?}",
+                    fact.kind
                 );
             }
             _ => {}
@@ -3582,17 +3597,24 @@ fn mode_overlap_payload_keys_match_detector() {
         .iter()
         .filter(|(o, _)| o.kind == BuddyOpportunityKind::ConfigDrift)
         .collect();
-    assert!(!drift_opps.is_empty(), "must emit ConfigDrift opportunity for ModePromptOverlap");
+    assert!(
+        !drift_opps.is_empty(),
+        "must emit ConfigDrift opportunity for ModePromptOverlap"
+    );
     let (opp, _) = &drift_opps[0];
     assert!(
         !opp.cooldown_key.is_empty() && opp.cooldown_key != "config_drift:mode_overlap:",
         "cooldown_key must include real mode_id, got: {}",
         opp.cooldown_key
     );
-    let has_customization_action = opp.proposed_actions.iter().any(|a| {
-        matches!(a, BuddyAction::DraftCustomizationChange { .. })
-    });
-    assert!(has_customization_action, "opp must have DraftCustomizationChange action");
+    let has_customization_action = opp
+        .proposed_actions
+        .iter()
+        .any(|a| matches!(a, BuddyAction::DraftCustomizationChange { .. }));
+    assert!(
+        has_customization_action,
+        "opp must have DraftCustomizationChange action"
+    );
     if let Some(BuddyAction::DraftCustomizationChange { id, .. }) = opp
         .proposed_actions
         .iter()
@@ -3615,7 +3637,9 @@ async fn accept_synthesizes_real_draft() {
         None,
     );
     let mut opp = make_opportunity("opp-synth", "ck-synth");
-    opp.proposed_actions = vec![BuddyAction::DraftAgentsMdPatch { diff: String::new() }];
+    opp.proposed_actions = vec![BuddyAction::DraftAgentsMdPatch {
+        diff: String::new(),
+    }];
     svc.add_opportunity(opp);
     let synth_opp = svc.opportunity_queue.get("opp-synth").cloned().unwrap();
     let action = &synth_opp.proposed_actions[0];
@@ -3628,8 +3652,14 @@ async fn accept_synthesizes_real_draft() {
         "# AGENTS.md\n\nThis file provides guidance to AI agents.".to_string(),
         String::new(),
     );
-    assert!(!draft.id.is_empty(), "synthesized draft must have non-empty id");
-    assert!(!draft.yaml_or_json.is_empty(), "synthesized draft must have non-empty content");
+    assert!(
+        !draft.id.is_empty(),
+        "synthesized draft must have non-empty id"
+    );
+    assert!(
+        !draft.yaml_or_json.is_empty(),
+        "synthesized draft must have non-empty content"
+    );
     assert_eq!(draft.kind, DraftKind::AgentsMd);
     assert!(
         svc.draft_store.get(&draft.id).is_some(),
@@ -3702,7 +3732,9 @@ async fn humor_attach_does_not_hold_buddy_lock() {
     let started = Arc::new(AtomicBool::new(false));
     let mut svc = make_service();
     svc.humor_service = Arc::new(tokio::sync::Mutex::new(HumorService::new_with_generator(
-        Arc::new(SlowGen { started: started.clone() }),
+        Arc::new(SlowGen {
+            started: started.clone(),
+        }),
     )));
 
     let humor_arc = svc.humor_service.clone();
@@ -3767,7 +3799,12 @@ fn task_stuck_uses_heartbeat_not_started_at() {
         schema_version: 1,
         rev: 0,
         columns: vec![],
-        cards: vec![make_board_card("c1", "doing", Some("agent-1"), Some(&(now - Duration::hours(1)).to_rfc3339()))],
+        cards: vec![make_board_card(
+            "c1",
+            "doing",
+            Some("agent-1"),
+            Some(&(now - Duration::hours(1)).to_rfc3339()),
+        )],
     };
 
     // Fresh heartbeat (1 min ago) — no stuck fact even though started_at is 1h old.
@@ -3856,7 +3893,12 @@ fn task_cluster_requires_file_overlap() {
             touched_files: vec!["src/auth.rs".to_string()],
         },
         TaskHealthEntry {
-            meta: make_task_meta("t2", "Fix auth issue", TaskStatus::Active, &now.to_rfc3339()),
+            meta: make_task_meta(
+                "t2",
+                "Fix auth issue",
+                TaskStatus::Active,
+                &now.to_rfc3339(),
+            ),
             board: board.clone(),
             last_heartbeat: None,
             touched_files: vec!["src/session.rs".to_string()],
@@ -3864,7 +3906,9 @@ fn task_cluster_requires_file_overlap() {
     ];
     let facts = detect_task_health_facts(&disjoint, now);
     assert!(
-        facts.iter().all(|f| f.kind != BuddyFactKind::TaskClusterDuplicate),
+        facts
+            .iter()
+            .all(|f| f.kind != BuddyFactKind::TaskClusterDuplicate),
         "disjoint file sets must not produce cluster duplicate"
     );
 
@@ -3877,7 +3921,12 @@ fn task_cluster_requires_file_overlap() {
             touched_files: vec!["src/auth.rs".to_string(), "src/common.rs".to_string()],
         },
         TaskHealthEntry {
-            meta: make_task_meta("t4", "Fix auth issue", TaskStatus::Active, &now.to_rfc3339()),
+            meta: make_task_meta(
+                "t4",
+                "Fix auth issue",
+                TaskStatus::Active,
+                &now.to_rfc3339(),
+            ),
             board,
             last_heartbeat: None,
             touched_files: vec!["src/common.rs".to_string(), "src/session.rs".to_string()],
@@ -3885,7 +3934,9 @@ fn task_cluster_requires_file_overlap() {
     ];
     let facts = detect_task_health_facts(&overlap, now);
     assert!(
-        facts.iter().any(|f| f.kind == BuddyFactKind::TaskClusterDuplicate),
+        facts
+            .iter()
+            .any(|f| f.kind == BuddyFactKind::TaskClusterDuplicate),
         "shared file must produce cluster duplicate for similar tasks"
     );
 }
@@ -3912,12 +3963,19 @@ async fn pulse_populates_all_subpulse_counts() {
     let mut store = FactStore::new();
     let now = chrono::Utc::now();
     store.ingest(make_fact("task:stuck:t1", BuddyFactKind::TaskStuck, now));
-    store.ingest(make_fact("task:abandoned:t2", BuddyFactKind::TaskAbandoned, now));
+    store.ingest(make_fact(
+        "task:abandoned:t2",
+        BuddyFactKind::TaskAbandoned,
+        now,
+    ));
 
     let pulse = build_pulse(gcx.clone(), std::path::Path::new("/tmp"), &store).await;
 
     assert!(pulse.generated_at.is_some(), "generated_at must be set");
-    assert!(pulse.providers.defaults_ok, "defaults_ok must be true when all 3 models set");
+    assert!(
+        pulse.providers.defaults_ok,
+        "defaults_ok must be true when all 3 models set"
+    );
     assert_eq!(
         pulse.mcp.total,
         gcx.read().await.integration_sessions.len() as u32,
@@ -3925,6 +3983,12 @@ async fn pulse_populates_all_subpulse_counts() {
     );
     assert!(pulse.customization.skills >= 0, "skills must be populated");
     assert!(pulse.customization.hooks >= 0, "hooks must be populated");
-    assert_eq!(pulse.tasks.stuck, 1, "stuck count must reflect injected fact");
-    assert_eq!(pulse.tasks.abandoned, 1, "abandoned count must reflect injected fact");
+    assert_eq!(
+        pulse.tasks.stuck, 1,
+        "stuck count must reflect injected fact"
+    );
+    assert_eq!(
+        pulse.tasks.abandoned, 1,
+        "abandoned count must reflect injected fact"
+    );
 }
