@@ -737,6 +737,31 @@ async fn scan_skill_items(
     );
     let mut out = Vec::new();
     let mut seen = HashSet::new();
+    // Support single-skill repos that place SKILL.md directly at the repo root.
+    let root_skill_md = repo_dir.join("SKILL.md");
+    if root_skill_md.exists() && seen.insert(String::new()) {
+        if let Ok(content) = tokio::fs::read_to_string(&root_skill_md).await {
+            let (fm, body) = parse_frontmatter_and_body(&content);
+            let name = yaml_str(&fm, "name");
+            if !name.is_empty() {
+                out.push(MarketplaceItem {
+                    id: name.clone(),
+                    name,
+                    description: yaml_str(&fm, "description"),
+                    tags: yaml_str_list(&fm, "tags"),
+                    publisher: source.label.clone(),
+                    homepage: source.repo_url.clone(),
+                    kind: MarketplaceKind::Skill,
+                    source_id: source.id.clone(),
+                    source_label: source.label.clone(),
+                    path: String::new(),
+                    installed_scopes: Vec::new(),
+                    body_preview: make_body_preview(&body),
+                    params: yaml_params(&fm),
+                });
+            }
+        }
+    }
     for root in roots {
         let mut entries = match tokio::fs::read_dir(&root).await {
             Ok(v) => v,
@@ -1549,7 +1574,17 @@ pub async fn install_marketplace_item(
                 let _ = tokio::fs::remove_dir_all(&temp).await;
             }
             let mut size = 0u64;
-            copy_dir_recursive(&abs_path, &temp, &mut size).await?;
+            if item.path.is_empty() {
+                // Root-level SKILL.md repo: create the skill dir and copy just the one file.
+                tokio::fs::create_dir_all(&temp)
+                    .await
+                    .map_err(|e| format!("mkdir {:?}: {}", temp, e))?;
+                size = tokio::fs::copy(abs_path.join("SKILL.md"), temp.join("SKILL.md"))
+                    .await
+                    .map_err(|e| format!("copy SKILL.md from root: {}", e))?;
+            } else {
+                copy_dir_recursive(&abs_path, &temp, &mut size).await?;
+            }
             // Apply substitutions to the staged dir, not the live target.
             substitute_params_in_dir(&temp, &req.params).await?;
             // Everything staged: now atomically swap.
