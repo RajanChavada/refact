@@ -19,9 +19,8 @@ pub fn detect_diagnostic_cluster_facts(
     let window_30min = now - chrono::Duration::minutes(30);
     let window_5min = now - chrono::Duration::minutes(5);
 
-    let mut by_type: HashMap<&str, (u32, &str)> = HashMap::new();
-    let mut fe_count: u32 = 0;
-    let mut fe_sample: Option<&str> = None;
+    let mut by_type: HashMap<&str, Vec<&DiagnosticContext>> = HashMap::new();
+    let mut frontend_diagnostics: Vec<&DiagnosticContext> = Vec::new();
 
     for diag in diagnostics {
         let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&diag.collected_at) else {
@@ -30,34 +29,42 @@ pub fn detect_diagnostic_cluster_facts(
         let ts_utc = ts.with_timezone(&Utc);
 
         if ts_utc >= window_30min {
-            let entry = by_type
+            by_type
                 .entry(diag.error_type.as_str())
-                .or_insert((0, diag.collected_at.as_str()));
-            entry.0 += 1;
+                .or_default()
+                .push(diag);
         }
 
-        if ts_utc >= window_5min {
-            if diag.tool_name.as_deref() == Some("frontend") {
-                fe_count += 1;
-                if fe_sample.is_none() {
-                    fe_sample = Some(diag.collected_at.as_str());
-                }
-            }
+        if ts_utc >= window_5min && diag.tool_name.as_deref() == Some("frontend") {
+            frontend_diagnostics.push(diag);
         }
     }
 
-    for (error_type, (count, sample)) in &by_type {
-        if *count >= 3 {
-            tracing::debug!("diagnostic_cluster: type={} count={}", error_type, count);
+    for (error_type, cluster_diagnostics) in &by_type {
+        if cluster_diagnostics.len() >= 3 {
+            tracing::debug!(
+                "diagnostic_cluster: type={} count={}",
+                error_type,
+                cluster_diagnostics.len()
+            );
+            let diagnostic_ids: Vec<String> = cluster_diagnostics
+                .iter()
+                .map(|diag| crate::buddy::diagnostics::diagnostic_id(diag))
+                .collect();
+            let sample_collected_at = cluster_diagnostics
+                .first()
+                .map(|diag| diag.collected_at.clone())
+                .unwrap_or_default();
             facts.push(BuddyFact {
                 kind: BuddyFactKind::DiagnosticCluster,
                 key: format!("diag:cluster:{}", error_type),
                 source: "diagnostic_cluster",
                 payload: serde_json::json!({
                     "error_type": error_type,
-                    "count": count,
+                    "count": cluster_diagnostics.len(),
                     "window_seconds": 1800,
-                    "sample_diagnostic_id": sample,
+                    "diagnostic_ids": diagnostic_ids,
+                    "sample_collected_at": sample_collected_at,
                 }),
                 seen_at: now,
                 confidence: 0.9,
@@ -65,17 +72,29 @@ pub fn detect_diagnostic_cluster_facts(
         }
     }
 
-    if fe_count >= 5 {
-        tracing::debug!("diagnostic_cluster: frontend burst count={}", fe_count);
+    if frontend_diagnostics.len() >= 5 {
+        tracing::debug!(
+            "diagnostic_cluster: frontend burst count={}",
+            frontend_diagnostics.len()
+        );
+        let diagnostic_ids: Vec<String> = frontend_diagnostics
+            .iter()
+            .map(|diag| crate::buddy::diagnostics::diagnostic_id(diag))
+            .collect();
+        let sample_collected_at = frontend_diagnostics
+            .first()
+            .map(|diag| diag.collected_at.clone())
+            .unwrap_or_default();
         facts.push(BuddyFact {
             kind: BuddyFactKind::FrontendErrorBurst,
             key: "diag:fe_burst:global".to_string(),
             source: "diagnostic_cluster",
             payload: serde_json::json!({
                 "error_type": "frontend",
-                "count": fe_count,
+                "count": frontend_diagnostics.len(),
                 "window_seconds": 300,
-                "sample_diagnostic_id": fe_sample.unwrap_or(""),
+                "diagnostic_ids": diagnostic_ids,
+                "sample_collected_at": sample_collected_at,
             }),
             seen_at: now,
             confidence: 0.95,

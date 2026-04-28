@@ -258,6 +258,18 @@ const RULES: &[Rule] = &[
 mod rules {
     use super::*;
 
+    fn fact_diagnostic_ids(fact: &crate::buddy::types::BuddyFact) -> Vec<String> {
+        fact.payload
+            .get("diagnostic_ids")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn opp(
         kind: BuddyOpportunityKind,
         summary: impl Into<String>,
@@ -589,6 +601,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("error")
                     .to_string();
+                let diagnostic_ids = fact_diagnostic_ids(fact);
                 opp(
                     BuddyOpportunityKind::DiagnosticInvestigation,
                     format!("Repeated errors: {}", error_type),
@@ -600,7 +613,7 @@ mod rules {
                         BuddyAction::LaunchInvestigationChat {
                             preload: InvestigationContext {
                                 fact_keys: vec![fact.key.clone()],
-                                diagnostic_ids: vec![],
+                                diagnostic_ids: diagnostic_ids.clone(),
                                 log_excerpt: String::new(),
                                 config_summary: String::new(),
                                 initial_user_message: format!(
@@ -632,6 +645,7 @@ mod rules {
             .into_iter()
             .take(1)
             .map(|fact| {
+                let diagnostic_ids = fact_diagnostic_ids(fact);
                 opp(
                     BuddyOpportunityKind::DiagnosticInvestigation,
                     "Frontend error burst detected",
@@ -643,7 +657,7 @@ mod rules {
                         BuddyAction::LaunchInvestigationChat {
                             preload: InvestigationContext {
                                 fact_keys: vec![fact.key.clone()],
-                                diagnostic_ids: vec![],
+                                diagnostic_ids: diagnostic_ids.clone(),
                                 log_excerpt: String::new(),
                                 config_summary: String::new(),
                                 initial_user_message: "Investigate frontend error burst"
