@@ -273,7 +273,7 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
       />
       {displaySize >= 100 &&
         (() => {
-          const pos = BUBBLE_STYLES[bubblePosition] ?? BUBBLE_STYLES.above;
+          const pos = BUBBLE_STYLES[bubblePosition];
           const tailColor: React.CSSProperties =
             bubblePosition === "left"
               ? { borderLeft: `7px solid ${palette.body}` }

@@ -42,11 +42,11 @@ import { SETUP_MODES } from "../Setup/setupModes";
 import { useUpdateBuddySettingsMutation } from "../../services/refact/buddy";
 import styles from "./BuddyHome.module.css";
 
-const NEED_ROWS: Array<{
+const NEED_ROWS: {
   key: keyof BuddyNeeds;
   label: string;
   invert?: boolean;
-}> = [
+}[] = [
   { key: "hunger", label: "Hunger" },
   { key: "energy", label: "Energy" },
   { key: "hygiene", label: "Hygiene" },
@@ -54,12 +54,12 @@ const NEED_ROWS: Array<{
   { key: "affection", label: "Affection" },
 ];
 
-const CARE_ACTIONS: Array<{
+const CARE_ACTIONS: {
   action: BuddyCareAction;
   label: string;
   emoji: string;
   toy?: string;
-}> = [
+}[] = [
   { action: "feed", label: "Feed", emoji: "🍜" },
   { action: "play", label: "Play", emoji: "🎾", toy: "bug" },
   { action: "pet", label: "Pet", emoji: "💕" },
@@ -116,6 +116,7 @@ export const BuddyHome: React.FC = () => {
   const nextStage = STAGES[(progression?.stage ?? state.progress.stage) + 1];
 
   const xp = progression?.xp ?? state.progress.xp;
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   const xpNext = progression?.xp_next ?? nextStage?.xpThreshold;
   const xpFill = useMemo(
     () => computeXpFill(progression?.xp ?? 0, progression?.xp_next ?? 100),
@@ -391,10 +392,10 @@ export const BuddyHome: React.FC = () => {
 
         {statusText && <div className={styles.statusText}>{statusText}</div>}
 
-        {nowPlaying && nowPlaying.progress != null && (
+        {nowPlaying?.progress != null && (
           <div className={styles.statusBubble}>
             <span className={styles.statusIcon}>
-              {SIGNALS[nowPlaying.signal_type]?.icon ?? "⚡"}
+              {SIGNALS[nowPlaying.signal_type].icon}
             </span>
             <div className={styles.statusContent}>
               <div className={styles.progressBar}>
@@ -848,6 +849,7 @@ export const BuddyHome: React.FC = () => {
                         <span className={styles.ackBadge}>acknowledged</span>
                       )}
                     </span>
+                    {/* eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing */}
                     {(e.description || subtitle) && (
                       <span className={styles.listSubtitle}>
                         {e.description ?? subtitle}

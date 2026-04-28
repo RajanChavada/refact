@@ -58,6 +58,7 @@ export function useBuddyState(
         paletteIndex: identity.palette_index,
       },
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     reduxSnapshot?.state.identity.name,
     reduxSnapshot?.state.identity.palette_index,
@@ -120,6 +121,7 @@ export function useBuddyState(
         },
       },
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     reduxSnapshot?.state.personality.traits.playfulness,
     reduxSnapshot?.state.personality.traits.chaos,
@@ -151,13 +153,13 @@ export function useBuddyState(
     if (prev !== null && curr > prev) {
       dispatch({ kind: "signal", signalType: "stage_up" });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     reduxSnapshot?.state.progression.stage,
     reduxSnapshot?.state.progression.xp,
   ]);
 
   // Skills sync is independent — fires when skills change even without XP/stage change
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const skillsKey = reduxSnapshot?.state.skills.unlocked.join(",") ?? "";
   useEffect(() => {
     if (!reduxSnapshot) return;
@@ -182,7 +184,7 @@ export function useBuddyState(
       onBuddyEventRef.current?.({
         type: "stage_evolved",
         stage: curr,
-        name: stageDef?.name ?? String(curr),
+        name: stageDef.name,
       });
     }
   }, [state.progress.stage]);
@@ -221,7 +223,7 @@ export function useBuddyState(
     }
 
     const signalDef = SIGNALS[nowPlaying.signal_type];
-    const isActive = signalDef?.category === "active";
+    const isActive = signalDef.category === "active";
     const isCompleted =
       nowPlaying.status === "completed" || nowPlaying.status === "failed";
     if (isActive && !isCompleted) {
@@ -230,7 +232,7 @@ export function useBuddyState(
     const ttl = nowPlaying.persistent
       ? undefined
       : nowPlaying.ttl_ms ??
-        signalDef?.duration ??
+        signalDef.duration ??
         (nowPlaying.status === "progress" ? 8000 : 4000);
     if (ttl === undefined) return;
     const timer = setTimeout(() => reduxDispatch(clearNowPlaying()), ttl);

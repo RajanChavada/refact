@@ -1,4 +1,5 @@
 let pixelFontReady = false;
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/prefer-optional-chain
 if (typeof document !== "undefined" && document.fonts) {
   void document.fonts.load('8px "Press Start 2P"').then(() => {
     pixelFontReady = true;

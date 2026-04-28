@@ -64,6 +64,7 @@ function clipInlineText(text: string, maxLen: number): string {
 function clipBlockText(text: string, maxLen: number): string {
   const normalized = text
     .replace(/\r\n?/g, "\n")
+    // eslint-disable-next-line no-control-regex
     .replace(/\u0000/g, "")
     .trim();
   if (normalized.length <= maxLen) return normalized;
@@ -234,11 +235,11 @@ export function buildBuddyInvestigationPrompt(
   const turns = collectRecentTurns(input.messages);
   const summary = summarizeTurns(turns);
   const logs = clipBlockText(
-    input.logs?.trim() || "Investigation logs were unavailable.",
+    input.logs?.trim() ?? "Investigation logs were unavailable.",
     MAX_CONTEXT_BLOCK_LEN,
   );
   const internalContext = clipBlockText(
-    input.internalContext?.trim() ||
+    input.internalContext?.trim() ??
       "Internal setup/config context was unavailable.",
     MAX_CONTEXT_BLOCK_LEN,
   );

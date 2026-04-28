@@ -29,7 +29,7 @@ import { useBuddyOpportunities } from "./hooks/useBuddyOpportunities";
 import type { BuddyControl, BuddySuggestion, DiagnosticContext } from "./types";
 import { isBuddyOverlaySuppressedIssue } from "./investigation";
 import { executeBuddyAction } from "./executeBuddyAction";
-import { selectBuddySnapshot } from "./buddySlice";
+
 import styles from "./BuddyChatCompanion.module.css";
 
 interface Props {
@@ -52,7 +52,6 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const nowPlaying = useAppSelector(selectNowPlaying);
   const diagnostics = useAppSelector(selectBuddyDiagnostics);
   const suggestions = useAppSelector(selectBuddySuggestions);
-  const snapshot = useAppSelector(selectBuddySnapshot);
   const threadError = useAppSelector((state) =>
     selectChatErrorById(state, chatId),
   );
@@ -113,7 +112,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const notification: NotificationItem | null = useMemo(() => {
     const chatDiagnostic =
       diagnostics.find((d) => d.chat_id === chatId) ?? null;
-    const normalizedThreadError = threadError?.trim() || null;
+    const normalizedThreadError = threadError?.trim() ?? null;
     if (normalizedThreadError) {
       if (
         isBuddyOverlaySuppressedIssue(normalizedThreadError, chatDiagnostic)
@@ -132,8 +131,8 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
 
     const runtimeError =
       nowPlaying?.chat_id === chatId &&
-      nowPlaying?.status === "failed" &&
-      !nowPlaying?.dismissed
+      nowPlaying.status === "failed" &&
+      !nowPlaying.dismissed
         ? nowPlaying
         : runtimeQueue.find(
             (e) =>
@@ -155,7 +154,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
       };
     }
 
-    if (chatDiagnostic?.error_message?.trim()) {
+    if (chatDiagnostic?.error_message.trim()) {
       if (
         isBuddyOverlaySuppressedIssue(
           chatDiagnostic.error_message,
@@ -182,7 +181,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
         id: activeSuggestion.id,
         text: `${activeSuggestion.title}: ${activeSuggestion.description}`,
         source: "suggestion",
-        controls: activeSuggestion.controls?.length
+        controls: activeSuggestion.controls.length
           ? activeSuggestion.controls
           : suggestionControls,
         timestamp: new Date(activeSuggestion.created_at).getTime(),
@@ -198,7 +197,6 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     runtimeQueue,
     diagnostics,
     suggestions,
-    snapshot,
     errorControls,
     suggestionControls,
   ]);
@@ -372,7 +370,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
         displaySize={160}
         speechOverride={notification.text}
         speechControls={notification.controls}
-        onSpeechControlClick={handleControl}
+        onSpeechControlClick={(ctrl) => void handleControl(ctrl)}
         bubblePosition="left"
       />
     </div>

@@ -154,7 +154,7 @@ export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
             <Button
               size="1"
               variant="ghost"
-              onClick={handleNew}
+              onClick={() => void handleNew()}
               disabled={isCreating}
             >
               {isCreating ? (
@@ -204,7 +204,7 @@ export const BuddyRecentChats: React.FC<BuddyRecentChatsProps> = ({
             {filter === "all" ? "No conversations yet" : `No ${filter} entries`}
           </Text>
           {filter === "all" && (
-            <Button size="1" variant="soft" onClick={handleNew}>
+            <Button size="1" variant="soft" onClick={() => void handleNew()}>
               Start a conversation
             </Button>
           )}

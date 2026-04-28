@@ -69,11 +69,12 @@ const SuggestionCard: React.FC<SuggestionCardProps> = ({ suggestion }) => {
       handleInvestigate,
       suggestion.description,
       suggestion.id,
+      suggestion.quest,
       suggestion.title,
     ],
   );
 
-  const controls = suggestion.controls?.length
+  const controls = suggestion.controls.length
     ? suggestion.controls
     : [
         {
