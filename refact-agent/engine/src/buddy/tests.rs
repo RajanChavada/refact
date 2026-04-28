@@ -3004,16 +3004,17 @@ fn provider_health_no_emit_when_ok() {
     use crate::caps::DefaultModels;
     let now = chrono::Utc::now();
     let defaults = DefaultModels {
-        completion_default_model: String::new(),
+        completion_default_model: "starcoder".to_string(),
         chat_default_model: "openai/gpt-4o".to_string(),
         chat_thinking_model: "openai/o1".to_string(),
-        chat_light_model: String::new(),
+        chat_light_model: "openai/gpt-4o-mini".to_string(),
         chat_buddy_model: "openai/gpt-4o-mini".to_string(),
     };
     let available = vec![
         "openai/gpt-4o".to_string(),
         "openai/o1".to_string(),
         "openai/gpt-4o-mini".to_string(),
+        "starcoder".to_string(),
     ];
     let facts = detect_provider_health_facts(&defaults, &available, now);
     let interesting: Vec<_> = facts
@@ -5796,6 +5797,226 @@ async fn pulse_task_total_and_by_status_populated() {
         pulse.tasks.by_status.get("completed").copied().unwrap_or(0),
         1,
         "completed count must be 1"
+    );
+}
+
+#[test]
+fn provider_health_checks_chat_light_and_completion_models() {
+    use super::observers::provider_health::detect_provider_health_facts;
+    use crate::caps::DefaultModels;
+
+    let now = chrono::Utc::now();
+    let defaults = DefaultModels {
+        completion_default_model: String::new(),
+        chat_default_model: "openai/gpt-4o".to_string(),
+        chat_thinking_model: "openai/o1".to_string(),
+        chat_light_model: String::new(),
+        chat_buddy_model: "openai/gpt-4o-mini".to_string(),
+    };
+    let available = vec![
+        "openai/gpt-4o".to_string(),
+        "openai/o1".to_string(),
+        "openai/gpt-4o-mini".to_string(),
+    ];
+
+    let facts = detect_provider_health_facts(&defaults, &available, now);
+    assert!(facts.iter().any(|f| {
+        f.kind == BuddyFactKind::DefaultModelMissing
+            && f.payload.get("field").and_then(|v| v.as_str()) == Some("chat_light_model")
+    }));
+    assert!(facts.iter().any(|f| {
+        f.kind == BuddyFactKind::DefaultModelMissing
+            && f.payload.get("field").and_then(|v| v.as_str()) == Some("completion_model")
+    }));
+}
+
+#[test]
+fn broken_ref_per_field_distinct_opportunities() {
+    use super::facts::FactStore;
+    use super::observers::provider_health::detect_provider_health_facts;
+    use super::opportunities::{OpportunityDetector, OpportunityQueue};
+    use crate::caps::DefaultModels;
+
+    let now = chrono::Utc::now();
+    let defaults = DefaultModels {
+        completion_default_model: "starcoder".to_string(),
+        chat_default_model: "missing-default".to_string(),
+        chat_thinking_model: "missing-thinking".to_string(),
+        chat_light_model: "openai/gpt-4o-mini".to_string(),
+        chat_buddy_model: "openai/gpt-4o-mini".to_string(),
+    };
+    let available = vec!["openai/gpt-4o-mini".to_string(), "starcoder".to_string()];
+    let mut store = FactStore::new();
+    for fact in detect_provider_health_facts(&defaults, &available, now) {
+        store.ingest(fact);
+    }
+
+    let opps =
+        OpportunityDetector::new().detect(&store, &BuddyPulse::default(), &OpportunityQueue::new());
+    let broken: Vec<_> = opps
+        .iter()
+        .filter(|(opp, _)| opp.cooldown_key.starts_with("provider:broken_ref:"))
+        .collect();
+
+    assert_eq!(broken.len(), 2);
+    assert!(broken
+        .iter()
+        .any(|(opp, _)| opp.cooldown_key == "provider:broken_ref:chat_model:missing-default"));
+    assert!(broken.iter().any(|(opp, _)| {
+        opp.cooldown_key == "provider:broken_ref:chat_thinking_model:missing-thinking"
+    }));
+}
+
+#[test]
+fn multiple_missing_defaults_surface_separately() {
+    use super::facts::FactStore;
+    use super::observers::provider_health::detect_provider_health_facts;
+    use super::opportunities::{OpportunityDetector, OpportunityQueue};
+    use crate::caps::DefaultModels;
+
+    let now = chrono::Utc::now();
+    let defaults = DefaultModels {
+        completion_default_model: "starcoder".to_string(),
+        chat_default_model: String::new(),
+        chat_thinking_model: String::new(),
+        chat_light_model: "openai/gpt-4o-mini".to_string(),
+        chat_buddy_model: "openai/gpt-4o-mini".to_string(),
+    };
+    let available = vec!["openai/gpt-4o-mini".to_string(), "starcoder".to_string()];
+    let mut store = FactStore::new();
+    for fact in detect_provider_health_facts(&defaults, &available, now) {
+        store.ingest(fact);
+    }
+
+    let opps =
+        OpportunityDetector::new().detect(&store, &BuddyPulse::default(), &OpportunityQueue::new());
+    let missing: Vec<_> = opps
+        .iter()
+        .filter(|(opp, _)| {
+            opp.cooldown_key
+                .starts_with("provider:default_model_missing:")
+        })
+        .collect();
+
+    assert_eq!(missing.len(), 2);
+    assert!(missing
+        .iter()
+        .any(|(opp, _)| opp.cooldown_key == "provider:default_model_missing:chat_model"));
+    assert!(missing.iter().any(|(opp, _)| {
+        opp.cooldown_key == "provider:default_model_missing:chat_thinking_model"
+    }));
+}
+
+#[test]
+fn fact_store_ingest_updates_kind_and_source_on_duplicate() {
+    use super::facts::FactStore;
+
+    let now = chrono::Utc::now();
+    let mut store = FactStore::new();
+    store.ingest(BuddyFact {
+        kind: BuddyFactKind::TaskStuck,
+        key: "dup".to_string(),
+        source: "old_source",
+        payload: serde_json::json!({"old": true}),
+        seen_at: now - Duration::minutes(1),
+        confidence: 0.1,
+    });
+    store.ingest(BuddyFact {
+        kind: BuddyFactKind::TaskAbandoned,
+        key: "dup".to_string(),
+        source: "new_source",
+        payload: serde_json::json!({"new": true}),
+        seen_at: now,
+        confidence: 0.9,
+    });
+
+    let fact = store.iter().next().unwrap();
+    assert_eq!(store.len(), 1);
+    assert_eq!(fact.kind, BuddyFactKind::TaskAbandoned);
+    assert_eq!(fact.source, "new_source");
+    assert_eq!(fact.payload, serde_json::json!({"new": true}));
+    assert_eq!(fact.seen_at, now);
+    assert_eq!(fact.confidence, 0.9);
+}
+
+#[test]
+fn fact_store_recent_at_uses_passed_now() {
+    use super::facts::FactStore;
+
+    let now = chrono::DateTime::parse_from_rfc3339("2026-04-29T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let mut store = FactStore::new();
+    store.ingest(make_fact(
+        "old",
+        BuddyFactKind::DiagnosticCluster,
+        now - Duration::hours(2),
+    ));
+    store.ingest(make_fact(
+        "recent",
+        BuddyFactKind::DiagnosticCluster,
+        now - Duration::minutes(10),
+    ));
+
+    let facts = store.recent_at(BuddyFactKind::DiagnosticCluster, Duration::hours(1), now);
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].key, "recent");
+}
+
+#[test]
+fn task_health_opportunity_links_populated_with_task_ids() {
+    use super::facts::FactStore;
+    use super::opportunities::{OpportunityDetector, OpportunityQueue};
+
+    let now = chrono::Utc::now();
+    let mut store = FactStore::new();
+    store.ingest(BuddyFact {
+        kind: BuddyFactKind::TaskStuck,
+        key: "task:stuck:task-123".to_string(),
+        source: "test",
+        payload: serde_json::json!({"task_id": "task-123"}),
+        seen_at: now,
+        confidence: 1.0,
+    });
+
+    let opps =
+        OpportunityDetector::new().detect(&store, &BuddyPulse::default(), &OpportunityQueue::new());
+    let (opp, _) = opps
+        .iter()
+        .find(|(opp, _)| opp.kind == BuddyOpportunityKind::TaskHealth)
+        .unwrap();
+
+    assert_eq!(opp.related.task_ids, vec!["task-123".to_string()]);
+}
+
+#[test]
+fn primary_fact_kind_uses_actual_fact_kind_when_available() {
+    use super::facts::FactStore;
+    use super::opportunities::{
+        primary_fact_kind_for_opportunity, OpportunityDetector, OpportunityQueue,
+    };
+
+    let now = chrono::Utc::now();
+    let mut store = FactStore::new();
+    store.ingest(BuddyFact {
+        kind: BuddyFactKind::TaskAbandoned,
+        key: "task:abandoned:task-456".to_string(),
+        source: "test",
+        payload: serde_json::json!({"task_id": "task-456"}),
+        seen_at: now,
+        confidence: 1.0,
+    });
+
+    let opps =
+        OpportunityDetector::new().detect(&store, &BuddyPulse::default(), &OpportunityQueue::new());
+    let (opp, _) = opps
+        .iter()
+        .find(|(opp, _)| opp.cooldown_key == "task_health:abandoned:task-456")
+        .unwrap();
+
+    assert_eq!(
+        primary_fact_kind_for_opportunity(opp, &store),
+        BuddyFactKind::TaskAbandoned
     );
 }
 

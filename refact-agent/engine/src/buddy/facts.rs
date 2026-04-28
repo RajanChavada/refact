@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
@@ -48,8 +48,10 @@ impl FactStore {
         if let Some(pos) = existing_pos {
             let key = fact.key.clone();
             let entry = &mut self.ring[pos];
-            entry.seen_at = fact.seen_at;
+            entry.kind = fact.kind;
+            entry.source = fact.source;
             entry.payload = fact.payload;
+            entry.seen_at = fact.seen_at;
             entry.confidence = fact.confidence;
             self.by_key.insert(key, pos);
             return;
@@ -79,7 +81,16 @@ impl FactStore {
 
     /// Return references to all facts of `kind` seen within `within` of now.
     pub fn recent(&self, kind: BuddyFactKind, within: Duration) -> Vec<&BuddyFact> {
-        let cutoff = Utc::now() - within;
+        self.recent_at(kind, within, Utc::now())
+    }
+
+    pub fn recent_at(
+        &self,
+        kind: BuddyFactKind,
+        within: Duration,
+        now: DateTime<Utc>,
+    ) -> Vec<&BuddyFact> {
+        let cutoff = now - within;
         self.ring
             .iter()
             .filter(|f| f.kind == kind && f.seen_at >= cutoff)

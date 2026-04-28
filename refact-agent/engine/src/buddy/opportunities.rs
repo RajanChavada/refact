@@ -270,6 +270,25 @@ mod rules {
             .unwrap_or_default()
     }
 
+    fn payload_strings(fact: &crate::buddy::types::BuddyFact, key: &str) -> Vec<String> {
+        fact.payload
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn related_with_config_paths(paths: Vec<String>) -> BuddyOpportunityLinks {
+        BuddyOpportunityLinks {
+            config_paths: paths,
+            ..BuddyOpportunityLinks::default()
+        }
+    }
+
     fn opp(
         kind: BuddyOpportunityKind,
         summary: impl Into<String>,
@@ -307,7 +326,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::TaskStuck, Duration::hours(2))
+            .recent_at(BuddyFactKind::TaskStuck, Duration::hours(2), now)
             .into_iter()
             .map(|fact| {
                 let task_id = fact
@@ -316,7 +335,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::TaskHealth,
                     format!("Task stuck: {}", task_id),
                     BuddyPriority::High,
@@ -325,13 +344,17 @@ mod rules {
                     format!("task_health:stuck:{}", task_id),
                     vec![
                         BuddyAction::OpenPage {
-                            page: BuddyPage::TaskWorkspace { task_id },
+                            page: BuddyPage::TaskWorkspace {
+                                task_id: task_id.clone(),
+                            },
                             params: None,
                         },
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related.task_ids = vec![task_id];
+                o
             })
             .collect()
     }
@@ -343,7 +366,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::TaskAbandoned, Duration::days(2))
+            .recent_at(BuddyFactKind::TaskAbandoned, Duration::days(2), now)
             .into_iter()
             .map(|fact| {
                 let task_id = fact
@@ -352,7 +375,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::TaskHealth,
                     "Abandoned task needs review",
                     BuddyPriority::Normal,
@@ -367,7 +390,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related.task_ids = vec![task_id];
+                o
             })
             .collect()
     }
@@ -379,7 +404,11 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::TaskClusterDuplicate, Duration::hours(12))
+            .recent_at(
+                BuddyFactKind::TaskClusterDuplicate,
+                Duration::hours(12),
+                now,
+            )
             .into_iter()
             .map(|fact| {
                 let task_a = fact
@@ -431,7 +460,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::TrajectoryClutter, Duration::hours(12))
+            .recent_at(BuddyFactKind::TrajectoryClutter, Duration::hours(12), now)
             .into_iter()
             .map(|fact| {
                 opp(
@@ -460,9 +489,8 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::DefaultModelMissing, Duration::hours(6))
+            .recent_at(BuddyFactKind::DefaultModelMissing, Duration::hours(6), now)
             .into_iter()
-            .take(1)
             .map(|fact| {
                 let field = fact
                     .payload
@@ -474,6 +502,8 @@ mod rules {
                     "chat_thinking_model" => {
                         (DefaultsKind::ChatThinkingModel, "chat_thinking_model")
                     }
+                    "chat_light_model" => (DefaultsKind::ChatModel, "chat_light_model"),
+                    "completion_model" => (DefaultsKind::ChatModel, "completion_default_model"),
                     "chat_model" => (DefaultsKind::ChatModel, "chat_default_model"),
                     other => {
                         tracing::warn!(
@@ -484,7 +514,7 @@ mod rules {
                     }
                 };
                 let patch = serde_json::json!({ patch_key: "your-provider/model-name" });
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::ProviderTuning,
                     "Default model not configured",
                     BuddyPriority::High,
@@ -503,7 +533,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec!["providers/defaults".to_string()]);
+                o
             })
             .collect()
     }
@@ -515,23 +547,28 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::BrokenModelReference, Duration::hours(6))
+            .recent_at(BuddyFactKind::BrokenModelReference, Duration::hours(6), now)
             .into_iter()
-            .take(1)
             .map(|fact| {
+                let field = fact
+                    .payload
+                    .get("field")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("chat_model")
+                    .to_string();
                 let model = fact
                     .payload
                     .get("model_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::ProviderTuning,
                     format!("Model not available: {}", model),
                     BuddyPriority::High,
                     fact.confidence,
                     vec![fact.key.clone()],
-                    format!("provider:broken_ref:{}", model),
+                    format!("provider:broken_ref:{}:{}", field, model),
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::DefaultModels,
@@ -540,7 +577,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec!["providers/defaults".to_string()]);
+                o
             })
             .collect()
     }
@@ -556,15 +595,23 @@ mod rules {
             BuddyFactKind::MemoryStaleConflict,
             BuddyFactKind::MemoryRecurringLesson,
         ];
-        let fact_keys: Vec<String> = kinds
+        let recent: Vec<_> = kinds
             .iter()
-            .flat_map(|k| store.recent(*k, Duration::hours(24)))
-            .map(|f| f.key.clone())
+            .flat_map(|k| store.recent_at(*k, Duration::hours(24), now))
+            .collect();
+        let fact_keys: Vec<String> = recent.iter().map(|f| f.key.clone()).collect();
+        let memory_ids: Vec<String> = recent
+            .iter()
+            .flat_map(|f| {
+                let mut ids = payload_strings(f, "memory_ids");
+                ids.extend(payload_strings(f, "doc_ids"));
+                ids
+            })
             .collect();
         if fact_keys.is_empty() {
             return vec![];
         }
-        vec![opp(
+        let mut o = opp(
             BuddyOpportunityKind::MemoryGarden,
             "Knowledge base needs attention",
             BuddyPriority::Normal,
@@ -582,7 +629,9 @@ mod rules {
                 BuddyAction::Dismiss,
             ],
             now,
-        )]
+        );
+        o.related.memory_ids = memory_ids;
+        vec![o]
     }
 
     pub fn diagnostic_investigation(
@@ -592,7 +641,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::DiagnosticCluster, Duration::hours(1))
+            .recent_at(BuddyFactKind::DiagnosticCluster, Duration::hours(1), now)
             .into_iter()
             .map(|fact| {
                 let error_type = fact
@@ -602,7 +651,7 @@ mod rules {
                     .unwrap_or("error")
                     .to_string();
                 let diagnostic_ids = fact_diagnostic_ids(fact);
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::DiagnosticInvestigation,
                     format!("Repeated errors: {}", error_type),
                     BuddyPriority::High,
@@ -629,7 +678,10 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related.chat_ids = payload_strings(fact, "chat_ids");
+                o.related.config_paths = payload_strings(fact, "config_paths");
+                o
             })
             .collect()
     }
@@ -641,12 +693,16 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::FrontendErrorBurst, Duration::minutes(30))
+            .recent_at(
+                BuddyFactKind::FrontendErrorBurst,
+                Duration::minutes(30),
+                now,
+            )
             .into_iter()
             .take(1)
             .map(|fact| {
                 let diagnostic_ids = fact_diagnostic_ids(fact);
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::DiagnosticInvestigation,
                     "Frontend error burst detected",
                     BuddyPriority::High,
@@ -671,7 +727,10 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related.chat_ids = payload_strings(fact, "chat_ids");
+                o.related.config_paths = payload_strings(fact, "config_paths");
+                o
             })
             .collect()
     }
@@ -683,7 +742,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::UncommittedPressure, Duration::hours(4))
+            .recent_at(BuddyFactKind::UncommittedPressure, Duration::hours(4), now)
             .into_iter()
             .take(1)
             .map(|fact| {
@@ -714,7 +773,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::GitDiffWidening, Duration::hours(4))
+            .recent_at(BuddyFactKind::GitDiffWidening, Duration::hours(4), now)
             .into_iter()
             .take(1)
             .map(|fact| {
@@ -745,7 +804,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::ModePromptOverlap, Duration::hours(24))
+            .recent_at(BuddyFactKind::ModePromptOverlap, Duration::hours(24), now)
             .into_iter()
             .take(1)
             .map(|fact| {
@@ -755,7 +814,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::ConfigDrift,
                     "Mode prompts are overlapping",
                     BuddyPriority::Normal,
@@ -775,7 +834,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec![format!("customization/modes/{}", id)]);
+                o
             })
             .collect()
     }
@@ -787,7 +848,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::SkillTriggerWeak, Duration::hours(48))
+            .recent_at(BuddyFactKind::SkillTriggerWeak, Duration::hours(48), now)
             .into_iter()
             .take(1)
             .map(|fact| {
@@ -797,7 +858,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::ConfigDrift,
                     "Skill has weak trigger description",
                     BuddyPriority::Normal,
@@ -811,13 +872,15 @@ mod rules {
                         },
                         BuddyAction::DraftCustomizationChange {
                             customization_kind: CustomizationKind::Skill,
-                            id,
+                            id: id.clone(),
                             patch: serde_json::json!({}),
                         },
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec![format!("customization/skills/{}", id)]);
+                o
             })
             .collect()
     }
@@ -829,11 +892,11 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::AgentsMdGapDetected, Duration::hours(72))
+            .recent_at(BuddyFactKind::AgentsMdGapDetected, Duration::hours(72), now)
             .into_iter()
             .take(1)
             .map(|fact| {
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::AgentsMdGap,
                     "AGENTS.md missing or outdated",
                     BuddyPriority::Normal,
@@ -847,7 +910,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec!["AGENTS.md".to_string()]);
+                o
             })
             .collect()
     }
@@ -859,7 +924,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::McpAuthExpired, Duration::hours(6))
+            .recent_at(BuddyFactKind::McpAuthExpired, Duration::hours(6), now)
             .into_iter()
             .map(|fact| {
                 let id = fact
@@ -868,7 +933,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::IntegrationFix,
                     format!("MCP auth expiring: {}", id),
                     BuddyPriority::High,
@@ -883,7 +948,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec![format!("integrations/{}", id)]);
+                o
             })
             .collect()
     }
@@ -895,7 +962,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::IntegrationFailing, Duration::hours(4))
+            .recent_at(BuddyFactKind::IntegrationFailing, Duration::hours(4), now)
             .into_iter()
             .map(|fact| {
                 let id = fact
@@ -904,7 +971,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::IntegrationFix,
                     format!("Integration failing: {}", id),
                     BuddyPriority::Normal,
@@ -919,7 +986,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related = related_with_config_paths(vec![format!("integrations/{}", id)]);
+                o
             })
             .collect()
     }
@@ -931,7 +1000,7 @@ mod rules {
         now: DateTime<Utc>,
     ) -> Vec<BuddyOpportunity> {
         store
-            .recent(BuddyFactKind::ChatRetryStreak, Duration::hours(4))
+            .recent_at(BuddyFactKind::ChatRetryStreak, Duration::hours(4), now)
             .into_iter()
             .map(|fact| {
                 let chat_id = fact
@@ -940,7 +1009,7 @@ mod rules {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                opp(
+                let mut o = opp(
                     BuddyOpportunityKind::ChatRecap,
                     "Chat seems to be going in circles",
                     BuddyPriority::Normal,
@@ -961,7 +1030,9 @@ mod rules {
                         BuddyAction::Dismiss,
                     ],
                     now,
-                )
+                );
+                o.related.chat_ids = vec![chat_id];
+                o
             })
             .collect()
     }
@@ -1009,7 +1080,16 @@ impl Default for OpportunityDetector {
 }
 
 /// Map an opportunity kind to the primary fact kind that drives it (used for humor attachment).
-pub fn primary_fact_kind_for_opportunity(opp: &BuddyOpportunity) -> BuddyFactKind {
+pub fn primary_fact_kind_for_opportunity(
+    opp: &BuddyOpportunity,
+    fact_store: &crate::buddy::facts::FactStore,
+) -> BuddyFactKind {
+    if let Some(key) = opp.fact_keys.first() {
+        if let Some(fact) = fact_store.iter().find(|f| &f.key == key) {
+            return fact.kind;
+        }
+    }
+
     match opp.kind {
         BuddyOpportunityKind::TaskHealth => BuddyFactKind::TaskStuck,
         BuddyOpportunityKind::TrajectoryCleanup => BuddyFactKind::TrajectoryClutter,

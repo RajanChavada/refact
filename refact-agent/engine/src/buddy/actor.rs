@@ -1304,7 +1304,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
                         let tasks: Vec<(BuddyOpportunity, BuddyFactKind, u64)> = humor_needed
                             .into_iter()
                             .map(|(opp, _, cs)| {
-                                let kind = primary_fact_kind_for_opportunity(&opp);
+                                let kind = primary_fact_kind_for_opportunity(&opp, &svc.fact_store);
                                 (opp, kind, cs)
                             })
                             .collect();

@@ -17,26 +17,51 @@ pub fn detect_provider_health_facts(
 ) -> Vec<BuddyFact> {
     let mut facts = vec![];
     let fields = [
-        ("chat_model", defaults.chat_default_model.as_str()),
-        ("chat_buddy_model", defaults.chat_buddy_model.as_str()),
-        ("chat_thinking_model", defaults.chat_thinking_model.as_str()),
+        (
+            "chat_default_model",
+            defaults.chat_default_model.as_str(),
+            "chat_model",
+        ),
+        (
+            "chat_buddy_model",
+            defaults.chat_buddy_model.as_str(),
+            "chat_buddy_model",
+        ),
+        (
+            "chat_thinking_model",
+            defaults.chat_thinking_model.as_str(),
+            "chat_thinking_model",
+        ),
+        (
+            "chat_light_model",
+            defaults.chat_light_model.as_str(),
+            "chat_light_model",
+        ),
+        (
+            "completion_default_model",
+            defaults.completion_default_model.as_str(),
+            "completion_model",
+        ),
     ];
-    for (field, model_id) in &fields {
+    for (field_name, model_id, payload_field) in &fields {
         if model_id.is_empty() {
             facts.push(BuddyFact {
                 kind: BuddyFactKind::DefaultModelMissing,
-                key: format!("provider:default_missing:{}", field),
+                key: format!("provider:default_missing:{}", field_name),
                 source: "provider_health",
-                payload: serde_json::json!({ "field": field, "model_id": null }),
+                payload: serde_json::json!({ "field": payload_field, "model_id": null }),
                 seen_at: now,
                 confidence: 0.95,
             });
-        } else if !available_models.contains(&model_id.to_string()) {
+        } else if !available_models
+            .iter()
+            .any(|available| available == model_id)
+        {
             facts.push(BuddyFact {
                 kind: BuddyFactKind::BrokenModelReference,
-                key: format!("provider:broken_ref:{}", field),
+                key: format!("provider:broken_ref:{}", field_name),
                 source: "provider_health",
-                payload: serde_json::json!({ "field": field, "model_id": model_id }),
+                payload: serde_json::json!({ "field": payload_field, "model_id": model_id }),
                 seen_at: now,
                 confidence: 0.9,
             });
@@ -69,7 +94,8 @@ impl BuddyObserver for ProviderHealthObserver {
             Some(c) => c.clone(),
             None => return vec![],
         };
-        let available: Vec<String> = caps.chat_models.keys().cloned().collect();
+        let mut available: Vec<String> = caps.chat_models.keys().cloned().collect();
+        available.extend(caps.completion_models.keys().cloned());
         detect_provider_health_facts(&caps.defaults, &available, Utc::now())
     }
 }
