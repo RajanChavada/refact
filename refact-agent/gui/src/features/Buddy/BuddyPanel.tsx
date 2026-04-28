@@ -2,7 +2,6 @@ import React, { useCallback, useState } from "react";
 import { useAppDispatch, useAppSelector } from "../../hooks";
 import { push } from "../Pages/pagesSlice";
 import { BuddyCanvas } from "./BuddyCanvas";
-import { BuddyOpportunityCard } from "./BuddyOpportunityCard";
 import { useBuddyState } from "./hooks/useBuddyState";
 import { useBuddyOpportunities } from "./hooks/useBuddyOpportunities";
 import {
@@ -15,6 +14,12 @@ import {
 import { executeBuddyAction } from "./executeBuddyAction";
 import type { BuddyControl } from "./types";
 import { PALETTES, SIGNALS } from "./constants";
+import { useExecuteBuddyAction } from "./hooks/useExecuteBuddyAction";
+import {
+  getOpportunityActionFromControl,
+  opportunityActionControls,
+  opportunitySpeechText,
+} from "./buddyOpportunityActions";
 import styles from "./BuddyPanel.module.css";
 
 export const BuddyPanel: React.FC = () => {
@@ -26,6 +31,7 @@ export const BuddyPanel: React.FC = () => {
   const diagnostics = useAppSelector(selectBuddyDiagnostics);
   const { unread } = useBuddyOpportunities();
   const [showTop, setShowTop] = useState(false);
+  const executeOpportunityAction = useExecuteBuddyAction();
 
   const buddy = useBuddyState();
   const { state } = buddy;
@@ -38,20 +44,34 @@ export const BuddyPanel: React.FC = () => {
     snapshot?.state.identity.palette_index ?? state.paletteIndex;
   const palette = PALETTES[paletteIndex] ?? PALETTES[0];
 
-  const speechText = activeSpeech
-    ? activeSpeech.text
-    : nowPlaying?.speech_text ?? nowPlaying?.title ?? null;
-  const speechControls = activeSpeech ? activeSpeech.controls : undefined;
-  const speechHandler = activeSpeech
+  const topOpportunity = showTop ? unread[0] ?? null : null;
+  const speechText = topOpportunity
+    ? opportunitySpeechText(topOpportunity)
+    : activeSpeech
+      ? activeSpeech.text
+      : nowPlaying?.speech_text ?? nowPlaying?.title ?? null;
+  const speechControls = topOpportunity
+    ? opportunityActionControls(topOpportunity)
+    : activeSpeech
+      ? activeSpeech.controls
+      : undefined;
+  const speechHandler = topOpportunity
     ? async (ctrl: BuddyControl) => {
-        await executeBuddyAction(ctrl, dispatch, {
-          triggerText: activeSpeech.text,
-          triggerSource: "runtime",
-          sourceChatId: activeSpeech.chat_id,
-          diagnostic: activeDiagnostic,
-        });
+        const action = getOpportunityActionFromControl(ctrl, topOpportunity);
+        if (!action) return;
+        await executeOpportunityAction(action, topOpportunity);
+        setShowTop(false);
       }
-    : undefined;
+    : activeSpeech
+      ? async (ctrl: BuddyControl) => {
+          await executeBuddyAction(ctrl, dispatch, {
+            triggerText: activeSpeech.text,
+            triggerSource: "runtime",
+            sourceChatId: activeSpeech.chat_id,
+            diagnostic: activeDiagnostic,
+          });
+        }
+      : undefined;
 
   const handleOpen = useCallback(() => {
     dispatch(push({ name: "buddy" }));
@@ -100,14 +120,6 @@ export const BuddyPanel: React.FC = () => {
           >
             {badgeLabel}
           </button>
-        </div>
-      )}
-      {showTop && unread.length > 0 && (
-        <div
-          style={{ padding: "0 var(--space-2) var(--space-2)" }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <BuddyOpportunityCard opportunity={unread[0]} />
         </div>
       )}
       <div className={styles.body}>

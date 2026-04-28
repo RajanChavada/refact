@@ -24,11 +24,21 @@ import {
 } from "../../services/refact/buddy";
 import { useBuddyState } from "./hooks/useBuddyState";
 import { BuddyCanvas } from "./BuddyCanvas";
-import { BuddyOpportunityCard } from "./BuddyOpportunityCard";
 import { useBuddyOpportunities } from "./hooks/useBuddyOpportunities";
-import type { BuddyControl, BuddySuggestion, DiagnosticContext } from "./types";
+import { useExecuteBuddyAction } from "./hooks/useExecuteBuddyAction";
+import type {
+  BuddyControl,
+  BuddyOpportunity,
+  BuddySuggestion,
+  DiagnosticContext,
+} from "./types";
 import { isBuddyOverlaySuppressedIssue } from "./investigation";
 import { executeBuddyAction } from "./executeBuddyAction";
+import {
+  getOpportunityActionFromControl,
+  opportunityActionControls,
+  opportunitySpeechText,
+} from "./buddyOpportunityActions";
 
 import styles from "./BuddyChatCompanion.module.css";
 
@@ -39,10 +49,11 @@ interface Props {
 interface NotificationItem {
   id: string;
   text: string;
-  source: "thread" | "runtime" | "diagnostic" | "suggestion";
+  source: "thread" | "runtime" | "diagnostic" | "suggestion" | "opportunity";
   controls: BuddyControl[];
   timestamp: number;
   diagnostic?: DiagnosticContext | null;
+  opportunity?: BuddyOpportunity;
 }
 
 export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
@@ -59,6 +70,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const buddy = useBuddyState();
   const { unread } = useBuddyOpportunities();
   const [showTopOpp, setShowTopOpp] = useState(false);
+  const executeOpportunityAction = useExecuteBuddyAction();
   const [dismissMutation] = useDismissBuddySuggestionMutation();
   const [dismissRuntimeMutation] = useDismissBuddyRuntimeEventMutation();
 
@@ -109,7 +121,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     [],
   );
 
-  const notification: NotificationItem | null = useMemo(() => {
+  const baseNotification: NotificationItem | null = useMemo(() => {
     const chatDiagnostic =
       diagnostics.find((d) => d.chat_id === chatId) ?? null;
     const normalizedThreadError = threadError?.trim() ?? null;
@@ -201,6 +213,23 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     suggestionControls,
   ]);
 
+  const topOpportunity =
+    showTopOpp || baseNotification === null ? unread[0] ?? null : null;
+
+  const notification: NotificationItem | null = useMemo(() => {
+    if (!topOpportunity) return baseNotification;
+
+    return {
+      id: `opportunity-${topOpportunity.id}`,
+      text: opportunitySpeechText(topOpportunity),
+      source: "opportunity",
+      controls: opportunityActionControls(topOpportunity),
+      timestamp: new Date(topOpportunity.created_at).getTime(),
+      diagnostic: null,
+      opportunity: topOpportunity,
+    };
+  }, [baseNotification, topOpportunity]);
+
   const isDismissed = notification ? dismissedIds.has(notification.id) : false;
 
   useEffect(() => {
@@ -214,6 +243,20 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const handleControl = useCallback(
     async (ctrl: BuddyControl) => {
       if (!notification) return;
+
+      if (notification.source === "opportunity") {
+        if (!notification.opportunity) return;
+        const action = getOpportunityActionFromControl(
+          ctrl,
+          notification.opportunity,
+        );
+        if (!action) return;
+
+        await executeOpportunityAction(action, notification.opportunity);
+        setDismissedIds((prev) => new Set(prev).add(notification.id));
+        setShowTopOpp(false);
+        return;
+      }
 
       if (ctrl.action === "dismiss" || ctrl.action === "dismiss_speech") {
         if (notification.source === "suggestion") {
@@ -295,6 +338,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     [
       notification,
       pending,
+      executeOpportunityAction,
       dismissMutation,
       dismissRuntimeMutation,
       dispatch,
@@ -304,36 +348,48 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
 
   const badgeCount = unread.length;
   const badgeLabel = badgeCount > 9 ? "9+" : String(badgeCount);
+  const handleBadgeClick = useCallback(() => {
+    const firstOpportunity = unread[0];
+    if (firstOpportunity) {
+      setDismissedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(`opportunity-${firstOpportunity.id}`);
+        return next;
+      });
+    }
+    setShowTopOpp((v) => !v);
+  }, [unread]);
 
   if (!enabled) return null;
   if (!notification || isDismissed) {
     if (badgeCount === 0) return null;
     return (
       <div className={styles.companion}>
-        {badgeCount > 0 && (
-          <button
-            type="button"
-            data-testid="buddy-companion-unread-badge"
-            aria-label={`${badgeCount} unread opportunities`}
-            style={{
-              background: "var(--accent-9)",
-              color: "var(--accent-contrast)",
-              border: "none",
-              borderRadius: "9999px",
-              padding: "1px 5px",
-              fontSize: "10px",
-              fontWeight: 700,
-              cursor: "pointer",
-              lineHeight: 1.4,
-            }}
-            onClick={() => setShowTopOpp((v) => !v)}
-          >
-            {badgeLabel}
-          </button>
-        )}
-        {showTopOpp && unread.length > 0 && (
-          <BuddyOpportunityCard opportunity={unread[0]} />
-        )}
+        <button
+          type="button"
+          data-testid="buddy-companion-unread-badge"
+          aria-label={`${badgeCount} unread opportunities`}
+          style={{
+            background: "var(--accent-9)",
+            color: "var(--accent-contrast)",
+            border: "none",
+            borderRadius: "9999px",
+            padding: "1px 5px",
+            fontSize: "10px",
+            fontWeight: 700,
+            cursor: "pointer",
+            lineHeight: 1.4,
+          }}
+          onClick={handleBadgeClick}
+        >
+          {badgeLabel}
+        </button>
+        <BuddyCanvas
+          state={buddy.state}
+          onEvent={buddy.handleCanvasEvent}
+          displaySize={160}
+          bubblePosition="left"
+        />
       </div>
     );
   }
@@ -356,13 +412,10 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
             cursor: "pointer",
             lineHeight: 1.4,
           }}
-          onClick={() => setShowTopOpp((v) => !v)}
+          onClick={handleBadgeClick}
         >
           {badgeLabel}
         </button>
-      )}
-      {showTopOpp && unread.length > 0 && (
-        <BuddyOpportunityCard opportunity={unread[0]} />
       )}
       <BuddyCanvas
         state={buddy.state}

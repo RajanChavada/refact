@@ -1,70 +1,10 @@
 import React from "react";
 import { Text } from "@radix-ui/themes";
 import classNames from "classnames";
-import type { BuddyOpportunity, BuddyAction, BuddyPage } from "./types";
+import type { BuddyOpportunity } from "./types";
 import { useExecuteBuddyAction } from "./hooks/useExecuteBuddyAction";
+import { actionLabel } from "./buddyOpportunityActions";
 import styles from "./BuddyOpportunityCard.module.css";
-
-function actionLabel(action: BuddyAction): string {
-  switch (action.kind) {
-    case "open_page":
-      return "Open " + humanizePage(action.page);
-    case "launch_investigation_chat":
-      return "Investigate";
-    case "draft_skill":
-    case "draft_command":
-    case "draft_delegate":
-    case "draft_mode":
-      return action.label;
-    case "draft_agents_md_patch":
-      return "Update AGENTS.md";
-    case "draft_defaults_change":
-      return "Adjust defaults";
-    case "draft_customization_change":
-      return "Edit";
-    case "offer_marketplace_install":
-      return "Browse marketplace";
-    case "create_pulse_report":
-      return "Create report";
-    case "dismiss":
-      return "Dismiss";
-  }
-}
-
-function humanizePage(page: BuddyPage): string {
-  switch (page.type) {
-    case "buddy":
-      return "Buddy";
-    case "stats":
-      return "Stats";
-    case "customization":
-      return "Customization";
-    case "providers":
-      return "Providers";
-    case "default_models":
-      return "Default Models";
-    case "integrations":
-      return "Integrations";
-    case "extensions":
-      return "Extensions";
-    case "marketplace_hub":
-      return "Marketplace";
-    case "marketplace":
-      return "MCP Marketplace";
-    case "skills_marketplace":
-      return "Skills Marketplace";
-    case "commands_marketplace":
-      return "Commands Marketplace";
-    case "delegates_marketplace":
-      return "Delegates Marketplace";
-    case "tasks_list":
-      return "Tasks";
-    case "task_workspace":
-      return "Task Workspace";
-    case "knowledge_graph":
-      return "Knowledge Graph";
-  }
-}
 
 interface Props {
   opportunity: BuddyOpportunity;

@@ -29,7 +29,7 @@ const BUBBLE_STYLES: Record<
 > = {
   above: {
     container: {
-      bottom: "70%",
+      bottom: "64%",
       left: "50%",
       transform: "translateX(-50%)",
     },
@@ -44,9 +44,9 @@ const BUBBLE_STYLES: Record<
   },
   left: {
     container: {
-      right: "100%",
+      right: "78%",
       top: "10%",
-      marginRight: "8px",
+      marginRight: "4px",
     },
     tail: {
       left: "100%",
@@ -59,9 +59,9 @@ const BUBBLE_STYLES: Record<
   },
   right: {
     container: {
-      left: "100%",
+      left: "78%",
       top: "10%",
-      marginLeft: "8px",
+      marginLeft: "4px",
     },
     tail: {
       right: "100%",
