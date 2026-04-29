@@ -57,11 +57,11 @@ pub struct ModelsDevModel {
     #[serde(default)]
     pub family: Option<String>,
     #[serde(default)]
-    pub reasoning: bool,
+    pub reasoning: Option<bool>,
     #[serde(default)]
-    pub temperature: bool,
+    pub temperature: Option<bool>,
     #[serde(default)]
-    pub tool_call: bool,
+    pub tool_call: Option<bool>,
     #[serde(default)]
     pub cost: Option<ModelsDevCost>,
     #[serde(default)]
@@ -385,6 +385,7 @@ fn validate_catalog_value_schema(value: &serde_json::Value) -> Result<(), String
 
     let mut model_count = 0usize;
     for (provider_key, provider_value) in providers {
+        validate_non_empty_catalog_field("provider key", provider_key)?;
         let provider = provider_value
             .as_object()
             .ok_or_else(|| format!("models.dev provider '{provider_key}' must be a JSON object"))?;
@@ -394,6 +395,22 @@ fn validate_catalog_value_schema(value: &serde_json::Value) -> Result<(), String
         let models = models_value.as_object().ok_or_else(|| {
             format!("models.dev provider '{provider_key}' models must be a JSON object")
         })?;
+        if models.is_empty() {
+            return Err(format!(
+                "models.dev provider '{provider_key}' has no models"
+            ));
+        }
+        for (model_key, model_value) in models {
+            validate_non_empty_catalog_field(
+                &format!("model key in provider '{provider_key}'"),
+                model_key,
+            )?;
+            model_value.as_object().ok_or_else(|| {
+                format!(
+                    "models.dev model '{model_key}' in provider '{provider_key}' must be a JSON object"
+                )
+            })?;
+        }
         model_count += models.len();
     }
 
@@ -404,22 +421,57 @@ fn validate_catalog_value_schema(value: &serde_json::Value) -> Result<(), String
     Ok(())
 }
 
-fn normalize_and_validate_catalog(
-    mut catalog: ModelsDevCatalog,
-) -> Result<ModelsDevCatalog, String> {
+fn normalize_and_validate_catalog(catalog: ModelsDevCatalog) -> Result<ModelsDevCatalog, String> {
     if catalog.is_empty() {
         return Err("models.dev catalog is empty".to_string());
     }
 
+    let mut provider_aliases = HashMap::new();
     let mut model_count = 0usize;
-    for (provider_key, provider) in catalog.iter_mut() {
-        if provider.id.is_empty() {
-            provider.id = provider_key.clone();
+    for (provider_key, provider) in catalog.iter() {
+        validate_non_empty_catalog_field("provider key", provider_key)?;
+        validate_non_empty_catalog_field(&format!("provider '{provider_key}' id"), &provider.id)?;
+        insert_catalog_alias(
+            &mut provider_aliases,
+            "provider",
+            provider_key,
+            provider_key,
+        )?;
+        insert_catalog_alias(
+            &mut provider_aliases,
+            "provider",
+            &provider.id,
+            provider_key,
+        )?;
+        if provider.models.is_empty() {
+            return Err(format!(
+                "models.dev provider '{provider_key}' has no models"
+            ));
         }
-        for (model_key, model) in provider.models.iter_mut() {
-            if model.id.is_empty() {
-                model.id = model_key.clone();
-            }
+
+        let mut model_aliases = HashMap::new();
+        for (model_key, model) in provider.models.iter() {
+            validate_non_empty_catalog_field(
+                &format!("model key in provider '{provider_key}'"),
+                model_key,
+            )?;
+            validate_non_empty_catalog_field(
+                &format!("model '{model_key}' id in provider '{provider_key}'"),
+                &model.id,
+            )?;
+            let model_alias_context = format!("model in provider '{provider_key}'");
+            insert_catalog_alias(
+                &mut model_aliases,
+                &model_alias_context,
+                model_key,
+                model_key,
+            )?;
+            insert_catalog_alias(
+                &mut model_aliases,
+                &model_alias_context,
+                &model.id,
+                model_key,
+            )?;
             model_count += 1;
         }
     }
@@ -429,6 +481,31 @@ fn normalize_and_validate_catalog(
     }
 
     Ok(catalog)
+}
+
+fn validate_non_empty_catalog_field(context: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("models.dev {context} must be non-empty"));
+    }
+    Ok(())
+}
+
+fn insert_catalog_alias(
+    aliases: &mut HashMap<String, String>,
+    context: &str,
+    alias: &str,
+    owner: &str,
+) -> Result<(), String> {
+    if let Some(existing_owner) = aliases.get(alias) {
+        if existing_owner != owner {
+            return Err(format!(
+                "models.dev duplicate {context} alias '{alias}' for '{existing_owner}' and '{owner}'"
+            ));
+        }
+        return Ok(());
+    }
+    aliases.insert(alias.to_string(), owner.to_string());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -519,8 +596,9 @@ mod tests {
         assert_eq!(provider.env, vec!["OPENAI_API_KEY"]);
         let model = get_model(&catalog, "openai", "gpt-4o").unwrap();
         assert_eq!(model.name, "GPT-4o");
-        assert!(model.temperature);
-        assert!(model.tool_call);
+        assert_eq!(model.reasoning, Some(false));
+        assert_eq!(model.temperature, Some(true));
+        assert_eq!(model.tool_call, Some(true));
         assert_eq!(model.family.as_deref(), Some("gpt"));
         assert_eq!(model.status.as_deref(), Some("beta"));
         assert_eq!(
@@ -571,6 +649,144 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("missing models object"));
+    }
+
+    #[test]
+    fn missing_boolean_capabilities_parse_as_unknown() {
+        let catalog = parse_catalog_json(
+            r#"
+            {
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-4o": {
+                            "id": "gpt-4o",
+                            "name": "GPT-4o"
+                        }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let model = get_model(&catalog, "openai", "gpt-4o").unwrap();
+
+        assert_eq!(model.reasoning, None);
+        assert_eq!(model.temperature, None);
+        assert_eq!(model.tool_call, None);
+    }
+
+    #[test]
+    fn provider_with_empty_key_or_id_is_rejected() {
+        let empty_key_error = parse_catalog_json(
+            r#"
+            {
+                "": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-4o": { "id": "gpt-4o" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(empty_key_error.contains("provider key"));
+
+        let empty_id_error = parse_catalog_json(
+            r#"
+            {
+                "openai": {
+                    "id": "",
+                    "models": {
+                        "gpt-4o": { "id": "gpt-4o" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(empty_id_error.contains("provider 'openai' id"));
+    }
+
+    #[test]
+    fn model_with_empty_key_or_id_is_rejected() {
+        let empty_key_error = parse_catalog_json(
+            r#"
+            {
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "": { "id": "gpt-4o" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(empty_key_error.contains("model key in provider 'openai'"));
+
+        let empty_id_error = parse_catalog_json(
+            r#"
+            {
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-4o": { "id": "" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(empty_id_error.contains("model 'gpt-4o' id in provider 'openai'"));
+    }
+
+    #[test]
+    fn duplicate_provider_id_is_rejected() {
+        let error = parse_catalog_json(
+            r#"
+            {
+                "openai": {
+                    "id": "duplicate",
+                    "models": {
+                        "gpt-4o": { "id": "gpt-4o" }
+                    }
+                },
+                "anthropic": {
+                    "id": "duplicate",
+                    "models": {
+                        "claude": { "id": "claude" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("duplicate provider alias"));
+        assert!(error.contains("duplicate"));
+    }
+
+    #[test]
+    fn duplicate_model_id_within_provider_is_rejected() {
+        let error = parse_catalog_json(
+            r#"
+            {
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-4o": { "id": "duplicate" },
+                        "gpt-4.1": { "id": "duplicate" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("duplicate model in provider 'openai' alias"));
+        assert!(error.contains("duplicate"));
     }
 
     #[tokio::test]
