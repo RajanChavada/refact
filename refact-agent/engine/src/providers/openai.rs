@@ -173,7 +173,7 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
         self.custom_models
             .get(model_id)
             .and_then(|config| config.pricing.clone())
@@ -252,7 +252,7 @@ available:
                 let enabled = enabled_set.contains(id.as_str());
                 let resolved_caps = resolve_model_caps(model_caps, &format!("openai/{id}"))
                     .or_else(|| resolve_model_caps(model_caps, &id));
-                let pricing = self.model_pricing(&id).or_else(|| {
+                let pricing = self.custom_model_pricing(&id).or_else(|| {
                     resolved_caps
                         .as_ref()
                         .and_then(|resolved| resolved.caps.pricing.clone())

@@ -392,7 +392,7 @@ pub trait ProviderTrait: Send + Sync {
         false
     }
 
-    fn model_pricing(&self, _model_id: &str) -> Option<ModelPricing> {
+    fn custom_model_pricing(&self, _model_id: &str) -> Option<ModelPricing> {
         None
     }
 
@@ -459,8 +459,8 @@ pub trait ProviderTrait: Send + Sync {
                     enabled_set.contains(name.as_str()) || enabled_set.contains(model_id)
                 };
                 let pricing = self
-                    .model_pricing(model_id)
-                    .or_else(|| self.model_pricing(name));
+                    .custom_model_pricing(model_id)
+                    .or_else(|| self.custom_model_pricing(name));
                 models_map.insert(
                     model_id.to_string(),
                     AvailableModel::from_caps(model_id, caps, enabled, pricing),

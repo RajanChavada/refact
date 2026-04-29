@@ -322,6 +322,10 @@ pub fn models_dev_catalog_to_model_caps(
     for (provider_key, provider) in catalog {
         let provider_aliases = provider_aliases(provider_key, provider);
         for (model_key, model) in &provider.models {
+            if !is_active_chat_model(model) {
+                continue;
+            }
+
             let model_aliases = model_aliases(model_key, model);
             let owner = model_owner_key(provider_key, model_key);
             let model_caps = models_dev_model_to_model_caps(model);
@@ -366,10 +370,10 @@ fn models_dev_model_to_model_caps(model: &ModelsDevModel) -> ModelCapabilities {
         n_ctx: limit.and_then(|limit| limit.context).unwrap_or_default(),
         max_output_tokens: limit.and_then(|limit| limit.output).unwrap_or_default(),
         supports_tools: model.tool_call == Some(true),
-        supports_vision: has_input_modality(input_modalities, "image"),
-        supports_video: has_input_modality(input_modalities, "video"),
-        supports_audio: has_input_modality(input_modalities, "audio"),
-        supports_pdf: has_input_modality(input_modalities, "pdf"),
+        supports_vision: has_modality(input_modalities, "image"),
+        supports_video: has_modality(input_modalities, "video"),
+        supports_audio: has_modality(input_modalities, "audio"),
+        supports_pdf: has_modality(input_modalities, "pdf"),
         supports_temperature: model.temperature.unwrap_or(true),
         tokenizer: "fake".to_string(),
         pricing: model_cost_to_pricing(model),
@@ -377,11 +381,87 @@ fn models_dev_model_to_model_caps(model: &ModelsDevModel) -> ModelCapabilities {
             .cost
             .as_ref()
             .and_then(|cost| serde_json::to_value(cost).ok()),
+        status: non_empty_status(model.status.as_deref()),
         ..Default::default()
     }
 }
 
-fn has_input_modality(modalities: &[String], expected: &str) -> bool {
+fn is_active_chat_model(model: &ModelsDevModel) -> bool {
+    if model
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("deprecated"))
+    {
+        return false;
+    }
+
+    let Some(modalities) = model.modalities.as_ref() else {
+        return false;
+    };
+    if !has_modality(&modalities.input, "text") || !has_modality(&modalities.output, "text") {
+        return false;
+    }
+    if modalities
+        .output
+        .iter()
+        .any(|modality| !modality.eq_ignore_ascii_case("text"))
+    {
+        return false;
+    }
+
+    let Some(limit) = model.limit.as_ref() else {
+        return false;
+    };
+    if limit.context.unwrap_or_default() == 0 {
+        return false;
+    }
+
+    !is_special_purpose_model(model)
+}
+
+fn is_special_purpose_model(model: &ModelsDevModel) -> bool {
+    let searchable = [
+        model.id.as_str(),
+        model.name.as_str(),
+        model.family.as_deref().unwrap_or_default(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+
+    [
+        "embedding",
+        "embed-",
+        "-embed",
+        "rerank",
+        "re-rank",
+        "ocr",
+        "whisper",
+        "transcrib",
+        "speech-to-text",
+        "text-to-speech",
+        "tts",
+        "moderation",
+        "classifier",
+        "classify",
+        "guard",
+        "safety",
+        "gpt-image",
+        "dall-e",
+        "stable-diffusion",
+        "sdxl",
+    ]
+    .iter()
+    .any(|marker| searchable.contains(marker))
+}
+
+fn non_empty_status(status: Option<&str>) -> Option<String> {
+    status
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .map(str::to_string)
+}
+
+fn has_modality(modalities: &[String], expected: &str) -> bool {
     modalities
         .iter()
         .any(|modality| modality.eq_ignore_ascii_case(expected))
@@ -413,6 +493,10 @@ fn collect_bare_alias_owners(catalog: &ModelsDevCatalog) -> HashMap<String, Hash
     let mut owners: HashMap<String, HashSet<String>> = HashMap::new();
     for (provider_key, provider) in catalog {
         for (model_key, model) in &provider.models {
+            if !is_active_chat_model(model) {
+                continue;
+            }
+
             let owner = model_owner_key(provider_key, model_key);
             for alias in model_aliases(model_key, model) {
                 if alias.contains('/') {

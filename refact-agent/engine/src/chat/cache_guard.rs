@@ -345,6 +345,39 @@ mod tests {
         assert!(!is_cache_guard_pause_id("call_123"));
     }
 
+    #[tokio::test]
+    async fn test_models_dev_cache_guard_uses_central_pricing_lookup() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let mut model_caps = std::collections::HashMap::new();
+        model_caps.insert(
+            "openai/gpt-4o".to_string(),
+            crate::caps::model_caps::ModelCapabilities {
+                n_ctx: 128_000,
+                max_output_tokens: 16_384,
+                pricing: Some(crate::providers::traits::ModelPricing {
+                    prompt: 2.5,
+                    generated: 10.0,
+                    cache_read: Some(1.25),
+                    cache_creation: None,
+                }),
+                ..Default::default()
+            },
+        );
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(std::sync::Arc::new(crate::caps::CodeAssistantCaps {
+                model_caps: std::sync::Arc::new(model_caps),
+                ..Default::default()
+            }));
+            gcx.caps_last_attempted_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+        }
+
+        assert!(is_guard_enabled_for_model(gcx, "openai/gpt-4o").await);
+    }
+
     #[test]
     fn test_append_only_prefix_ignores_previous_response_id() {
         // When previous_response_id is present, the request body uses tail-only mode

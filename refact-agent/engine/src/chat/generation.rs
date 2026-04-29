@@ -9,7 +9,8 @@ use crate::subchat::{resolve_subchat_config, run_subchat};
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{
-    ChatContent, ChatMessage, ChatMeta, ChatUsage, SamplingParameters, is_agentic_mode_id,
+    ChatContent, ChatMessage, ChatMeta, ChatUsage, MeteringUsd, SamplingParameters,
+    is_agentic_mode_id,
 };
 use crate::stats::event::{LlmCallEvent, canonicalize_mode_for_stats, split_model_provider};
 use crate::chat::tool_call_recovery;
@@ -989,6 +990,15 @@ pub async fn run_llm_generation(
     .await
 }
 
+async fn generation_metering_usd(
+    gcx: &Arc<ARwLock<GlobalContext>>,
+    model_id: &str,
+    usage: &ChatUsage,
+) -> Option<MeteringUsd> {
+    let pricing = crate::providers::pricing::lookup_model_pricing(gcx, model_id).await?;
+    crate::providers::pricing::compute_cost(usage, &pricing)
+}
+
 async fn run_streaming_generation(
     gcx: Arc<ARwLock<GlobalContext>>,
     session_arc: Arc<AMutex<ChatSession>>,
@@ -1576,13 +1586,7 @@ async fn run_streaming_generation(
         (model_rec.base.id.clone(), session.draft_usage.clone())
     };
     let metering_usd = if let Some(ref usage) = usage_for_pricing {
-        if let Some(pricing) =
-            crate::providers::pricing::lookup_model_pricing(&gcx, &model_id).await
-        {
-            crate::providers::pricing::compute_cost(usage, &pricing)
-        } else {
-            None
-        }
+        generation_metering_usd(&gcx, &model_id, usage).await
     } else {
         None
     };
@@ -1987,5 +1991,53 @@ mod tests {
 
         assert_eq!(result.finish_reason.as_deref(), Some("stop"));
         assert!(!result.extra.contains_key("_tool_call_guard"));
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_generation_metering_uses_central_pricing_lookup() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let mut model_caps = std::collections::HashMap::new();
+        model_caps.insert(
+            "openai/gpt-4o".to_string(),
+            crate::caps::model_caps::ModelCapabilities {
+                n_ctx: 128_000,
+                max_output_tokens: 16_384,
+                pricing: Some(crate::providers::traits::ModelPricing {
+                    prompt: 2.0,
+                    generated: 4.0,
+                    cache_read: Some(1.0),
+                    cache_creation: Some(3.0),
+                }),
+                ..Default::default()
+            },
+        );
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(std::sync::Arc::new(crate::caps::CodeAssistantCaps {
+                model_caps: std::sync::Arc::new(model_caps),
+                ..Default::default()
+            }));
+            gcx.caps_last_attempted_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+        }
+        let usage = ChatUsage {
+            prompt_tokens: 1_000,
+            completion_tokens: 2_000,
+            total_tokens: 3_000,
+            cache_read_tokens: Some(500),
+            cache_creation_tokens: Some(250),
+            metering_usd: None,
+        };
+
+        let metering = generation_metering_usd(&gcx, "openai/gpt-4o", &usage)
+            .await
+            .unwrap();
+
+        assert_eq!(metering.prompt_usd, 0.002);
+        assert_eq!(metering.generated_usd, 0.008);
+        assert_eq!(metering.cache_read_usd, Some(0.0005));
+        assert_eq!(metering.cache_creation_usd, Some(0.00075));
     }
 }

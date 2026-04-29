@@ -463,7 +463,7 @@ impl OpenAICodexProvider {
                         .collect()
                 });
             let enabled = enabled_set.contains(slug.as_str());
-            let pricing = self.model_pricing(slug.as_str());
+            let pricing = self.custom_model_pricing(slug.as_str());
             if let Some(caps) = crate::caps::model_caps::resolve_model_caps(model_caps, &slug) {
                 let mut m = AvailableModel::from_caps(&slug, &caps.caps, enabled, pricing);
                 m.display_name = display_name;
@@ -561,7 +561,7 @@ impl OpenAICodexProvider {
                 continue;
             }
             let enabled = enabled_set.contains(id.as_str());
-            let pricing = self.model_pricing(id.as_str());
+            let pricing = self.custom_model_pricing(id.as_str());
             if let Some(caps) = crate::caps::model_caps::resolve_model_caps(model_caps, &id) {
                 models_map.insert(
                     id.clone(),
@@ -575,7 +575,7 @@ impl OpenAICodexProvider {
         for (name, caps) in model_caps {
             if is_codex_model_conservative(name) && !models_map.contains_key(name) {
                 let enabled = enabled_set.contains(name.as_str());
-                let pricing = self.model_pricing(name);
+                let pricing = self.custom_model_pricing(name);
                 models_map.insert(
                     name.clone(),
                     AvailableModel::from_caps(name, caps, enabled, pricing),
@@ -643,7 +643,7 @@ impl OpenAICodexProvider {
 
         for model_id in &codex_model_ids {
             let enabled = enabled_set.contains(model_id.as_str());
-            let pricing = self.model_pricing(model_id);
+            let pricing = self.custom_model_pricing(model_id);
 
             if let Some(caps) = crate::caps::model_caps::resolve_model_caps(model_caps, model_id) {
                 models.push(AvailableModel::from_caps(
@@ -899,7 +899,7 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
         if let Some(config) = self.custom_models.get(model_id) {
             if config.pricing.is_some() {
                 return config.pricing.clone();

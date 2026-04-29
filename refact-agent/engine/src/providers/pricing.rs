@@ -40,7 +40,7 @@ pub fn compute_cost(usage: &ChatUsage, pricing: &ModelPricing) -> Option<Meterin
     })
 }
 
-pub fn model_caps_pricing(
+pub fn standard_model_pricing_from_caps(
     model_caps: &HashMap<String, ModelCapabilities>,
     model_id: &str,
 ) -> Option<ModelPricing> {
@@ -89,10 +89,20 @@ pub async fn lookup_model_pricing(
         return Some(custom_pricing);
     }
 
+    if let Some(pricing) = gcx
+        .read()
+        .await
+        .caps
+        .as_ref()
+        .and_then(|caps| standard_model_pricing_from_caps(&caps.model_caps, model_id))
+    {
+        return Some(pricing);
+    }
+
     let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0)
         .await
         .ok()?;
-    model_caps_pricing(&caps.model_caps, model_id)
+    standard_model_pricing_from_caps(&caps.model_caps, model_id)
 }
 
 async fn lookup_provider_custom_pricing(
@@ -104,5 +114,114 @@ async fn lookup_provider_custom_pricing(
     let registry = gcx_locked.providers.read().await;
     registry
         .get(provider_name)
-        .and_then(|provider| provider.model_pricing(model_name))
+        .and_then(|provider| provider.custom_model_pricing(model_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::caps::model_caps::model_caps_from_models_dev_catalog;
+    use crate::caps::models_dev::load_models_dev_snapshot_catalog;
+    use crate::caps::CodeAssistantCaps;
+    use crate::providers::traits::CustomModelConfig;
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn caps_with_model_caps(
+        model_caps: HashMap<String, ModelCapabilities>,
+    ) -> Arc<CodeAssistantCaps> {
+        Arc::new(CodeAssistantCaps {
+            model_caps: Arc::new(model_caps),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn test_models_dev_standard_provider_pricing_resolves_from_caps() {
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        for model in [
+            "openai/gpt-4o",
+            "anthropic/claude-3-5-sonnet-20241022",
+            "deepseek/deepseek-chat",
+        ] {
+            let pricing = standard_model_pricing_from_caps(&caps, model)
+                .unwrap_or_else(|| panic!("missing pricing for {model}"));
+            assert!(pricing.is_valid());
+            assert!(pricing.prompt > 0.0);
+            assert!(pricing.generated > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_models_dev_standard_provider_pricing_uses_provider_aliases() {
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        let openai = standard_model_pricing_from_caps(&caps, "openai/gpt-4o").unwrap();
+        let responses = standard_model_pricing_from_caps(&caps, "openai_responses/gpt-4o").unwrap();
+        let gemini =
+            standard_model_pricing_from_caps(&caps, "google_gemini/gemini-1.5-flash").unwrap();
+
+        assert_eq!(responses.prompt, openai.prompt);
+        assert!(gemini.is_valid());
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_custom_pricing_overrides_caps_pricing() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let model_caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        let mut provider = crate::providers::create_provider("openai").unwrap();
+        provider.add_custom_model(
+            "gpt-4o".to_string(),
+            CustomModelConfig {
+                pricing: Some(ModelPricing {
+                    prompt: 101.0,
+                    generated: 202.0,
+                    cache_read: Some(303.0),
+                    cache_creation: Some(404.0),
+                }),
+                ..Default::default()
+            },
+        );
+        let providers = { gcx.read().await.providers.clone() };
+        providers.write().await.add(provider);
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(caps_with_model_caps(model_caps));
+            gcx.caps_last_attempted_ts = now_secs();
+        }
+
+        let pricing = lookup_model_pricing(&gcx, "openai/gpt-4o").await.unwrap();
+
+        assert_eq!(pricing.prompt, 101.0);
+        assert_eq!(pricing.generated, 202.0);
+        assert_eq!(pricing.cache_read, Some(303.0));
+        assert_eq!(pricing.cache_creation, Some(404.0));
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_lookup_pricing_falls_back_to_caps() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let model_caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(caps_with_model_caps(model_caps));
+            gcx.caps_last_attempted_ts = now_secs();
+        }
+
+        let pricing = lookup_model_pricing(&gcx, "openai/gpt-4o").await.unwrap();
+
+        assert!(pricing.is_valid());
+        assert!(pricing.prompt > 0.0);
+        assert!(pricing.generated > 0.0);
+    }
 }

@@ -108,6 +108,8 @@ pub struct ModelCapabilities {
     pub pricing: Option<ModelPricing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_cost: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -458,6 +460,15 @@ mod tests {
         ModelsDevModel {
             id: model_id.to_string(),
             name: model_id.to_string(),
+            limit: Some(ModelsDevLimit {
+                context: Some(128_000),
+                output: Some(16_384),
+                ..Default::default()
+            }),
+            modalities: Some(ModelsDevModalities {
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+            }),
             ..Default::default()
         }
     }
@@ -540,11 +551,10 @@ mod tests {
                 (
                     "false-temperature",
                     ModelsDevModel {
-                        id: "false-temperature".to_string(),
                         temperature: Some(false),
                         tool_call: Some(false),
                         reasoning: None,
-                        ..Default::default()
+                        ..models_dev_model("false-temperature")
                     },
                 ),
             ],
@@ -612,13 +622,157 @@ mod tests {
     }
 
     #[test]
+    fn test_models_dev_non_chat_modalities_are_excluded() {
+        let mut image_output = models_dev_model("image-model");
+        image_output.modalities = Some(ModelsDevModalities {
+            input: vec!["text".to_string()],
+            output: vec!["image".to_string()],
+        });
+        let mut text_and_image_output = models_dev_model("text-image-model");
+        text_and_image_output.modalities = Some(ModelsDevModalities {
+            input: vec!["text".to_string(), "image".to_string()],
+            output: vec!["text".to_string(), "image".to_string()],
+        });
+        let mut audio_output = models_dev_model("tts-model");
+        audio_output.modalities = Some(ModelsDevModalities {
+            input: vec!["text".to_string()],
+            output: vec!["audio".to_string()],
+        });
+        let mut asr = models_dev_model("asr-model");
+        asr.modalities = Some(ModelsDevModalities {
+            input: vec!["audio".to_string()],
+            output: vec!["text".to_string()],
+        });
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![
+                ("normal-chat", models_dev_model("normal-chat")),
+                ("image-model", image_output),
+                ("text-image-model", text_and_image_output),
+                ("tts-model", audio_output),
+                ("asr-model", asr),
+            ],
+        )]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        assert!(resolve_model_caps(&caps, "provider-a/normal-chat").is_some());
+        for model in ["image-model", "text-image-model", "tts-model", "asr-model"] {
+            assert!(
+                resolve_model_caps(&caps, &format!("provider-a/{model}")).is_none(),
+                "{model} should be excluded from chat capabilities"
+            );
+        }
+    }
+
+    #[test]
+    fn test_models_dev_special_purpose_text_models_are_excluded() {
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![
+                (
+                    "text-embedding-3-large",
+                    models_dev_model("text-embedding-3-large"),
+                ),
+                ("qwen3-reranker-4b", models_dev_model("qwen3-reranker-4b")),
+                ("safety-guard", models_dev_model("safety-guard")),
+                ("normal-chat", models_dev_model("normal-chat")),
+            ],
+        )]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        assert!(resolve_model_caps(&caps, "provider-a/normal-chat").is_some());
+        for model in [
+            "text-embedding-3-large",
+            "qwen3-reranker-4b",
+            "safety-guard",
+        ] {
+            assert!(resolve_model_caps(&caps, &format!("provider-a/{model}")).is_none());
+        }
+    }
+
+    #[test]
+    fn test_models_dev_multimodal_text_output_chat_models_are_included() {
+        let mut multimodal = models_dev_model("vision-chat");
+        multimodal.modalities = Some(ModelsDevModalities {
+            input: vec!["text".to_string(), "image".to_string(), "pdf".to_string()],
+            output: vec!["text".to_string()],
+        });
+        let catalog =
+            catalog_with_providers(vec![("provider-a", vec![("vision-chat", multimodal)])]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        let model = resolve_model_caps(&caps, "provider-a/vision-chat")
+            .unwrap()
+            .caps;
+
+        assert!(model.supports_vision);
+        assert!(model.supports_pdf);
+    }
+
+    #[test]
+    fn test_models_dev_status_policy_excludes_deprecated_and_marks_beta() {
+        let mut deprecated = models_dev_model("deprecated-chat");
+        deprecated.status = Some("deprecated".to_string());
+        let mut beta = models_dev_model("beta-chat");
+        beta.status = Some("beta".to_string());
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![("deprecated-chat", deprecated), ("beta-chat", beta)],
+        )]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        assert!(resolve_model_caps(&caps, "provider-a/deprecated-chat").is_none());
+        let beta = resolve_model_caps(&caps, "provider-a/beta-chat")
+            .unwrap()
+            .caps;
+        assert_eq!(beta.status.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn test_models_dev_openai_providers_do_not_expose_gpt_image_models() {
+        let mut gpt_image = models_dev_model("gpt-image-1");
+        gpt_image.modalities = Some(ModelsDevModalities {
+            input: vec!["text".to_string(), "image".to_string()],
+            output: vec!["image".to_string()],
+        });
+        let catalog = catalog_with_providers(vec![(
+            "openai",
+            vec![
+                ("gpt-4o", models_dev_model("gpt-4o")),
+                ("gpt-image-1", gpt_image),
+            ],
+        )]);
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        let openai_models = crate::providers::create_provider("openai")
+            .unwrap()
+            .get_available_models_from_caps(&caps);
+        let openai_responses_models = crate::providers::create_provider("openai_responses")
+            .unwrap()
+            .get_available_models_from_caps(&caps);
+
+        assert!(openai_models.iter().any(|model| model.id == "gpt-4o"));
+        assert!(openai_responses_models
+            .iter()
+            .any(|model| model.id == "gpt-4o"));
+        assert!(!openai_models
+            .iter()
+            .any(|model| model.id.contains("gpt-image")));
+        assert!(!openai_responses_models
+            .iter()
+            .any(|model| model.id.contains("gpt-image")));
+    }
+
+    #[test]
     fn test_models_dev_pricing_metadata_labels_base_tier_and_preserves_raw_cost() {
         let catalog = catalog_with_providers(vec![(
             "provider-a",
             vec![(
                 "priced-model",
                 ModelsDevModel {
-                    id: "priced-model".to_string(),
                     cost: Some(ModelsDevCost {
                         input: Some(1.0),
                         output: Some(2.0),
@@ -630,7 +784,7 @@ mod tests {
                             ..Default::default()
                         }),
                     }),
-                    ..Default::default()
+                    ..models_dev_model("priced-model")
                 },
             )],
         )]);
@@ -660,14 +814,13 @@ mod tests {
         catalog.get_mut("openai").unwrap().models.insert(
             "refact-cache-test-model".to_string(),
             ModelsDevModel {
-                id: "refact-cache-test-model".to_string(),
                 limit: Some(ModelsDevLimit {
                     context: Some(42_000),
                     output: Some(4_200),
                     ..Default::default()
                 }),
                 tool_call: Some(true),
-                ..Default::default()
+                ..models_dev_model("refact-cache-test-model")
             },
         );
         let cache_dir = { gcx.read().await.cache_dir.clone() };

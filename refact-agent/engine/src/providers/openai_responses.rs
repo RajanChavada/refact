@@ -122,7 +122,7 @@ available:
     }
 
     fn has_credentials(&self) -> bool {
-        let key = resolve_env_var(&self.api_key, "", "openai api_key");
+        let key = resolve_env_var(&self.api_key, "", "openai_responses api_key");
         !key.is_empty()
     }
 
@@ -150,7 +150,7 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
         self.custom_models
             .get(model_id)
             .and_then(|config| config.pricing.clone())

@@ -580,7 +580,7 @@ available:
                 crate::caps::model_caps::resolve_model_caps(model_caps, &api_id_without_date)
             {
                 let enabled = enabled_set.contains(api_id.as_str());
-                let pricing = self.model_pricing(api_id);
+                let pricing = self.custom_model_pricing(api_id);
                 let mut model = AvailableModel::from_caps(api_id, &caps.caps, enabled, pricing);
                 if api_id != &caps.matched_key {
                     model.display_name = Some(api_id.clone());
