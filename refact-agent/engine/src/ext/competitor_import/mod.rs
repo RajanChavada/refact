@@ -1,18 +1,16 @@
-//! Competitor customization auto-import v1 is always enabled, non-destructive, and
-//! reports unsupported rules without importing them. The first supported source
-//! families are Claude Code, OpenCode, Kilo Code, and Continue. This skeleton only
-//! discovers global and project scopes; later cards add artifact conversion and writes.
-
 #![allow(dead_code)]
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::RwLock as ARwLock;
 
 use crate::global_context::GlobalContext;
 
+pub mod manifest;
 pub mod sources;
 pub mod types;
+pub mod writer;
 
 use types::{ImportIssue, ImportScope, ImportStatus, ImportSummary};
 
@@ -21,8 +19,16 @@ pub async fn run_global_import(gcx: Arc<ARwLock<GlobalContext>>) -> ImportSummar
         let gcx_locked = gcx.read().await;
         gcx_locked.config_dir.clone()
     };
+    let home_dir = home::home_dir();
+    run_global_import_with_paths(&refact_config_dir, home_dir.as_deref())
+}
+
+pub(crate) fn run_global_import_with_paths(
+    refact_config_dir: &Path,
+    home_dir: Option<&Path>,
+) -> ImportSummary {
     let mut summary = ImportSummary::from_scopes(vec![ImportScope::Global]);
-    let Some(home_dir) = home::home_dir() else {
+    let Some(home_dir) = home_dir else {
         summary.add_issue(ImportIssue {
             competitor: None,
             kind: None,
@@ -33,8 +39,8 @@ pub async fn run_global_import(gcx: Arc<ARwLock<GlobalContext>>) -> ImportSummar
         });
         return summary;
     };
-    let config_dir = sources::config_root_from_refact_config_dir(&refact_config_dir);
-    summary.discovered_sources = sources::discover_global_sources(&home_dir, &config_dir);
+    let config_dir = sources::config_root_from_refact_config_dir(refact_config_dir);
+    summary.discovered_sources = sources::discover_global_sources(home_dir, &config_dir);
     summary
 }
 
@@ -73,5 +79,35 @@ mod tests {
         let summary = run_project_import(gcx).await;
 
         assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn global_import_helper_uses_injected_home_and_config_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let refact_config = config.path().join("refact");
+
+        let summary = run_global_import_with_paths(&refact_config, Some(home.path()));
+
+        assert_eq!(summary.discovered_scopes, vec![ImportScope::Global]);
+        assert_eq!(summary.discovered_sources.len(), 6);
+        assert!(summary
+            .discovered_sources
+            .iter()
+            .any(|source| source.path == home.path().join(".claude")));
+        assert!(summary
+            .discovered_sources
+            .iter()
+            .any(|source| source.path == config.path().join("opencode")));
+    }
+
+    #[test]
+    fn global_import_helper_reports_missing_home_without_mutating_paths() {
+        let config = tempfile::tempdir().unwrap();
+
+        let summary = run_global_import_with_paths(&config.path().join("refact"), None);
+
+        assert_eq!(summary.errors.len(), 1);
+        assert!(summary.discovered_sources.is_empty());
     }
 }

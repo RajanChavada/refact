@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,21 +36,50 @@ pub struct ImportSourceRoot {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportArtifact {
-    FileContent { destination: PathBuf, content: String },
-    DirectoryCopy { source: PathBuf, destination: PathBuf },
+    FileContent { content: String },
+    DirectoryCopy { source_dir: PathBuf },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportCandidate {
     pub competitor: Competitor,
     pub kind: ImportKind,
     pub scope: ImportScope,
+    pub source_root: PathBuf,
     pub source_path: PathBuf,
+    pub dest_name: String,
     pub destination_path: PathBuf,
     pub artifact: ImportArtifact,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportCandidateSummary {
+    pub competitor: Competitor,
+    pub kind: ImportKind,
+    pub scope: ImportScope,
+    pub source_root: PathBuf,
+    pub source_path: PathBuf,
+    pub dest_name: String,
+    pub destination_path: PathBuf,
+    pub metadata: Value,
+}
+
+impl From<&ImportCandidate> for ImportCandidateSummary {
+    fn from(candidate: &ImportCandidate) -> Self {
+        Self {
+            competitor: candidate.competitor,
+            kind: candidate.kind,
+            scope: candidate.scope.clone(),
+            source_root: candidate.source_root.clone(),
+            source_path: candidate.source_path.clone(),
+            dest_name: candidate.dest_name.clone(),
+            destination_path: candidate.destination_path.clone(),
+            metadata: candidate.metadata.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -62,6 +92,13 @@ pub enum ImportStatus {
     UserModified,
     Unsupported,
     Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportOutcome {
+    pub candidate: ImportCandidateSummary,
+    pub status: ImportStatus,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,8 +115,10 @@ pub struct ImportIssue {
 pub struct ImportSummary {
     pub discovered_scopes: Vec<ImportScope>,
     pub discovered_sources: Vec<ImportSourceRoot>,
-    pub candidates: Vec<ImportCandidate>,
+    pub candidates: Vec<ImportCandidateSummary>,
+    pub outcomes: Vec<ImportOutcome>,
     pub issues: Vec<ImportIssue>,
+    pub errors: Vec<ImportIssue>,
     pub status_counts: BTreeMap<ImportStatus, usize>,
 }
 
@@ -91,12 +130,25 @@ impl ImportSummary {
         }
     }
 
+    pub fn record_candidate(&mut self, candidate: &ImportCandidate) {
+        self.candidates
+            .push(ImportCandidateSummary::from(candidate));
+    }
+
     pub fn record_status(&mut self, status: ImportStatus) {
         *self.status_counts.entry(status).or_insert(0) += 1;
     }
 
+    pub fn add_outcome(&mut self, outcome: ImportOutcome) {
+        self.record_status(outcome.status.clone());
+        self.outcomes.push(outcome);
+    }
+
     pub fn add_issue(&mut self, issue: ImportIssue) {
         self.record_status(issue.status.clone());
+        if issue.status == ImportStatus::Error {
+            self.errors.push(issue.clone());
+        }
         self.issues.push(issue);
     }
 
@@ -104,7 +156,9 @@ impl ImportSummary {
         self.discovered_scopes.extend(other.discovered_scopes);
         self.discovered_sources.extend(other.discovered_sources);
         self.candidates.extend(other.candidates);
+        self.outcomes.extend(other.outcomes);
         self.issues.extend(other.issues);
+        self.errors.extend(other.errors);
         for (status, count) in other.status_counts {
             *self.status_counts.entry(status).or_insert(0) += count;
         }
@@ -114,7 +168,9 @@ impl ImportSummary {
         self.discovered_scopes.is_empty()
             && self.discovered_sources.is_empty()
             && self.candidates.is_empty()
+            && self.outcomes.is_empty()
             && self.issues.is_empty()
+            && self.errors.is_empty()
             && self.status_counts.is_empty()
     }
 }
@@ -149,5 +205,29 @@ mod tests {
         assert_eq!(left.status_counts.get(&ImportStatus::Created), Some(&2));
         assert_eq!(left.status_counts.get(&ImportStatus::Unchanged), Some(&1));
         assert_eq!(left.status_counts.get(&ImportStatus::Unsupported), Some(&1));
+    }
+
+    #[test]
+    fn summary_serialization_omits_artifact_content() {
+        let candidate = ImportCandidate {
+            competitor: Competitor::ClaudeCode,
+            kind: ImportKind::Command,
+            scope: ImportScope::Global,
+            source_root: PathBuf::from("/source"),
+            source_path: PathBuf::from("/source/secret.md"),
+            dest_name: "secret".to_string(),
+            destination_path: PathBuf::from("/dest/secret.md"),
+            artifact: ImportArtifact::FileContent {
+                content: "secret artifact content".to_string(),
+            },
+            metadata: serde_json::json!({"original_name": "secret"}),
+        };
+        let mut summary = ImportSummary::default();
+        summary.record_candidate(&candidate);
+
+        let json = serde_json::to_string(&summary).unwrap();
+
+        assert!(!json.contains("secret artifact content"));
+        assert!(json.contains("secret.md"));
     }
 }
