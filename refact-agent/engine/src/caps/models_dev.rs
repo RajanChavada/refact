@@ -318,11 +318,49 @@ async fn write_models_dev_cache_atomic(cache_dir: &Path, contents: &str) -> Resu
         cleanup_models_dev_cache_tmp_path(&tmp_path).await;
         return Err(format!("Failed to write models.dev cache temp file: {e}"));
     }
-    if let Err(e) = tokio::fs::rename(&tmp_path, &cache_path).await {
+    if let Err(e) = replace_models_dev_cache_file(&tmp_path, &cache_path).await {
         cleanup_models_dev_cache_tmp_path(&tmp_path).await;
-        return Err(format!("Failed to replace models.dev cache file: {e}"));
+        return Err(e);
     }
     Ok(())
+}
+
+async fn replace_models_dev_cache_file(tmp_path: &Path, cache_path: &Path) -> Result<(), String> {
+    match tokio::fs::rename(tmp_path, cache_path).await {
+        Ok(()) => Ok(()),
+        Err(first_error) => {
+            let backup_path = unique_models_dev_cache_backup_path(cache_path);
+            if let Err(backup_error) = tokio::fs::rename(cache_path, &backup_path).await {
+                return Err(format!(
+                    concat!(
+                        "Failed to replace models.dev cache file: {}; ",
+                        "failed to move existing cache file aside: {}"
+                    ),
+                    first_error, backup_error
+                ));
+            }
+
+            match tokio::fs::rename(tmp_path, cache_path).await {
+                Ok(()) => {
+                    cleanup_models_dev_cache_tmp_path(&backup_path).await;
+                    Ok(())
+                }
+                Err(replace_error) => match tokio::fs::rename(&backup_path, cache_path).await {
+                    Ok(()) => Err(format!(
+                        "Failed to replace models.dev cache file after moving existing file aside: {replace_error}"
+                    )),
+                    Err(restore_error) => Err(format!(
+                        concat!(
+                            "Failed to replace models.dev cache file after moving existing file ",
+                            "aside: {}; failed to restore previous cache file: {}"
+                        ),
+                        replace_error,
+                        restore_error
+                    )),
+                },
+            }
+        }
+    }
 }
 
 async fn read_models_dev_response_body(mut response: reqwest::Response) -> Result<String, String> {
@@ -369,6 +407,11 @@ fn validate_models_dev_body_size(size: usize) -> Result<(), String> {
 fn unique_models_dev_cache_tmp_path(cache_path: &Path) -> PathBuf {
     let unique_id = MODELS_DEV_CACHE_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
     cache_path.with_extension(format!("json.tmp.{}.{}", std::process::id(), unique_id))
+}
+
+fn unique_models_dev_cache_backup_path(cache_path: &Path) -> PathBuf {
+    let unique_id = MODELS_DEV_CACHE_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    cache_path.with_extension(format!("json.backup.{}.{}", std::process::id(), unique_id))
 }
 
 async fn cleanup_models_dev_cache_tmp_path(tmp_path: &Path) {
@@ -963,6 +1006,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cache_replace_fallback_restores_existing_file_when_new_file_is_missing() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let cache_path = models_dev_cache_path(tempdir.path());
+        tokio::fs::create_dir_all(cache_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&cache_path, "existing").await.unwrap();
+        let missing_tmp_path = cache_path.with_extension("json.tmp.missing");
+
+        let error = replace_models_dev_cache_file(&missing_tmp_path, &cache_path)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("Failed to replace models.dev cache file"));
+        let contents = tokio::fs::read_to_string(&cache_path).await.unwrap();
+        assert_eq!(contents, "existing");
+
+        let mut dir = tokio::fs::read_dir(cache_path.parent().unwrap())
+            .await
+            .unwrap();
+        while let Some(entry) = dir.next_entry().await.unwrap() {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            assert!(!file_name.contains(".backup."));
+        }
+    }
+
+    #[tokio::test]
     async fn write_cache_replaces_file_and_leaves_no_temp_file() {
         let tempdir = tempfile::tempdir().unwrap();
         let first = required_catalog_json();
@@ -986,6 +1056,7 @@ mod tests {
         while let Some(entry) = dir.next_entry().await.unwrap() {
             let file_name = entry.file_name().to_string_lossy().to_string();
             assert!(!file_name.contains(".tmp."));
+            assert!(!file_name.contains(".backup."));
         }
     }
 }

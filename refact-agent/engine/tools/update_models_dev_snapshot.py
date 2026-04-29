@@ -20,6 +20,17 @@ REQUIRED_PROVIDERS = {
 REQUIRED_ZAI_PROVIDER_ALIASES = ("zai", "zhipuai")
 
 
+class RawJsonObject(list[tuple[str, Any]]):
+    pass
+
+
+def require_max_catalog_bytes(size: int, subject: str) -> None:
+    if size > MAX_CATALOG_BYTES:
+        raise ValueError(
+            f"{subject} is too large: {size} bytes exceeds {MAX_CATALOG_BYTES} byte limit"
+        )
+
+
 def require_non_empty_string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{context} must be a non-empty string")
@@ -35,6 +46,45 @@ def insert_alias(
             f"duplicate {context} alias {alias!r} for {existing_owner!r} and {owner!r}"
         )
     aliases[alias] = owner
+
+
+def reject_duplicate_raw_keys(pairs: RawJsonObject, context: str) -> None:
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate {context} key {key!r}")
+        seen.add(key)
+
+
+def raw_values_for_key(pairs: RawJsonObject, key: str) -> list[Any]:
+    return [value for object_key, value in pairs if object_key == key]
+
+
+def validate_raw_catalog_keys(data: Any) -> None:
+    if not isinstance(data, RawJsonObject):
+        return
+
+    reject_duplicate_raw_keys(data, "provider")
+    for provider_key, provider in data:
+        if not isinstance(provider, RawJsonObject):
+            continue
+        models_values = raw_values_for_key(provider, "models")
+        if len(models_values) > 1:
+            raise ValueError(f"duplicate provider {provider_key!r} key 'models'")
+        if not models_values or not isinstance(models_values[0], RawJsonObject):
+            continue
+        reject_duplicate_raw_keys(
+            models_values[0], f"model in provider {provider_key!r}"
+        )
+
+
+def parse_catalog_json(catalog_json: str) -> dict[str, Any]:
+    require_max_catalog_bytes(
+        len(catalog_json.encode("utf-8")), "models.dev catalog"
+    )
+    raw_data = json.loads(catalog_json, object_pairs_hook=RawJsonObject)
+    validate_raw_catalog_keys(raw_data)
+    return validate_catalog(json.loads(catalog_json))
 
 
 def get_provider(catalog: dict[str, Any], provider_id: str) -> dict[str, Any] | None:
@@ -132,27 +182,36 @@ def read_response_limited(response: Any) -> bytes:
             raise ValueError(
                 f"models.dev catalog Content-Length is malformed: {content_length!r}"
             )
-        if parsed_content_length > MAX_CATALOG_BYTES:
-            raise ValueError(
-                f"models.dev catalog is too large: {parsed_content_length} bytes exceeds {MAX_CATALOG_BYTES} byte limit"
-            )
+        require_max_catalog_bytes(parsed_content_length, "models.dev catalog")
 
     body = response.read(MAX_CATALOG_BYTES + 1)
-    if len(body) > MAX_CATALOG_BYTES:
-        raise ValueError(
-            f"models.dev catalog is too large: {len(body)} bytes exceeds {MAX_CATALOG_BYTES} byte limit"
-        )
+    require_max_catalog_bytes(len(body), "models.dev catalog")
     return body
 
 
+def serialize_snapshot(data: dict[str, Any]) -> bytes:
+    # Pretty JSON is committed for deterministic, reviewable diffs instead of
+    # matching the compact API payload.
+    # Validate the exact UTF-8 bytes because pretty output can be larger than
+    # the downloaded catalog.
+    text = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    serialized = text.encode("utf-8")
+    validate_serialized_snapshot_size(serialized)
+    return serialized
+
+
+def validate_serialized_snapshot_size(serialized: bytes) -> None:
+    require_max_catalog_bytes(len(serialized), "models.dev serialized snapshot")
+
+
 def write_snapshot(snapshot_path: pathlib.Path, data: dict[str, Any]) -> None:
+    serialized = serialize_snapshot(data)
     tmp_path = snapshot_path.with_name(
         f"{snapshot_path.name}.tmp.{os.getpid()}.{time.monotonic_ns()}"
     )
     try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, sort_keys=True, indent=2)
-            handle.write("\n")
+        with tmp_path.open("wb") as handle:
+            handle.write(serialized)
         os.replace(tmp_path, snapshot_path)
     except Exception:
         try:
@@ -167,7 +226,7 @@ def main() -> None:
     snapshot_path = root / "src" / "caps" / "models_dev_snapshot.json"
     request = urllib.request.Request(URL, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=30) as response:
-        data = validate_catalog(json.loads(read_response_limited(response).decode("utf-8")))
+        data = parse_catalog_json(read_response_limited(response).decode("utf-8"))
     write_snapshot(snapshot_path, data)
     print(f"wrote {snapshot_path}")
 
