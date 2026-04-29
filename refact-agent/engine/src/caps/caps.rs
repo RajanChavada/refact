@@ -564,9 +564,14 @@ fn build_chat_model_record(
     };
 
     let supports_agent = supports_tools;
-    let endpoint = runtime_endpoint.replace("$MODEL", &model.id);
+    let effective_wire_format = model.wire_format_override.unwrap_or(runtime_wire_format);
+    let effective_endpoint = model
+        .endpoint_override
+        .as_deref()
+        .unwrap_or(runtime_endpoint);
+    let endpoint = effective_endpoint.replace("$MODEL", &model.id);
 
-    let endpoint_style = match runtime_wire_format {
+    let endpoint_style = match effective_wire_format {
         WireFormat::AnthropicMessages => "anthropic",
         _ => "openai",
     }
@@ -579,7 +584,7 @@ fn build_chat_model_record(
             id: model_id,
             endpoint,
             endpoint_style,
-            wire_format: runtime_wire_format,
+            wire_format: effective_wire_format,
             api_key: runtime_api_key.to_string(),
             auth_token: runtime_auth_token.to_string(),
             tokenizer_api_key: runtime_tokenizer_api_key.to_string(),
@@ -1353,6 +1358,8 @@ mod tests {
             selected_provider: None,
             max_output_tokens: None,
             provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
             base_model: Some("Qwen/Qwen3.6-27B-FP8".to_string()),
         };
 

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod http;
+pub mod models_dev_provider;
 pub mod pricing;
 mod registry;
 pub mod traits;

@@ -692,6 +692,8 @@ impl OpenAICodexProvider {
             selected_provider: None,
             max_output_tokens: None,
             provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
             base_model: None,
         }
     }
