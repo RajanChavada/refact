@@ -14,6 +14,7 @@ mod google_gemini;
 mod groq;
 mod kimi;
 mod lmstudio;
+mod minimax;
 pub mod oauth_refresh;
 mod ollama;
 mod openai;
@@ -25,5 +26,6 @@ mod qwen;
 mod vllm;
 mod xai;
 mod xai_responses;
+mod zhipu;
 
 pub use registry::*;

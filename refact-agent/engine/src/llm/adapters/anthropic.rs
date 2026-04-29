@@ -143,7 +143,7 @@ impl LlmWireAdapter for AnthropicAdapter {
             }
         }
 
-        if matches!(req.cache_control, CacheControl::Ephemeral) {
+        if matches!(req.cache_control, CacheControl::Ephemeral) && settings.supports_cache_control {
             body["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
         }
 
@@ -956,6 +956,21 @@ mod tests {
         let http = adapter.build_http(&req, &settings()).unwrap();
         assert_eq!(http.body["cache_control"]["type"], "ephemeral");
         assert_eq!(http.body["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn test_top_level_cache_control_omitted_when_unsupported() {
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "claude".to_string(),
+            vec![ChatMessage::new("user".to_string(), "test".to_string())],
+        )
+        .with_cache_control(CacheControl::Ephemeral);
+        let mut settings = settings();
+        settings.supports_cache_control = false;
+
+        let http = adapter.build_http(&req, &settings).unwrap();
+        assert!(http.body.get("cache_control").is_none());
     }
 
     #[test]

@@ -295,6 +295,10 @@ const PROVIDER_TEMPLATES: &[(&str, &str)] = &[
         include_str!("../yaml_configs/default_providers/lmstudio.yaml"),
     ),
     (
+        "minimax",
+        include_str!("../yaml_configs/default_providers/minimax.yaml"),
+    ),
+    (
         "ollama",
         include_str!("../yaml_configs/default_providers/ollama.yaml"),
     ),
@@ -325,6 +329,10 @@ const PROVIDER_TEMPLATES: &[(&str, &str)] = &[
     (
         "xai_responses",
         include_str!("../yaml_configs/default_providers/xai_responses.yaml"),
+    ),
+    (
+        "zhipu",
+        include_str!("../yaml_configs/default_providers/zhipu.yaml"),
     ),
 ];
 static PARSED_PROVIDERS: OnceLock<IndexMap<String, CapsProvider>> = OnceLock::new();

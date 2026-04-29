@@ -7,7 +7,8 @@ use crate::providers::{
     openrouter::OpenRouterProvider, ollama::OllamaProvider, lmstudio::LMStudioProvider,
     vllm::VLLMProvider, groq::GroqProvider, deepseek::DeepseekProvider, xai::XAIProvider,
     xai_responses::XAIResponsesProvider, google_gemini::GoogleGeminiProvider, qwen::QwenProvider,
-    kimi::KimiProvider, custom::CustomProvider, claude_code::ClaudeCodeProvider,
+    kimi::KimiProvider, zhipu::ZhipuProvider, minimax::MiniMaxProvider, custom::CustomProvider,
+    claude_code::ClaudeCodeProvider,
 };
 
 pub const PROVIDER_NAMES: &[&str] = &[
@@ -26,6 +27,8 @@ pub const PROVIDER_NAMES: &[&str] = &[
     "google_gemini",
     "qwen",
     "kimi",
+    "zhipu",
+    "minimax",
     "custom",
     "claude_code",
 ];
@@ -47,6 +50,8 @@ pub fn create_provider(name: &str) -> Option<Box<dyn ProviderTrait>> {
         "google_gemini" => Some(Box::new(GoogleGeminiProvider::default())),
         "qwen" => Some(Box::new(QwenProvider::default())),
         "kimi" => Some(Box::new(KimiProvider::default())),
+        "zhipu" => Some(Box::new(ZhipuProvider::default())),
+        "minimax" => Some(Box::new(MiniMaxProvider::default())),
         "custom" => Some(Box::new(CustomProvider::default())),
         "claude_code" => Some(Box::new(ClaudeCodeProvider::default())),
         _ => None,
