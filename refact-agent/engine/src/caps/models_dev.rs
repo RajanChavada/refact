@@ -138,12 +138,18 @@ pub fn parse_catalog_json(json: &str) -> Result<ModelsDevCatalog, String> {
     normalize_and_validate_catalog(catalog)
 }
 
-pub fn load_models_dev_snapshot_catalog() -> Result<ModelsDevCatalog, String> {
-    let catalog = parse_catalog_json(MODELS_DEV_SNAPSHOT)
-        .map_err(|e| format!("Failed to parse bundled models.dev snapshot: {e}"))?;
+fn parse_required_project_catalog_json(
+    json: &str,
+    source: &str,
+) -> Result<ModelsDevCatalog, String> {
+    let catalog = parse_catalog_json(json).map_err(|e| format!("{source} is invalid: {e}"))?;
     validate_required_project_providers(&catalog)
-        .map_err(|e| format!("Bundled models.dev snapshot is incomplete: {e}"))?;
+        .map_err(|e| format!("{source} is incomplete: {e}"))?;
     Ok(catalog)
+}
+
+pub fn load_models_dev_snapshot_catalog() -> Result<ModelsDevCatalog, String> {
+    parse_required_project_catalog_json(MODELS_DEV_SNAPSHOT, "Bundled models.dev snapshot")
 }
 
 pub fn models_dev_cache_path(cache_dir: &Path) -> PathBuf {
@@ -189,18 +195,28 @@ pub fn cost_to_pricing(cost: &ModelsDevCost) -> Option<ModelPricing> {
 
 pub fn validate_required_project_providers(catalog: &ModelsDevCatalog) -> Result<(), String> {
     for provider_id in REQUIRED_MODELS_DEV_PROVIDERS {
-        if get_provider(catalog, provider_id).is_none() {
-            return Err(format!("required provider '{provider_id}' is missing"));
+        let provider = get_provider(catalog, provider_id)
+            .ok_or_else(|| format!("required provider '{provider_id}' is missing"))?;
+        if provider.models.is_empty() {
+            return Err(format!("required provider '{provider_id}' has no models"));
         }
     }
 
-    if REQUIRED_ZAI_PROVIDER_ALIASES
+    let zai_provider_exists = REQUIRED_ZAI_PROVIDER_ALIASES
         .iter()
-        .all(|provider_id| get_provider(catalog, provider_id).is_none())
-    {
+        .any(|provider_id| get_provider(catalog, provider_id).is_some());
+    let zai_provider_has_models = REQUIRED_ZAI_PROVIDER_ALIASES.iter().any(|provider_id| {
+        get_provider(catalog, provider_id).is_some_and(|provider| !provider.models.is_empty())
+    });
+    if !zai_provider_has_models {
+        let provider_group = REQUIRED_ZAI_PROVIDER_ALIASES.join(" or ");
+        if zai_provider_exists {
+            return Err(format!(
+                "required provider group '{provider_group}' has no models"
+            ));
+        }
         return Err(format!(
-            "required provider group '{}' is missing",
-            REQUIRED_ZAI_PROVIDER_ALIASES.join(" or ")
+            "required provider group '{provider_group}' is missing"
         ));
     }
 
@@ -239,16 +255,18 @@ pub async fn load_models_dev_catalog_from_cache_or_snapshot(
 ) -> Result<ModelsDevCatalog, String> {
     let cache_path = models_dev_cache_path(cache_dir);
     match tokio::fs::read_to_string(&cache_path).await {
-        Ok(contents) => match parse_catalog_json(&contents) {
-            Ok(catalog) => Ok(catalog),
-            Err(e) => {
-                warn!(
-                    "models.dev runtime cache '{}' is corrupt: {e}; using bundled snapshot",
-                    cache_path.display()
-                );
-                load_models_dev_snapshot_catalog()
+        Ok(contents) => {
+            match parse_required_project_catalog_json(&contents, "models.dev runtime cache") {
+                Ok(catalog) => Ok(catalog),
+                Err(e) => {
+                    warn!(
+                        "models.dev runtime cache '{}' is invalid: {e}; using bundled snapshot",
+                        cache_path.display()
+                    );
+                    load_models_dev_snapshot_catalog()
+                }
             }
-        },
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => load_models_dev_snapshot_catalog(),
         Err(e) => {
             warn!(
@@ -275,7 +293,7 @@ pub async fn fetch_models_dev_catalog(
             return Err(format!("models.dev catalog returned HTTP {status}"));
         }
         let body = read_models_dev_response_body(response).await?;
-        let catalog = parse_catalog_json(&body)?;
+        let catalog = parse_required_project_catalog_json(&body, "models.dev live catalog")?;
         Ok((catalog, body))
     })
     .await
@@ -283,6 +301,11 @@ pub async fn fetch_models_dev_catalog(
 }
 
 pub async fn write_models_dev_cache(cache_dir: &Path, contents: &str) -> Result<(), String> {
+    parse_required_project_catalog_json(contents, "models.dev runtime cache")?;
+    write_models_dev_cache_atomic(cache_dir, contents).await
+}
+
+async fn write_models_dev_cache_atomic(cache_dir: &Path, contents: &str) -> Result<(), String> {
     validate_models_dev_body_size(contents.len())?;
     let cache_path = models_dev_cache_path(cache_dir);
     if let Some(parent) = cache_path.parent() {
@@ -459,6 +482,35 @@ mod tests {
         "#
     }
 
+    fn provider_with_model(provider_id: &str) -> ModelsDevProvider {
+        let model_id = format!("{provider_id}-model");
+        ModelsDevProvider {
+            id: provider_id.to_string(),
+            name: provider_id.to_string(),
+            models: HashMap::from([(
+                model_id.clone(),
+                ModelsDevModel {
+                    id: model_id,
+                    name: format!("{provider_id} model"),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+
+    fn required_catalog() -> ModelsDevCatalog {
+        let mut catalog = ModelsDevCatalog::new();
+        for provider_id in REQUIRED_MODELS_DEV_PROVIDERS {
+            catalog.insert((*provider_id).to_string(), provider_with_model(provider_id));
+        }
+        catalog.insert("zai".to_string(), provider_with_model("zai"));
+        catalog
+    }
+
+    fn required_catalog_json() -> String {
+        serde_json::to_string(&required_catalog()).unwrap()
+    }
     #[test]
     fn minimal_catalog_parses_successfully() {
         let catalog = parse_catalog_json(minimal_catalog_json()).unwrap();
@@ -535,6 +587,69 @@ mod tests {
         assert!(!catalog.is_empty());
     }
 
+    #[tokio::test]
+    async fn incomplete_cache_missing_required_providers_falls_back_to_snapshot() {
+        let tempdir = tempfile::tempdir().unwrap();
+        write_models_dev_cache_atomic(tempdir.path(), minimal_catalog_json())
+            .await
+            .unwrap();
+
+        let catalog = load_models_dev_catalog_from_cache_or_snapshot(tempdir.path())
+            .await
+            .unwrap();
+
+        assert!(get_provider(&catalog, "anthropic").is_some());
+        assert!(validate_required_project_providers(&catalog).is_ok());
+    }
+
+    #[tokio::test]
+    async fn incomplete_live_catalog_is_rejected_and_not_cached() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let error =
+            parse_required_project_catalog_json(minimal_catalog_json(), "models.dev live catalog")
+                .unwrap_err();
+
+        assert!(error.contains("models.dev live catalog is incomplete"));
+        assert!(error.contains("required provider 'anthropic' is missing"));
+
+        let cache_error = write_models_dev_cache(tempdir.path(), minimal_catalog_json())
+            .await
+            .unwrap_err();
+
+        assert!(cache_error.contains("models.dev runtime cache is incomplete"));
+        assert!(!models_dev_cache_path(tempdir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn public_cache_write_rejects_invalid_catalog() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let error = write_models_dev_cache(tempdir.path(), "not json")
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("models.dev runtime cache is invalid"));
+        assert!(!models_dev_cache_path(tempdir.path()).exists());
+    }
+
+    #[test]
+    fn required_provider_with_empty_models_is_rejected() {
+        let mut catalog = required_catalog();
+        catalog.get_mut("openai").unwrap().models.clear();
+
+        let error = validate_required_project_providers(&catalog).unwrap_err();
+
+        assert!(error.contains("required provider 'openai' has no models"));
+    }
+
+    #[test]
+    fn required_zai_provider_group_with_empty_models_is_rejected() {
+        let mut catalog = required_catalog();
+        catalog.get_mut("zai").unwrap().models.clear();
+
+        let error = validate_required_project_providers(&catalog).unwrap_err();
+
+        assert!(error.contains("required provider group 'zai or zhipuai' has no models"));
+    }
     #[test]
     fn cost_conversion_maps_to_model_pricing() {
         let catalog = parse_catalog_json(minimal_catalog_json()).unwrap();
@@ -634,16 +749,20 @@ mod tests {
     #[tokio::test]
     async fn write_cache_replaces_file_and_leaves_no_temp_file() {
         let tempdir = tempfile::tempdir().unwrap();
-        write_models_dev_cache(tempdir.path(), "first")
+        let first = required_catalog_json();
+        let mut second_catalog = required_catalog();
+        second_catalog.insert("zhipuai".to_string(), provider_with_model("zhipuai"));
+        let second = serde_json::to_string(&second_catalog).unwrap();
+        write_models_dev_cache(tempdir.path(), &first)
             .await
             .unwrap();
-        write_models_dev_cache(tempdir.path(), "second")
+        write_models_dev_cache(tempdir.path(), &second)
             .await
             .unwrap();
 
         let cache_path = models_dev_cache_path(tempdir.path());
         let contents = tokio::fs::read_to_string(&cache_path).await.unwrap();
-        assert_eq!(contents, "second");
+        assert_eq!(contents, second);
 
         let mut dir = tokio::fs::read_dir(cache_path.parent().unwrap())
             .await
