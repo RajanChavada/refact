@@ -845,7 +845,8 @@ export interface BuddySnapshot {
   active_speech?: BuddySpeechItem | null;
   runtime_queue?: BuddyRuntimeEvent[];
   now_playing?: BuddyRuntimeEvent | null;
-  pulse?: BuddyPulse;
+  pulse?: BuddyPulse | null;
+  opportunities?: BuddyOpportunity[];
   active_drafts?: BuddyDraft[];
 }
 
@@ -911,7 +912,7 @@ export interface BuddyRuntimeEvent {
   id: string;
   signal_type: string;
   title: string;
-  description?: string;
+  description?: string | null;
   source: string;
   status:
     | "started"
@@ -920,14 +921,14 @@ export interface BuddyRuntimeEvent {
     | "failed"
     | "info"
     | "streaming";
-  progress?: number;
-  dedupe_key?: string;
+  progress?: number | null;
+  dedupe_key?: string | null;
   priority: string;
   created_at: string;
-  ttl_ms?: number;
-  speech_text?: string;
-  scene?: string;
-  duration_hint?: number;
+  ttl_ms?: number | null;
+  speech_text?: string | null;
+  scene?: string | null;
+  duration_hint?: number | null;
   persistent?: boolean;
   controls?: BuddyControl[];
   chat_id?: string;

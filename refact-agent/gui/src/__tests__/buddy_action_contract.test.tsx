@@ -292,9 +292,11 @@ describe("buddy action execution contract", () => {
     );
 
     const { store, execute } = renderExecutor();
+    const beforePages = store.getState().pages.length;
     const action: BuddyAction = { kind: "open_page", page: { type: "buddy" } };
     await execute(action, makeOpportunity({ proposed_actions: [action] }), 0);
 
+    expect(store.getState().pages.length - beforePages).toBe(1);
     expect(lastPage(store)).toMatchObject({ name: "stats dashboard" });
   });
 
@@ -313,17 +315,20 @@ describe("buddy action execution contract", () => {
         "http://127.0.0.1:8001/v1/buddy/opportunities/:id/dismiss",
         () => {
           dismissCalled = true;
-          return HttpResponse.json({ dismissed: true });
+          return HttpResponse.json({ snapshot: makeSnapshot("Dismiss Snapshot") });
         },
       ),
     );
 
-    const { execute } = renderExecutor();
+    const { store, execute } = renderExecutor();
     const action: BuddyAction = { kind: "dismiss" };
     await execute(action, makeOpportunity({ proposed_actions: [action] }), 0);
 
     expect(dismissCalled).toBe(true);
     expect(acceptCalled).toBe(false);
+    expect(store.getState().buddy.snapshot?.state.identity.name).toBe(
+      "Dismiss Snapshot",
+    );
   });
 
   it("double_click_sends_one_opportunity_request", async () => {

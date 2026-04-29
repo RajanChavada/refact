@@ -386,8 +386,7 @@ mod rules {
                             page: BuddyPage::TaskWorkspace {
                                 task_id: task_id.clone(),
                             },
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -424,8 +423,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::TasksList,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -480,8 +478,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::TasksList,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -563,8 +560,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::DefaultModels,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::DraftDefaultsChange {
                             defaults_kind,
                             patch,
@@ -611,8 +607,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::DefaultModels,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -660,8 +655,7 @@ mod rules {
             vec![
                 BuddyAction::OpenPage {
                     page: BuddyPage::KnowledgeGraph,
-                    params: None,
-                },
+                        },
                 BuddyAction::CreatePulseReport {
                     scope: PulseScope::Memory,
                 },
@@ -712,8 +706,7 @@ mod rules {
                         },
                         BuddyAction::OpenPage {
                             page: BuddyPage::Buddy,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -761,8 +754,7 @@ mod rules {
                         },
                         BuddyAction::OpenPage {
                             page: BuddyPage::Buddy,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -795,8 +787,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::Stats,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -826,8 +817,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::Stats,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -863,8 +853,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::Customization,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::DraftCustomizationChange {
                             customization_kind: CustomizationKind::Mode,
                             id: id.clone(),
@@ -907,8 +896,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::Customization,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::DraftCustomizationChange {
                             customization_kind: CustomizationKind::Skill,
                             id: id.clone(),
@@ -982,8 +970,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::Integrations,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,
@@ -1020,8 +1007,7 @@ mod rules {
                     vec![
                         BuddyAction::OpenPage {
                             page: BuddyPage::Integrations,
-                            params: None,
-                        },
+                                        },
                         BuddyAction::Dismiss,
                     ],
                     now,

@@ -111,6 +111,22 @@ pub(crate) fn redact_sensitive(text: &str) -> String {
                 Regex::new(r#"(?i)Authorization:\s*[^\s"',]+"#).unwrap(),
                 "Authorization: [REDACTED]",
             ),
+            (
+                Regex::new(r#"(?i)(https?://[^\s?#]+)\?[^\s)\]]+"#).unwrap(),
+                "$1?[REDACTED]",
+            ),
+            (
+                Regex::new(r#"file://[^\s)\]]+"#).unwrap(),
+                "file://[REDACTED_PATH]",
+            ),
+            (
+                Regex::new(r#"[A-Za-z]:\\[^\s)\]]+"#).unwrap(),
+                "[REDACTED_PATH]",
+            ),
+            (
+                Regex::new(r#"/(?:Users|home)/[^\s)]+"#).unwrap(),
+                "[REDACTED_PATH]",
+            ),
         ]
     });
 
@@ -119,6 +135,15 @@ pub(crate) fn redact_sensitive(text: &str) -> String {
         out = re.replace_all(&out, *replacement).into_owned();
     }
     out
+}
+
+pub(crate) fn redact_diagnostic_metadata(value: &str) -> Option<String> {
+    let redacted = redact_sensitive(value).trim().to_string();
+    if redacted.is_empty() {
+        None
+    } else {
+        Some(redacted)
+    }
 }
 
 /// Single producer/consumer for the runtime_queue.jsonl log. Funneling all
@@ -244,8 +269,11 @@ impl BuddyService {
     }
 
     pub fn snapshot(&self) -> BuddySnapshot {
+        let opportunities = self.opportunity_queue.snapshot();
+        let mut state = self.state.clone();
+        state.opportunities = opportunities.clone();
         BuddySnapshot {
-            state: self.state.clone(),
+            state,
             settings: self.settings.clone(),
             enabled: self.settings.enabled,
             recent_diagnostics: self.recent_diagnostics.clone(),
@@ -253,7 +281,7 @@ impl BuddyService {
             now_playing: self.runtime_queue.now_playing.clone(),
             active_speech: self.active_speech.clone(),
             pulse: self.pulse.clone(),
-            opportunities: self.opportunity_queue.snapshot(),
+            opportunities,
             active_drafts: self.draft_store.snapshot(),
         }
     }
@@ -826,6 +854,14 @@ impl BuddyService {
 
     pub fn add_diagnostic(&mut self, mut ctx: super::diagnostics::DiagnosticContext) {
         ctx.error_message = redact_sensitive(&ctx.error_message);
+        ctx.source_file = ctx
+            .source_file
+            .as_deref()
+            .and_then(redact_diagnostic_metadata);
+        ctx.tool_name = ctx
+            .tool_name
+            .as_deref()
+            .and_then(redact_diagnostic_metadata);
         self.recent_diagnostics.push(ctx.clone());
         if self.recent_diagnostics.len() > 100 {
             self.recent_diagnostics.remove(0);

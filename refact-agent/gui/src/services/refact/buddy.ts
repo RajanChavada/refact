@@ -65,6 +65,10 @@ export interface FrontendErrorReport {
   chat_id?: string;
 }
 
+export interface BuddyOpportunityDismissResponse {
+  snapshot: BuddySnapshot;
+}
+
 export interface BuddyInvestigationContextResponse {
   logs: string;
   internal_context: string;
@@ -91,6 +95,30 @@ async function parseBuddyResponse<T>(response: Response): Promise<T> {
     throw new Error(`${response.status} ${response.statusText}: ${text}`);
   }
   return (await response.json()) as T;
+}
+
+const FRONTEND_SOURCE_PATTERNS: [RegExp, string][] = [
+  [/Bearer\s+[^\s"'`]+/gi, "Bearer [REDACTED]"],
+  [/sk-[A-Za-z0-9]{20,}/g, "[REDACTED_SK_TOKEN]"],
+  [/\bghp_[A-Za-z0-9]{10,}\b/g, "[REDACTED_GH_TOKEN]"],
+  [/\bglpat-[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_GL_TOKEN]"],
+  [
+    /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
+    "$1=[REDACTED]",
+  ],
+  [/(https?:\/\/[^\s?#]+)\?[^\s)\]]+/gi, "$1?[REDACTED]"],
+  [/file:\/\/[^\s)\]]+/gi, "file://[REDACTED_PATH]"],
+  [/[A-Za-z]:\\[^\s)\]]+/g, "[REDACTED_PATH]"],
+  [/\/(?:Users|home)\/[^\s)]+/g, "[REDACTED_PATH]"],
+];
+
+function redactFrontendSource(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const redacted = FRONTEND_SOURCE_PATTERNS.reduce(
+    (current, [pattern, replacement]) => current.replace(pattern, replacement),
+    value,
+  ).trim();
+  return redacted || undefined;
 }
 
 export async function createBuddyConversationRequest(
@@ -413,7 +441,7 @@ export const buddyApi = createApi({
       },
       invalidatesTags: ["BuddyOpportunities", "BuddySnapshot"],
     }),
-    dismissOpportunity: builder.mutation<{ dismissed: boolean }, string>({
+    dismissOpportunity: builder.mutation<BuddyOpportunityDismissResponse, string>({
       queryFn: async (id, api, _opts, baseQuery) => {
         const state = api.getState() as BuddyApiState;
         const port = state.config.lspPort;
@@ -424,7 +452,7 @@ export const buddyApi = createApi({
           method: "POST",
         });
         if (result.error) return { error: result.error };
-        return { data: { dismissed: true } };
+        return { data: result.data as BuddyOpportunityDismissResponse };
       },
       invalidatesTags: ["BuddyOpportunities", "BuddySnapshot"],
     }),
@@ -628,11 +656,23 @@ export const buddyApi = createApi({
         try {
           const headers = new Headers({ "Content-Type": "application/json" });
           if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
-          await fetch(`http://127.0.0.1:${port}/v1/buddy/frontend-error`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-          });
+          const response = await fetch(
+            `http://127.0.0.1:${port}/v1/buddy/frontend-error`,
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                message: body.error,
+                stack: "",
+                url:
+                  redactFrontendSource(body.source_file) ??
+                  "frontend/report_frontend_error",
+                kind: redactFrontendSource(body.tool_name) ?? "frontend",
+                chat_id: body.chat_id,
+              }),
+            },
+          );
+          await parseBuddyResponse<unknown>(response);
           return { data: undefined };
         } catch (error) {
           return {

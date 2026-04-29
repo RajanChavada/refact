@@ -186,7 +186,7 @@ describe("buddy UI polish", () => {
     ).toBe("Install MCP");
   });
 
-  it("unread_selector_matches_documented_shown_policy", () => {
+  it("unread_selector_treats_new_and_shown_as_unread", () => {
     const reducer = buddySlice.reducer;
     const s1 = reducer(
       undefined,
@@ -197,7 +197,7 @@ describe("buddy UI polish", () => {
       addOpportunity(makeOpportunity({ id: "o-shown", status: "shown" })),
     );
     const unread = selectUnreadOpportunities({ buddy: s2 });
-    expect(unread.map((o) => o.id)).toEqual(["o-new"]);
+    expect(unread.map((o) => o.id)).toEqual(["o-new", "o-shown"]);
   });
 
   it("shared_navigation_helper_routes_all_pages", () => {

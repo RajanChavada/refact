@@ -585,8 +585,14 @@ pub async fn handle_v1_buddy_diagnostics_collect(
     axum::Json(req): axum::Json<DiagnosticsCollectRequest>,
 ) -> Result<axum::Json<DiagnosticContext>, ScratchError> {
     let mut ctx = crate::buddy::diagnostics::collect_diagnostics(gcx.clone(), &req.error).await;
-    ctx.source_file = req.source_file;
-    ctx.tool_name = req.tool_name;
+    ctx.source_file = req
+        .source_file
+        .as_deref()
+        .and_then(crate::buddy::actor::redact_diagnostic_metadata);
+    ctx.tool_name = req
+        .tool_name
+        .as_deref()
+        .and_then(crate::buddy::actor::redact_diagnostic_metadata);
     ctx.chat_id = req.chat_id;
     ctx.collected_at = req.collected_at.unwrap_or(ctx.collected_at);
 

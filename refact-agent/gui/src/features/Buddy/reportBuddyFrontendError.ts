@@ -24,7 +24,7 @@ const SECRET_PATTERNS: [RegExp, string][] = [
   [/(https?:\/\/[^\s?#]+)\?[^\s)\]]+/gi, "$1?[REDACTED]"],
   [/file:\/\/[^\s)\]]+/gi, "file://[REDACTED_PATH]"],
   [/[A-Za-z]:\\[^\s)\]]+/g, "[REDACTED_PATH]"],
-  [/\/(?:Users|home)\/[^\s)\]]+/g, "[REDACTED_PATH]"],
+  [/\/(?:Users|home)\/[^\s)]+/g, "[REDACTED_PATH]"],
 ];
 
 export const BUDDY_FRONTEND_ERROR_NOISE_PATTERNS: RegExp[] = [
@@ -473,6 +473,14 @@ export function redactBuddyFrontendErrorText(text: string): string {
   );
 }
 
+export function redactBuddyFrontendErrorSource(
+  source: string | undefined,
+): string | undefined {
+  if (!source) return undefined;
+  const redacted = redactBuddyFrontendErrorText(source).trim();
+  return redacted || undefined;
+}
+
 export function buildBuddyFrontendErrorDedupeKey(
   args: {
     source: BuddyFrontendErrorSource;
@@ -576,14 +584,25 @@ export async function reportBuddyFrontendError(
   );
   if (!normalized) return;
 
-  const key = buildBuddyFrontendErrorDedupeKey(args, normalized);
+  const sourceFile =
+    redactBuddyFrontendErrorSource(args.sourceFile) ?? `frontend/${args.source}`;
+  const toolName = redactBuddyFrontendErrorSource(args.toolName) ?? args.source;
+  const key = buildBuddyFrontendErrorDedupeKey(
+    {
+      source: args.source,
+      sourceFile,
+      toolName,
+      chatId: args.chatId,
+    },
+    normalized,
+  );
   if (!shouldReport(key, deps.now())) return;
 
   try {
     await deps.post(port, apiKey, {
       error: `[frontend:${args.source}] ${normalized}`,
-      source_file: args.sourceFile ?? `frontend/${args.source}`,
-      tool_name: args.toolName ?? args.source,
+      source_file: sourceFile,
+      tool_name: toolName,
       chat_id: args.chatId,
     });
   } catch {

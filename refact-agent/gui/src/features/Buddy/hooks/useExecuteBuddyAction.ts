@@ -68,7 +68,8 @@ export function useExecuteBuddyAction() {
 
       if (action.kind === "dismiss") {
         try {
-          await dismissOpportunity(opp.id).unwrap();
+          const response = await dismissOpportunity(opp.id).unwrap();
+          dispatch(setBuddySnapshot(response.snapshot));
         } catch (error) {
           throw new Error(formatOpportunityActionError(error));
         }

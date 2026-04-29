@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import type { BuddyAction, BuddyPage } from "../features/Buddy/types";
+import type {
+  BuddyAction,
+  BuddyPage,
+  BuddyRuntimeEvent,
+} from "../features/Buddy/types";
 
 function roundTrip<T>(value: T): unknown {
   return JSON.parse(JSON.stringify(value));
@@ -132,5 +136,41 @@ describe("Buddy schema contract", () => {
       expect(parsed.kind).toBe(action.kind);
       expect(assertBuddyAction(parsed)).toBeTruthy();
     }
+  });
+
+  test("OpenPage action has no params field", () => {
+    const action: BuddyAction = { kind: "open_page", page: { type: "buddy" } };
+    const parsed = roundTrip(action) as Record<string, unknown>;
+    expect(parsed.params).toBeUndefined();
+  });
+
+  test("runtime event fixture accepts backend null option fields", () => {
+    const event = roundTrip({
+      id: "runtime-1",
+      signal_type: "indexing",
+      title: "Indexing",
+      description: null,
+      source: "indexer",
+      status: "started",
+      progress: null,
+      dedupe_key: null,
+      priority: "normal",
+      created_at: "2024-01-01T00:00:00Z",
+      ttl_ms: null,
+      speech_text: null,
+      scene: null,
+      duration_hint: null,
+      persistent: false,
+      controls: [],
+      dismissed: false,
+    }) as BuddyRuntimeEvent;
+
+    expect(event.description).toBeNull();
+    expect(event.progress).toBeNull();
+    expect(event.dedupe_key).toBeNull();
+    expect(event.ttl_ms).toBeNull();
+    expect(event.speech_text).toBeNull();
+    expect(event.scene).toBeNull();
+    expect(event.duration_hint).toBeNull();
   });
 });

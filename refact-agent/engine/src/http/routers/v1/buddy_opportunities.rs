@@ -217,16 +217,7 @@ pub(crate) async fn dispatch_action(
     action: &BuddyAction,
 ) -> Result<ActionOutcome, ScratchError> {
     match action {
-        BuddyAction::OpenPage { page, .. } => {
-            let buddy_arc = gcx.read().await.buddy.clone();
-            let lock = buddy_arc.lock().await;
-            let svc = lock.as_ref().ok_or_else(|| {
-                ScratchError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "buddy not initialized".to_string(),
-                )
-            })?;
-            svc.send_navigation(page.clone());
+        BuddyAction::OpenPage { page } => {
             let nav_page = serde_json::to_value(page)
                 .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             Ok(ActionOutcome {

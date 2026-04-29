@@ -180,18 +180,22 @@ function normalizeBuddyState(state: Partial<BuddyState>): BuddyState {
 }
 
 function normalizeBuddySnapshot(snapshot: BuddySnapshot): BuddySnapshot {
+  const normalizedState = normalizeBuddyState(snapshot.state);
+  const opportunities = snapshot.opportunities ?? normalizedState.opportunities;
+  normalizedState.opportunities = opportunities;
   return {
     ...snapshot,
     settings: {
       ...defaultBuddySettings(),
       ...snapshot.settings,
     },
-    state: normalizeBuddyState(snapshot.state),
+    state: normalizedState,
     recent_diagnostics: snapshot.recent_diagnostics ?? [],
     runtime_queue: snapshot.runtime_queue ?? [],
     now_playing: snapshot.now_playing ?? null,
     active_speech: snapshot.active_speech ?? null,
     pulse: snapshot.pulse ?? defaultBuddyPulse(),
+    opportunities,
     active_drafts: snapshot.active_drafts ?? [],
   };
 }
@@ -222,9 +226,48 @@ const initialState: BuddySliceState = {
   pulse: null,
   activeDrafts: [],
 };
+function syncSnapshotRuntime(state: BuddySliceState) {
+  if (state.snapshot) {
+    state.snapshot.runtime_queue = state.runtimeQueue;
+    state.snapshot.now_playing = state.nowPlaying;
+  }
+}
+
+function syncSnapshotDiagnostics(state: BuddySliceState) {
+  if (state.snapshot) {
+    state.snapshot.recent_diagnostics = state.recentDiagnostics;
+  }
+}
+
+function syncSnapshotSpeech(state: BuddySliceState) {
+  if (state.snapshot) {
+    state.snapshot.active_speech = state.activeSpeech;
+  }
+}
+
+function syncSnapshotOpportunities(state: BuddySliceState) {
+  if (state.snapshot) {
+    state.snapshot.state.opportunities = state.opportunities;
+    state.snapshot.opportunities = state.opportunities;
+  }
+}
+
+function syncSnapshotPulse(state: BuddySliceState) {
+  if (state.snapshot) {
+    state.snapshot.pulse = state.pulse ?? defaultBuddyPulse();
+  }
+}
+
+function syncSnapshotDrafts(state: BuddySliceState) {
+  if (state.snapshot) {
+    state.snapshot.active_drafts = state.activeDrafts;
+  }
+}
+
 const selectUnreadOpportunitiesFromSlice = createSelector(
   [(state: BuddySliceState) => state.opportunities],
-  (opportunities) => opportunities.filter((o) => o.status === "new"),
+  (opportunities) =>
+    opportunities.filter((o) => o.status === "new" || o.status === "shown"),
 );
 
 export const buddySlice = createSlice({
@@ -252,23 +295,33 @@ export const buddySlice = createSlice({
       state.runtimeQueue = [];
       state.nowPlaying = null;
       state.activeSpeech = null;
+      state.opportunities = [];
+      state.pulse = null;
+      state.activeDrafts = [];
     },
     updateBuddyState: (state, action: PayloadAction<BuddyState>) => {
       state.loaded = true;
+      const buddyState = normalizeBuddyState(action.payload);
+      state.opportunities = buddyState.opportunities;
       if (state.snapshot) {
-        state.snapshot.state = normalizeBuddyState(action.payload);
+        state.snapshot.state = buddyState;
       } else {
         // Buddy became active while we had no snapshot (was disabled/not-ready).
         // Bootstrap a minimal snapshot so the UI recovers without a full reconnect.
         state.snapshot = {
-          state: normalizeBuddyState(action.payload),
+          state: buddyState,
           settings: defaultBuddySettings(),
           enabled: true,
+          recent_diagnostics: state.recentDiagnostics,
           runtime_queue: state.runtimeQueue,
           now_playing: state.nowPlaying,
           active_speech: state.activeSpeech,
+          pulse: state.pulse ?? defaultBuddyPulse(),
+          opportunities: state.opportunities,
+          active_drafts: state.activeDrafts,
         };
       }
+      syncSnapshotOpportunities(state);
     },
     addBuddyActivity: (state, action: PayloadAction<BuddyActivityEntry>) => {
       if (state.snapshot) {
@@ -310,6 +363,7 @@ export const buddySlice = createSlice({
       if (state.recentDiagnostics.length > 100) {
         state.recentDiagnostics.splice(100);
       }
+      syncSnapshotDiagnostics(state);
     },
 
     enqueueRuntimeEvent: (state, action: PayloadAction<BuddyRuntimeEvent>) => {
@@ -324,12 +378,14 @@ export const buddySlice = createSlice({
             (state.runtimeQueue[idx].dismissed ?? false) ||
             (event.dismissed ?? false);
           state.runtimeQueue[idx] = { ...event, dismissed: wasDismissed };
+          syncSnapshotRuntime(state);
           return;
         }
         if (state.nowPlaying?.dedupe_key === event.dedupe_key) {
           const wasDismissed =
             (state.nowPlaying.dismissed ?? false) || (event.dismissed ?? false);
           state.nowPlaying = { ...event, dismissed: wasDismissed };
+          syncSnapshotRuntime(state);
           return;
         }
       }
@@ -341,15 +397,18 @@ export const buddySlice = createSlice({
       if (state.runtimeQueue.length > 100) {
         state.runtimeQueue.splice(100);
       }
+      syncSnapshotRuntime(state);
     },
     dequeueRuntimeEvent: (state) => {
       const next = state.runtimeQueue.shift();
       if (next !== undefined) {
         state.nowPlaying = next;
       }
+      syncSnapshotRuntime(state);
     },
     clearNowPlaying: (state) => {
       state.nowPlaying = null;
+      syncSnapshotRuntime(state);
     },
     updateRuntimeProgress: (
       state,
@@ -362,12 +421,15 @@ export const buddySlice = createSlice({
       } else if (state.nowPlaying?.dedupe_key === dedupe_key) {
         state.nowPlaying.progress = progress;
       }
+      syncSnapshotRuntime(state);
     },
     setActiveSpeech: (state, action: PayloadAction<BuddySpeechItem>) => {
       state.activeSpeech = action.payload;
+      syncSnapshotSpeech(state);
     },
     clearActiveSpeech: (state) => {
       state.activeSpeech = null;
+      syncSnapshotSpeech(state);
     },
     /** Mark a runtime event as dismissed by id (optimistic; server confirms via SSE). */
     dismissRuntimeEvent: (state, action: PayloadAction<string>) => {
@@ -377,18 +439,21 @@ export const buddySlice = createSlice({
       if (state.nowPlaying?.id === id) {
         state.nowPlaying = { ...state.nowPlaying, dismissed: true };
       }
+      syncSnapshotRuntime(state);
     },
     addOpportunity: (state, action: PayloadAction<BuddyOpportunity>) => {
       const opp = action.payload;
       const idx = state.opportunities.findIndex((o) => o.id === opp.id);
       if (idx >= 0) {
         state.opportunities[idx] = opp;
+        syncSnapshotOpportunities(state);
         return;
       }
       state.opportunities.push(opp);
       if (state.opportunities.length > 200) {
         state.opportunities.shift();
       }
+      syncSnapshotOpportunities(state);
     },
     resolveOpportunity: (
       state,
@@ -399,6 +464,7 @@ export const buddySlice = createSlice({
       if (opp) {
         opp.status = status;
       }
+      syncSnapshotOpportunities(state);
     },
     expireOpportunities: (state, action: PayloadAction<string>) => {
       const now = action.payload;
@@ -409,9 +475,11 @@ export const buddySlice = createSlice({
           }
         }
       }
+      syncSnapshotOpportunities(state);
     },
     setPulse: (state, action: PayloadAction<BuddyPulse>) => {
       state.pulse = action.payload;
+      syncSnapshotPulse(state);
     },
     addDraft: (state, action: PayloadAction<BuddyDraft>) => {
       const draft = action.payload;
@@ -421,11 +489,13 @@ export const buddySlice = createSlice({
       } else {
         state.activeDrafts.push(draft);
       }
+      syncSnapshotDrafts(state);
     },
     consumeDraft: (state, action: PayloadAction<string>) => {
       state.activeDrafts = state.activeDrafts.filter(
         (d) => d.id !== action.payload,
       );
+      syncSnapshotDrafts(state);
     },
     removeDraft: (state, action: PayloadAction<string>) => {
       state.activeDrafts = state.activeDrafts.filter(
@@ -437,6 +507,7 @@ export const buddySlice = createSlice({
       action: PayloadAction<BuddyOpportunity[]>,
     ) => {
       state.opportunities = action.payload;
+      syncSnapshotOpportunities(state);
     },
   },
   selectors: {

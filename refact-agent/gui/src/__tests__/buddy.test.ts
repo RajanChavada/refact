@@ -10,6 +10,7 @@ import { configureStore, createListenerMiddleware } from "@reduxjs/toolkit";
 import {
   buddySlice,
   setBuddySnapshot,
+  setBuddyUnavailable,
   updateBuddyState,
   addBuddyActivity,
   addBuddySuggestion,
@@ -21,6 +22,7 @@ import {
   setActiveSpeech,
   clearActiveSpeech,
   enqueueRuntimeEvent,
+  dequeueRuntimeEvent,
   addOpportunity,
   resolveOpportunity,
   setPulse,
@@ -1060,6 +1062,47 @@ describe("Buddy frontend error reporting helpers", () => {
     expect(redacted).toContain("[REDACTED_PATH]");
   });
 
+  test("reportFrontendError mutation fails on non-OK HTTP and redacts source_file", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response("rate limited", {
+          status: 429,
+          statusText: "Too Many Requests",
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const store = configureStore({
+      reducer: {
+        config: () => ({ apiKey: "key", lspPort: 8001 }),
+        [buddyApi.reducerPath]: buddyApi.reducer,
+      },
+      middleware: (getDefault) => getDefault().concat(buddyApi.middleware),
+    });
+
+    try {
+      const result = await store.dispatch(
+        buddyApi.endpoints.reportFrontendError.initiate({
+          error: "frontend exploded",
+          source_file: "/home/alice/project/App.tsx?token=secret",
+          tool_name: "frontend/window_error",
+        }),
+      );
+
+      expect("error" in result).toBe(true);
+      expect(JSON.stringify("error" in result ? result.error : null)).toContain(
+        "429",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      const payload = JSON.parse(String(init.body)) as { url?: string };
+      expect(payload.url).toBe("[REDACTED_PATH]");
+    } finally {
+      vi.stubGlobal("fetch", originalFetch);
+    }
+  });
+
   test("dedupe key includes chat id and tool name", () => {
     const left = buildBuddyFrontendErrorDedupeKey(
       {
@@ -1292,6 +1335,7 @@ describe("Buddy frontend error reporting helpers", () => {
       {
         source: "ui_error_state",
         error: "Failed to start OAuth",
+        sourceFile: "/home/alice/project/App.tsx?token=secret",
         chatId: "chat-a",
       },
       {
@@ -1306,6 +1350,7 @@ describe("Buddy frontend error reporting helpers", () => {
     expect(call[0]).toBe(8001);
     expect(call[1]).toBe("key");
     expect(call[2].chat_id).toBe("chat-a");
+    expect(call[2].source_file).toBe("[REDACTED_PATH]");
     expect(call[2].error).toContain("[frontend:ui_error_state]");
   });
 
@@ -1497,6 +1542,103 @@ describe("buddy opportunities, pulse, and drafts", () => {
     expect(state.activeDrafts[0].id).toBe("draft-1");
   });
 
+  test("slice fields stay synchronized with snapshot mirrors", () => {
+    let state = reducer(undefined, setBuddySnapshot(makeSnapshot()));
+    const opportunity = makeOpportunity({ id: "opp-sync" });
+    const pulse = makePulse();
+    const draft = makeDraft({ id: "draft-sync" });
+    const runtimeEvent: BuddyRuntimeEvent = {
+      id: "runtime-sync",
+      signal_type: "indexing",
+      title: "Indexing",
+      source: "indexer",
+      status: "started",
+      priority: "normal",
+      created_at: "2024-01-01T00:00:00Z",
+    };
+    const speech: BuddySpeechItem = {
+      id: "speech-sync",
+      text: "Hello",
+      mood: "happy",
+      scope: "global",
+      persistent: false,
+      ttl_seconds: 10,
+      created_at: "2024-01-01T00:00:00Z",
+      controls: [],
+    };
+
+    state = reducer(state, addOpportunity(opportunity));
+    expect(state.snapshot?.state.opportunities).toEqual(state.opportunities);
+    expect(state.snapshot?.opportunities).toEqual(state.opportunities);
+    state = reducer(state, setPulse(pulse));
+    expect(state.snapshot?.pulse).toEqual(state.pulse);
+    state = reducer(state, addDraft(draft));
+    expect(state.snapshot?.active_drafts).toEqual(state.activeDrafts);
+    state = reducer(state, addBuddyDiagnostic(makeDiagnostic()));
+    expect(state.snapshot?.recent_diagnostics).toEqual(state.recentDiagnostics);
+    state = reducer(state, enqueueRuntimeEvent(runtimeEvent));
+    expect(state.snapshot?.runtime_queue).toEqual(state.runtimeQueue);
+    state = reducer(state, dequeueRuntimeEvent());
+    expect(state.snapshot?.runtime_queue).toEqual(state.runtimeQueue);
+    expect(state.snapshot?.now_playing).toEqual(state.nowPlaying);
+    state = reducer(state, setActiveSpeech(speech));
+    expect(state.snapshot?.active_speech).toEqual(state.activeSpeech);
+    state = reducer(state, consumeDraft(draft.id));
+    expect(state.snapshot?.active_drafts).toEqual(state.activeDrafts);
+  });
+
+  test("setBuddyUnavailable clears Buddy-derived state", () => {
+    const opportunity = makeOpportunity({ id: "opp-clear" });
+    const runtimeEvent: BuddyRuntimeEvent = {
+      id: "runtime-clear",
+      signal_type: "indexing",
+      title: "Indexing",
+      source: "indexer",
+      status: "started",
+      priority: "normal",
+      created_at: "2024-01-01T00:00:00Z",
+    };
+    const speech: BuddySpeechItem = {
+      id: "speech-clear",
+      text: "Hello",
+      mood: "happy",
+      scope: "global",
+      persistent: false,
+      ttl_seconds: 10,
+      created_at: "2024-01-01T00:00:00Z",
+      controls: [],
+    };
+    const stateWithOpportunity = {
+      ...makeState(),
+      opportunities: [opportunity],
+    };
+    const populated = reducer(
+      undefined,
+      setBuddySnapshot(
+        makeSnapshot({
+          state: stateWithOpportunity,
+          opportunities: [opportunity],
+          pulse: makePulse(),
+          active_drafts: [makeDraft()],
+          recent_diagnostics: [makeDiagnostic()],
+          runtime_queue: [runtimeEvent],
+          now_playing: runtimeEvent,
+          active_speech: speech,
+        }),
+      ),
+    );
+    const state = reducer(populated, setBuddyUnavailable());
+
+    expect(state.snapshot).toBeNull();
+    expect(state.opportunities).toEqual([]);
+    expect(state.pulse).toBeNull();
+    expect(state.activeDrafts).toEqual([]);
+    expect(state.recentDiagnostics).toEqual([]);
+    expect(state.runtimeQueue).toEqual([]);
+    expect(state.nowPlaying).toBeNull();
+    expect(state.activeSpeech).toBeNull();
+  });
+
   test("selectUnreadOpportunities filters by status", () => {
     const s1 = reducer(
       undefined,
@@ -1512,9 +1654,9 @@ describe("buddy opportunities, pulse, and drafts", () => {
     );
     const rootState = { buddy: s3 };
     const unread = selectUnreadOpportunities(rootState);
-    expect(unread).toHaveLength(1);
+    expect(unread).toHaveLength(2);
     expect(unread.map((o) => o.id)).toContain("o1");
-    expect(unread.map((o) => o.id)).not.toContain("o2");
+    expect(unread.map((o) => o.id)).toContain("o2");
     expect(unread.map((o) => o.id)).not.toContain("o3");
   });
 

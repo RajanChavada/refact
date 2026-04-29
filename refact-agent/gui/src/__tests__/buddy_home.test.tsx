@@ -202,7 +202,7 @@ describe("BuddyOpportunityCard_renders_actions", () => {
       ),
       http.post(
         "http://127.0.0.1:8001/v1/buddy/opportunities/:id/dismiss",
-        () => HttpResponse.json({ dismissed: true }),
+        () => HttpResponse.json({ snapshot: makeSnapshot() }),
       ),
       http.post("http://127.0.0.1:8001/v1/buddy/investigations", () =>
         HttpResponse.json({ chat_id: "inv-1" }),
@@ -255,7 +255,7 @@ describe("BuddyOpportunityCard_dismiss_calls_mutation", () => {
         "http://127.0.0.1:8001/v1/buddy/opportunities/:id/dismiss",
         () => {
           dismissed = true;
-          return HttpResponse.json({ dismissed: true });
+          return HttpResponse.json({ snapshot: makeSnapshot() });
         },
       ),
     );

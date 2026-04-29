@@ -17,10 +17,9 @@ use super::state::{
 };
 use super::types::{
     BuddyAction, BuddyActivity, BuddyCareAction, BuddyFact, BuddyFactKind, BuddyJobState,
-    BuddyOnboarding,
-    BuddyOpportunity, BuddyOpportunityKind, BuddyOpportunityLinks, BuddyPage, BuddyPriority,
-    BuddyPulse, BuddySuggestion, BuddyState, CustomizationKind, DefaultsKind, DraftKind,
-    InvestigationContext, MarketKind, OpportunityStatus, PulseScope,
+    BuddyOnboarding, BuddyOpportunity, BuddyOpportunityKind, BuddyOpportunityLinks, BuddyPage,
+    BuddyPriority, BuddyPulse, BuddySuggestion, BuddyState, CustomizationKind, DefaultsKind,
+    DraftKind, InvestigationContext, MarketKind, OpportunityStatus, PulseScope,
 };
 
 fn make_service() -> BuddyService {
@@ -784,7 +783,9 @@ async fn log_fallback_filters_by_filename_not_full_path() {
 
     assert!(!is_log_candidate(&unrelated));
     assert!(is_log_candidate(&real_log));
-    let content = read_log_content(&refact_dir.join("refact.log")).await.unwrap();
+    let content = read_log_content(&refact_dir.join("refact.log"))
+        .await
+        .unwrap();
     assert_eq!(content, "good");
 }
 
@@ -1342,6 +1343,27 @@ fn test_error_redaction_strips_tokens() {
         !output.contains("sk-abc123xyz"),
         "must not contain raw token"
     );
+}
+
+#[tokio::test]
+async fn diagnostic_metadata_is_redacted_before_storage() {
+    let mut svc = make_service();
+    svc.add_diagnostic(DiagnosticContext {
+        error_type: "frontend".to_string(),
+        error_message: "Bearer secret-token in /home/alice/project/app.ts".to_string(),
+        source_file: Some("/home/alice/project/app.ts?token=secret".to_string()),
+        tool_name: Some("tool?api_key=secret".to_string()),
+        chat_id: None,
+        collected_at: chrono::Utc::now().to_rfc3339(),
+        severity: DiagnosticSeverity::High,
+    });
+
+    let stored = svc.recent_diagnostics.first().unwrap();
+    assert_eq!(stored.source_file.as_deref(), Some("[REDACTED_PATH]"));
+    assert_eq!(stored.tool_name.as_deref(), Some("tool?api_key=[REDACTED]"));
+    assert!(!stored.error_message.contains("secret-token"));
+    let event = svc.runtime_queue.items.front().unwrap();
+    assert_eq!(event.source, "[REDACTED_PATH]");
 }
 
 #[test]
@@ -2043,7 +2065,6 @@ fn buddy_action_round_trip() {
     let actions: Vec<BuddyAction> = vec![
         BuddyAction::OpenPage {
             page: BuddyPage::Buddy,
-            params: None,
         },
         BuddyAction::LaunchInvestigationChat {
             preload: InvestigationContext {
@@ -2183,12 +2204,20 @@ fn schema_contract_buddy_page_variants() {
 }
 
 #[test]
+fn schema_contract_open_page_has_no_params() {
+    let value = serde_json::to_value(BuddyAction::OpenPage {
+        page: BuddyPage::Buddy,
+    })
+    .unwrap();
+    assert!(value.get("params").is_none());
+}
+
+#[test]
 fn schema_contract_buddy_action_variants() {
     let actions = vec![
         (
             BuddyAction::OpenPage {
                 page: BuddyPage::Buddy,
-                params: None,
             },
             "open_page",
         ),
@@ -3046,9 +3075,7 @@ fn trajectory_clutter_threshold() {
 
 #[tokio::test]
 async fn trajectory_scan_caps_file_reads() {
-    use super::observers::trajectory_clutter::{
-        scan_trajectories_dir, MAX_TRAJECTORY_SCAN_FILES,
-    };
+    use super::observers::trajectory_clutter::{scan_trajectories_dir, MAX_TRAJECTORY_SCAN_FILES};
     let dir = tempfile::tempdir().unwrap();
     for i in 0..(MAX_TRAJECTORY_SCAN_FILES + 20) {
         tokio::fs::write(
@@ -3194,7 +3221,10 @@ fn git_diff_widening_counts_single_large_recent_commit_deterministically() {
     let second = git_diff_widening(dir.path(), chrono::Utc::now()).unwrap();
     assert!(first.0 > 500);
     assert_eq!(first, second);
-    assert_eq!(first.1, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    assert_eq!(
+        first.1,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    );
 }
 
 #[test]
@@ -3765,7 +3795,6 @@ async fn accept_action_dispatch() {
     let mut opp = make_opportunity("opp-nav", "ck-nav");
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
-        params: None,
     }];
     svc.add_opportunity(opp);
     let _ = rx.try_recv();
@@ -5651,7 +5680,6 @@ async fn accept_route_terminal_status_returns_409() {
     opp.resolved_at = Some(chrono::Utc::now());
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
-        params: None,
     }];
     svc.opportunity_queue.push(opp);
     *gcx.read().await.buddy.lock().await = Some(svc);
@@ -5680,7 +5708,6 @@ async fn accept_after_dismiss_returns_409() {
     let mut opp = make_opportunity("opp-dismiss-then-accept", "ck-dismiss-then-accept");
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
-        params: None,
     }];
     svc.add_opportunity(opp);
     *gcx.read().await.buddy.lock().await = Some(svc);
@@ -5724,7 +5751,6 @@ async fn expired_opportunity_cannot_be_accepted() {
     opp.resolved_at = Some(chrono::Utc::now());
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
-        params: None,
     }];
     svc.opportunity_queue.push(opp);
     *gcx.read().await.buddy.lock().await = Some(svc);
@@ -5775,7 +5801,6 @@ async fn concurrent_accepts_only_one_succeeds() {
     let mut opp = make_opportunity("opp-concurrent-accept", "ck-concurrent-accept");
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
-        params: None,
     }];
     svc.add_opportunity(opp);
     *gcx.read().await.buddy.lock().await = Some(svc);
@@ -5849,7 +5874,7 @@ async fn dismiss_action_through_accept_route_results_in_dismissed_not_accepted()
 }
 
 #[tokio::test]
-async fn accept_route_with_action_index_1_dispatches_second_action() {
+async fn accept_route_with_action_index_1_returns_second_action_without_navigation_event() {
     use axum::extract::Path;
     use axum::Extension;
     use crate::buddy::events::BuddyEvent;
@@ -5871,11 +5896,9 @@ async fn accept_route_with_action_index_1_dispatches_second_action() {
     opp.proposed_actions = vec![
         BuddyAction::OpenPage {
             page: BuddyPage::Buddy,
-            params: None,
         },
         BuddyAction::OpenPage {
             page: BuddyPage::Stats,
-            params: None,
         },
     ];
     svc.add_opportunity(opp);
@@ -5895,14 +5918,13 @@ async fn accept_route_with_action_index_1_dispatches_second_action() {
     assert_eq!(response.0["action_result"]["kind"], "open_page");
     assert_eq!(response.0["action_result"]["navigate_to"]["type"], "stats");
 
-    let mut saw_stats_navigation = false;
+    let mut navigation_events = 0;
     while let Ok(event) = rx.try_recv() {
-        if let BuddyEvent::NavigationRequest { page } = event {
-            assert_eq!(page, BuddyPage::Stats);
-            saw_stats_navigation = true;
+        if let BuddyEvent::NavigationRequest { .. } = event {
+            navigation_events += 1;
         }
     }
-    assert!(saw_stats_navigation);
+    assert_eq!(navigation_events, 0);
 }
 
 #[tokio::test]

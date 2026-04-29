@@ -488,7 +488,6 @@ pub struct BuddyOpportunityLinks {
 pub enum BuddyAction {
     OpenPage {
         page: BuddyPage,
-        params: Option<serde_json::Value>,
     },
     LaunchInvestigationChat {
         preload: InvestigationContext,
