@@ -106,6 +106,12 @@ enum UsageRequestError {
     Other(String),
 }
 
+struct WhamContext {
+    access_token: String,
+    chatgpt_account_id: String,
+    source: AuthSource,
+}
+
 impl OpenAICodexProvider {
     fn needs_refresh_on_start(expires_at: i64) -> bool {
         const REFRESH_BEFORE_EXPIRY_MS: i64 = 5 * 60 * 1000;
@@ -172,6 +178,14 @@ impl OpenAICodexProvider {
             serde_yaml::Value::String("oauth_tokens".to_string()),
             serde_yaml::Value::Mapping(tokens_map),
         );
+        if self.oauth_tokens.openai_api_key.is_empty() {
+            yaml_map.remove(serde_yaml::Value::String("OPENAI_API_KEY".to_string()));
+        } else {
+            yaml_map.insert(
+                serde_yaml::Value::String("OPENAI_API_KEY".to_string()),
+                serde_yaml::Value::String(self.oauth_tokens.openai_api_key.clone()),
+            );
+        }
         yaml_map.insert(
             serde_yaml::Value::String("session_id".to_string()),
             serde_yaml::Value::String(self.session_id.clone()),
@@ -241,12 +255,13 @@ impl OpenAICodexProvider {
         (AuthSource::None, CodexAuth::None)
     }
 
-    fn resolve_wham_context(&self) -> Result<(String, String), String> {
+    fn resolve_wham_context(&self) -> Result<WhamContext, String> {
         if self.oauth_tokens.has_valid_access_token() {
-            return Ok((
-                self.oauth_tokens.access_token.clone(),
-                self.oauth_tokens.chatgpt_account_id.clone(),
-            ));
+            return Ok(WhamContext {
+                access_token: self.oauth_tokens.access_token.clone(),
+                chatgpt_account_id: self.oauth_tokens.chatgpt_account_id.clone(),
+                source: AuthSource::InAppOAuth,
+            });
         }
         if !self.oauth_tokens.access_token.is_empty() && self.oauth_tokens.has_refresh_token() {
             return Err(
@@ -261,7 +276,11 @@ impl OpenAICodexProvider {
                         "Codex CLI OAuth token is expired. Run `codex login` again.".to_string()
                     );
                 }
-                return Ok((cli_tokens.access_token, cli_tokens.chatgpt_account_id));
+                return Ok(WhamContext {
+                    access_token: cli_tokens.access_token,
+                    chatgpt_account_id: cli_tokens.chatgpt_account_id,
+                    source: AuthSource::CodexCli,
+                });
             }
         }
         Err("No ChatGPT OAuth access token available for usage API. Log in in OpenAI Codex provider settings or run `codex login`.".to_string())
@@ -300,10 +319,21 @@ impl OpenAICodexProvider {
         Ok(Self::parse_usage_payload(&root))
     }
 
-    fn usage_request_error_to_string(error: UsageRequestError) -> String {
+    fn usage_request_error_to_string(error: UsageRequestError, source: AuthSource) -> String {
         match error {
             UsageRequestError::Status(status, body) => {
                 let truncated: String = body.chars().take(512).collect();
+                if source == AuthSource::CodexCli
+                    && matches!(
+                        status,
+                        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                    )
+                {
+                    return format!(
+                        "Codex CLI OAuth token was rejected by OpenAI Codex usage API ({}). Refact does not refresh Codex CLI-managed tokens; run `codex login` again: {}",
+                        status, truncated
+                    );
+                }
                 format!(
                     "OpenAI Codex usage API returned {}. Check OpenAI Codex login/setup in provider settings or log in again: {}",
                     status, truncated
@@ -317,10 +347,14 @@ impl OpenAICodexProvider {
         &self,
         http_client: &reqwest::Client,
     ) -> Result<OpenAICodexUsage, String> {
-        let (token, chatgpt_account_id) = self.resolve_wham_context()?;
-        self.fetch_usage_once(http_client, &token, &chatgpt_account_id)
-            .await
-            .map_err(Self::usage_request_error_to_string)
+        let context = self.resolve_wham_context()?;
+        self.fetch_usage_once(
+            http_client,
+            &context.access_token,
+            &context.chatgpt_account_id,
+        )
+        .await
+        .map_err(|error| Self::usage_request_error_to_string(error, context.source))
     }
 
     pub async fn fetch_usage_with_refresh(
@@ -332,22 +366,32 @@ impl OpenAICodexProvider {
             return self.fetch_usage(http_client).await;
         }
 
-        let (token, chatgpt_account_id) = match self.resolve_wham_context() {
+        let mut refresh_attempted = false;
+        let context = match self.resolve_wham_context() {
             Ok(context) => context,
             Err(_) if self.oauth_tokens.has_refresh_token() => {
-                let token = self
+                refresh_attempted = true;
+                let access_token = self
                     .force_refresh_after_auth_rejection(http_client, config_dir)
                     .await?
                     .ok_or_else(|| {
                         "OpenAI Codex usage access token is expired and refresh returned no access token. Log in again in OpenAI Codex provider settings.".to_string()
                     })?;
-                (token, self.oauth_tokens.chatgpt_account_id.clone())
+                WhamContext {
+                    access_token,
+                    chatgpt_account_id: self.oauth_tokens.chatgpt_account_id.clone(),
+                    source: AuthSource::InAppOAuth,
+                }
             }
             Err(error) => return Err(error),
         };
 
         match self
-            .fetch_usage_once(http_client, &token, &chatgpt_account_id)
+            .fetch_usage_once(
+                http_client,
+                &context.access_token,
+                &context.chatgpt_account_id,
+            )
             .await
         {
             Ok(usage) => Ok(usage),
@@ -355,20 +399,24 @@ impl OpenAICodexProvider {
                 if Self::should_force_refresh_for_status(
                     status,
                     &self.oauth_tokens.refresh_token,
-                    false,
+                    refresh_attempted,
                 ) =>
             {
-                let token = self
+                let access_token = self
                     .force_refresh_after_auth_rejection(http_client, config_dir)
                     .await?
                     .ok_or_else(|| {
                         "OpenAI Codex usage API rejected the access token and refresh returned no access token. Log in again in OpenAI Codex provider settings.".to_string()
                     })?;
-                self.fetch_usage_once(http_client, &token, &self.oauth_tokens.chatgpt_account_id)
-                    .await
-                    .map_err(Self::usage_request_error_to_string)
+                self.fetch_usage_once(
+                    http_client,
+                    &access_token,
+                    &self.oauth_tokens.chatgpt_account_id,
+                )
+                .await
+                .map_err(|error| Self::usage_request_error_to_string(error, AuthSource::InAppOAuth))
             }
-            Err(error) => Err(Self::usage_request_error_to_string(error)),
+            Err(error) => Err(Self::usage_request_error_to_string(error, context.source)),
         }
     }
 
@@ -560,6 +608,14 @@ impl OpenAICodexProvider {
         );
         headers.insert("originator".to_string(), CODEX_ORIGINATOR.to_string());
         headers.insert("session_id".to_string(), self.session_id.clone());
+        headers
+    }
+
+    fn chatgpt_backend_streaming_headers(
+        &self,
+        chatgpt_account_id: &str,
+    ) -> HashMap<String, String> {
+        let mut headers = self.chatgpt_backend_headers(chatgpt_account_id);
         headers.insert("accept".to_string(), "text/event-stream".to_string());
         headers
     }
@@ -847,22 +903,43 @@ impl OpenAICodexProvider {
     }
 
     fn live_status_is_disabled(model: &Value) -> bool {
-        model
-            .get("status")
-            .or_else(|| model.get("availability"))
-            .and_then(Value::as_str)
-            .map(|status| {
-                matches!(
-                    status.to_ascii_lowercase().as_str(),
-                    "disabled"
-                        | "unsupported"
-                        | "not_supported"
-                        | "unavailable"
-                        | "not_available"
-                        | "retired"
-                )
-            })
-            .unwrap_or(false)
+        [
+            "status",
+            "availability",
+            "access",
+            "access_status",
+            "entitlement",
+            "entitlement_status",
+            "policy",
+        ]
+        .iter()
+        .filter_map(|key| model.get(*key).and_then(Value::as_str))
+        .any(|status| {
+            let normalized = status
+                .trim()
+                .to_ascii_lowercase()
+                .replace('-', "_")
+                .replace(' ', "_");
+            matches!(
+                normalized.as_str(),
+                "disabled"
+                    | "unsupported"
+                    | "not_supported"
+                    | "unavailable"
+                    | "not_available"
+                    | "retired"
+                    | "deprecated"
+                    | "restricted"
+                    | "policy_disabled"
+                    | "policy_restricted"
+                    | "policy_denied"
+                    | "not_entitled"
+                    | "entitlement_required"
+                    | "denied"
+                    | "not_allowed"
+                    | "disabled_by_policy"
+            )
+        })
     }
 
     fn live_model_is_supported(model: &Value) -> bool {
@@ -892,6 +969,12 @@ impl OpenAICodexProvider {
                 "apiDisabled",
                 "policy_disabled",
                 "policyDisabled",
+                "policy_restricted",
+                "policyRestricted",
+                "restricted",
+                "not_entitled",
+                "notEntitled",
+                "denied",
                 "unsupported",
                 "not_supported",
                 "notSupported",
@@ -1048,6 +1131,28 @@ impl OpenAICodexProvider {
             .then(|| self.oauth_tokens.access_token.clone())
     }
 
+    pub(crate) fn auth_state_matches(&self, tokens: &OAuthTokens, session_id: &str) -> bool {
+        &self.oauth_tokens == tokens && self.session_id == session_id
+    }
+
+    pub(crate) fn update_auth_state_from(&mut self, source: &OpenAICodexProvider) {
+        self.oauth_tokens = source.oauth_tokens.clone();
+        self.session_id = source.session_id.clone();
+    }
+
+    pub(crate) fn codex_cli_unmanaged_refresh_message(
+        rejected_access_token: &str,
+    ) -> Option<String> {
+        if rejected_access_token.is_empty() {
+            return None;
+        }
+        let cli_tokens = crate::providers::openai_codex_oauth::read_codex_cli_credentials().ok()?;
+        (cli_tokens.access_token == rejected_access_token).then(|| {
+            "Codex CLI OAuth token was rejected by ChatGPT backend. Refact does not refresh Codex CLI-managed tokens; run `codex login` again."
+                .to_string()
+        })
+    }
+
     fn unknown_live_codex_model(
         &self,
         id: String,
@@ -1178,7 +1283,7 @@ available:
                 chatgpt_account_id,
                 ..
             } => {
-                extra_headers = self.chatgpt_backend_headers(&chatgpt_account_id);
+                extra_headers = self.chatgpt_backend_streaming_headers(&chatgpt_account_id);
                 (
                     "https://chatgpt.com/backend-api/codex/responses".to_string(),
                     access_token,
@@ -1359,7 +1464,7 @@ mod tests {
 
     use super::OpenAICodexProvider;
     use crate::caps::model_caps::ModelCapabilities;
-    use crate::providers::openai_codex_oauth::OAuthTokens;
+    use crate::providers::openai_codex_oauth::{read_codex_cli_credentials, OAuthTokens};
     use crate::providers::traits::{CustomModelConfig, ModelPricing, ModelSource, ProviderTrait};
 
     fn provider_with_api_key(api_key: &str) -> OpenAICodexProvider {
@@ -1481,6 +1586,37 @@ mod tests {
     }
 
     #[test]
+    fn openai_codex_cli_mixed_api_key_and_oauth_preserves_both() {
+        with_codex_home(|codex_home| {
+            write_codex_auth(
+                codex_home,
+                json!({
+                    "OPENAI_API_KEY": "sk-cli",
+                    "tokens": {
+                        "access_token": "cli-access",
+                        "refresh_token": "cli-refresh"
+                    }
+                }),
+            );
+            let mut p = OpenAICodexProvider::default();
+            p.enabled_models = vec!["gpt-5.6-codex".to_string()];
+
+            let cli_tokens = read_codex_cli_credentials().unwrap();
+            let runtime = p.build_runtime().unwrap();
+            let wham_context = p.resolve_wham_context().unwrap();
+
+            assert_eq!(cli_tokens.openai_api_key, "sk-cli");
+            assert_eq!(cli_tokens.access_token, "cli-access");
+            assert_eq!(cli_tokens.refresh_token, "cli-refresh");
+            assert!(runtime.enabled);
+            assert_eq!(runtime.api_key, "sk-cli");
+            assert_eq!(runtime.chat_endpoint, "https://api.openai.com/v1/responses");
+            assert_eq!(wham_context.access_token, "cli-access");
+            assert_eq!(wham_context.source, super::AuthSource::CodexCli);
+        });
+    }
+
+    #[test]
     fn openai_codex_cli_oauth_only_runtime_is_chatgpt_backend_usable() {
         with_codex_home(|codex_home| {
             write_codex_auth(
@@ -1524,6 +1660,18 @@ mod tests {
             assert!(status.contains("Codex CLI credentials are not usable"));
             assert!(!status.contains("OK (Codex CLI session)"));
         });
+    }
+
+    #[test]
+    fn codex_home_nonexistent_override_does_not_fallback_to_home() {
+        let _lock = CODEX_HOME_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("missing-codex-home");
+        let _guard = CodexHomeGuard::new(&nonexistent);
+
+        let err = read_codex_cli_credentials().unwrap_err();
+
+        assert!(err.contains(&nonexistent.join("auth.json").display().to_string()));
     }
 
     #[test]
@@ -1618,6 +1766,12 @@ mod tests {
             json!({"slug": "gpt-5-codex-api-off", "supported_in_api": false}),
             json!({"slug": "gpt-5-codex-disabled", "disabled": true}),
             json!({"slug": "gpt-5-codex-unsupported", "status": "unsupported"}),
+            json!({"slug": "gpt-5-codex-deprecated", "status": "deprecated"}),
+            json!({"slug": "gpt-5-codex-restricted", "availability": "restricted"}),
+            json!({"slug": "gpt-5-codex-policy", "status": "policy_disabled"}),
+            json!({"slug": "gpt-5-codex-policy-restricted", "policy": "policy_restricted"}),
+            json!({"slug": "gpt-5-codex-not-entitled", "entitlement_status": "not_entitled"}),
+            json!({"slug": "gpt-5-codex-denied", "access_status": "denied"}),
         ];
 
         let models = p.available_models_from_live_chatgpt_models(&live_models, &HashMap::new());
@@ -1665,6 +1819,45 @@ mod tests {
     }
 
     #[test]
+    fn openai_codex_auth_state_update_preserves_model_settings() {
+        let mut current = OpenAICodexProvider {
+            enabled_models: vec!["keep-enabled".to_string()],
+            custom_models: HashMap::from([(
+                "keep-custom".to_string(),
+                CustomModelConfig {
+                    n_ctx: Some(4096),
+                    ..Default::default()
+                },
+            )]),
+            oauth_tokens: OAuthTokens {
+                access_token: "old-access".to_string(),
+                ..Default::default()
+            },
+            session_id: "old-session".to_string(),
+        };
+        let source = OpenAICodexProvider {
+            enabled_models: vec!["clobber-enabled".to_string()],
+            custom_models: HashMap::from([("clobber-custom".to_string(), Default::default())]),
+            oauth_tokens: OAuthTokens {
+                access_token: "new-access".to_string(),
+                refresh_token: "new-refresh".to_string(),
+                expires_at: 42,
+                ..Default::default()
+            },
+            session_id: "new-session".to_string(),
+        };
+
+        current.update_auth_state_from(&source);
+
+        assert_eq!(current.oauth_tokens.access_token, "new-access");
+        assert_eq!(current.oauth_tokens.refresh_token, "new-refresh");
+        assert_eq!(current.session_id, "new-session");
+        assert_eq!(current.enabled_models, vec!["keep-enabled".to_string()]);
+        assert!(current.custom_models.contains_key("keep-custom"));
+        assert!(!current.custom_models.contains_key("clobber-custom"));
+    }
+
+    #[test]
     fn openai_codex_expired_usage_token_with_refresh_returns_actionable_error() {
         with_codex_home(|_| {
             let p = OpenAICodexProvider {
@@ -1685,6 +1878,17 @@ mod tests {
             assert!(err.contains("expired"));
             assert!(err.contains("OpenAI Codex provider settings"));
         });
+    }
+
+    #[test]
+    fn cli_oauth_usage_auth_rejection_is_actionable() {
+        let err = OpenAICodexProvider::usage_request_error_to_string(
+            super::UsageRequestError::Status(reqwest::StatusCode::UNAUTHORIZED, "nope".to_string()),
+            super::AuthSource::CodexCli,
+        );
+
+        assert!(err.contains("Refact does not refresh Codex CLI-managed tokens"));
+        assert!(err.contains("codex login"));
     }
 
     #[test]
@@ -1710,6 +1914,7 @@ mod tests {
             headers.get("OpenAI-Beta").map(String::as_str),
             Some("responses=experimental")
         );
+        assert!(headers.get("accept").is_none());
     }
 
     #[test]
@@ -1741,6 +1946,10 @@ mod tests {
                 .map(String::as_str),
             Some("acct-123")
         );
+        assert_eq!(
+            runtime.extra_headers.get("accept").map(String::as_str),
+            Some("text/event-stream")
+        );
     }
 
     #[test]
@@ -1769,6 +1978,17 @@ mod tests {
             reqwest::StatusCode::INTERNAL_SERVER_ERROR,
             "refresh",
             false,
+        ));
+    }
+
+    #[test]
+    fn usage_refresh_decision_is_bounded_after_expired_token_refresh() {
+        let expired_token_refresh_attempted = true;
+
+        assert!(!OpenAICodexProvider::should_force_refresh_for_status(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "refresh",
+            expired_token_refresh_attempted,
         ));
     }
 

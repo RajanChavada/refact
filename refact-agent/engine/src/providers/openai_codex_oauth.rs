@@ -24,7 +24,7 @@ pub struct PkceSession {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OAuthTokens {
     #[serde(default)]
     pub access_token: String,
@@ -88,10 +88,11 @@ struct CodexCliCredentials {
 
 #[derive(Debug, Deserialize)]
 struct CodexCliTokens {
+    #[serde(default)]
     access_token: String,
     #[serde(default)]
     refresh_token: String,
-    #[allow(dead_code)]
+    #[serde(default)]
     id_token: Option<serde_json::Value>,
 }
 
@@ -119,11 +120,8 @@ fn generate_code_challenge(verifier: &str) -> String {
 }
 
 fn codex_home_dir() -> Option<std::path::PathBuf> {
-    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
-        let path = std::path::PathBuf::from(codex_home);
-        if path.exists() {
-            return Some(path);
-        }
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        return Some(std::path::PathBuf::from(codex_home));
     }
     home::home_dir().map(|h| h.join(CODEX_HOME_DIR))
 }
@@ -145,25 +143,41 @@ pub fn read_codex_cli_credentials() -> Result<OAuthTokens, String> {
     let creds: CodexCliCredentials = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", auth_path.display(), e))?;
 
-    // In Codex CLI, OPENAI_API_KEY is obtained via token exchange and is the correct
-    // credential for api.openai.com endpoints. Prefer it if present.
-    if let Some(api_key) = creds.openai_api_key.as_ref().filter(|k| !k.is_empty()) {
-        return Ok(OAuthTokens {
-            access_token: String::new(),
-            refresh_token: String::new(),
-            expires_at: 0,
-            openai_api_key: api_key.clone(),
-            chatgpt_account_id: String::new(),
-            api_key_exchange_error: String::new(),
-        });
-    }
+    let openai_api_key = creds
+        .openai_api_key
+        .as_ref()
+        .filter(|key| !key.is_empty())
+        .cloned()
+        .unwrap_or_default();
 
-    let tokens = creds.tokens.ok_or_else(|| {
-        "No Codex CLI credentials found (expected OPENAI_API_KEY or OAuth tokens). Run 'codex login' first."
-            .to_string()
-    })?;
+    let Some(tokens) = creds.tokens else {
+        if !openai_api_key.is_empty() {
+            return Ok(OAuthTokens {
+                access_token: String::new(),
+                refresh_token: String::new(),
+                expires_at: 0,
+                openai_api_key,
+                chatgpt_account_id: String::new(),
+                api_key_exchange_error: String::new(),
+            });
+        }
+        return Err(
+            "No Codex CLI credentials found (expected OPENAI_API_KEY or OAuth tokens). Run 'codex login' first."
+                .to_string(),
+        );
+    };
 
     if tokens.access_token.is_empty() {
+        if !openai_api_key.is_empty() {
+            return Ok(OAuthTokens {
+                access_token: String::new(),
+                refresh_token: String::new(),
+                expires_at: 0,
+                openai_api_key,
+                chatgpt_account_id: String::new(),
+                api_key_exchange_error: String::new(),
+            });
+        }
         return Err("Empty access token in Codex CLI credentials".to_string());
     }
 
@@ -179,7 +193,7 @@ pub fn read_codex_cli_credentials() -> Result<OAuthTokens, String> {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         expires_at,
-        openai_api_key: String::new(),
+        openai_api_key,
         chatgpt_account_id,
         api_key_exchange_error: String::new(),
     })
@@ -607,17 +621,21 @@ pub async fn start_callback_listener(
     Ok(handle)
 }
 
-async fn send_http_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) {
-    use tokio::io::AsyncWriteExt;
+fn raw_http_response(status: u16, body: &str) -> String {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
         _ => "Error",
     };
-    let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         status, reason, body.len(), body
-    );
+    )
+}
+
+async fn send_http_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) {
+    use tokio::io::AsyncWriteExt;
+    let response = raw_http_response(status, body);
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
@@ -652,4 +670,18 @@ fn callback_html(success: bool, message: &str) -> String {
 </div>
 </body></html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_callback_http_response_includes_csp() {
+        let response = raw_http_response(200, "ok");
+
+        assert!(response
+            .contains("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'"));
+        assert!(response.contains("Content-Type: text/html"));
+    }
 }

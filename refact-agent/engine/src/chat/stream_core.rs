@@ -130,12 +130,29 @@ async fn force_refresh_openai_codex_for_retry(
     };
 
     let Some(mut provider) = provider else {
+        if let Some(message) =
+            crate::providers::openai_codex::OpenAICodexProvider::codex_cli_unmanaged_refresh_message(
+                current_access_token,
+            )
+        {
+            return Err(message);
+        }
         return Ok(None);
     };
 
     if let Some(access_token) = provider.access_token_changed_since_rejection(current_access_token)
     {
         return Ok(Some(access_token));
+    }
+
+    if provider.oauth_tokens.refresh_token.is_empty() {
+        if let Some(message) =
+            crate::providers::openai_codex::OpenAICodexProvider::codex_cli_unmanaged_refresh_message(
+                current_access_token,
+            )
+        {
+            return Err(message);
+        }
     }
 
     if !crate::providers::openai_codex::OpenAICodexProvider::should_force_refresh_for_status(
@@ -146,20 +163,29 @@ async fn force_refresh_openai_codex_for_retry(
         return Ok(None);
     }
 
+    let previous_tokens = provider.oauth_tokens.clone();
+    let previous_session_id = provider.session_id.clone();
     let refresh_result = provider
         .force_refresh_after_auth_rejection(http_client, &config_dir)
         .await;
 
-    {
-        let gcx_locked = gcx.read().await;
-        let mut registry = gcx_locked.providers.write().await;
-        registry.add(Box::new(provider));
-    }
+    if !provider.auth_state_matches(&previous_tokens, &previous_session_id) {
+        {
+            let gcx_locked = gcx.read().await;
+            let mut registry = gcx_locked.providers.write().await;
+            if let Some(current) = registry.get_mut("openai_codex").and_then(|p| {
+                p.as_any_mut()
+                    .downcast_mut::<crate::providers::openai_codex::OpenAICodexProvider>()
+            }) {
+                current.update_auth_state_from(&provider);
+            }
+        }
 
-    {
-        let mut gcx_locked = gcx.write().await;
-        gcx_locked.caps = None;
-        gcx_locked.caps_last_attempted_ts = 0;
+        {
+            let mut gcx_locked = gcx.write().await;
+            gcx_locked.caps = None;
+            gcx_locked.caps_last_attempted_ts = 0;
+        }
     }
 
     refresh_result

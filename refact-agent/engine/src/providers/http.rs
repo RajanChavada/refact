@@ -2138,21 +2138,14 @@ pub async fn handle_v1_openai_codex_usage(
     };
     let mut codex = codex.clone();
     let previous_tokens = codex.oauth_tokens.clone();
+    let previous_session_id = codex.session_id.clone();
 
     let result = codex
         .fetch_usage_with_refresh(&http_client, &config_dir)
         .await;
-    let tokens_changed = previous_tokens.access_token != codex.oauth_tokens.access_token
-        || previous_tokens.refresh_token != codex.oauth_tokens.refresh_token
-        || previous_tokens.expires_at != codex.oauth_tokens.expires_at
-        || previous_tokens.openai_api_key != codex.oauth_tokens.openai_api_key
-        || previous_tokens.chatgpt_account_id != codex.oauth_tokens.chatgpt_account_id;
+    if sync_openai_codex_auth_state(gcx.clone(), &codex, &previous_tokens, &previous_session_id)
+        .await?
     {
-        let gcx_locked = gcx.read().await;
-        let mut registry = gcx_locked.providers.write().await;
-        registry.add(Box::new(codex));
-    }
-    if tokens_changed {
         invalidate_caps(gcx.clone()).await;
     }
 
@@ -2160,6 +2153,34 @@ pub async fn handle_v1_openai_codex_usage(
         Ok(usage) => json_response(StatusCode::OK, &json!({"data": usage})),
         Err(e) => json_response(StatusCode::OK, &json!({"error": e})),
     }
+}
+
+async fn sync_openai_codex_auth_state(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    source: &OpenAICodexProvider,
+    previous_tokens: &crate::providers::openai_codex_oauth::OAuthTokens,
+    previous_session_id: &str,
+) -> Result<bool, ScratchError> {
+    if source.auth_state_matches(previous_tokens, previous_session_id) {
+        return Ok(false);
+    }
+
+    let gcx_locked = gcx.read().await;
+    let mut registry = gcx_locked.providers.write().await;
+    let provider = registry.get_mut("openai_codex").ok_or_else(|| {
+        ScratchError::new(
+            StatusCode::NOT_FOUND,
+            "OpenAI Codex provider is not available".to_string(),
+        )
+    })?;
+    let Some(current) = provider.as_any_mut().downcast_mut::<OpenAICodexProvider>() else {
+        return Err(ScratchError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to resolve OpenAI Codex provider type".to_string(),
+        ));
+    };
+    current.update_auth_state_from(source);
+    Ok(true)
 }
 
 fn ensure_openai_codex_session_id(yaml_map: &mut serde_yaml::Mapping) -> String {
@@ -2221,20 +2242,19 @@ async fn save_provider_oauth_tokens(
         tokens_value.clone(),
     );
 
-    // Backward/compat + UX: expose API key (if present) at the top-level as well.
-    // Our OpenAI Codex provider expects an API key (OPENAI_API_KEY) for api.openai.com.
-    if let Some(api_key) = tokens_value
-        .get("openai_api_key")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        yaml_map.insert(
-            serde_yaml::Value::String("OPENAI_API_KEY".to_string()),
-            serde_yaml::Value::String(api_key.to_string()),
-        );
-    }
-
     if provider_name == "openai_codex" {
+        if let Some(api_key) = tokens_value
+            .get("openai_api_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            yaml_map.insert(
+                serde_yaml::Value::String("OPENAI_API_KEY".to_string()),
+                serde_yaml::Value::String(api_key.to_string()),
+            );
+        } else {
+            yaml_map.remove(serde_yaml::Value::String("OPENAI_API_KEY".to_string()));
+        }
         ensure_openai_codex_session_id(&mut yaml_map);
     }
 
@@ -2343,5 +2363,178 @@ mod tests {
         );
         let preserved = ensure_openai_codex_session_id(&mut yaml_map);
         assert_eq!(preserved, "existing-session");
+    }
+
+    #[tokio::test]
+    async fn openai_codex_oauth_logout_removes_top_level_api_key() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let config_dir = gcx.read().await.config_dir.clone();
+        let providers_dir = config_dir.join("providers.d");
+        tokio::fs::create_dir_all(&providers_dir).await.unwrap();
+        tokio::fs::write(
+            providers_dir.join("openai_codex.yaml"),
+            "OPENAI_API_KEY: sk-stale\noauth_tokens:\n  openai_api_key: sk-stale\n  access_token: old\n",
+        )
+        .await
+        .unwrap();
+        let empty =
+            serde_yaml::to_value(&crate::providers::openai_codex_oauth::OAuthTokens::default())
+                .unwrap();
+
+        save_provider_oauth_tokens(&gcx, &config_dir, "openai_codex", &empty)
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(providers_dir.join("openai_codex.yaml"))
+            .await
+            .unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        assert!(yaml.get("OPENAI_API_KEY").is_none());
+        assert_eq!(
+            yaml.get("oauth_tokens")
+                .and_then(|tokens| tokens.get("openai_api_key"))
+                .and_then(|value| value.as_str()),
+            Some("")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_codex_oauth_save_syncs_top_level_api_key() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let config_dir = gcx.read().await.config_dir.clone();
+        let tokens = crate::providers::openai_codex_oauth::OAuthTokens {
+            openai_api_key: "sk-new".to_string(),
+            access_token: "access".to_string(),
+            expires_at: i64::MAX,
+            ..Default::default()
+        };
+        let tokens_value = serde_yaml::to_value(&tokens).unwrap();
+
+        save_provider_oauth_tokens(&gcx, &config_dir, "openai_codex", &tokens_value)
+            .await
+            .unwrap();
+
+        let content =
+            tokio::fs::read_to_string(config_dir.join("providers.d").join("openai_codex.yaml"))
+                .await
+                .unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(
+            yaml.get("OPENAI_API_KEY").and_then(|value| value.as_str()),
+            Some("sk-new")
+        );
+        assert_eq!(
+            yaml.get("oauth_tokens")
+                .and_then(|tokens| tokens.get("openai_api_key"))
+                .and_then(|value| value.as_str()),
+            Some("sk-new")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_codex_usage_no_token_change_does_not_replace_registry_provider() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let mut current = OpenAICodexProvider::default();
+        current.enabled_models = vec!["keep-enabled".to_string()];
+        current.custom_models.insert(
+            "keep-custom".to_string(),
+            CustomModelConfig {
+                n_ctx: Some(4096),
+                ..Default::default()
+            },
+        );
+        current.oauth_tokens.access_token = "same-access".to_string();
+        current.session_id = "same-session".to_string();
+        let previous_tokens = current.oauth_tokens.clone();
+        let previous_session_id = current.session_id.clone();
+        {
+            let gcx_locked = gcx.read().await;
+            let mut registry = gcx_locked.providers.write().await;
+            registry.add(Box::new(current.clone()));
+        }
+        let mut source = OpenAICodexProvider::default();
+        source.enabled_models = vec!["clobber-enabled".to_string()];
+        source.oauth_tokens = previous_tokens.clone();
+        source.session_id = previous_session_id.clone();
+
+        let changed = sync_openai_codex_auth_state(
+            gcx.clone(),
+            &source,
+            &previous_tokens,
+            &previous_session_id,
+        )
+        .await
+        .unwrap();
+
+        let stored = {
+            let gcx_locked = gcx.read().await;
+            let registry = gcx_locked.providers.read().await;
+            registry
+                .get("openai_codex")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<OpenAICodexProvider>()
+                .unwrap()
+                .clone()
+        };
+        assert!(!changed);
+        assert_eq!(stored.enabled_models, vec!["keep-enabled".to_string()]);
+        assert!(stored.custom_models.contains_key("keep-custom"));
+    }
+
+    #[tokio::test]
+    async fn openai_codex_token_refresh_preserves_concurrent_model_settings() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let mut current = OpenAICodexProvider::default();
+        current.enabled_models = vec!["keep-enabled".to_string()];
+        current.custom_models.insert(
+            "keep-custom".to_string(),
+            CustomModelConfig {
+                n_ctx: Some(4096),
+                ..Default::default()
+            },
+        );
+        current.oauth_tokens.access_token = "old-access".to_string();
+        current.session_id = "old-session".to_string();
+        let previous_tokens = current.oauth_tokens.clone();
+        let previous_session_id = current.session_id.clone();
+        {
+            let gcx_locked = gcx.read().await;
+            let mut registry = gcx_locked.providers.write().await;
+            registry.add(Box::new(current));
+        }
+        let mut source = OpenAICodexProvider::default();
+        source.enabled_models = vec!["clobber-enabled".to_string()];
+        source.oauth_tokens.access_token = "new-access".to_string();
+        source.oauth_tokens.refresh_token = "new-refresh".to_string();
+        source.oauth_tokens.expires_at = 42;
+        source.session_id = "new-session".to_string();
+
+        let changed = sync_openai_codex_auth_state(
+            gcx.clone(),
+            &source,
+            &previous_tokens,
+            &previous_session_id,
+        )
+        .await
+        .unwrap();
+
+        let stored = {
+            let gcx_locked = gcx.read().await;
+            let registry = gcx_locked.providers.read().await;
+            registry
+                .get("openai_codex")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<OpenAICodexProvider>()
+                .unwrap()
+                .clone()
+        };
+        assert!(changed);
+        assert_eq!(stored.oauth_tokens.access_token, "new-access");
+        assert_eq!(stored.oauth_tokens.refresh_token, "new-refresh");
+        assert_eq!(stored.session_id, "new-session");
+        assert_eq!(stored.enabled_models, vec!["keep-enabled".to_string()]);
+        assert!(stored.custom_models.contains_key("keep-custom"));
     }
 }
