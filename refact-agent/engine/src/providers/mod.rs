@@ -17,7 +17,7 @@ mod lmstudio;
 pub mod oauth_refresh;
 mod ollama;
 mod openai;
-mod openai_codex;
+pub(crate) mod openai_codex;
 pub mod openai_codex_oauth;
 mod openai_responses;
 mod openrouter;

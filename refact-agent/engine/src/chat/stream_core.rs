@@ -11,7 +11,7 @@ use crate::call_validation::ChatUsage;
 use crate::caps::BaseModelRecord;
 use crate::global_context::GlobalContext;
 use crate::llm::{LlmRequest, LlmStreamDelta, get_adapter, safe_truncate};
-use crate::llm::adapter::{AdapterSettings, StreamParseError};
+use crate::llm::adapter::{AdapterSettings, HttpParts, StreamParseError};
 
 use super::types::{DeltaOp, stream_heartbeat, stream_idle_timeout, stream_total_timeout};
 use super::openai_merge::ToolCallAccumulator;
@@ -81,6 +81,81 @@ pub struct StreamRunParams {
     pub supports_reasoning: bool,
     pub reasoning_type: Option<String>,
     pub supports_temperature: bool,
+}
+
+async fn send_llm_http_request(
+    client: &reqwest::Client,
+    http_parts: &HttpParts,
+) -> Result<reqwest::Response, String> {
+    client
+        .post(&http_parts.url)
+        .headers(http_parts.headers.clone())
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .json(&http_parts.body)
+        .send()
+        .await
+        .map_err(|e| format!("LLM request failed: {}", e))
+}
+
+fn is_openai_codex_chatgpt_backend(model_rec: &BaseModelRecord) -> bool {
+    model_rec.id.starts_with("openai_codex/")
+        && model_rec.endpoint.contains("chatgpt.com/backend-api")
+}
+
+async fn force_refresh_openai_codex_for_retry(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    http_client: &reqwest::Client,
+    status: reqwest::StatusCode,
+    current_access_token: &str,
+) -> Result<Option<String>, String> {
+    let (config_dir, provider) = {
+        let gcx_locked = gcx.read().await;
+        let registry = gcx_locked.providers.read().await;
+        let provider = registry
+            .get("openai_codex")
+            .and_then(|p| {
+                p.as_any()
+                    .downcast_ref::<crate::providers::openai_codex::OpenAICodexProvider>()
+            })
+            .cloned();
+        (gcx_locked.config_dir.clone(), provider)
+    };
+
+    let Some(mut provider) = provider else {
+        return Ok(None);
+    };
+
+    if provider.oauth_tokens.access_token != current_access_token
+        && !provider.oauth_tokens.access_token.is_empty()
+    {
+        return Ok(Some(provider.oauth_tokens.access_token.clone()));
+    }
+
+    if !crate::providers::openai_codex::OpenAICodexProvider::should_force_refresh_for_status(
+        status,
+        &provider.oauth_tokens.refresh_token,
+        false,
+    ) {
+        return Ok(None);
+    }
+
+    let refresh_result = provider
+        .force_refresh_after_auth_rejection(http_client, &config_dir)
+        .await;
+
+    {
+        let gcx_locked = gcx.read().await;
+        let mut registry = gcx_locked.providers.write().await;
+        registry.add(Box::new(provider));
+    }
+
+    {
+        let mut gcx_locked = gcx.write().await;
+        gcx_locked.caps = None;
+        gcx_locked.caps_last_attempted_ts = 0;
+    }
+
+    refresh_result
 }
 
 #[derive(Default, Clone)]
@@ -327,16 +402,44 @@ pub async fn run_llm_stream<C: StreamCollector>(
         "LLM streaming request"
     );
 
-    let response = client
-        .post(&http_parts.url)
-        .headers(http_parts.headers.clone())
-        .header(reqwest::header::ACCEPT, "text/event-stream")
-        .json(&http_parts.body)
-        .send()
-        .await
-        .map_err(|e| format!("LLM request failed: {}", e))?;
+    let mut response = send_llm_http_request(&client, &http_parts).await?;
+    let mut status = response.status();
+    if !status.is_success()
+        && is_openai_codex_chatgpt_backend(&params.model_rec)
+        && matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        )
+    {
+        match force_refresh_openai_codex_for_retry(
+            gcx.clone(),
+            &client,
+            status,
+            &params.model_rec.api_key,
+        )
+        .await?
+        {
+            Some(new_access_token) => {
+                let mut retry_parts = HttpParts {
+                    url: http_parts.url.clone(),
+                    headers: http_parts.headers.clone(),
+                    body: http_parts.body.clone(),
+                };
+                let auth_value =
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {}", new_access_token))
+                        .map_err(|e| {
+                            format!("OpenAI Codex refreshed token cannot be used: {}", e)
+                        })?;
+                retry_parts
+                    .headers
+                    .insert(reqwest::header::AUTHORIZATION, auth_value);
+                response = send_llm_http_request(&client, &retry_parts).await?;
+                status = response.status();
+            }
+            None => {}
+        }
+    }
 
-    let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
         return Err(format_llm_error_body(&format!("{}", status), &text));
