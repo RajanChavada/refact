@@ -7,8 +7,11 @@ use tokio::sync::RwLock as ARwLock;
 
 use crate::global_context::GlobalContext;
 
+pub mod converters;
 pub mod manifest;
+pub mod markdown;
 pub mod sources;
+pub mod tools;
 pub mod types;
 pub mod writer;
 

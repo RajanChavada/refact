@@ -37,6 +37,84 @@ pub struct ImportSourceRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionContext {
+    pub competitor: Competitor,
+    pub scope: ImportScope,
+    pub source_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionError {
+    pub competitor: Competitor,
+    pub kind: ImportKind,
+    pub scope: ImportScope,
+    pub path: PathBuf,
+    pub message: String,
+}
+
+impl ConversionError {
+    pub fn new(
+        context: &ConversionContext,
+        kind: ImportKind,
+        path: PathBuf,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            competitor: context.competitor,
+            kind,
+            scope: context.scope.clone(),
+            path,
+            message: message.into(),
+        }
+    }
+
+    pub fn into_issue(self) -> ImportIssue {
+        ImportIssue {
+            competitor: Some(self.competitor),
+            kind: Some(self.kind),
+            scope: Some(self.scope),
+            path: Some(self.path),
+            status: ImportStatus::Error,
+            message: self.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolPolicy {
+    pub allowed: Option<Vec<String>>,
+    pub denied: Vec<String>,
+}
+
+impl ToolPolicy {
+    pub fn missing() -> Self {
+        Self {
+            allowed: None,
+            denied: Vec::new(),
+        }
+    }
+
+    pub fn allow(allowed: Vec<String>) -> Self {
+        Self {
+            allowed: Some(allowed),
+            denied: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedSubagent {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub prompt: String,
+    pub tool_policy: ToolPolicy,
+    pub max_steps: Option<usize>,
+    pub model: Option<String>,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportArtifact {
     FileContent { content: String },
     DirectoryCopy { source_dir: PathBuf },
