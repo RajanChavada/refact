@@ -5,14 +5,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::caps::model_caps::ModelCapabilities;
+use crate::caps::model_caps::{resolve_model_caps, ModelCapabilities};
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
 use crate::providers::traits::{
     AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
     merge_custom_models, parse_enabled_models, parse_custom_models, set_model_enabled_impl,
 };
-use crate::providers::pricing::google_gemini_pricing;
 
 const GEMINI_MODELS_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -33,7 +32,11 @@ pub struct GoogleGeminiHealthInfo {
 }
 
 impl GoogleGeminiProvider {
-    fn parse_gemini_model(model: &serde_json::Value, enabled: bool) -> Option<AvailableModel> {
+    fn parse_gemini_model(
+        model: &serde_json::Value,
+        enabled: bool,
+        pricing: Option<ModelPricing>,
+    ) -> Option<AvailableModel> {
         let name = model.get("name")?.as_str()?;
         let id = name.strip_prefix("models/").unwrap_or(name).to_string();
 
@@ -64,8 +67,6 @@ impl GoogleGeminiProvider {
             .get("thinking")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-
-        let pricing = google_gemini_pricing(&id);
 
         Some(AvailableModel {
             id,
@@ -269,18 +270,15 @@ available:
     }
 
     fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        google_gemini_pricing(model_id)
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 
     async fn fetch_available_models(
         &self,
         http_client: &reqwest::Client,
-        _model_caps: &HashMap<String, ModelCapabilities>,
+        model_caps: &HashMap<String, ModelCapabilities>,
     ) -> Vec<AvailableModel> {
         let api_key = resolve_env_var(&self.api_key, "", "google_gemini api_key");
         if api_key.is_empty() {
@@ -332,7 +330,14 @@ available:
 
                     if let Some(id) = model_id {
                         let enabled = enabled_set.contains(id);
-                        if let Some(model) = Self::parse_gemini_model(m, enabled) {
+                        let resolved_caps = resolve_model_caps(model_caps, &format!("google/{id}"))
+                            .or_else(|| resolve_model_caps(model_caps, &id));
+                        let pricing = self.model_pricing(id).or_else(|| {
+                            resolved_caps
+                                .as_ref()
+                                .and_then(|resolved| resolved.caps.pricing.clone())
+                        });
+                        if let Some(model) = Self::parse_gemini_model(m, enabled, pricing) {
                             all_models.push(model);
                         }
                     }

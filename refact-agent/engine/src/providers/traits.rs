@@ -165,7 +165,10 @@ impl AvailableModel {
             supports_tools: caps.supports_tools,
             supports_parallel_tools: caps.supports_parallel_tools,
             supports_strict_tools: caps.supports_strict_tools,
-            supports_multimodality: caps.supports_vision,
+            supports_multimodality: caps.supports_vision
+                || caps.supports_video
+                || caps.supports_audio
+                || caps.supports_pdf,
             reasoning_effort_options: caps.reasoning_effort_options.clone(),
             supports_thinking_budget: caps.supports_thinking_budget,
             supports_adaptive_thinking_budget: caps.supports_adaptive_thinking_budget,
@@ -176,10 +179,10 @@ impl AvailableModel {
             },
             enabled,
             is_custom: false,
-            pricing,
+            pricing: pricing.or_else(|| caps.pricing.clone()),
             available_providers: Vec::new(),
             selected_provider: None,
-            max_output_tokens: None,
+            max_output_tokens: (caps.max_output_tokens > 0).then_some(caps.max_output_tokens),
             provider_variants: Vec::new(),
             base_model: None,
         }
@@ -427,26 +430,40 @@ pub trait ProviderTrait: Send + Sync {
         let mut models_map: HashMap<String, AvailableModel> = HashMap::new();
 
         let regex_opt: Option<Regex> = self.model_filter_regex().and_then(get_cached_regex);
+        let provider_aliases = model_caps_provider_aliases(self.name());
+        let has_provider_qualified_caps = model_caps
+            .keys()
+            .any(|key| model_caps_key_has_provider_alias(key, &provider_aliases));
 
         for (name, caps) in model_caps {
-            if is_legacy_refact_model(name) {
+            let Some(model_id) =
+                model_caps_provider_model_id(&provider_aliases, has_provider_qualified_caps, name)
+            else {
+                continue;
+            };
+            if is_legacy_refact_model(model_id) {
                 continue;
             }
             let matches = match &regex_opt {
-                Some(regex) => regex.is_match(name),
+                Some(regex) => regex.is_match(model_id),
                 None => true,
             };
             if matches {
-                let disabled = self.disabled_models().contains(&name.to_string());
+                let disabled = self
+                    .disabled_models()
+                    .iter()
+                    .any(|disabled| disabled == name || disabled.as_str() == model_id);
                 let enabled = if disabled {
                     false
                 } else {
-                    enabled_set.contains(name.as_str())
+                    enabled_set.contains(name.as_str()) || enabled_set.contains(model_id)
                 };
-                let pricing = self.model_pricing(name);
+                let pricing = self
+                    .model_pricing(model_id)
+                    .or_else(|| self.model_pricing(name));
                 models_map.insert(
-                    name.clone(),
-                    AvailableModel::from_caps(name, caps, enabled, pricing),
+                    model_id.to_string(),
+                    AvailableModel::from_caps(model_id, caps, enabled, pricing),
                 );
             }
         }
@@ -478,6 +495,44 @@ pub trait ProviderTrait: Send + Sync {
 // ============================================================================
 // Helper functions for reducing boilerplate in provider implementations
 // ============================================================================
+
+fn model_caps_provider_model_id<'a>(
+    provider_aliases: &[String],
+    has_provider_qualified_caps: bool,
+    capability_key: &'a str,
+) -> Option<&'a str> {
+    if !capability_key.contains('/') {
+        return (!has_provider_qualified_caps).then_some(capability_key);
+    }
+
+    for provider_alias in provider_aliases {
+        let prefix = format!("{provider_alias}/");
+        if let Some(model_id) = capability_key.strip_prefix(&prefix) {
+            return Some(model_id);
+        }
+    }
+
+    None
+}
+
+fn model_caps_key_has_provider_alias(key: &str, provider_aliases: &[String]) -> bool {
+    provider_aliases
+        .iter()
+        .any(|provider_alias| key.starts_with(&format!("{provider_alias}/")))
+}
+
+fn model_caps_provider_aliases(provider_name: &str) -> Vec<String> {
+    let mut aliases = vec![provider_name.to_string(), provider_name.replace('_', "-")];
+    for suffix in ["_responses", "-responses"] {
+        if let Some(stripped) = provider_name.strip_suffix(suffix) {
+            aliases.push(stripped.to_string());
+            aliases.push(stripped.replace('_', "-"));
+        }
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
 
 pub fn merge_custom_models(
     models: &mut Vec<AvailableModel>,

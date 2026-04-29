@@ -1576,7 +1576,9 @@ async fn run_streaming_generation(
         (model_rec.base.id.clone(), session.draft_usage.clone())
     };
     let metering_usd = if let Some(ref usage) = usage_for_pricing {
-        if let Some(pricing) = get_model_pricing(&gcx, &model_id).await {
+        if let Some(pricing) =
+            crate::providers::pricing::lookup_model_pricing(&gcx, &model_id).await
+        {
             crate::providers::pricing::compute_cost(usage, &pricing)
         } else {
             None
@@ -1662,27 +1664,6 @@ async fn run_streaming_generation(
     }
 
     Ok(())
-}
-
-async fn get_model_pricing(
-    gcx: &Arc<ARwLock<GlobalContext>>,
-    model_id: &str,
-) -> Option<crate::providers::traits::ModelPricing> {
-    let parts: Vec<&str> = model_id.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let provider_name = parts[0];
-    let model_name = parts[1];
-
-    let gcx_locked = gcx.read().await;
-    let registry = gcx_locked.providers.read().await;
-
-    if let Some(provider) = registry.get(provider_name) {
-        return provider.model_pricing(model_name);
-    }
-
-    None
 }
 
 fn is_result_empty(result: &ChoiceFinal) -> bool {

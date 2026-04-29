@@ -11,7 +11,6 @@ use crate::providers::traits::{
     CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
     parse_enabled_models, parse_custom_models, set_model_enabled_impl,
 };
-use crate::providers::pricing::openai_pricing;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenAIResponsesProvider {
@@ -152,11 +151,8 @@ available:
     }
 
     fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        openai_pricing(model_id)
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 }

@@ -1,26 +1,16 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use tokio::sync::RwLock as ARwLock;
 use tracing::warn;
 
+use crate::caps::models_dev::{
+    load_models_dev_catalog, models_dev_catalog_to_model_caps, ModelsDevCatalog,
+};
 use crate::global_context::GlobalContext;
-
-static BUNDLED_MODEL_CAPS: OnceLock<HashMap<String, ModelCapabilities>> = OnceLock::new();
-const BUNDLED_MODEL_CAPS_FILES: &[(&str, &str)] = &[
-    ("antropic", include_str!("model_capabilites/antropic.json")),
-    ("deepseek", include_str!("model_capabilites/deepseek.json")),
-    ("glm", include_str!("model_capabilites/glm.json")),
-    ("google", include_str!("model_capabilites/google.json")),
-    ("kimi", include_str!("model_capabilites/kimi.json")),
-    ("llama", include_str!("model_capabilites/llama.json")),
-    ("mistral", include_str!("model_capabilites/mistral.json")),
-    ("openai", include_str!("model_capabilites/openai.json")),
-    ("other", include_str!("model_capabilites/other.json")),
-    ("qwen", include_str!("model_capabilites/qwen.json")),
-    ("xai", include_str!("model_capabilites/xai.json")),
-];
+use crate::providers::traits::ModelPricing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,6 +104,10 @@ pub struct ModelCapabilities {
     pub supports_web_search: bool,
     #[serde(default = "default_true")]
     pub supports_cache_control: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_cost: Option<Value>,
 }
 
 fn default_true() -> bool {
@@ -159,42 +153,49 @@ fn validate_model_caps(caps: &mut HashMap<String, ModelCapabilities>) {
     }
 }
 
-fn load_bundled_model_caps() -> Result<HashMap<String, ModelCapabilities>, String> {
-    let mut models = HashMap::new();
-
-    for (family, content) in BUNDLED_MODEL_CAPS_FILES {
-        let parsed: HashMap<String, ModelCapabilities> = serde_json::from_str(content)
-            .map_err(|e| format!("Failed to parse bundled model caps {family}: {e}"))?;
-        for (name, caps) in parsed {
-            if models.insert(name.clone(), caps).is_some() {
-                warn!(
-                    "Bundled model capabilities duplicate model '{}', last one wins",
-                    name
-                );
-            }
-        }
-    }
-
+pub fn model_caps_from_models_dev_catalog(
+    catalog: &ModelsDevCatalog,
+) -> Result<HashMap<String, ModelCapabilities>, String> {
+    let mut models = models_dev_catalog_to_model_caps(catalog)?;
     validate_model_caps(&mut models);
     Ok(models)
 }
 
-pub fn bundled_model_caps() -> Result<HashMap<String, ModelCapabilities>, String> {
-    match BUNDLED_MODEL_CAPS.get() {
-        Some(models) => Ok(models.clone()),
-        None => {
-            let models = load_bundled_model_caps()?;
-            let _ = BUNDLED_MODEL_CAPS.set(models.clone());
-            Ok(models)
-        }
-    }
+pub async fn get_model_caps(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    force_refresh: bool,
+) -> Result<HashMap<String, ModelCapabilities>, String> {
+    let catalog = load_models_dev_catalog(gcx, force_refresh)
+        .await
+        .map_err(|e| format!("Failed to load models.dev model capabilities: {e}"))?;
+    model_caps_from_models_dev_catalog(&catalog)
 }
 
-pub async fn get_model_caps(
-    _gcx: Arc<ARwLock<GlobalContext>>,
-    _force_refresh: bool,
-) -> Result<HashMap<String, ModelCapabilities>, String> {
-    bundled_model_caps()
+pub fn model_caps_pricing_metadata(caps: &HashMap<String, ModelCapabilities>) -> Value {
+    let mut map = Map::new();
+    for (model_id, model_caps) in caps {
+        let Some(pricing) = model_caps.pricing.as_ref() else {
+            continue;
+        };
+        let Ok(mut value) = serde_json::to_value(pricing) else {
+            continue;
+        };
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "source".to_string(),
+                Value::String("models.dev".to_string()),
+            );
+            obj.insert(
+                "tier".to_string(),
+                Value::String("base_text_tokens".to_string()),
+            );
+            if let Some(raw_cost) = model_caps.raw_cost.as_ref() {
+                obj.insert("raw_cost".to_string(), raw_cost.clone());
+            }
+        }
+        map.insert(model_id.clone(), value);
+    }
+    Value::Object(map)
 }
 
 pub fn is_model_supported(caps: &HashMap<String, ModelCapabilities>, model_name: &str) -> bool {
@@ -425,6 +426,285 @@ pub fn resolve_model_caps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::caps::models_dev::{
+        load_models_dev_snapshot_catalog, write_models_dev_cache, ModelsDevCost, ModelsDevCostTier,
+        ModelsDevLimit, ModelsDevModalities, ModelsDevModel, ModelsDevProvider,
+    };
+
+    fn catalog_with_providers(
+        providers: Vec<(&str, Vec<(&str, ModelsDevModel)>)>,
+    ) -> ModelsDevCatalog {
+        providers
+            .into_iter()
+            .map(|(provider_id, models)| {
+                let provider_models = models
+                    .into_iter()
+                    .map(|(model_key, model)| (model_key.to_string(), model))
+                    .collect();
+                (
+                    provider_id.to_string(),
+                    ModelsDevProvider {
+                        id: provider_id.to_string(),
+                        name: provider_id.to_string(),
+                        models: provider_models,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn models_dev_model(model_id: &str) -> ModelsDevModel {
+        ModelsDevModel {
+            id: model_id.to_string(),
+            name: model_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_models_dev_translation_maps_limits_booleans_modalities_and_pricing() {
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![(
+                "model-a",
+                ModelsDevModel {
+                    id: "model-a".to_string(),
+                    limit: Some(ModelsDevLimit {
+                        context: Some(128_000),
+                        output: Some(16_384),
+                        ..Default::default()
+                    }),
+                    tool_call: Some(true),
+                    temperature: None,
+                    reasoning: Some(true),
+                    modalities: Some(ModelsDevModalities {
+                        input: vec![
+                            "text".to_string(),
+                            "image".to_string(),
+                            "video".to_string(),
+                            "audio".to_string(),
+                            "pdf".to_string(),
+                        ],
+                        output: vec!["text".to_string()],
+                    }),
+                    cost: Some(ModelsDevCost {
+                        input: Some(2.5),
+                        output: Some(10.0),
+                        cache_read: Some(1.25),
+                        cache_write: Some(3.75),
+                        context_over_200k: Some(ModelsDevCostTier {
+                            input: Some(5.0),
+                            output: Some(20.0),
+                            ..Default::default()
+                        }),
+                    }),
+                    ..Default::default()
+                },
+            )],
+        )]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        let resolved = resolve_model_caps(&caps, "provider-a/model-a").unwrap();
+        let model = resolved.caps;
+
+        assert_eq!(model.n_ctx, 128_000);
+        assert_eq!(model.max_output_tokens, 16_384);
+        assert!(model.supports_tools);
+        assert!(model.supports_temperature);
+        assert!(model.supports_vision);
+        assert!(model.supports_video);
+        assert!(model.supports_audio);
+        assert!(model.supports_pdf);
+        assert!(model.reasoning_effort_options.is_none());
+        assert!(!model.supports_thinking_budget);
+        assert!(!model.supports_adaptive_thinking_budget);
+        assert_eq!(model.tokenizer, "fake");
+        let pricing = model.pricing.unwrap();
+        assert_eq!(pricing.prompt, 2.5);
+        assert_eq!(pricing.generated, 10.0);
+        assert_eq!(pricing.cache_read, Some(1.25));
+        assert_eq!(pricing.cache_creation, Some(3.75));
+        assert_eq!(
+            model.raw_cost.unwrap()["context_over_200k"]["input"],
+            serde_json::json!(5.0)
+        );
+    }
+
+    #[test]
+    fn test_models_dev_option_bool_defaults_are_explicit() {
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![
+                ("missing-bools", models_dev_model("missing-bools")),
+                (
+                    "false-temperature",
+                    ModelsDevModel {
+                        id: "false-temperature".to_string(),
+                        temperature: Some(false),
+                        tool_call: Some(false),
+                        reasoning: None,
+                        ..Default::default()
+                    },
+                ),
+            ],
+        )]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        let missing = resolve_model_caps(&caps, "missing-bools").unwrap().caps;
+        assert!(!missing.supports_tools);
+        assert!(missing.supports_temperature);
+        assert!(missing.reasoning_effort_options.is_none());
+        assert!(!missing.supports_thinking_budget);
+
+        let explicit_false = resolve_model_caps(&caps, "provider-a/false-temperature")
+            .unwrap()
+            .caps;
+        assert!(!explicit_false.supports_tools);
+        assert!(!explicit_false.supports_temperature);
+        assert!(explicit_false.reasoning_effort_options.is_none());
+    }
+
+    #[test]
+    fn test_models_dev_translation_adds_qualified_and_unambiguous_bare_keys() {
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![("unique-model", models_dev_model("unique-model"))],
+        )]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        assert!(caps.contains_key("provider-a/unique-model"));
+        assert!(caps.contains_key("unique-model"));
+        assert_eq!(
+            resolve_model_caps(&caps, "provider-a/unique-model")
+                .unwrap()
+                .matched_key,
+            "provider-a/unique-model"
+        );
+        assert_eq!(
+            resolve_model_caps(&caps, "unique-model")
+                .unwrap()
+                .matched_key,
+            "unique-model"
+        );
+    }
+
+    #[test]
+    fn test_models_dev_translation_skips_conflicting_bare_keys() {
+        let catalog = catalog_with_providers(vec![
+            (
+                "provider-a",
+                vec![("shared-model", models_dev_model("shared-model"))],
+            ),
+            (
+                "provider-b",
+                vec![("shared-model", models_dev_model("shared-model"))],
+            ),
+        ]);
+
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        assert!(caps.contains_key("provider-a/shared-model"));
+        assert!(caps.contains_key("provider-b/shared-model"));
+        assert!(!caps.contains_key("shared-model"));
+        assert!(resolve_model_caps(&caps, "shared-model").is_none());
+    }
+
+    #[test]
+    fn test_models_dev_pricing_metadata_labels_base_tier_and_preserves_raw_cost() {
+        let catalog = catalog_with_providers(vec![(
+            "provider-a",
+            vec![(
+                "priced-model",
+                ModelsDevModel {
+                    id: "priced-model".to_string(),
+                    cost: Some(ModelsDevCost {
+                        input: Some(1.0),
+                        output: Some(2.0),
+                        cache_read: Some(0.5),
+                        cache_write: Some(0.75),
+                        context_over_200k: Some(ModelsDevCostTier {
+                            input: Some(10.0),
+                            output: Some(20.0),
+                            ..Default::default()
+                        }),
+                    }),
+                    ..Default::default()
+                },
+            )],
+        )]);
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        let metadata = model_caps_pricing_metadata(&caps);
+        let pricing = &metadata["provider-a/priced-model"];
+
+        assert_eq!(pricing["prompt"], serde_json::json!(1.0));
+        assert_eq!(pricing["generated"], serde_json::json!(2.0));
+        assert_eq!(pricing["cache_read"], serde_json::json!(0.5));
+        assert_eq!(pricing["cache_creation"], serde_json::json!(0.75));
+        assert_eq!(pricing["source"], serde_json::json!("models.dev"));
+        assert_eq!(pricing["tier"], serde_json::json!("base_text_tokens"));
+        assert_eq!(
+            pricing["raw_cost"]["context_over_200k"]["output"],
+            serde_json::json!(20.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_model_caps_loads_models_dev_snapshot_and_cache() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let snapshot_caps = get_model_caps(gcx.clone(), false).await.unwrap();
+        assert!(resolve_model_caps(&snapshot_caps, "openai/gpt-4o").is_some());
+
+        let mut catalog = load_models_dev_snapshot_catalog().unwrap();
+        catalog.get_mut("openai").unwrap().models.insert(
+            "refact-cache-test-model".to_string(),
+            ModelsDevModel {
+                id: "refact-cache-test-model".to_string(),
+                limit: Some(ModelsDevLimit {
+                    context: Some(42_000),
+                    output: Some(4_200),
+                    ..Default::default()
+                }),
+                tool_call: Some(true),
+                ..Default::default()
+            },
+        );
+        let cache_dir = { gcx.read().await.cache_dir.clone() };
+        let contents = serde_json::to_string(&catalog).unwrap();
+        write_models_dev_cache(&cache_dir, &contents).await.unwrap();
+
+        let cache_caps = get_model_caps(gcx, false).await.unwrap();
+        let resolved = resolve_model_caps(&cache_caps, "openai/refact-cache-test-model")
+            .unwrap()
+            .caps;
+        assert_eq!(resolved.n_ctx, 42_000);
+        assert_eq!(resolved.max_output_tokens, 4_200);
+        assert!(resolved.supports_tools);
+    }
+
+    #[test]
+    fn test_models_dev_snapshot_resolves_representative_planned_providers() {
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        for model in [
+            "openai/gpt-4o",
+            "anthropic/claude-3-5-sonnet-20241022",
+            "deepseek/deepseek-chat",
+            "alibaba/qwen-max",
+            "moonshotai/kimi-k2-thinking",
+            "zai/glm-4.6",
+            "zhipuai/glm-4.6",
+            "minimax/MiniMax-M2.1",
+            "github-copilot/claude-opus-4.6",
+        ] {
+            assert!(
+                resolve_model_caps(&caps, model).is_some(),
+                "models.dev snapshot should resolve {model}"
+            );
+        }
+    }
 
     #[test]
     fn test_model_capability_lookup() {
@@ -940,25 +1220,20 @@ mod tests {
     }
 
     #[test]
-    fn test_bundled_model_caps_loads_representative_models() {
-        let caps = bundled_model_caps().unwrap();
+    fn test_models_dev_snapshot_loads_representative_bare_models() {
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
 
         for model in [
-            "gpt-4o",
-            "claude-sonnet-4-6",
-            "gemini-3-pro",
-            "deepseek-chat",
-            "qwen3.6-27b",
-            "mistral-large-3",
-            "kimi-k2-instruct",
-            "llama-3.3-70b",
-            "grok-4",
-            "GLM-4.6",
-            "minimax-m2.1",
+            "gpt-4o-2024-05-13",
+            "claude-3-opus-20240229",
+            "qwen3.6-35b-a3b",
+            "gemini-1.5-flash",
+            "grok-3-fast",
         ] {
             assert!(
                 resolve_model_caps(&caps, model).is_some(),
-                "bundled caps should include {model}"
+                "models.dev caps should include unambiguous bare model {model}"
             );
         }
     }

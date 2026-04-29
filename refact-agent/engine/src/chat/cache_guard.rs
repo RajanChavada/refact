@@ -5,7 +5,6 @@ use similar::{Algorithm, TextDiff};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 
 use crate::global_context::GlobalContext;
-use crate::providers::traits::ModelPricing;
 use crate::tokens::{cached_tokenizer, count_text_tokens_with_fallback};
 
 const CACHE_GUARD_TOOL_NAME: &str = "cache_guard";
@@ -38,7 +37,8 @@ pub fn is_cache_guard_pause_reason(reason: &crate::chat::types::PauseReason) -> 
 }
 
 pub async fn is_guard_enabled_for_model(gcx: Arc<ARwLock<GlobalContext>>, model_id: &str) -> bool {
-    let Some(pricing) = get_model_pricing(&gcx, model_id).await else {
+    let Some(pricing) = crate::providers::pricing::lookup_model_pricing(&gcx, model_id).await
+    else {
         return false;
     };
     pricing.cache_read.is_some() || pricing.cache_creation.is_some()
@@ -115,7 +115,7 @@ pub async fn estimate_extra_cache_miss_usd(
     model_id: &str,
     previous_sanitized: &Value,
 ) -> Option<f64> {
-    let pricing = get_model_pricing(&gcx, model_id).await?;
+    let pricing = crate::providers::pricing::lookup_model_pricing(&gcx, model_id).await?;
     let cache_read_rate = pricing.cache_read?;
     if pricing.prompt <= cache_read_rate {
         return Some(0.0);
@@ -222,24 +222,6 @@ pub async fn commit_cache_guard_snapshot(
 ) {
     let mut session = session_arc.lock().await;
     session.cache_guard_snapshot = Some(sanitized_body);
-}
-
-async fn get_model_pricing(
-    gcx: &Arc<ARwLock<GlobalContext>>,
-    model_id: &str,
-) -> Option<ModelPricing> {
-    let parts: Vec<&str> = model_id.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let provider_name = parts[0];
-    let model_name = parts[1];
-
-    let gcx_locked = gcx.read().await;
-    let registry = gcx_locked.providers.read().await;
-    registry
-        .get(provider_name)
-        .and_then(|provider| provider.model_pricing(model_name))
 }
 
 fn sanitize_value(value: &Value) -> Value {

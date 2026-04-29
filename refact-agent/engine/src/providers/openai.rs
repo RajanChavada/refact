@@ -6,14 +6,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::caps::model_caps::ModelCapabilities;
+use crate::caps::model_caps::{resolve_model_caps, ModelCapabilities};
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::{is_legacy_refact_model, resolve_env_var};
 use crate::providers::traits::{
     AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
     merge_custom_models, parse_enabled_models, parse_custom_models, set_model_enabled_impl,
 };
-use crate::providers::pricing::openai_pricing;
 
 const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
 
@@ -175,12 +174,9 @@ available:
     }
 
     fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        openai_pricing(model_id)
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 
     async fn fetch_available_models(
@@ -254,12 +250,18 @@ available:
                 }
 
                 let enabled = enabled_set.contains(id.as_str());
-                let pricing = self.model_pricing(&id);
+                let resolved_caps = resolve_model_caps(model_caps, &format!("openai/{id}"))
+                    .or_else(|| resolve_model_caps(model_caps, &id));
+                let pricing = self.model_pricing(&id).or_else(|| {
+                    resolved_caps
+                        .as_ref()
+                        .and_then(|resolved| resolved.caps.pricing.clone())
+                });
 
-                if let Some(caps) = model_caps.get(&id) {
+                if let Some(resolved) = resolved_caps {
                     models_map.insert(
                         id.clone(),
-                        AvailableModel::from_caps(&id, caps, enabled, pricing),
+                        AvailableModel::from_caps(&id, &resolved.caps, enabled, pricing),
                     );
                 } else {
                     models_map.insert(

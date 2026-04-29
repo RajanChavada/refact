@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::warn;
 
+use crate::caps::model_caps::ModelCapabilities;
 use crate::global_context::GlobalContext;
 use crate::providers::traits::ModelPricing;
 
@@ -285,6 +286,7 @@ pub fn get_provider<'a>(
         .or_else(|| catalog.values().find(|provider| provider.id == provider_id))
 }
 
+#[allow(dead_code)]
 pub fn get_model<'a>(
     catalog: &'a ModelsDevCatalog,
     provider_id: &str,
@@ -309,6 +311,155 @@ pub fn cost_to_pricing(cost: &ModelsDevCost) -> Option<ModelPricing> {
         cache_creation: cost.cache_write,
     };
     pricing.is_valid().then_some(pricing)
+}
+
+pub fn models_dev_catalog_to_model_caps(
+    catalog: &ModelsDevCatalog,
+) -> Result<HashMap<String, ModelCapabilities>, String> {
+    let bare_alias_owners = collect_bare_alias_owners(catalog);
+    let mut caps = HashMap::new();
+
+    for (provider_key, provider) in catalog {
+        let provider_aliases = provider_aliases(provider_key, provider);
+        for (model_key, model) in &provider.models {
+            let model_aliases = model_aliases(model_key, model);
+            let owner = model_owner_key(provider_key, model_key);
+            let model_caps = models_dev_model_to_model_caps(model);
+
+            for provider_alias in &provider_aliases {
+                for model_alias in &model_aliases {
+                    let key = format!("{provider_alias}/{model_alias}");
+                    insert_qualified_model_caps(&mut caps, key, &model_caps)?;
+                }
+            }
+
+            for model_alias in &model_aliases {
+                if model_alias.contains('/') {
+                    continue;
+                }
+                let collision_key = bare_alias_collision_key(model_alias);
+                if bare_alias_owners
+                    .get(&collision_key)
+                    .is_some_and(|owners| owners.len() == 1 && owners.contains(&owner))
+                {
+                    insert_bare_model_caps(&mut caps, model_alias.to_string(), &model_caps);
+                }
+            }
+        }
+    }
+
+    if caps.is_empty() {
+        return Err("models.dev catalog produced no model capabilities".to_string());
+    }
+
+    Ok(caps)
+}
+
+fn models_dev_model_to_model_caps(model: &ModelsDevModel) -> ModelCapabilities {
+    let limit = model.limit.as_ref();
+    let input_modalities = model
+        .modalities
+        .as_ref()
+        .map(|modalities| modalities.input.as_slice())
+        .unwrap_or(&[]);
+    ModelCapabilities {
+        n_ctx: limit.and_then(|limit| limit.context).unwrap_or_default(),
+        max_output_tokens: limit.and_then(|limit| limit.output).unwrap_or_default(),
+        supports_tools: model.tool_call == Some(true),
+        supports_vision: has_input_modality(input_modalities, "image"),
+        supports_video: has_input_modality(input_modalities, "video"),
+        supports_audio: has_input_modality(input_modalities, "audio"),
+        supports_pdf: has_input_modality(input_modalities, "pdf"),
+        supports_temperature: model.temperature.unwrap_or(true),
+        tokenizer: "fake".to_string(),
+        pricing: model_cost_to_pricing(model),
+        raw_cost: model
+            .cost
+            .as_ref()
+            .and_then(|cost| serde_json::to_value(cost).ok()),
+        ..Default::default()
+    }
+}
+
+fn has_input_modality(modalities: &[String], expected: &str) -> bool {
+    modalities
+        .iter()
+        .any(|modality| modality.eq_ignore_ascii_case(expected))
+}
+
+fn provider_aliases(provider_key: &str, provider: &ModelsDevProvider) -> Vec<String> {
+    unique_non_empty_aliases([
+        provider_key.to_string(),
+        provider.id.clone(),
+        provider_key.replace('-', "_"),
+        provider.id.replace('-', "_"),
+    ])
+}
+
+fn model_aliases(model_key: &str, model: &ModelsDevModel) -> Vec<String> {
+    unique_non_empty_aliases([model_key.to_string(), model.id.clone()])
+}
+
+fn unique_non_empty_aliases<const N: usize>(aliases: [String; N]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    aliases
+        .into_iter()
+        .filter(|alias| !alias.trim().is_empty())
+        .filter(|alias| seen.insert(alias.clone()))
+        .collect()
+}
+
+fn collect_bare_alias_owners(catalog: &ModelsDevCatalog) -> HashMap<String, HashSet<String>> {
+    let mut owners: HashMap<String, HashSet<String>> = HashMap::new();
+    for (provider_key, provider) in catalog {
+        for (model_key, model) in &provider.models {
+            let owner = model_owner_key(provider_key, model_key);
+            for alias in model_aliases(model_key, model) {
+                if alias.contains('/') {
+                    continue;
+                }
+                owners
+                    .entry(bare_alias_collision_key(&alias))
+                    .or_default()
+                    .insert(owner.clone());
+            }
+        }
+    }
+    owners
+}
+
+fn model_owner_key(provider_key: &str, model_key: &str) -> String {
+    format!("{provider_key}/{model_key}")
+}
+
+fn bare_alias_collision_key(alias: &str) -> String {
+    alias.to_ascii_lowercase().replace('.', "-")
+}
+
+fn insert_qualified_model_caps(
+    caps: &mut HashMap<String, ModelCapabilities>,
+    key: String,
+    model_caps: &ModelCapabilities,
+) -> Result<(), String> {
+    if caps.contains_key(&key) {
+        return Err(format!(
+            "models.dev capability key '{key}' would be duplicated"
+        ));
+    }
+    caps.insert(key, model_caps.clone());
+    Ok(())
+}
+
+fn insert_bare_model_caps(
+    caps: &mut HashMap<String, ModelCapabilities>,
+    key: String,
+    model_caps: &ModelCapabilities,
+) {
+    if caps.contains_key(&key) {
+        warn!("Skipping ambiguous models.dev bare capability key '{key}'");
+        return;
+    }
+    caps.insert(key, model_caps.clone());
 }
 
 pub fn validate_required_project_providers(catalog: &ModelsDevCatalog) -> Result<(), String> {

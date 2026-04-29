@@ -13,7 +13,9 @@ use crate::caps::providers::{
     CapsProvider,
 };
 use crate::providers::config::{ModelTypeDefaults, ProviderDefaults, is_legacy_refact_model};
-use crate::caps::model_caps::{ModelCapabilities, get_model_caps, resolve_model_caps};
+use crate::caps::model_caps::{
+    get_model_caps, model_caps_pricing_metadata, resolve_model_caps, ModelCapabilities,
+};
 use crate::llm::WireFormat;
 use crate::providers::traits::AvailableModel;
 
@@ -386,6 +388,43 @@ impl DefaultModels {
     }
 }
 
+fn resolve_model_caps_for_provider_model(
+    model_caps: &HashMap<String, ModelCapabilities>,
+    model_id: &str,
+) -> Option<crate::caps::model_caps::ResolvedCaps> {
+    if let Some(resolved) = resolve_model_caps(model_caps, model_id) {
+        return Some(resolved);
+    }
+
+    let Some((provider_name, bare_model_id)) = model_id.split_once('/') else {
+        return None;
+    };
+    for provider_alias in model_caps_provider_aliases(provider_name) {
+        let qualified = format!("{provider_alias}/{bare_model_id}");
+        if let Some(resolved) = resolve_model_caps(model_caps, &qualified) {
+            return Some(resolved);
+        }
+    }
+
+    None
+}
+
+fn model_caps_provider_aliases(provider_name: &str) -> Vec<String> {
+    let mut aliases = vec![provider_name.replace('_', "-")];
+    for suffix in ["_responses", "-responses"] {
+        if let Some(stripped) = provider_name.strip_suffix(suffix) {
+            aliases.push(stripped.to_string());
+            aliases.push(stripped.replace('_', "-"));
+        }
+    }
+    if provider_name == "google_gemini" {
+        aliases.push("google".to_string());
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
 /// Build ChatModelRecord from an AvailableModel and provider runtime info
 fn build_chat_model_record(
     provider_name: &str,
@@ -416,7 +455,7 @@ fn build_chat_model_record(
     } else {
         None
     }
-    .or_else(|| resolve_model_caps(model_caps, &model_id))
+    .or_else(|| resolve_model_caps_for_provider_model(model_caps, &model_id))
     .or_else(|| {
         if model_id.starts_with("openrouter/") {
             None
@@ -488,7 +527,10 @@ fn build_chat_model_record(
             (
                 effective_n_ctx,
                 caps.supports_tools,
-                caps.supports_vision,
+                caps.supports_vision
+                    || caps.supports_video
+                    || caps.supports_audio
+                    || caps.supports_pdf,
                 caps.reasoning_effort_options.clone(),
                 caps.supports_thinking_budget,
                 caps.supports_adaptive_thinking_budget,
@@ -864,13 +906,13 @@ pub async fn load_caps(
         provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
     }
 
-    let model_caps_map = match get_model_caps(gcx.clone(), false).await {
-        Ok(map) => map,
-        Err(e) => {
-            warn!("Failed to fetch model capabilities: {}, using empty map", e);
-            HashMap::new()
-        }
-    };
+    let model_caps_map = get_model_caps(gcx.clone(), false).await.map_err(|e| {
+        format!("Failed to load models.dev capabilities. Check the bundled snapshot or runtime cache: {e}")
+    })?;
+    caps.metadata.pricing = model_caps_pricing_metadata(&model_caps_map);
+    caps.metadata
+        .features
+        .push("models_dev_base_text_pricing".to_string());
     caps.model_caps = Arc::new(model_caps_map);
 
     // Clear chat models from legacy CapsProviders that have a new ProviderTrait implementation.
@@ -942,7 +984,12 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_default_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_default_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_default_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default chat model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_default_model
@@ -955,7 +1002,12 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_thinking_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_thinking_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_thinking_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default thinking model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_thinking_model
@@ -968,7 +1020,12 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_buddy_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_buddy_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_buddy_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default buddy model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_buddy_model
@@ -981,7 +1038,12 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_light_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_light_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_light_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default light model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_light_model
@@ -1023,7 +1085,7 @@ pub fn resolve_chat_model(
 
     let base_record = resolve_model(&caps.chat_models, model_id)?;
 
-    let resolved = resolve_model_caps(&caps.model_caps, model_id);
+    let resolved = resolve_model_caps_for_provider_model(&caps.model_caps, model_id);
 
     match resolved {
         Some(resolved_caps) => {
@@ -1052,7 +1114,7 @@ pub fn resolve_chat_model(
 fn apply_model_caps_to_all_chat_models(caps: &mut CodeAssistantCaps) {
     let model_ids: Vec<String> = caps.chat_models.keys().cloned().collect();
     for model_id in model_ids {
-        if let Some(resolved) = resolve_model_caps(&caps.model_caps, &model_id) {
+        if let Some(resolved) = resolve_model_caps_for_provider_model(&caps.model_caps, &model_id) {
             if let Some(record) = caps.chat_models.get(&model_id) {
                 let mut updated = (**record).clone();
                 apply_registry_caps_to_chat_model(&mut updated, &resolved.caps);
@@ -1103,7 +1165,11 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     record.supports_tools = record.supports_tools || caps.supports_tools;
     record.supports_parallel_tools = record.supports_parallel_tools || caps.supports_parallel_tools;
     record.supports_strict_tools = record.supports_strict_tools || caps.supports_strict_tools;
-    record.supports_multimodality = record.supports_multimodality || caps.supports_vision;
+    record.supports_multimodality = record.supports_multimodality
+        || caps.supports_vision
+        || caps.supports_video
+        || caps.supports_audio
+        || caps.supports_pdf;
     record.supports_clicks = record.supports_clicks || caps.supports_clicks;
     record.default_temperature = caps.default_temperature;
     record.default_max_tokens = caps.default_max_tokens;
