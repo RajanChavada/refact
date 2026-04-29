@@ -66,6 +66,8 @@ pub struct TrajectoryEvent {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_lines_added: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,6 +128,8 @@ pub struct TrajectoryMeta {
     pub session_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_chat_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeMeta>,
     #[serde(default)]
     pub total_lines_added: i64,
     #[serde(default)]
@@ -387,11 +391,109 @@ pub async fn find_trajectory_path(
     None
 }
 
+fn parse_worktree_meta(value: &serde_json::Value) -> Option<WorktreeMeta> {
+    if value.is_null() {
+        return None;
+    }
+    serde_json::from_value(value.clone()).ok()
+}
+
+fn trajectory_worktree_from_extra(
+    extra: &serde_json::Map<String, serde_json::Value>,
+) -> Option<WorktreeMeta> {
+    extra.get("worktree").and_then(parse_worktree_meta)
+}
+
+fn sanitize_worktree_extra(
+    extra: &mut serde_json::Map<String, serde_json::Value>,
+) -> Option<WorktreeMeta> {
+    let Some(value) = extra.get("worktree") else {
+        return None;
+    };
+    if value.is_null() {
+        extra.remove("worktree");
+        return None;
+    }
+    match serde_json::from_value::<WorktreeMeta>(value.clone()) {
+        Ok(worktree) => Some(worktree),
+        Err(e) => {
+            warn!("Ignoring invalid trajectory worktree metadata: {}", e);
+            extra.remove("worktree");
+            None
+        }
+    }
+}
+
+async fn synthesize_legacy_task_agent_worktree(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    chat_id: &str,
+    task_meta: Option<&super::types::TaskMeta>,
+) -> Option<WorktreeMeta> {
+    let task_meta = task_meta?;
+    if task_meta.role != "agents" {
+        return None;
+    }
+
+    let source_workspace_root = get_project_dirs(gcx.clone()).await.into_iter().next();
+    let task_record = crate::tasks::storage::load_task_meta(gcx.clone(), &task_meta.task_id)
+        .await
+        .ok();
+    let board = crate::tasks::storage::load_board(gcx, &task_meta.task_id)
+        .await
+        .ok()?;
+
+    let card = task_meta
+        .card_id
+        .as_deref()
+        .and_then(|card_id| board.cards.iter().find(|card| card.id == card_id))
+        .or_else(|| {
+            board
+                .cards
+                .iter()
+                .find(|card| card.agent_chat_id.as_deref() == Some(chat_id))
+        })
+        .or_else(|| {
+            task_meta.agent_id.as_deref().and_then(|agent_id| {
+                board
+                    .cards
+                    .iter()
+                    .find(|card| card.assignee.as_deref() == Some(agent_id))
+            })
+        })?;
+
+    let root = PathBuf::from(card.agent_worktree.as_ref()?);
+    let source_workspace_root = source_workspace_root.unwrap_or_else(|| root.clone());
+    let id = card
+        .agent_worktree_name
+        .clone()
+        .or_else(|| {
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+        })
+        .unwrap_or_else(|| format!("{}-{}", task_meta.task_id, card.id));
+
+    Some(WorktreeMeta {
+        id,
+        kind: "task_agent".to_string(),
+        root,
+        source_workspace_root: source_workspace_root.clone(),
+        repo_root: source_workspace_root,
+        branch: card.agent_branch.clone(),
+        base_branch: task_record.as_ref().and_then(|meta| meta.base_branch.clone()),
+        base_commit: task_record.as_ref().and_then(|meta| meta.base_commit.clone()),
+        task_id: Some(task_meta.task_id.clone()),
+        card_id: Some(card.id.clone()),
+        agent_id: task_meta.agent_id.clone().or_else(|| card.assignee.clone()),
+        enforce: true,
+    })
+}
+
 pub async fn load_trajectory_for_chat(
     gcx: Arc<ARwLock<GlobalContext>>,
     chat_id: &str,
 ) -> Option<LoadedTrajectory> {
-    let traj_path = find_trajectory_path(gcx, chat_id).await?;
+    let traj_path = find_trajectory_path(gcx.clone(), chat_id).await?;
     let content = tokio::fs::read_to_string(&traj_path).await.ok()?;
     let t: serde_json::Value = serde_json::from_str(&content).ok()?;
 
@@ -432,6 +534,12 @@ pub async fn load_trajectory_for_chat(
     let task_meta: Option<super::types::TaskMeta> = t
         .get("task_meta")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+    let mut worktree = t.get("worktree").and_then(parse_worktree_meta);
+    if worktree.is_none() {
+        worktree = synthesize_legacy_task_agent_worktree(gcx.clone(), chat_id, task_meta.as_ref())
+            .await;
+    }
 
     let thread = ThreadParams {
         id: chat_id.to_string(),
@@ -480,9 +588,7 @@ pub async fn load_trajectory_for_chat(
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         task_meta,
-        worktree: t
-            .get("worktree")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+        worktree,
         parent_id: t
             .get("parent_id")
             .and_then(|v| v.as_str())
@@ -865,6 +971,7 @@ pub async fn save_trajectory_snapshot(
                 root_chat_id: Some(effective_root),
                 model: Some(snapshot.model.clone()),
                 mode: Some(snapshot.mode.clone()),
+                worktree: snapshot.worktree.clone(),
                 total_lines_added: Some(total_lines_added),
                 total_lines_removed: Some(total_lines_removed),
                 tasks_total: Some(tasks_total),
@@ -996,6 +1103,7 @@ async fn process_trajectory_change(
                 root_chat_id: None,
                 model: None,
                 mode: None,
+                worktree: None,
                 total_lines_added: None,
                 total_lines_removed: None,
                 tasks_total: None,
@@ -1021,6 +1129,7 @@ async fn process_trajectory_change(
             root_chat_id,
             model,
             mode,
+            worktree,
             total_lines_added,
             total_lines_removed,
             tasks_total,
@@ -1048,6 +1157,7 @@ async fn process_trajectory_change(
                 Some(effective_root),
                 Some(t.thread.model),
                 Some(t.thread.mode),
+                t.thread.worktree,
                 Some(lines_added),
                 Some(lines_removed),
                 Some(t_total),
@@ -1058,7 +1168,7 @@ async fn process_trajectory_change(
         } else {
             (
                 None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-                None,
+                None, None,
             )
         };
         let (session_state, session_error) = get_session_state_for_chat(&sessions, chat_id).await;
@@ -1077,6 +1187,7 @@ async fn process_trajectory_change(
                 root_chat_id,
                 model,
                 mode,
+                worktree,
                 total_lines_added,
                 total_lines_removed,
                 tasks_total,
@@ -1556,6 +1667,7 @@ fn spawn_title_generation_task(
         }
         info!("Updated trajectory {} with generated title: {}", id, title);
         let (session_state, session_error) = get_session_state_for_chat(&sessions, &id).await;
+        let worktree = trajectory_worktree_from_extra(&data.extra);
         let event = TrajectoryEvent {
             event_type: "updated".to_string(),
             id: id.clone(),
@@ -1570,6 +1682,7 @@ fn spawn_title_generation_task(
             root_chat_id: None,
             model: None,
             mode: None,
+            worktree,
             total_lines_added: None,
             total_lines_removed: None,
             tasks_total: None,
@@ -1978,6 +2091,8 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let worktree = trajectory_worktree_from_extra(&data.extra);
+
     let (total_lines_added, total_lines_removed) =
         calculate_line_changes_from_messages(&data.messages);
     let (tasks_total, tasks_done, tasks_failed) =
@@ -2000,6 +2115,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         card_id,
         session_state: None,
         root_chat_id,
+        worktree,
         total_lines_added,
         total_lines_removed,
         tasks_total,
@@ -2255,6 +2371,9 @@ async fn enrich_with_session_state(
     for (idx, session_arc) in session_arcs {
         let session = session_arc.lock().await;
         trajectories[idx].session_state = Some(session.runtime.state.to_string());
+        if trajectories[idx].worktree.is_none() {
+            trajectories[idx].worktree = session.thread.worktree.clone();
+        }
     }
 }
 
@@ -2363,6 +2482,7 @@ pub async fn handle_v1_trajectories_save(
         .unwrap_or(false);
     let should_generate_title =
         is_placeholder_title(&data.title) && !is_title_generated && !data.messages.is_empty();
+    let worktree = sanitize_worktree_extra(&mut data.extra);
     atomic_write_json(&file_path, &data)
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -2407,6 +2527,7 @@ pub async fn handle_v1_trajectories_save(
         root_chat_id: Some(effective_root),
         model: Some(data.model.clone()),
         mode: Some(data.mode.clone()),
+        worktree,
         total_lines_added: Some(total_lines_added),
         total_lines_removed: Some(total_lines_removed),
         tasks_total: Some(tasks_total),
@@ -2464,6 +2585,7 @@ pub async fn handle_v1_trajectories_delete(
         root_chat_id: None,
         model: None,
         mode: None,
+        worktree: None,
         total_lines_added: None,
         total_lines_removed: None,
         tasks_total: None,
@@ -2532,6 +2654,23 @@ pub async fn handle_v1_trajectories_subscribe(
 mod tests {
     use super::*;
     use crate::chat::types::ActiveCommandContext;
+
+    fn trajectory_worktree_sample() -> WorktreeMeta {
+        WorktreeMeta {
+            id: "wt-1".to_string(),
+            kind: "task_agent".to_string(),
+            root: std::path::PathBuf::from("/tmp/refact-wt"),
+            source_workspace_root: std::path::PathBuf::from("/tmp/refact-src"),
+            repo_root: std::path::PathBuf::from("/tmp/refact-src"),
+            branch: Some("refact/task/card".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: Some("abc123".to_string()),
+            task_id: Some("task-1".to_string()),
+            card_id: Some("card-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            enforce: true,
+        }
+    }
 
     #[test]
     fn test_validate_trajectory_id_rejects_path_traversal() {
@@ -2975,6 +3114,7 @@ mod tests {
             root_chat_id: Some("root-123".to_string()),
             model: Some("gpt-4".to_string()),
             mode: Some("AGENT".to_string()),
+            worktree: None,
             total_lines_added: Some(100),
             total_lines_removed: Some(50),
             tasks_total: Some(5),
@@ -3167,6 +3307,237 @@ mod tests {
             active_skill.is_none(),
             "Old trajectories must load with active_skill = None"
         );
+    }
+
+    #[test]
+    fn trajectory_worktree_snapshot_from_session_captures_thread_worktree() {
+        let worktree = trajectory_worktree_sample();
+        let mut session = ChatSession::new("wt-snapshot".to_string());
+        session.thread.worktree = Some(worktree.clone());
+        let snapshot = TrajectorySnapshot::from_session(&session);
+        assert_eq!(snapshot.worktree, Some(worktree));
+    }
+
+    #[test]
+    fn trajectory_worktree_meta_creation_includes_worktree() {
+        let worktree = trajectory_worktree_sample();
+        let mut extra = serde_json::Map::new();
+        extra.insert("worktree".to_string(), serde_json::to_value(&worktree).unwrap());
+        let data = TrajectoryData {
+            id: "meta-chat".to_string(),
+            title: "Meta".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            model: "model".to_string(),
+            mode: "agent".to_string(),
+            tool_use: "agent".to_string(),
+            messages: Vec::new(),
+            extra,
+        };
+        let meta = trajectory_data_to_meta(&data);
+        let meta_worktree = meta.worktree.unwrap();
+        assert_eq!(meta_worktree.id, worktree.id);
+        assert_eq!(meta_worktree.branch, worktree.branch);
+        assert_eq!(meta_worktree.root, worktree.root);
+    }
+
+    #[test]
+    fn trajectory_worktree_invalid_extra_is_not_preserved() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("worktree".to_string(), json!({"root":"/tmp/untrusted"}));
+        let worktree = sanitize_worktree_extra(&mut extra);
+        assert!(worktree.is_none());
+        assert!(extra.get("worktree").is_none());
+    }
+
+    #[tokio::test]
+    async fn trajectory_worktree_save_load_roundtrips_top_level_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+
+        let worktree = trajectory_worktree_sample();
+        let chat_id = "wt-roundtrip".to_string();
+        let snapshot = TrajectorySnapshot {
+            chat_id: chat_id.clone(),
+            title: "Worktree Chat".to_string(),
+            model: "model".to_string(),
+            mode: "agent".to_string(),
+            tool_use: "agent".to_string(),
+            messages: vec![ChatMessage::new("user".to_string(), "Hello".to_string())],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            boost_reasoning: false,
+            checkpoints_enabled: true,
+            context_tokens_cap: None,
+            include_project_info: true,
+            is_title_generated: true,
+            auto_approve_editing_tools: false,
+            auto_approve_dangerous_commands: false,
+            version: 1,
+            task_meta: None,
+            worktree: Some(worktree.clone()),
+            parent_id: None,
+            link_type: None,
+            root_chat_id: None,
+            reasoning_effort: None,
+            thinking_budget: None,
+            temperature: None,
+            frequency_penalty: None,
+            max_tokens: None,
+            parallel_tool_calls: None,
+            previous_response_id: None,
+            active_skill: None,
+            auto_enrichment_enabled: None,
+            buddy_meta: None,
+        };
+
+        save_trajectory_snapshot(gcx.clone(), snapshot).await.unwrap();
+        let path = dir
+            .path()
+            .join(".refact")
+            .join("trajectories")
+            .join(format!("{}.json", chat_id));
+        let raw = tokio::fs::read_to_string(path).await.unwrap();
+        let raw_json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(raw_json["worktree"]["id"], worktree.id);
+        assert_eq!(raw_json["worktree"]["branch"], "refact/task/card");
+
+        let loaded = load_trajectory_for_chat(gcx, &chat_id).await.unwrap();
+        assert_eq!(loaded.thread.worktree, Some(worktree));
+    }
+
+    #[tokio::test]
+    async fn trajectory_worktree_old_json_without_worktree_loads_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+        let traj_dir = dir.path().join(".refact").join("trajectories");
+        tokio::fs::create_dir_all(&traj_dir).await.unwrap();
+        tokio::fs::write(
+            traj_dir.join("old-chat.json"),
+            r#"{"id":"old-chat","title":"Old","model":"m","mode":"agent","tool_use":"agent","messages":[],"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","include_project_info":true,"checkpoints_enabled":true}"#,
+        )
+        .await
+        .unwrap();
+
+        let loaded = load_trajectory_for_chat(gcx, "old-chat").await.unwrap();
+        assert!(loaded.thread.worktree.is_none());
+    }
+
+    #[tokio::test]
+    async fn trajectory_worktree_legacy_task_agent_hydrates_from_board_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+
+        let task_id = "task-legacy";
+        let agent_id = "agent-1";
+        let card_id = "card-1";
+        let chat_id = "legacy-agent-chat";
+        let task_dir = dir.path().join(".refact").join("tasks").join(task_id);
+        tokio::fs::create_dir_all(task_dir.join("trajectories").join("agents").join(agent_id))
+            .await
+            .unwrap();
+        let meta = crate::tasks::types::TaskMeta {
+            schema_version: 1,
+            id: task_id.to_string(),
+            name: "Task".to_string(),
+            status: crate::tasks::types::TaskStatus::Active,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            cards_total: 1,
+            cards_done: 0,
+            cards_failed: 0,
+            agents_active: 1,
+            base_branch: Some("main".to_string()),
+            base_commit: Some("base123".to_string()),
+            default_agent_model: None,
+            is_name_generated: true,
+            last_agents_summary_at: None,
+            planner_session_state: None,
+        };
+        tokio::fs::write(task_dir.join("meta.yaml"), serde_yaml::to_string(&meta).unwrap())
+            .await
+            .unwrap();
+        let agent_worktree = dir.path().join("agent-worktree");
+        let board = crate::tasks::types::TaskBoard {
+            schema_version: 1,
+            rev: 1,
+            columns: Vec::new(),
+            cards: vec![crate::tasks::types::BoardCard {
+                id: card_id.to_string(),
+                title: "Card".to_string(),
+                column: "doing".to_string(),
+                priority: "P1".to_string(),
+                depends_on: Vec::new(),
+                instructions: String::new(),
+                assignee: Some(agent_id.to_string()),
+                agent_chat_id: Some(chat_id.to_string()),
+                status_updates: Vec::new(),
+                final_report: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                started_at: None,
+                last_heartbeat_at: None,
+                completed_at: None,
+                agent_branch: Some("refact/task/card".to_string()),
+                agent_worktree: Some(agent_worktree.to_string_lossy().to_string()),
+                agent_worktree_name: Some("wt-legacy".to_string()),
+                target_files: Vec::new(),
+            }],
+        };
+        tokio::fs::write(task_dir.join("board.yaml"), serde_yaml::to_string(&board).unwrap())
+            .await
+            .unwrap();
+        let trajectory = json!({
+            "id": chat_id,
+            "title": "Legacy Agent",
+            "model": "m",
+            "mode": "task_agent",
+            "tool_use": "agent",
+            "messages": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "include_project_info": true,
+            "checkpoints_enabled": true,
+            "task_meta": {
+                "task_id": task_id,
+                "role": "agents",
+                "agent_id": agent_id,
+                "card_id": card_id
+            }
+        });
+        tokio::fs::write(
+            task_dir
+                .join("trajectories")
+                .join("agents")
+                .join(agent_id)
+                .join(format!("{}.json", chat_id)),
+            serde_json::to_string(&trajectory).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let loaded = load_trajectory_for_chat(gcx, chat_id).await.unwrap();
+        let worktree = loaded.thread.worktree.unwrap();
+        assert_eq!(worktree.id, "wt-legacy");
+        assert_eq!(worktree.kind, "task_agent");
+        assert_eq!(worktree.root, agent_worktree);
+        assert_eq!(worktree.branch.as_deref(), Some("refact/task/card"));
+        assert_eq!(worktree.base_branch.as_deref(), Some("main"));
+        assert_eq!(worktree.base_commit.as_deref(), Some("base123"));
+        assert!(worktree.enforce);
     }
 
     #[tokio::test]

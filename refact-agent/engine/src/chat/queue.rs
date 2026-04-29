@@ -455,6 +455,13 @@ pub fn apply_setparams_patch(
         }
     }
 
+    if let Some(worktree_val) = patch.get("worktree") {
+        if worktree_val.is_null() && thread.worktree.is_some() {
+            thread.worktree = None;
+            changed = true;
+        }
+    }
+
     let mut sanitized_patch = patch.clone();
     if let Some(obj) = sanitized_patch.as_object_mut() {
         obj.remove("type");
@@ -462,6 +469,13 @@ pub fn apply_setparams_patch(
         obj.remove("seq");
         if patch.get("mode").and_then(|v| v.as_str()).is_some() {
             obj.insert("mode".to_string(), serde_json::json!(thread.mode));
+        }
+        if let Some(worktree_val) = patch.get("worktree") {
+            if worktree_val.is_null() {
+                obj.insert("worktree".to_string(), serde_json::Value::Null);
+            } else {
+                obj.remove("worktree");
+            }
         }
     }
 
@@ -1761,6 +1775,40 @@ mod tests {
         let (changed, _) = apply_setparams_patch(&mut thread, &patch);
         assert!(!changed);
         assert_eq!(thread.model, "original");
+    }
+
+    #[test]
+    fn trajectory_worktree_apply_setparams_detaches_on_null() {
+        let mut thread = ThreadParams::default();
+        thread.worktree = Some(crate::worktrees::types::WorktreeMeta {
+            id: "wt-1".to_string(),
+            kind: "task_agent".to_string(),
+            root: std::path::PathBuf::from("/tmp/wt"),
+            source_workspace_root: std::path::PathBuf::from("/tmp/src"),
+            repo_root: std::path::PathBuf::from("/tmp/src"),
+            branch: Some("branch".to_string()),
+            base_branch: None,
+            base_commit: None,
+            task_id: None,
+            card_id: None,
+            agent_id: None,
+            enforce: true,
+        });
+        let patch = json!({"worktree": null});
+        let (changed, sanitized) = apply_setparams_patch(&mut thread, &patch);
+        assert!(changed);
+        assert!(thread.worktree.is_none());
+        assert!(sanitized.get("worktree").unwrap().is_null());
+    }
+
+    #[test]
+    fn trajectory_worktree_apply_setparams_ignores_attach_object() {
+        let mut thread = ThreadParams::default();
+        let patch = json!({"worktree": {"root": "/tmp/untrusted"}});
+        let (changed, sanitized) = apply_setparams_patch(&mut thread, &patch);
+        assert!(!changed);
+        assert!(thread.worktree.is_none());
+        assert!(sanitized.get("worktree").is_none());
     }
 
     #[test]
