@@ -1291,6 +1291,32 @@ describe("Buddy frontend error reporting helpers", () => {
     expect(recovered).toBeNull();
   });
 
+  test("corrupt crash session with extreme updatedAt is not recovered", () => {
+    const now = Date.now();
+    localStorage.setItem(
+      "refact:buddy:frontend-crash:v1",
+      JSON.stringify({
+        version: 1,
+        sessionId: "bad-updated-at",
+        status: "running",
+        startedAt: now - 1000,
+        updatedAt: Number.MAX_VALUE,
+        breadcrumbs: [],
+      }),
+    );
+
+    let recovered: unknown;
+    expect(() => {
+      recovered = beginBuddyCrashSession({
+        host: "web",
+        page: "chat",
+        chatId: "chat-b",
+        isStreaming: false,
+      });
+    }).not.toThrow();
+    expect(recovered).toBeNull();
+  });
+
   test("buildBuddyCrashRecoveryError explains SIGILL limitation and includes breadcrumbs", () => {
     beginBuddyCrashSession({
       host: "jetbrains",
@@ -1333,6 +1359,11 @@ describe("Buddy frontend error reporting helpers", () => {
         updatedAt: now,
         breadcrumbs: [
           { ts: "bad", label: "bad_ts", detail: "hidden" },
+          {
+            ts: Number.MAX_VALUE,
+            label: "bad_extreme",
+            detail: "extreme hidden",
+          },
           { ts: now, label: 42, detail: "hidden" },
           { ts: now, label: "good", detail: "visible" },
         ],
@@ -1352,6 +1383,32 @@ describe("Buddy frontend error reporting helpers", () => {
     }
     expect(() => buildBuddyCrashRecoveryError(recovered)).not.toThrow();
     const report = buildBuddyCrashRecoveryError(recovered);
+    expect(report).toContain("good: visible");
+    expect(report).not.toContain("hidden");
+    expect(report).not.toContain("bad_extreme");
+  });
+
+  test("buildBuddyCrashRecoveryError handles malformed timestamps defensively", () => {
+    const now = Date.now();
+    const malformed = {
+      version: 1,
+      sessionId: "malformed-timestamps",
+      status: "running",
+      startedAt: Number.MAX_VALUE,
+      updatedAt: Number.MAX_VALUE,
+      hot: { tool: "reading files" },
+      breadcrumbs: [
+        { ts: Number.MAX_VALUE, label: "bad", detail: "hidden" },
+        null,
+        { ts: now, label: "good", detail: "visible" },
+      ],
+    };
+
+    expect(() => buildBuddyCrashRecoveryError(malformed as never)).not.toThrow();
+    const report = buildBuddyCrashRecoveryError(malformed as never);
+    expect(report).toContain("Started at: unknown");
+    expect(report).toContain("Last heartbeat: unknown");
+    expect(report).toContain("tool: reading files");
     expect(report).toContain("good: visible");
     expect(report).not.toContain("hidden");
   });

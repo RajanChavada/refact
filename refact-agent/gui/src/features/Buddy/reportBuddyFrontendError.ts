@@ -137,6 +137,22 @@ function finiteNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+function validCrashTimestamp(value: unknown): number | undefined {
+  const ts = finiteNumber(value);
+  if (ts === undefined) return undefined;
+  return Number.isFinite(new Date(ts).getTime()) ? ts : undefined;
+}
+
+function formatCrashTimestamp(value: unknown): string | null {
+  const ts = validCrashTimestamp(value);
+  if (ts === undefined) return null;
+  try {
+    return new Date(ts).toISOString();
+  } catch {
+    return null;
+  }
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -147,7 +163,7 @@ function optionalBoolean(value: unknown): boolean | undefined {
 
 function parseCrashBreadcrumb(value: unknown): BuddyCrashBreadcrumb | null {
   if (!isRecord(value)) return null;
-  const ts = finiteNumber(value.ts);
+  const ts = validCrashTimestamp(value.ts);
   const label = optionalString(value.label);
   const detail = optionalString(value.detail);
   if (ts === undefined || label === undefined || detail === undefined) {
@@ -183,8 +199,8 @@ function readCrashSession(): BuddyCrashSession | null {
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return null;
-    const startedAt = finiteNumber(parsed.startedAt);
-    const updatedAt = finiteNumber(parsed.updatedAt);
+    const startedAt = validCrashTimestamp(parsed.startedAt);
+    const updatedAt = validCrashTimestamp(parsed.updatedAt);
     const sessionId = optionalString(parsed.sessionId);
     const status =
       parsed.status === "running" || parsed.status === "closed"
@@ -206,7 +222,7 @@ function readCrashSession(): BuddyCrashSession | null {
       status,
       startedAt,
       updatedAt,
-      closedAt: finiteNumber(parsed.closedAt),
+      closedAt: validCrashTimestamp(parsed.closedAt),
       host: optionalString(parsed.host),
       page: optionalString(parsed.page),
       chatId: optionalString(parsed.chatId),
@@ -317,7 +333,10 @@ function recoverableCrashSession(
 ): BuddyCrashSession | null {
   if (!session) return null;
   if (session.status !== "running") return null;
-  if (Date.now() - session.updatedAt > CRASH_MAX_AGE_MS) return null;
+  if (validCrashTimestamp(session.startedAt) === undefined) return null;
+  const updatedAt = validCrashTimestamp(session.updatedAt);
+  if (updatedAt === undefined) return null;
+  if (Date.now() - updatedAt > CRASH_MAX_AGE_MS) return null;
   return session;
 }
 
@@ -406,29 +425,43 @@ export function addBuddyCrashBreadcrumb(label: string, detail: unknown): void {
 export function buildBuddyCrashRecoveryError(
   session: BuddyCrashSession,
 ): string {
-  const ageSeconds = Math.max(
-    0,
-    Math.round((Date.now() - session.updatedAt) / 1000),
-  );
-  const hotLines = Object.entries(session.hot ?? {})
-    .filter(([, value]) => typeof value === "string" && value.length > 0)
+  const updatedAt = validCrashTimestamp(session.updatedAt);
+  const ageSeconds =
+    updatedAt === undefined
+      ? null
+      : Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
+  const hot = isRecord(session.hot) ? session.hot : {};
+  const hotLines = Object.entries(hot)
+    .filter((entry): entry is [string, string] => {
+      const value = entry[1];
+      return typeof value === "string" && value.length > 0;
+    })
     .map(([key, value]) => `- ${key}: ${value}`);
-  const breadcrumbLines = session.breadcrumbs.map(
-    (entry) =>
-      `- ${new Date(entry.ts).toISOString()} ${entry.label}: ${entry.detail}`,
-  );
+  const breadcrumbs: unknown[] = Array.isArray(session.breadcrumbs)
+    ? session.breadcrumbs
+    : [];
+  const breadcrumbLines = breadcrumbs.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const ts = formatCrashTimestamp(entry.ts);
+    const label = optionalString(entry.label);
+    const detail = optionalString(entry.detail);
+    if (!ts || label === undefined || detail === undefined) return [];
+    return [`- ${ts} ${label}: ${detail}`];
+  });
   const heapUsed = formatBytes(session.heapUsed);
   const heapLimit = formatBytes(session.heapLimit);
+  const startedAtText = formatCrashTimestamp(session.startedAt) ?? "unknown";
+  const updatedAtText = formatCrashTimestamp(session.updatedAt) ?? "unknown";
+  const ageText =
+    ageSeconds === null ? "" : ` (${ageSeconds}s before recovery)`;
 
   return [
     "Possible renderer crash/termination detected before the app restarted.",
     "Browser JavaScript cannot capture a native SIGILL/SIGKILL stack after the renderer dies, so this report contains the last persisted frontend breadcrumbs instead.",
     "",
     `Previous session id: ${session.sessionId}`,
-    `Started at: ${new Date(session.startedAt).toISOString()}`,
-    `Last heartbeat: ${new Date(
-      session.updatedAt,
-    ).toISOString()} (${ageSeconds}s before recovery)`,
+    `Started at: ${startedAtText}`,
+    `Last heartbeat: ${updatedAtText}${ageText}`,
     session.host ? `Host: ${session.host}` : "",
     session.page ? `Page: ${session.page}` : "",
     session.chatId ? `Chat ID: ${session.chatId}` : "",
