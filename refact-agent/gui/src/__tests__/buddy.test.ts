@@ -86,9 +86,28 @@ type CapturedThunk = (
   extra: unknown,
 ) => unknown;
 
+type TestDispatch = (action: unknown) => unknown;
+
+function isActionWithType(action: unknown, type: string): boolean {
+  if (typeof action !== "object" || action === null) return false;
+  const candidate = action as { type?: unknown };
+  return candidate.type === type;
+}
+
+function isCreateWithModeAction(action: unknown, mode: string): boolean {
+  if (typeof action !== "object" || action === null) return false;
+  const candidate = action as { payload?: unknown; type?: unknown };
+  if (candidate.type !== "chatThread/createWithId") return false;
+  if (typeof candidate.payload !== "object" || candidate.payload === null) {
+    return false;
+  }
+  const payload = candidate.payload as { mode?: unknown };
+  return payload.mode === mode;
+}
+
 function makeThunkDispatch() {
-  const innerDispatch = vi.fn();
-  const dispatch = vi.fn((action: unknown) => {
+  const innerDispatch = vi.fn<TestDispatch>(() => undefined);
+  const dispatch = vi.fn<TestDispatch>((action) => {
     if (typeof action === "function") {
       return (action as CapturedThunk)(
         innerDispatch,
@@ -1170,7 +1189,10 @@ describe("Buddy frontend error reporting helpers", () => {
         "429",
       );
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      const init = fetchMock.mock.calls[0]?.[1];
+      if (!init) {
+        throw new Error("expected fetch init");
+      }
       const payload = JSON.parse(String(init.body)) as { url?: string };
       expect(payload.url).toBe("[REDACTED_PATH]");
     } finally {
@@ -1938,14 +1960,10 @@ describe("executeBuddyNavigation dispatches for each BuddyPage variant", () => {
       dispatch as never,
     );
     expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(innerDispatch.mock.calls.map((call) => call[0])).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "chatThread/createWithId",
-          payload: expect.objectContaining({ mode: "setup_mcp" }),
-        }),
-      ]),
-    );
+    const actions = innerDispatch.mock.calls.map(([action]) => action);
+    expect(
+      actions.some((action) => isCreateWithModeAction(action, "setup_mcp")),
+    ).toBe(true);
   });
 
   test("ignores invalid setup_mode navigation", () => {
@@ -1978,19 +1996,19 @@ describe("executeBuddyAction setup controls", () => {
       };
       await executeBuddyAction(control, dispatch as never);
       expect(dispatch).toHaveBeenCalledTimes(2);
-      expect(innerDispatch.mock.calls.map((call) => call[0])).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "chatThread/createWithId",
-            payload: expect.objectContaining({ mode: expectedMode }),
-          }),
-        ]),
+      const actions = innerDispatch.mock.calls.map(
+        ([dispatched]) => dispatched,
       );
-      expect(innerDispatch.mock.calls.map((call) => call[0])).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: clearActiveSpeech.type }),
-        ]),
-      );
+      expect(
+        actions.some((dispatched) =>
+          isCreateWithModeAction(dispatched, expectedMode),
+        ),
+      ).toBe(true);
+      expect(
+        actions.some((dispatched) =>
+          isActionWithType(dispatched, clearActiveSpeech.type),
+        ),
+      ).toBe(true);
     }
   });
 
@@ -2004,14 +2022,10 @@ describe("executeBuddyAction setup controls", () => {
       style: "secondary",
     };
     await executeBuddyAction(control, dispatch as never);
-    expect(innerDispatch.mock.calls.map((call) => call[0])).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "chatThread/createWithId",
-          payload: expect.objectContaining({ mode: "setup" }),
-        }),
-      ]),
-    );
+    const actions = innerDispatch.mock.calls.map(([action]) => action);
+    expect(
+      actions.some((action) => isCreateWithModeAction(action, "setup")),
+    ).toBe(true);
   });
 });
 

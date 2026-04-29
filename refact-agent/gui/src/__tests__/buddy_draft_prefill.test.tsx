@@ -339,7 +339,6 @@ describe("CustomizationEditor_with_draft_id_prefills", () => {
   });
 });
 
-
 describe("DefaultModels_with_defaults_model_draft", () => {
   it("overlays ProviderDefaults shape and sends draft_id on save", async () => {
     let savedBody: Record<string, unknown> | null = null;

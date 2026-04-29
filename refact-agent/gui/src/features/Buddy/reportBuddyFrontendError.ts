@@ -618,7 +618,8 @@ export async function reportBuddyFrontendError(
   if (!normalized) return;
 
   const sourceFile =
-    redactBuddyFrontendErrorSource(args.sourceFile) ?? `frontend/${args.source}`;
+    redactBuddyFrontendErrorSource(args.sourceFile) ??
+    `frontend/${args.source}`;
   const toolName = redactBuddyFrontendErrorSource(args.toolName) ?? args.source;
   const key = buildBuddyFrontendErrorDedupeKey(
     {

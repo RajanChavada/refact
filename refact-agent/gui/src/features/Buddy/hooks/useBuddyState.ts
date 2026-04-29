@@ -234,11 +234,12 @@ export function useBuddyState(
     if (isActive && !isCompleted) {
       return;
     }
-    const ttl = nowPlaying.persistent && !isCompleted
-      ? undefined
-      : nowPlaying.ttl_ms ??
-        signalDef?.duration ??
-        (nowPlaying.status === "progress" ? 8000 : 4000);
+    const ttl =
+      nowPlaying.persistent && !isCompleted
+        ? undefined
+        : nowPlaying.ttl_ms ??
+          signalDef?.duration ??
+          (nowPlaying.status === "progress" ? 8000 : 4000);
     if (ttl === undefined) return;
     const timer = setTimeout(() => reduxDispatch(clearNowPlaying()), ttl);
     return () => clearTimeout(timer);

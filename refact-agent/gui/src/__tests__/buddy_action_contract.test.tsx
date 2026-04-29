@@ -315,7 +315,9 @@ describe("buddy action execution contract", () => {
         "http://127.0.0.1:8001/v1/buddy/opportunities/:id/dismiss",
         () => {
           dismissCalled = true;
-          return HttpResponse.json({ snapshot: makeSnapshot("Dismiss Snapshot") });
+          return HttpResponse.json({
+            snapshot: makeSnapshot("Dismiss Snapshot"),
+          });
         },
       ),
     );

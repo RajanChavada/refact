@@ -436,7 +436,10 @@ export const buddyApi = createApi({
       },
       invalidatesTags: ["BuddyOpportunities", "BuddySnapshot"],
     }),
-    dismissOpportunity: builder.mutation<BuddyOpportunityDismissResponse, string>({
+    dismissOpportunity: builder.mutation<
+      BuddyOpportunityDismissResponse,
+      string
+    >({
       queryFn: async (id, api, _opts, baseQuery) => {
         const state = api.getState() as BuddyApiState;
         const port = state.config.lspPort;
