@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 use chrono::{Local, Utc};
@@ -787,7 +788,7 @@ fn find_instruction_files_recursive(
 
 pub async fn find_instruction_files(project_dirs: &[PathBuf]) -> Vec<InstructionFile> {
     let mut files = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
+    let mut seen_paths = HashSet::new();
 
     for project_dir in project_dirs {
         find_instruction_files_recursive(project_dir, 0, &mut seen_paths, &mut files);
@@ -876,7 +877,50 @@ pub async fn find_instruction_files(project_dirs: &[PathBuf]) -> Vec<Instruction
         files.len()
     );
 
-    files
+    let original_count = files.len();
+    let deduplicated = deduplicate_instruction_files_by_content(files);
+    if deduplicated.len() < original_count {
+        tracing::info!(
+            "Deduplicated instruction files by content: {} -> {}",
+            original_count,
+            deduplicated.len()
+        );
+    }
+
+    deduplicated
+}
+
+fn instruction_file_content_key(file: &InstructionFile) -> Option<String> {
+    let content = if let Some(processed) = &file.processed_content {
+        processed.clone()
+    } else {
+        std::fs::read_to_string(&file.file_path).ok()?
+    };
+
+    Some(content.replace("\r\n", "\n"))
+}
+
+fn deduplicate_instruction_files_by_content(files: Vec<InstructionFile>) -> Vec<InstructionFile> {
+    let mut seen_content = HashSet::new();
+    let mut deduplicated = Vec::new();
+
+    for file in files {
+        let Some(content_key) = instruction_file_content_key(&file) else {
+            deduplicated.push(file);
+            continue;
+        };
+
+        if seen_content.insert(content_key) {
+            deduplicated.push(file);
+        } else {
+            tracing::info!(
+                "Skipping duplicate instruction file by content: {}",
+                file.file_path
+            );
+        }
+    }
+
+    deduplicated
 }
 
 fn determine_tool_source(pattern: &str) -> String {
@@ -1817,6 +1861,7 @@ pub async fn create_instruction_files_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_system_info_gather() {
@@ -1880,5 +1925,52 @@ mod tests {
         assert!(!result.contains("ChangeListManager"));
         assert!(!result.contains("ProjectId"));
         assert!(!result.contains("Test"));
+    }
+
+    #[test]
+    fn test_deduplicate_instruction_files_by_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let first_path = temp_dir.path().join("first").join("AGENTS.md");
+        let second_path = temp_dir.path().join("second").join("AGENTS.md");
+        let unique_path = temp_dir.path().join("third").join("AGENTS.md");
+        std::fs::create_dir_all(first_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(unique_path.parent().unwrap()).unwrap();
+        std::fs::write(&first_path, "# Rules\n\nUse cargo check.\n").unwrap();
+        std::fs::write(&second_path, "# Rules\r\n\r\nUse cargo check.\r\n").unwrap();
+        std::fs::write(&unique_path, "# Other Rules\n").unwrap();
+
+        let files = vec![
+            InstructionFile {
+                file_name: "AGENTS.md".to_string(),
+                file_path: first_path.to_string_lossy().to_string(),
+                source_tool: "universal".to_string(),
+                processed_content: None,
+                importance: 0,
+                max_chars: None,
+            },
+            InstructionFile {
+                file_name: "AGENTS.md".to_string(),
+                file_path: second_path.to_string_lossy().to_string(),
+                source_tool: "universal".to_string(),
+                processed_content: None,
+                importance: 0,
+                max_chars: None,
+            },
+            InstructionFile {
+                file_name: "AGENTS.md".to_string(),
+                file_path: unique_path.to_string_lossy().to_string(),
+                source_tool: "universal".to_string(),
+                processed_content: None,
+                importance: 0,
+                max_chars: None,
+            },
+        ];
+
+        let deduplicated = deduplicate_instruction_files_by_content(files);
+
+        assert_eq!(deduplicated.len(), 2);
+        assert_eq!(deduplicated[0].file_path, first_path.to_string_lossy());
+        assert_eq!(deduplicated[1].file_path, unique_path.to_string_lossy());
     }
 }
