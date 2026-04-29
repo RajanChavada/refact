@@ -824,6 +824,7 @@ pub fn start_generation(
         {
             let session = session_arc.lock().await;
             session.abort_flag.store(false, Ordering::SeqCst);
+            session.user_interrupt_flag.store(false, Ordering::SeqCst);
             session.queue_notify.notify_one();
         }
     })

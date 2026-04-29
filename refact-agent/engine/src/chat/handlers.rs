@@ -345,6 +345,11 @@ pub async fn handle_v1_chat_command(
             .unwrap());
     }
 
+    if request.priority && matches!(&request.command, ChatCommand::UserMessage { .. }) {
+        session.abort_stream();
+        session.clear_pending_tool_calls_for_interruption();
+    }
+
     if request.priority {
         let insert_pos = session
             .command_queue

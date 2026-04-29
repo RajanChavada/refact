@@ -572,6 +572,7 @@ mod tests {
             recent_request_ids: VecDeque::new(),
             recent_request_ids_set: std::collections::HashSet::new(),
             abort_flag: Arc::new(AtomicBool::new(false)),
+            user_interrupt_flag: Arc::new(AtomicBool::new(false)),
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),

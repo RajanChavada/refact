@@ -43,6 +43,7 @@ impl ChatSession {
             recent_request_ids: VecDeque::with_capacity(limits().recent_request_ids_capacity),
             recent_request_ids_set: HashSet::new(),
             abort_flag: Arc::new(AtomicBool::new(false)),
+            user_interrupt_flag: Arc::new(AtomicBool::new(false)),
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),
@@ -91,6 +92,7 @@ impl ChatSession {
             recent_request_ids: VecDeque::with_capacity(limits().recent_request_ids_capacity),
             recent_request_ids_set: HashSet::new(),
             abort_flag: Arc::new(AtomicBool::new(false)),
+            user_interrupt_flag: Arc::new(AtomicBool::new(false)),
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),
@@ -470,6 +472,7 @@ impl ChatSession {
             return None;
         }
         self.abort_flag.store(false, Ordering::SeqCst);
+        self.user_interrupt_flag.store(false, Ordering::SeqCst);
         let message_id = Uuid::new_v4().to_string();
         self.draft_message = Some(ChatMessage {
             message_id: message_id.clone(),
@@ -614,6 +617,7 @@ impl ChatSession {
 
     pub fn abort_stream(&mut self) {
         self.abort_flag.store(true, Ordering::SeqCst);
+        self.user_interrupt_flag.store(true, Ordering::SeqCst);
         if let Some(draft) = self.draft_message.take() {
             self.emit(ChatEvent::StreamFinished {
                 message_id: draft.message_id.clone(),
@@ -627,6 +631,49 @@ impl ChatSession {
         self.set_runtime_state(SessionState::Idle, None);
         self.touch();
         self.queue_notify.notify_one();
+    }
+
+    pub fn clear_pending_tool_calls_for_interruption(&mut self) {
+        let answered_ids: HashSet<String> = self
+            .messages
+            .iter()
+            .filter(|m| (m.role == "tool" || m.role == "diff") && !m.tool_call_id.is_empty())
+            .map(|m| m.tool_call_id.clone())
+            .collect();
+
+        let mut updated_message = None;
+        for message in self.messages.iter_mut().rev() {
+            if message.role != "assistant" {
+                continue;
+            }
+
+            let Some(tool_calls) = message.tool_calls.as_ref() else {
+                break;
+            };
+            let retained_tool_calls: Vec<_> = tool_calls
+                .iter()
+                .filter(|tool_call| answered_ids.contains(&tool_call.id))
+                .cloned()
+                .collect();
+
+            if retained_tool_calls.len() != tool_calls.len() {
+                message.tool_calls = if retained_tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(retained_tool_calls)
+                };
+                updated_message = Some(message.clone());
+            }
+            break;
+        }
+
+        if let Some(message) = updated_message {
+            self.increment_version();
+            self.emit(ChatEvent::MessageUpdated {
+                message_id: message.message_id.clone(),
+                message,
+            });
+        }
     }
 
     pub fn discard_draft_for_pause(&mut self) {
@@ -1277,6 +1324,31 @@ mod tests {
         let draft = session.draft_message.as_ref().unwrap();
         assert!(draft.tool_calls.is_some());
         assert_eq!(draft.tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_pending_tool_calls_for_interruption_updates_last_assistant() {
+        let mut session = make_session();
+        session.add_message(ChatMessage {
+            message_id: "assistant-with-tool".to_string(),
+            role: "assistant".to_string(),
+            content: ChatContent::SimpleText("I'll use a tool".to_string()),
+            tool_calls: Some(vec![crate::call_validation::ChatToolCall {
+                id: "call_1".to_string(),
+                index: Some(0),
+                tool_type: "function".to_string(),
+                function: crate::call_validation::ChatToolFunction {
+                    name: "shell".to_string(),
+                    arguments: "{}".to_string(),
+                },
+                extra_content: None,
+            }]),
+            ..Default::default()
+        });
+
+        session.clear_pending_tool_calls_for_interruption();
+
+        assert!(session.messages[0].tool_calls.is_none());
     }
 
     #[test]

@@ -685,6 +685,7 @@ pub struct ChatSession {
     pub recent_request_ids: VecDeque<String>,
     pub recent_request_ids_set: HashSet<String>,
     pub abort_flag: Arc<AtomicBool>,
+    pub user_interrupt_flag: Arc<AtomicBool>,
     pub queue_processor_running: Arc<AtomicBool>,
     pub queue_notify: Arc<Notify>,
     pub last_activity: Instant,

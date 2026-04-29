@@ -857,7 +857,11 @@ pub async fn process_tool_calls_once(
         session.set_runtime_state(SessionState::ExecutingTools, None);
     }
 
-    let (tool_results, _) = execute_tools_with_session(
+    let tool_interrupt_flag = {
+        let session = session_arc.lock().await;
+        session.user_interrupt_flag.clone()
+    };
+    let tool_execution = execute_tools_with_session(
         gcx.clone(),
         session_arc.clone(),
         &tools_to_execute,
@@ -866,8 +870,11 @@ pub async fn process_tool_calls_once(
         mode_id,
         model_id,
         ExecuteToolsOptions::default(),
-    )
-    .await;
+    );
+    let (tool_results, _) = tokio::select! {
+        result = tool_execution => result,
+        _ = wait_for_tool_abort(session_arc.clone(), tool_interrupt_flag) => (Vec::new(), false),
+    };
 
     // Determine tool-requested final state before checking abort, since ask_questions,
     // task_done, and task_agent_finish set abort_flag=true as part of their normal operation to prevent
@@ -895,6 +902,11 @@ pub async fn process_tool_calls_once(
         SessionState::Completed | SessionState::WaitingUserInput
     );
 
+    let was_interrupted = {
+        let session = session_arc.lock().await;
+        session.user_interrupt_flag.load(Ordering::Relaxed)
+    };
+
     // Check if we were aborted during tool execution (user stop or tool-initiated).
     let was_aborted = {
         let session = session_arc.lock().await;
@@ -903,8 +915,10 @@ pub async fn process_tool_calls_once(
 
     {
         let mut session = session_arc.lock().await;
-        for result_msg in tool_results {
-            session.add_message(result_msg);
+        if !was_interrupted || tool_initiated_stop {
+            for result_msg in tool_results {
+                session.add_message(result_msg);
+            }
         }
         if tool_initiated_stop {
             // ask_questions/task_done: always apply their intended state
@@ -1243,6 +1257,23 @@ pub async fn execute_tools_with_session(
     result
 }
 
+async fn wait_for_tool_abort(
+    session_arc: Arc<AMutex<ChatSession>>,
+    abort_flag: Arc<AtomicBool>,
+) {
+    loop {
+        if abort_flag.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let notify = {
+            let session = session_arc.lock().await;
+            session.queue_notify.clone()
+        };
+        notify.notified().await;
+    }
+}
+
 type SerialToolRegistry = std::collections::HashMap<
     String,
     Arc<AMutex<Box<dyn crate::tools::tools_description::Tool + Send>>>,
@@ -1278,6 +1309,14 @@ async fn execute_single_tool(
     mode_id: &str,
     model_id: Option<&str>,
 ) -> (usize, bool, Vec<ChatMessage>, Vec<ContextFile>) {
+    let abort_flag = {
+        let ccx_locked = ccx.lock().await;
+        ccx_locked.abort_flag.clone()
+    };
+    if abort_flag.load(Ordering::Relaxed) {
+        return (idx, false, Vec::new(), Vec::new());
+    }
+
     let args: std::collections::HashMap<String, serde_json::Value> =
         match tool_call.function.parse_args() {
             Ok(a) => a,
@@ -1542,6 +1581,14 @@ async fn execute_tools_inner(
     let mut current_parallel_batch: Vec<(usize, ChatToolCall)> = Vec::new();
 
     for (idx, tool_call) in tool_calls.iter().enumerate() {
+        let is_aborted = {
+            let ccx_locked = ccx.lock().await;
+            ccx_locked.abort_flag.load(Ordering::Relaxed)
+        };
+        if is_aborted {
+            break;
+        }
+
         let resolved_name = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(
             &tool_call.function.name,
         );
