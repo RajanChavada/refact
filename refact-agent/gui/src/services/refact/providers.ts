@@ -258,6 +258,24 @@ export type ProviderDefaultsUpdateRequest = ProviderDefaults & {
   draft_id?: string;
 };
 
+export type OAuthStartMode = "callback" | "manual_code" | "device";
+
+export type OAuthStartResponse = {
+  session_id: string;
+  authorize_url: string;
+  user_code?: string;
+  instructions?: string;
+  poll_interval?: number;
+  mode?: OAuthStartMode;
+};
+
+export type OAuthExchangeResponse = {
+  success: boolean;
+  auth_status: string;
+  status?: string;
+  poll_interval?: number;
+};
+
 export type ErrorLogInstance = {
   path: string;
   error_line: number;
@@ -882,7 +900,7 @@ export const providersApi = createApi({
     }),
 
     oauthStart: builder.mutation<
-      { session_id: string; authorize_url: string },
+      OAuthStartResponse,
       { providerName: string; mode?: string }
     >({
       queryFn: async (args, api, extraOptions, baseQuery) => {
@@ -901,23 +919,32 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
-        const data = result.data as {
-          session_id: string;
-          authorize_url: string;
-        };
-        return { data };
+        if (!isOAuthStartResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/oauth/start`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+        return { data: result.data };
       },
     }),
 
     oauthExchange: builder.mutation<
-      { success: boolean; auth_status: string },
+      OAuthExchangeResponse,
       { providerName: string; session_id: string; code: string }
     >({
-      invalidatesTags: (_result, _error, { providerName }) => [
-        { type: "PROVIDER", id: providerName },
-        { type: "PROVIDERS", id: "LIST" },
-        { type: "AVAILABLE_MODELS", id: providerName },
-      ],
+      invalidatesTags: (result, _error, { providerName }) =>
+        result?.success
+          ? [
+              { type: "PROVIDER", id: providerName },
+              { type: "PROVIDERS", id: "LIST" },
+              { type: "AVAILABLE_MODELS", id: providerName },
+            ]
+          : [],
       queryFn: async (args, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort as unknown as number;
@@ -934,12 +961,20 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
-        const data = result.data as {
-          success: boolean;
-          auth_status: string;
-        };
-        api.dispatch(capsApi.util.resetApiState());
-        return { data };
+        if (!isOAuthExchangeResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/oauth/exchange`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+        if (result.data.success) {
+          api.dispatch(capsApi.util.resetApiState());
+        }
+        return { data: result.data };
       },
     }),
 
@@ -1176,6 +1211,48 @@ function isUsageResponse(data: unknown): data is ClaudeCodeUsageResponse {
   if (typeof data !== "object" || data === null) return false;
   // Must have at least one of `data` or `error` key
   return hasProperty(data, "data") || hasProperty(data, "error");
+}
+
+function isOAuthStartMode(data: unknown): data is OAuthStartMode {
+  return data === "callback" || data === "manual_code" || data === "device";
+}
+
+function isOptionalStringField(data: object, key: string): boolean {
+  return !hasProperty(data, key) || typeof data[key] === "string";
+}
+
+function isOptionalNumberField(data: object, key: string): boolean {
+  return (
+    !hasProperty(data, key) ||
+    (typeof data[key] === "number" && Number.isFinite(data[key]))
+  );
+}
+
+function isOAuthStartResponse(data: unknown): data is OAuthStartResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "session_id") || typeof data.session_id !== "string")
+    return false;
+  if (
+    !hasProperty(data, "authorize_url") ||
+    typeof data.authorize_url !== "string"
+  )
+    return false;
+  if (!isOptionalStringField(data, "user_code")) return false;
+  if (!isOptionalStringField(data, "instructions")) return false;
+  if (!isOptionalNumberField(data, "poll_interval")) return false;
+  if (hasProperty(data, "mode") && !isOAuthStartMode(data.mode)) return false;
+  return true;
+}
+
+function isOAuthExchangeResponse(data: unknown): data is OAuthExchangeResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "success") || typeof data.success !== "boolean")
+    return false;
+  if (!hasProperty(data, "auth_status") || typeof data.auth_status !== "string")
+    return false;
+  if (!isOptionalStringField(data, "status")) return false;
+  if (!isOptionalNumberField(data, "poll_interval")) return false;
+  return true;
 }
 
 function isModelTypeDefaults(data: unknown): data is ModelTypeDefaults {
