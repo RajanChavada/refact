@@ -68,6 +68,7 @@ export {
   ideOpenHotKeys,
   ideOpenSettingsAction,
   ideOpenChatInNewTab,
+  ideOpenFolderInNewWindow,
   ideAnimateFileStart,
   ideAnimateFileStop,
   ideChatPageChange,

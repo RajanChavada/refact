@@ -1,0 +1,131 @@
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  color: var(--gray-12);
+  transition: background-color 0.15s ease;
+  max-width: 220px;
+}
+
+.trigger:hover:not(:disabled) {
+  background-color: var(--gray-a3);
+}
+
+.trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.triggerActive {
+  background-color: var(--accent-a3);
+}
+
+.triggerText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content {
+  min-width: 320px;
+  max-width: 420px;
+  padding: var(--space-2);
+}
+
+.menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sectionHeader {
+  padding: 0 var(--space-2);
+}
+
+.list {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: var(--space-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-2);
+  color: var(--gray-12);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.item:hover:not(:disabled) {
+  background-color: var(--gray-a3);
+}
+
+.item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.itemSelected {
+  background-color: var(--accent-a3);
+}
+
+.itemTitle {
+  min-width: 0;
+}
+
+.path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.feedback {
+  padding: 0 var(--space-2);
+}
+
+.modalFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}

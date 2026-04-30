@@ -20,6 +20,7 @@ import {
   TodoStatus,
 } from "./types";
 import type { SessionState } from "../../../utils/sessionStatus";
+import type { WorktreeMeta } from "../../../services/refact/worktrees";
 
 const EMPTY_MESSAGES: ChatMessages = [];
 const EMPTY_QUEUED: QueuedItem[] = [];
@@ -700,6 +701,14 @@ export const selectManualPreviewItemsById = (
 
 export const selectManualPreviewRan = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.manual_preview_ran ?? false;
+
+export const selectThreadWorktree = (state: RootState): WorktreeMeta | null =>
+  state.chat.threads[state.chat.current_thread_id]?.thread.worktree ?? null;
+
+export const selectThreadWorktreeById = (
+  state: RootState,
+  chatId: string,
+): WorktreeMeta | null => state.chat.threads[chatId]?.thread.worktree ?? null;
 
 export const selectIsBuddyChat = (state: RootState, chatId: string): boolean =>
   !!state.chat.threads[chatId]?.thread.buddy_meta?.is_buddy_chat;

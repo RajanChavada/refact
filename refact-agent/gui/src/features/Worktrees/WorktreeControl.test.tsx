@@ -1,0 +1,439 @@
+import { beforeEach, describe, expect, test } from "vitest";
+import { http, HttpResponse } from "msw";
+import { screen, waitFor, render } from "../../utils/test-utils";
+import { ChatForm } from "../../components/ChatForm/ChatForm";
+import type { Chat } from "../Chat/Thread/types";
+import type {
+  WorktreeListResponse,
+  WorktreeMeta,
+  WorktreeRecordView,
+} from "../../services/refact";
+import { WorktreeControl } from "./WorktreeControl";
+import {
+  emptyTrajectories,
+  goodCaps,
+  goodPing,
+  goodPrompts,
+  goodUser,
+  noCommandPreview,
+  noCompletions,
+  noTools,
+  server,
+  trajectorySave,
+} from "../../utils/mockServer";
+
+type JsonObject = Record<string, unknown>;
+type Host = "web" | "ide" | "vscode" | "jetbrains";
+
+function makeWorktreeRecord(
+  id: string,
+  branch: string,
+  referenceCount = 1,
+): WorktreeRecordView {
+  const meta: WorktreeMeta = {
+    id,
+    kind: "chat",
+    root: `/tmp/refact/${id}`,
+    source_workspace_root: "/repo",
+    repo_root: "/repo",
+    branch,
+    base_branch: "main",
+    base_commit: "abc123",
+    enforce: true,
+    reference_count: referenceCount,
+  };
+  return {
+    meta,
+    created_at: "2026-04-30T00:00:00Z",
+    updated_at: "2026-04-30T00:00:00Z",
+    references: Array.from({ length: referenceCount }, (_, index) => ({
+      kind: "chat",
+      chat_id: index === 0 ? "other-chat" : `other-chat-${index}`,
+    })),
+    reference_count: referenceCount,
+    referencing_chat_ids: Array.from({ length: referenceCount }, (_, index) =>
+      index === 0 ? "other-chat" : `other-chat-${index}`,
+    ),
+    status: {
+      path_exists: true,
+      is_git_worktree: true,
+      dirty: false,
+      staged_count: 0,
+      unstaged_count: 0,
+      untracked_count: 0,
+      branch,
+      head_commit: "abc123",
+    },
+  };
+}
+
+function makeWorktreeList(records: WorktreeRecordView[]): WorktreeListResponse {
+  return {
+    project_hash: "project-hash",
+    source_workspace_root: "/repo",
+    worktrees: records,
+  };
+}
+
+function worktreesList(records: WorktreeRecordView[]) {
+  return http.get("http://127.0.0.1:8001/v1/worktrees", () =>
+    HttpResponse.json(makeWorktreeList(records)),
+  );
+}
+
+function chatModes() {
+  return http.get("http://127.0.0.1:8001/v1/chat-modes", () =>
+    HttpResponse.json({
+      modes: [
+        {
+          id: "agent",
+          title: "Agent",
+          description: "Agent mode",
+          tools_count: 0,
+          thread_defaults: {
+            include_project_info: true,
+            checkpoints_enabled: true,
+            auto_approve_editing_tools: false,
+            auto_approve_dangerous_commands: false,
+          },
+          ui: { order: 1, tags: ["agent"] },
+        },
+      ],
+      errors: [],
+    }),
+  );
+}
+
+function commandCapture(calls: JsonObject[]) {
+  return http.post(
+    "http://127.0.0.1:8001/v1/chats/:id/commands",
+    async ({ request }) => {
+      calls.push((await request.json()) as JsonObject);
+      return HttpResponse.json({ status: "queued" });
+    },
+  );
+}
+
+function voiceStatus() {
+  return http.get("http://127.0.0.1:8001/v1/voice/status", () =>
+    HttpResponse.json({
+      enabled: false,
+      model_loaded: false,
+      model_name: "",
+      is_downloading: false,
+      download_progress: 0,
+    }),
+  );
+}
+
+function providerUsage(path: "claude-code" | "openai-codex") {
+  return http.get(`http://127.0.0.1:8001/v1/${path}/usage`, () =>
+    HttpResponse.json({ data: null, error: null }),
+  );
+}
+
+function createWorktreeHandler(
+  record: WorktreeRecordView,
+  calls: JsonObject[],
+) {
+  return http.post(
+    "http://127.0.0.1:8001/v1/worktrees",
+    async ({ request }) => {
+      calls.push((await request.json()) as JsonObject);
+      return HttpResponse.json({
+        worktree: record,
+        branch_was_created: true,
+        dirty_source_warning: false,
+        warnings: [],
+      });
+    },
+  );
+}
+
+function openWorktreeHandler(
+  record: WorktreeRecordView,
+  canOpenFolder: boolean,
+  calls?: string[],
+) {
+  return http.post(
+    `http://127.0.0.1:8001/v1/worktrees/${record.meta.id}/open`,
+    () => {
+      calls?.push(record.meta.id);
+      return HttpResponse.json({
+        id: record.meta.id,
+        path: record.meta.root,
+        branch: record.meta.branch,
+        can_open_folder: canOpenFolder,
+      });
+    },
+  );
+}
+
+function deleteWorktreeHandler(calls: string[]) {
+  return http.delete("http://127.0.0.1:8001/v1/worktrees/:id", ({ params }) => {
+    calls.push(String(params.id));
+    return HttpResponse.json({
+      deleted: true,
+      branch_deleted: false,
+      stale_path: false,
+      affected_references: [],
+      affected_reference_count: 0,
+      warnings: [],
+    });
+  });
+}
+
+function makeChatState(chatId: string, worktree?: WorktreeMeta | null): Chat {
+  return {
+    current_thread_id: chatId,
+    open_thread_ids: [chatId],
+    threads: {
+      [chatId]: {
+        thread: {
+          id: chatId,
+          messages: [],
+          title: "",
+          model: "",
+          tool_use: "agent",
+          mode: "agent",
+          new_chat_suggested: { wasSuggested: false },
+          boost_reasoning: false,
+          include_project_info: true,
+          auto_enrichment_enabled: true,
+          worktree,
+        },
+        streaming: false,
+        waiting_for_response: false,
+        prevent_send: false,
+        error: null,
+        queued_items: [],
+        send_immediately: false,
+        attached_images: [],
+        attached_text_files: [],
+        confirmation: {
+          pause: false,
+          pause_reasons: [],
+          status: { wasInteracted: false, confirmationStatus: true },
+        },
+        snapshot_received: true,
+        task_widget_expanded: false,
+        memory_enrichment_user_touched: false,
+        manual_preview_items: [],
+        manual_preview_ran: false,
+      },
+    },
+    system_prompt: {},
+    tool_use: "agent",
+    checkpoints_enabled: true,
+    sse_refresh_requested: null,
+    stream_version: 0,
+  };
+}
+
+function configState(host: Host = "web") {
+  return {
+    host,
+    lspPort: 8001,
+    apiKey: null,
+    themeProps: { appearance: "dark" as const },
+    features: { images: true, statistics: true, vecdb: true, ast: true },
+  };
+}
+
+function renderControl(
+  records: WorktreeRecordView[],
+  worktree?: WorktreeMeta | null,
+  host: Host = "web",
+) {
+  server.use(worktreesList(records));
+  return render(<WorktreeControl />, {
+    preloadedState: {
+      chat: makeChatState("chat-1", worktree),
+      config: configState(host),
+    },
+  });
+}
+
+beforeEach(() => {
+  server.use(worktreesList([]), chatModes());
+});
+
+describe("WorktreeControl", () => {
+  test("control renders beside mode selector", async () => {
+    server.use(
+      goodCaps,
+      goodUser,
+      goodPrompts,
+      noTools,
+      noCommandPreview,
+      noCompletions,
+      goodPing,
+      emptyTrajectories,
+      trajectorySave,
+      worktreesList([]),
+      chatModes(),
+      voiceStatus(),
+      providerUsage("claude-code"),
+      providerUsage("openai-codex"),
+      commandCapture([]),
+    );
+
+    render(<ChatForm onSubmit={() => undefined} />, {
+      preloadedState: {
+        chat: makeChatState("chat-form"),
+        config: configState("web"),
+      },
+    });
+
+    const worktreeTrigger = await screen.findByTestId(
+      "worktree-control-trigger",
+    );
+    const modeButtons = await screen.findAllByRole("button", { name: /Agent/ });
+    const modeButton = modeButtons.find(
+      (button) => button.textContent?.trim() === "Agent",
+    );
+
+    expect(worktreeTrigger).toBeInTheDocument();
+    expect(modeButton).toBeDefined();
+    expect(worktreeTrigger.parentElement).toBe(modeButton?.parentElement);
+  });
+
+  test("label shows worktree branch", async () => {
+    const record = makeWorktreeRecord("wt-branch", "refact/chat/branch");
+
+    renderControl([record], record.meta);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+        "refact/chat/branch",
+      );
+    });
+  });
+
+  test("no-worktree label shows main workspace fallback", async () => {
+    renderControl([]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+        "Main workspace",
+      );
+    });
+  });
+
+  test("create modal submits API call and attaches worktree", async () => {
+    const created = makeWorktreeRecord("wt-new", "refact/chat/new");
+    const createCalls: JsonObject[] = [];
+    const commandCalls: JsonObject[] = [];
+    server.use(
+      worktreesList([]),
+      createWorktreeHandler(created, createCalls),
+      commandCapture(commandCalls),
+    );
+
+    const { user } = renderControl([]);
+
+    await user.click(screen.getByTestId("worktree-control-trigger"));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Create worktree for this chat/,
+      }),
+    );
+    const branchInput = await screen.findByLabelText(/Branch name/);
+    await user.clear(branchInput);
+    await user.type(branchInput, "refact/chat/new");
+    await user.click(screen.getByRole("button", { name: /^Create$/ }));
+
+    await waitFor(() => expect(createCalls).toHaveLength(1));
+    expect(createCalls[0]).toMatchObject({
+      branch: "refact/chat/new",
+      base_branch: "main",
+      chat_id: "chat-1",
+      kind: "chat",
+    });
+    await waitFor(() => expect(commandCalls).toHaveLength(1));
+    expect(commandCalls[0]).toMatchObject({
+      type: "set_params",
+      patch: { worktree_id: "wt-new" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+        "refact/chat/new",
+      );
+    });
+  });
+
+  test("selecting existing shared worktree attaches it to current chat", async () => {
+    const shared = makeWorktreeRecord("wt-shared", "refact/chat/shared", 2);
+    const commandCalls: JsonObject[] = [];
+    server.use(worktreesList([shared]), commandCapture(commandCalls));
+
+    const { user } = renderControl([shared]);
+
+    await user.click(screen.getByTestId("worktree-control-trigger"));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Select worktree refact\/chat\/shared/,
+      }),
+    );
+
+    await waitFor(() => expect(commandCalls).toHaveLength(1));
+    expect(commandCalls[0]).toMatchObject({
+      type: "set_params",
+      patch: { worktree_id: "wt-shared" },
+    });
+    expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+      "refact/chat/shared",
+    );
+  });
+
+  test("open-in-new-window falls back to copied path when host cannot open folders", async () => {
+    const record = makeWorktreeRecord("wt-open", "refact/chat/open");
+    const openCalls: string[] = [];
+    server.use(
+      worktreesList([record]),
+      openWorktreeHandler(record, true, openCalls),
+    );
+
+    const { user } = renderControl([record], record.meta, "web");
+
+    await user.click(screen.getByTestId("worktree-control-trigger"));
+    await user.click(
+      await screen.findByRole("button", { name: /Open in new window/ }),
+    );
+
+    await waitFor(() => expect(openCalls).toEqual(["wt-open"]));
+    expect(
+      await screen.findByText("Path copied to clipboard."),
+    ).toBeInTheDocument();
+  });
+
+  test("detach clears worktree without delete call", async () => {
+    const record = makeWorktreeRecord("wt-detach", "refact/chat/detach");
+    const commandCalls: JsonObject[] = [];
+    const deleteCalls: string[] = [];
+    server.use(
+      worktreesList([record]),
+      commandCapture(commandCalls),
+      deleteWorktreeHandler(deleteCalls),
+    );
+
+    const { user } = renderControl([record], record.meta);
+
+    await user.click(screen.getByTestId("worktree-control-trigger"));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Detach \/ use main workspace/,
+      }),
+    );
+
+    await waitFor(() => expect(commandCalls).toHaveLength(1));
+    expect(commandCalls[0]).toMatchObject({
+      type: "set_params",
+      patch: { worktree: null },
+    });
+    expect(deleteCalls).toHaveLength(0);
+    expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+      "Main workspace",
+    );
+  });
+});

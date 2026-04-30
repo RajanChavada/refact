@@ -15,6 +15,7 @@ import { getLastThreadParams } from "../../../utils/threadStorage";
 import {
   setToolUse,
   setThreadMode,
+  setThreadWorktree,
   enableSend,
   clearChatError,
   setChatModel,
@@ -283,6 +284,13 @@ export const chatReducer = createReducer(initialState, (builder) => {
             defaults.auto_approve_dangerous_commands;
         }
       }
+    }
+  });
+
+  builder.addCase(setThreadWorktree, (state, action) => {
+    const rt = getRuntime(state, action.payload.chatId);
+    if (rt) {
+      rt.thread.worktree = action.payload.worktree;
     }
   });
 

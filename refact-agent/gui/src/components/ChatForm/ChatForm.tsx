@@ -81,6 +81,7 @@ import { ComboBox } from "../ComboBox";
 import { UnifiedAttachmentsTray } from "./UnifiedAttachmentsTray";
 import { ChatSettingsDropdown } from "./ChatSettingsDropdown";
 import { ModeSelect } from "./ModeSelect";
+import { WorktreeControl } from "../../features/Worktrees";
 import { addCheckboxValuesToInput } from "./utils";
 import { useCommandCompletionAndPreviewFiles } from "./useCommandCompletionAndPreviewFiles";
 import { useAppSelector, useAppDispatch } from "../../hooks";
@@ -571,6 +572,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 disabled={isModeDisabled}
               />
             )}
+            {!isBuddyChat && <WorktreeControl />}
 
             <Flex justify="end" flexGrow="1" wrap="wrap" gap="2" align="center">
               <BrowserToggleButton chatId={chatId} />

@@ -376,6 +376,11 @@ export const setThreadMode = createAction<{
   };
 }>("chatThread/setThreadMode");
 
+export const setThreadWorktree = createAction<{
+  chatId: string;
+  worktree: WorktreeMeta | null;
+}>("chatThread/setThreadWorktree");
+
 export const setEnabledCheckpoints = createAction<boolean>(
   "chat/setEnabledCheckpoints",
 );
