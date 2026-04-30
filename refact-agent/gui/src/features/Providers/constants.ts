@@ -13,5 +13,11 @@ export const BEAUTIFUL_PROVIDER_NAMES: Record<string, string> = {
   vllm: "vLLM",
   xai: "xAI",
   xai_responses: "xAI (Responses API)",
+  qwen: "Qwen",
+  kimi: "Kimi / Moonshot AI",
+  zhipu: "Z.AI / Zhipu",
+  minimax: "MiniMax",
+  doubao: "Doubao / Volcengine",
+  github_copilot: "GitHub Copilot",
   custom: "Custom Provider",
 };

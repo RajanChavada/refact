@@ -1,14 +1,20 @@
 import { AnthropicIcon } from "./Anthropic";
 import { CustomIcon } from "./Custom";
 import { DeepSeekIcon } from "./DeepSeek";
+import { DoubaoIcon } from "./Doubao";
 import { GeminiIcon } from "./Gemini";
+import { GitHubCopilotIcon } from "./GitHubCopilot";
 import { GroqIcon } from "./Groq";
+import { KimiIcon } from "./Kimi";
 import { LMStudioIcon } from "./LMStudio";
+import { MiniMaxIcon } from "./MiniMax";
 import { OllamaIcon } from "./Ollama";
 import { OpenAIIcon } from "./OpenAI";
 import { OpenRouterIcon } from "./OpenRouter";
+import { QwenIcon } from "./Qwen";
 import { VllmIcon } from "./Vllm";
 import { XaiIcon } from "./Xai";
+import { ZhipuIcon } from "./Zhipu";
 
 export const iconsMap: Record<string, JSX.Element> = {
   openai: <OpenAIIcon />,
@@ -25,5 +31,11 @@ export const iconsMap: Record<string, JSX.Element> = {
   vllm: <VllmIcon />,
   xai: <XaiIcon />,
   xai_responses: <XaiIcon />,
+  qwen: <QwenIcon />,
+  kimi: <KimiIcon />,
+  zhipu: <ZhipuIcon />,
+  minimax: <MiniMaxIcon />,
+  doubao: <DoubaoIcon />,
+  github_copilot: <GitHubCopilotIcon />,
   custom: <CustomIcon />,
 };
