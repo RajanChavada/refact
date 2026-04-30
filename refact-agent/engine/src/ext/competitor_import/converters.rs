@@ -7,6 +7,7 @@ use serde_yaml::{Mapping, Value as YamlValue};
 
 use crate::yaml_configs::customization_types::SubagentConfig;
 
+use super::manifest::hash_string;
 use super::markdown::{
     first_useful_line_or_heading, frontmatter_mapping, parse_markdown_frontmatter,
     render_markdown_with_frontmatter, sanitize_command_name, sanitize_skill_id,
@@ -319,10 +320,30 @@ fn stage_skill_package(
     normalized_skill_md: &str,
 ) -> IoResult<PathBuf> {
     fs::create_dir_all(staging_root)?;
-    let staged = staging_root.join(format!("{}-{}", skill_id, uuid::Uuid::new_v4().simple()));
+    let hash = hash_string(&format!(
+        "{}\n{}\n{}",
+        skill_dir.to_string_lossy(),
+        skill_id,
+        normalized_skill_md
+    ));
+    let staged = staging_root.join(format!("{}-{}", skill_id, &hash[..16]));
+    remove_existing_path(&staged)?;
     copy_directory_contents(skill_dir, &staged)?;
     fs::write(staged.join("SKILL.md"), normalized_skill_md)?;
     Ok(staged)
+}
+
+fn remove_existing_path(path: &Path) -> IoResult<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 fn copy_directory_contents(source_dir: &Path, target_dir: &Path) -> IoResult<()> {
@@ -531,6 +552,38 @@ mod tests {
             fs::read_to_string(source_dir.join("notes.txt")).unwrap(),
             "notes"
         );
+    }
+
+    #[test]
+    fn repeated_skill_conversion_reuses_staging_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("source skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: My Skill\n---\n# Helps review code\nUse carefully.",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("notes.txt"), "notes").unwrap();
+        let staging = temp.path().join("staging");
+
+        let first = convert_skill_package(&context(temp.path()), &skill_dir, &staging).unwrap();
+        let ImportArtifact::DirectoryCopy { source_dir } = first.artifact else {
+            panic!("expected directory copy");
+        };
+        fs::write(source_dir.join("stale.txt"), "stale").unwrap();
+
+        let second = convert_skill_package(&context(temp.path()), &skill_dir, &staging).unwrap();
+        let ImportArtifact::DirectoryCopy {
+            source_dir: second_source_dir,
+        } = second.artifact
+        else {
+            panic!("expected directory copy");
+        };
+
+        assert_eq!(second_source_dir, source_dir);
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
+        assert!(!second_source_dir.join("stale.txt").exists());
     }
 
     #[test]

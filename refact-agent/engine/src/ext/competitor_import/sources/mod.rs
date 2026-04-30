@@ -1,9 +1,14 @@
 use std::collections::HashSet;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::files_correction::canonical_path;
 
-use super::types::{Competitor, ImportScope, ImportSourceRoot};
+use super::types::{
+    Competitor, ConversionContext, ImportIssue, ImportKind, ImportScope, ImportSourceRoot,
+    ImportStatus,
+};
 
 pub mod claude;
 pub mod continue_dev;
@@ -101,6 +106,67 @@ pub fn discover_project_scopes(workspace_roots: &[PathBuf]) -> Vec<ImportScope> 
         }
     }
     scopes
+}
+
+pub(super) fn regular_dir_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_dir() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+pub(super) fn regular_file_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+pub(super) fn project_scan_root_allowed(
+    path: &Path,
+    workspace_root: &Path,
+) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(format!("failed to inspect source root: {err}")),
+    };
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err("project source root is a symlink and was skipped".to_string());
+    }
+    if !file_type.is_dir() {
+        return Ok(false);
+    }
+    let canonical_root = fs::canonicalize(workspace_root)
+        .map_err(|err| format!("failed to canonicalize workspace root: {err}"))?;
+    let canonical_path = fs::canonicalize(path)
+        .map_err(|err| format!("failed to canonicalize source root: {err}"))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err("project source root resolves outside workspace and was skipped".to_string());
+    }
+    Ok(true)
+}
+
+pub(super) fn scan_root_allowed(context: &ConversionContext, path: &Path) -> Result<bool, String> {
+    match &context.scope {
+        ImportScope::Project { root } => project_scan_root_allowed(path, root),
+        ImportScope::Global => Ok(regular_dir_exists(path)),
+    }
+}
+
+pub(super) fn skipped_root_issue(
+    context: &ConversionContext,
+    kind: Option<ImportKind>,
+    path: &Path,
+    message: impl Into<String>,
+) -> ImportIssue {
+    ImportIssue {
+        competitor: Some(context.competitor),
+        kind,
+        scope: Some(context.scope.clone()),
+        path: Some(path.to_path_buf()),
+        status: ImportStatus::Unsupported,
+        message: message.into(),
+    }
 }
 
 #[cfg(test)]

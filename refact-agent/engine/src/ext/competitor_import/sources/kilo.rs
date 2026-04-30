@@ -206,6 +206,19 @@ fn report_project_rule_files(
         workspace_root.join(".kilo"),
         workspace_root.join(".kilocode"),
     ] {
+        match super::project_scan_root_allowed(&root, workspace_root) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(message) => {
+                scan.issues.push(super::skipped_root_issue(
+                    context,
+                    Some(ImportKind::UnsupportedRules),
+                    &root,
+                    message,
+                ));
+                continue;
+            }
+        }
         report_rule_root(scan, context, &root.join("rules"));
         report_prefixed_rule_dirs(scan, context, &root, "rules-");
     }
@@ -227,6 +240,19 @@ fn report_prefixed_rule_dirs(
     root: &Path,
     prefix: &str,
 ) {
+    match super::scan_root_allowed(context, root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            scan.issues.push(super::skipped_root_issue(
+                context,
+                Some(ImportKind::UnsupportedRules),
+                root,
+                message,
+            ));
+            return;
+        }
+    }
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(err) if err.kind() == ErrorKind::NotFound => return,
@@ -244,8 +270,18 @@ fn report_prefixed_rule_dirs(
 }
 
 fn report_rule_root(scan: &mut KiloScan, context: &ConversionContext, rule_root: &Path) {
-    if !rule_root.is_dir() {
-        return;
+    match super::scan_root_allowed(context, rule_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            scan.issues.push(super::skipped_root_issue(
+                context,
+                Some(ImportKind::UnsupportedRules),
+                rule_root,
+                message,
+            ));
+            return;
+        }
     }
     for entry in walkdir::WalkDir::new(rule_root)
         .follow_links(false)
@@ -274,9 +310,7 @@ fn unsupported_rule_issue(context: &ConversionContext, path: &Path) -> ImportIss
 }
 
 fn is_regular_file(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false)
+    super::regular_file_exists(path)
 }
 
 #[cfg(test)]
@@ -441,6 +475,35 @@ mod tests {
         find_candidate(&scan, ImportKind::Command, "review");
         assert_eq!(scan.issues.len(), 1);
         assert_eq!(scan.issues[0].status, ImportStatus::Error);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_symlinked_kilo_roots_outside_workspace_are_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside_kilo = temp.path().join("outside-kilo");
+        let outside_legacy = temp.path().join("outside-kilocode");
+        write(
+            &outside_kilo.join("skills/foo/SKILL.md"),
+            "---\nname: foo\n---\nUse foo.",
+        );
+        write(&outside_kilo.join("commands/review.md"), "Review.");
+        write(&outside_kilo.join("agents/reviewer.md"), "Review.");
+        write(&outside_legacy.join("workflows/deploy.md"), "Deploy.");
+        fs::create_dir_all(&workspace).unwrap();
+        std::os::unix::fs::symlink(&outside_kilo, workspace.join(".kilo")).unwrap();
+        std::os::unix::fs::symlink(&outside_legacy, workspace.join(".kilocode")).unwrap();
+        let staging = temp.path().join("staging");
+
+        let scan = scan_project_root_with_staging(&workspace, &staging);
+
+        assert!(scan.candidates.is_empty());
+        assert!(scan
+            .issues
+            .iter()
+            .any(|issue| issue.status == ImportStatus::Unsupported));
+        assert!(!staging.exists());
     }
 
     #[test]

@@ -112,7 +112,25 @@ pub fn scan_project_root_with_staging(workspace_root: &Path, staging_root: &Path
         workspace_root.join("opencode.json"),
         workspace_root.join("opencode.jsonc"),
     ];
-    scan_root(&context, &opencode_root, &config_files, staging_root)
+    match super::project_scan_root_allowed(&opencode_root, workspace_root) {
+        Ok(true) => scan_root(&context, &opencode_root, &config_files, staging_root),
+        Ok(false) => {
+            let mut scan = OpenCodeScan::default();
+            scan_config_files(&mut scan, &context, &config_files, "OpenCode");
+            scan
+        }
+        Err(message) => {
+            let mut scan = OpenCodeScan::default();
+            scan.push_issue(super::skipped_root_issue(
+                &context,
+                None,
+                &opencode_root,
+                message,
+            ));
+            scan_config_files(&mut scan, &context, &config_files, "OpenCode");
+            scan
+        }
+    }
 }
 
 pub fn scan_global_root(config_root: &Path, refact_config_root: &Path) -> OpenCodeScan {
@@ -182,6 +200,19 @@ fn scan_skills(
     staging_root: &Path,
     display_name: &str,
 ) {
+    match super::scan_root_allowed(context, skills_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            scan.push_issue(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Skill),
+                skills_root,
+                message,
+            ));
+            return;
+        }
+    }
     let skill_dirs = match direct_child_dirs(skills_root) {
         Ok(skill_dirs) => skill_dirs,
         Err(err) => {
@@ -207,6 +238,19 @@ fn scan_markdown_commands(
     command_root: &Path,
     display_name: &str,
 ) {
+    match super::scan_root_allowed(context, command_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            scan.push_issue(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Command),
+                command_root,
+                message,
+            ));
+            return;
+        }
+    }
     let command_paths = match recursive_markdown_files(command_root) {
         Ok(command_paths) => command_paths,
         Err(err) => {
@@ -246,6 +290,19 @@ fn scan_markdown_agents(
     agent_root: &Path,
     display_name: &str,
 ) {
+    match super::scan_root_allowed(context, agent_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            scan.push_issue(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Subagent),
+                agent_root,
+                message,
+            ));
+            return;
+        }
+    }
     let agent_paths = match recursive_markdown_files(agent_root) {
         Ok(agent_paths) => agent_paths,
         Err(err) => {
@@ -673,10 +730,12 @@ fn strip_json_trailing_commas(input: &str) -> String {
 }
 
 fn direct_child_dirs(root: &Path) -> IoResult<Vec<PathBuf>> {
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-    if !root.is_dir() {
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
         return Ok(Vec::new());
     }
     let mut dirs = Vec::new();
@@ -697,7 +756,12 @@ fn direct_child_dirs(root: &Path) -> IoResult<Vec<PathBuf>> {
 }
 
 fn recursive_markdown_files(root: &Path) -> IoResult<Vec<PathBuf>> {
-    if !root.exists() || !root.is_dir() {
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
         return Ok(Vec::new());
     }
     let mut paths = Vec::new();
@@ -725,9 +789,7 @@ fn recursive_markdown_files(root: &Path) -> IoResult<Vec<PathBuf>> {
 }
 
 fn is_regular_file(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false)
+    super::regular_file_exists(path)
 }
 
 fn relative_markdown_name(root: &Path, path: &Path) -> String {
@@ -1297,6 +1359,52 @@ mod tests {
         find_candidate(&scan, ImportKind::Command, "review");
         assert_eq!(scan.issues.len(), 1);
         assert_eq!(scan.issues[0].status, ImportStatus::Error);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_symlinked_opencode_root_outside_workspace_is_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside-opencode");
+        fs::create_dir_all(outside.join("skills/foo")).unwrap();
+        fs::create_dir_all(outside.join("commands")).unwrap();
+        fs::create_dir_all(outside.join("agents")).unwrap();
+        fs::write(
+            outside.join("skills/foo/SKILL.md"),
+            "---\nname: Foo Skill\n---\n# Foo\nUse foo.",
+        )
+        .unwrap();
+        fs::write(outside.join("commands/review.md"), "Review").unwrap();
+        fs::write(outside.join("agents/reviewer.md"), "Review code").unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".opencode")).unwrap();
+        let staging = temp.path().join("staging");
+
+        let scan = scan_project_root_with_staging(&workspace, &staging);
+
+        assert!(scan.candidates.is_empty());
+        assert!(scan
+            .issues
+            .iter()
+            .any(|issue| issue.status == ImportStatus::Unsupported));
+        assert!(!staging.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_markdown_scan_skips_nested_symlink_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.md"), "Do not import").unwrap();
+        let command_root = temp.path().join(".opencode/commands");
+        fs::create_dir_all(&command_root).unwrap();
+        std::os::unix::fs::symlink(&outside, command_root.join("linked")).unwrap();
+
+        let scan = scan_project_root_with_staging(temp.path(), &temp.path().join("staging"));
+
+        assert!(scan.candidates.is_empty());
     }
 
     #[test]

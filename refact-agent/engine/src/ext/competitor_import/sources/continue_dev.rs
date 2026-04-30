@@ -65,8 +65,18 @@ pub fn scan_continue_root(
         source_root: source_root.to_path_buf(),
     };
     let mut result = ContinueScanResult::default();
-    if !source_root.is_dir() {
-        return result;
+    match super::scan_root_allowed(&context, source_root) {
+        Ok(true) => {}
+        Ok(false) => return result,
+        Err(message) => {
+            result.add_issue(super::skipped_root_issue(
+                &context,
+                None,
+                source_root,
+                message,
+            ));
+            return result;
+        }
     }
 
     scan_skills(&context, staging_root, &mut result);
@@ -78,6 +88,19 @@ pub fn scan_continue_root(
 
 fn scan_skills(context: &ConversionContext, staging_root: &Path, result: &mut ContinueScanResult) {
     let skills_root = context.source_root.join("skills");
+    match super::scan_root_allowed(context, &skills_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            result.add_issue(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Skill),
+                &skills_root,
+                message,
+            ));
+            return;
+        }
+    }
     for skill_md in collect_named_files_at_depth(&skills_root, "SKILL.md", 2) {
         match read_parsed_markdown(&skill_md) {
             Ok(_) => {
@@ -101,6 +124,19 @@ fn scan_skills(context: &ConversionContext, staging_root: &Path, result: &mut Co
 
 fn scan_prompts(context: &ConversionContext, result: &mut ContinueScanResult) {
     let prompts_root = context.source_root.join("prompts");
+    match super::scan_root_allowed(context, &prompts_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            result.add_issue(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Command),
+                &prompts_root,
+                message,
+            ));
+            return;
+        }
+    }
     for prompt_path in collect_markdown_files(&prompts_root) {
         match read_parsed_markdown(&prompt_path) {
             Ok((content, parsed)) => {
@@ -138,6 +174,19 @@ fn scan_prompts(context: &ConversionContext, result: &mut ContinueScanResult) {
 
 fn scan_checks(context: &ConversionContext, result: &mut ContinueScanResult) {
     let checks_root = context.source_root.join("checks");
+    match super::scan_root_allowed(context, &checks_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            result.add_issue(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Subagent),
+                &checks_root,
+                message,
+            ));
+            return;
+        }
+    }
     for check_path in collect_markdown_files(&checks_root) {
         match read_parsed_markdown(&check_path) {
             Ok((_, parsed)) => {
@@ -185,16 +234,27 @@ fn scan_checks(context: &ConversionContext, result: &mut ContinueScanResult) {
 
 fn report_continue_rule_files(context: &ConversionContext, result: &mut ContinueScanResult) {
     let rules_root = context.source_root.join("rules");
-    for path in collect_markdown_files(&rules_root) {
-        result.add_issue(unsupported_issue(
+    match super::scan_root_allowed(context, &rules_root) {
+        Ok(true) => {
+            for path in collect_markdown_files(&rules_root) {
+                result.add_issue(unsupported_issue(
+                    context,
+                    ImportKind::UnsupportedRules,
+                    &path,
+                    "Continue rules are report-only in v1",
+                ));
+            }
+        }
+        Ok(false) => {}
+        Err(message) => result.add_issue(super::skipped_root_issue(
             context,
-            ImportKind::UnsupportedRules,
-            &path,
-            "Continue rules are report-only in v1",
-        ));
+            Some(ImportKind::UnsupportedRules),
+            &rules_root,
+            message,
+        )),
     }
     let root_rules = context.source_root.join("rules.md");
-    if root_rules.is_file() {
+    if super::regular_file_exists(&root_rules) {
         result.add_issue(unsupported_issue(
             context,
             ImportKind::UnsupportedRules,
@@ -211,7 +271,7 @@ fn report_workspace_rule_files(
 ) {
     for file_name in ["rules.md", "AGENTS.md", "AGENT.md", "CLAUDE.md"] {
         let path = workspace_root.join(file_name);
-        if path.is_file() {
+        if super::regular_file_exists(&path) {
             result.add_issue(ImportIssue {
                 competitor: Some(Competitor::ContinueDev),
                 kind: Some(ImportKind::UnsupportedRules),
@@ -297,7 +357,7 @@ fn collect_named_files_at_depth(root: &Path, file_name: &str, depth: usize) -> V
 }
 
 fn collect_files(root: &Path, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
-    if !root.is_dir() {
+    if !super::regular_dir_exists(root) {
         return Vec::new();
     }
     WalkDir::new(root)
@@ -505,6 +565,36 @@ mod tests {
             .issues
             .iter()
             .all(|issue| issue.kind == Some(ImportKind::UnsupportedRules)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_symlinked_continue_root_outside_workspace_is_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside-continue");
+        write(
+            &outside.join("skills/foo/SKILL.md"),
+            "---\nname: foo\n---\nUse foo.",
+        );
+        write(
+            &outside.join("prompts/review.md"),
+            "---\ninvokable: true\n---\nReview.",
+        );
+        write(&outside.join("checks/security.md"), "# Check");
+        fs::create_dir_all(&workspace).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".continue")).unwrap();
+        let staging = temp.path().join("staging");
+
+        let result = scan_project_root(&workspace, &staging);
+
+        assert!(result.candidates.is_empty());
+        assert!(result
+            .summary
+            .issues
+            .iter()
+            .any(|issue| issue.status == ImportStatus::Unsupported));
+        assert!(!staging.exists());
     }
 
     #[test]

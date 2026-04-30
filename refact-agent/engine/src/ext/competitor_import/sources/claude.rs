@@ -51,15 +51,24 @@ pub fn collect_candidates(
 ) -> (Vec<ImportCandidate>, Vec<ImportIssue>) {
     let mut candidates = Vec::new();
     let mut issues = Vec::new();
-    if !is_regular_dir(source_root) {
-        return (candidates, issues);
-    }
-
     let context = ConversionContext {
         competitor: Competitor::ClaudeCode,
         scope,
         source_root: source_root.to_path_buf(),
     };
+    match super::scan_root_allowed(&context, source_root) {
+        Ok(true) => {}
+        Ok(false) => return (candidates, issues),
+        Err(message) => {
+            issues.push(super::skipped_root_issue(
+                &context,
+                None,
+                source_root,
+                message,
+            ));
+            return (candidates, issues);
+        }
+    }
 
     collect_skill_candidates(
         &context,
@@ -91,8 +100,18 @@ fn collect_skill_candidates(
     candidates: &mut Vec<ImportCandidate>,
     issues: &mut Vec<ImportIssue>,
 ) {
-    if !is_regular_dir(skills_root) {
-        return;
+    match super::scan_root_allowed(context, skills_root) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(message) => {
+            issues.push(super::skipped_root_issue(
+                context,
+                Some(ImportKind::Skill),
+                skills_root,
+                message,
+            ));
+            return;
+        }
     }
     let mut entries = match fs::read_dir(skills_root) {
         Ok(entries) => entries.filter_map(Result::ok).collect::<Vec<_>>(),
@@ -248,8 +267,18 @@ fn markdown_files(
     root: &Path,
     issues: &mut Vec<ImportIssue>,
 ) -> Vec<PathBuf> {
-    if !is_regular_dir(root) {
-        return Vec::new();
+    match super::scan_root_allowed(context, root) {
+        Ok(true) => {}
+        Ok(false) => return Vec::new(),
+        Err(message) => {
+            issues.push(super::skipped_root_issue(
+                context,
+                Some(kind),
+                root,
+                message,
+            ));
+            return Vec::new();
+        }
     }
     let mut paths = Vec::new();
     for entry in walkdir::WalkDir::new(root)
@@ -555,6 +584,47 @@ mod tests {
             fs::read_to_string(refact_config.join("commands").join("global.md")).unwrap(),
             "---\ndescription: Global command\n---\nRun globally"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_symlinked_claude_root_outside_workspace_is_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside-claude");
+        write_file(
+            &outside.join("skills/foo/SKILL.md"),
+            "---\nname: Foo Skill\n---\n# Foo\nUse foo.",
+        );
+        write_file(&outside.join("commands/review.md"), "Review.");
+        write_file(&outside.join("agents/reviewer.md"), "Review.");
+        fs::create_dir_all(&workspace).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".claude")).unwrap();
+
+        let summary = run_project_import_with_paths(&[workspace.clone()]).await;
+
+        assert!(summary.candidates.is_empty());
+        assert!(summary
+            .issues
+            .iter()
+            .any(|issue| issue.status == ImportStatus::Unsupported));
+        assert!(!workspace.join(".refact/imports/staging/claude").exists());
+    }
+
+    #[tokio::test]
+    async fn repeated_normalized_skill_import_reuses_staging_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_file(
+            &root.join(".claude/skills/foo/SKILL.md"),
+            "---\nname: Foo Skill\n---\n# Foo\nUse foo.",
+        );
+
+        run_project_import_with_paths(&[root.to_path_buf()]).await;
+        run_project_import_with_paths(&[root.to_path_buf()]).await;
+
+        let staging_root = root.join(".refact/imports/staging/claude");
+        assert_eq!(fs::read_dir(staging_root).unwrap().count(), 1);
     }
 
     #[tokio::test]
