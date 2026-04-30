@@ -19,6 +19,7 @@ use crate::tasks::types::StatusUpdate;
 use crate::chat::types::{SessionState, TaskMeta};
 use crate::chat::{get_or_create_session_with_trajectory, process_command_queue};
 use crate::chat::types::{CommandRequest, ChatCommand};
+use crate::worktrees::service::WorktreeService;
 
 /// Timeout for agent inactivity before considering it stuck (20 minutes)
 const AGENT_STUCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
@@ -163,6 +164,7 @@ async fn mark_agent_as_failed(
                     }
                     c.agent_worktree = None;
                     c.agent_branch = None;
+                    c.agent_worktree_name = None;
                 }
                 Ok(())
             })
@@ -288,6 +290,58 @@ async fn notify_planner_all_agents_done(
     Ok(())
 }
 
+pub(crate) async fn remove_agent_worktree_and_branch(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    agent_worktree: &str,
+    agent_branch: &str,
+    agent_worktree_name: Option<&str>,
+) -> (bool, bool) {
+    if let Some(worktree_id) = agent_worktree_name {
+        let cache_dir = gcx.read().await.cache_dir.clone();
+        let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+        if let Some(source_root) = project_dirs.first() {
+            if let Ok(service) = WorktreeService::new(cache_dir, source_root.clone()) {
+                match service.delete_worktree(worktree_id, true).await {
+                    Ok(deleted) => {
+                        return (
+                            deleted.deleted && !Path::new(agent_worktree).exists(),
+                            deleted.branch_deleted,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to delete registered worktree '{}': {}",
+                            worktree_id,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let project_dirs = crate::files_correction::get_project_dirs(gcx).await;
+    if let Some(workspace_root) = project_dirs.first() {
+        let worktree_removed = Command::new("git")
+            .args(["worktree", "remove", agent_worktree, "--force"])
+            .current_dir(workspace_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let branch_deleted = Command::new("git")
+            .args(["branch", "-D", agent_branch])
+            .current_dir(workspace_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        (worktree_removed, branch_deleted)
+    } else {
+        (false, false)
+    }
+}
+
 pub(crate) async fn cleanup_failed_agent_worktree(
     gcx: Arc<ARwLock<GlobalContext>>,
     agent_worktree: &str,
@@ -352,24 +406,13 @@ pub(crate) async fn cleanup_failed_agent_worktree(
         }
     }
 
-    crate::files_in_workspace::remove_folder(
+    let _ = remove_agent_worktree_and_branch(
         gcx.clone(),
-        &std::path::PathBuf::from(agent_worktree),
+        agent_worktree,
+        agent_branch,
+        _agent_worktree_name,
     )
     .await;
-
-    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
-    if let Some(workspace_root) = project_dirs.first() {
-        let _ = Command::new("git")
-            .args(["worktree", "remove", agent_worktree, "--force"])
-            .current_dir(workspace_root)
-            .output();
-
-        let _ = Command::new("git")
-            .args(["branch", "-D", agent_branch])
-            .current_dir(workspace_root)
-            .output();
-    }
 
     let parent = Path::new(agent_worktree).parent();
     if let Some(p) = parent {

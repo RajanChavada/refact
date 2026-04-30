@@ -190,11 +190,6 @@ impl Tool for ToolTaskMergeAgent {
 
             let mut cleanup_status = Vec::new();
             if agent_branch != base_branch {
-                crate::files_in_workspace::remove_folder(
-                    gcx.clone(),
-                    &std::path::PathBuf::from(agent_worktree),
-                )
-                .await;
                 let _guard = git_merge_lock().lock().await;
                 let worktree_removed =
                     run_git(&["worktree", "remove", agent_worktree, "--force"]).is_ok();
@@ -430,11 +425,6 @@ Use `cat <file>` to see conflict markers in each file."#,
         }
 
         let (worktree_removed, branch_deleted) = if agent_branch != base_branch {
-            crate::files_in_workspace::remove_folder(
-                gcx.clone(),
-                &std::path::PathBuf::from(agent_worktree),
-            )
-            .await;
             let wr = run_git(&["worktree", "remove", agent_worktree, "--force"]).is_ok();
             let bd = run_git(&["branch", "-D", agent_branch]).is_ok();
             (wr, bd)

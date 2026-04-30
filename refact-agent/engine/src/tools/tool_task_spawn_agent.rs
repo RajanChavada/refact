@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use serde_json::Value;
@@ -12,11 +13,12 @@ use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile};
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::tasks::storage;
-use crate::tasks::types::StatusUpdate;
+use crate::tasks::types::{BoardCard, StatusUpdate};
 use crate::global_context::{GlobalContext, try_load_caps_quickly_if_not_present};
 use crate::chat::types::{ThreadParams, TaskMeta, CommandRequest, ChatCommand};
 use crate::chat::{get_or_create_session_with_trajectory, process_command_queue};
-use crate::git::operations;
+use crate::worktrees::service::WorktreeService;
+use crate::worktrees::types::{CreateWorktreeRequest, WorktreeMeta};
 
 async fn get_task_id(
     ccx: &Arc<AMutex<AtCommandsContext>>,
@@ -63,30 +65,45 @@ async fn resolve_agent_model(
     )
 }
 
+#[derive(Debug)]
 struct PreparedWorktree {
-    branch_name: String,
-    worktree_name: String,
-    worktree_path: std::path::PathBuf,
-    workspace_root: std::path::PathBuf,
-    git_dir: std::path::PathBuf,
-    base_branch: Option<String>,
-    spawned_with_dirty_tree: bool,
+    meta: WorktreeMeta,
     branch_was_created: bool,
+    spawned_with_dirty_tree: bool,
 }
 
 impl PreparedWorktree {
-    fn cleanup_sync(&self) {
-        if let Ok(repo) = git2::Repository::open(&self.git_dir) {
-            operations::remove_worktree(&repo, &self.worktree_name, &self.worktree_path);
-            if self.branch_was_created {
-                operations::delete_branch_if_exists(&repo, &self.branch_name);
+    fn branch_name(&self) -> Option<String> {
+        self.meta.branch.clone()
+    }
+
+    fn worktree_name(&self) -> String {
+        self.meta.id.clone()
+    }
+
+    fn worktree_path(&self) -> PathBuf {
+        self.meta.root.clone()
+    }
+
+    fn source_workspace_root(&self) -> PathBuf {
+        self.meta.source_workspace_root.clone()
+    }
+
+    async fn cleanup(&self, gcx: Arc<ARwLock<GlobalContext>>) {
+        let cache_dir = gcx.read().await.cache_dir.clone();
+        if let Ok(service) =
+            WorktreeService::new(cache_dir, self.meta.source_workspace_root.clone())
+        {
+            if service
+                .delete_worktree(&self.meta.id, self.branch_was_created)
+                .await
+                .is_ok()
+            {
+                return;
             }
-        } else {
-            tracing::warn!(
-                "cleanup: could not open repo at {} to remove worktree '{}'",
-                self.git_dir.display(),
-                self.worktree_name
-            );
+        }
+        if self.meta.root.exists() {
+            let _ = std::fs::remove_dir_all(&self.meta.root);
         }
     }
 }
@@ -114,73 +131,45 @@ async fn prepare_agent_worktree(
     task_id: &str,
     agent_id: &str,
     card_id: &str,
-) -> Result<Option<PreparedWorktree>, String> {
+    agent_chat_id: &str,
+) -> Result<PreparedWorktree, String> {
     let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
-    let workspace_root = match project_dirs.first() {
-        Some(p) => p.clone(),
-        None => {
-            tracing::warn!(
-                "No workspace folder found, agent will work without an isolated worktree"
-            );
-            return Ok(None);
-        }
-    };
-
-    let repo = match git2::Repository::discover(&workspace_root) {
-        Ok(r) => r,
-        Err(_) => {
-            tracing::warn!(
-                "Workspace is not a git repository — agent will work in the main workspace without isolation"
-            );
-            return Ok(None);
-        }
-    };
-
-    let spawned_with_dirty_tree = operations::has_uncommitted_changes(&repo).unwrap_or(false);
-    if spawned_with_dirty_tree {
-        tracing::warn!(
-            "Spawning agent from HEAD — local uncommitted changes are excluded from the agent's worktree"
-        );
-    }
-
-    let base_commit = operations::get_head_commit(&repo)?;
-    let base_branch = operations::get_current_branch(&repo).ok();
-    let git_dir = repo.path().to_path_buf();
+    let workspace_root = project_dirs.first().cloned().ok_or_else(|| {
+        "No workspace folder found; task agents require an isolated git worktree".to_string()
+    })?;
 
     let agent_id_short = &agent_id[..agent_id.len().min(8)];
     let branch_name = format!(
         "refact/task/{}/card/{}/{}",
         task_id, card_id, agent_id_short
     );
-    let worktree_name = format!("{}-{}-{}", task_id, card_id, agent_id_short);
     let cache_dir = gcx.read().await.cache_dir.clone();
-    let worktree_path = cache_dir
-        .join("worktrees")
-        .join(task_id)
-        .join(agent_id_short);
-
-    tokio::fs::create_dir_all(worktree_path.parent().unwrap())
+    let service = WorktreeService::new(cache_dir, workspace_root.clone())?;
+    let created = service
+        .create_worktree(CreateWorktreeRequest {
+            source_workspace_root: Some(workspace_root.to_string_lossy().to_string()),
+            branch: Some(branch_name),
+            base_branch: None,
+            chat_id: Some(agent_chat_id.to_string()),
+            kind: Some("task_agent".to_string()),
+            task_id: Some(task_id.to_string()),
+            card_id: Some(card_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+        })
         .await
-        .map_err(|e| format!("Failed to create worktree parent dir: {}", e))?;
+        .map_err(|e| format!("Failed to create task-agent worktree: {}", e))?;
 
-    let branch_was_created = operations::create_worktree(
-        &repo,
-        &worktree_path,
-        &worktree_name,
-        &branch_name,
-        &base_commit,
-    )?;
+    if created.dirty_source_warning {
+        tracing::warn!(
+            "Spawning agent from HEAD — local uncommitted changes are excluded from the agent's worktree"
+        );
+    }
 
-    Ok(Some(PreparedWorktree {
-        branch_name,
-        worktree_name,
-        worktree_path,
-        workspace_root,
-        git_dir,
-        base_branch,
-        spawned_with_dirty_tree,
-        branch_was_created,
-    }))
+    Ok(PreparedWorktree {
+        meta: created.worktree.meta,
+        branch_was_created: created.branch_was_created,
+        spawned_with_dirty_tree: created.dirty_source_warning,
+    })
 }
 
 fn parse_rfc3339_to_utc(ts: &str) -> Option<DateTime<Utc>> {
@@ -221,6 +210,75 @@ fn build_agent_prompt(
 - Report progress clearly
 - **Remember to call `task_agent_finish()` when done!**"#
     )
+}
+
+fn mark_card_agent_started(
+    card: &mut BoardCard,
+    agent_id: &str,
+    agent_chat_id: &str,
+    worktree_branch: Option<String>,
+    worktree_path: Option<String>,
+    worktree_name: Option<String>,
+) {
+    card.assignee = Some(agent_id.to_string());
+    card.agent_chat_id = Some(agent_chat_id.to_string());
+    card.started_at = Some(Utc::now().to_rfc3339());
+    if card.column == "planned" {
+        card.column = "doing".to_string();
+    }
+    card.agent_branch = worktree_branch;
+    card.agent_worktree = worktree_path;
+    card.agent_worktree_name = worktree_name;
+    card.status_updates.push(StatusUpdate {
+        timestamp: Utc::now().to_rfc3339(),
+        message: "Agent started working on card".to_string(),
+    });
+}
+
+fn build_agent_thread_params(
+    agent_chat_id: &str,
+    card_title: &str,
+    model: &str,
+    task_id: &str,
+    agent_id: &str,
+    card_id: &str,
+    worktree: WorktreeMeta,
+) -> ThreadParams {
+    ThreadParams {
+        id: agent_chat_id.to_string(),
+        title: format!("Agent: {}", card_title),
+        model: model.to_string(),
+        mode: "task_agent".to_string(),
+        tool_use: "agent".to_string(),
+        boost_reasoning: Some(false),
+        context_tokens_cap: None,
+        include_project_info: true,
+        checkpoints_enabled: false,
+        is_title_generated: true,
+        auto_approve_editing_tools: true,
+        auto_approve_dangerous_commands: false,
+        task_meta: Some(TaskMeta {
+            task_id: task_id.to_string(),
+            role: "agents".to_string(),
+            agent_id: Some(agent_id.to_string()),
+            card_id: Some(card_id.to_string()),
+        }),
+        worktree: Some(worktree),
+        parent_id: None,
+        link_type: None,
+        root_chat_id: None,
+        reasoning_effort: None,
+        thinking_budget: None,
+        temperature: None,
+        frequency_penalty: None,
+        max_tokens: None,
+        parallel_tool_calls: None,
+        previous_response_id: None,
+        browser_meta: None,
+        active_skill: None,
+        auto_enrichment_enabled: None,
+        buddy_meta: None,
+    }
 }
 
 #[async_trait]
@@ -369,26 +427,26 @@ impl Tool for ToolTaskSpawnAgent {
         let agent_chat_id = format!("agent-{}-{}", card_id, &agent_id[..8]);
 
         let prepared_worktree =
-            prepare_agent_worktree(gcx.clone(), &task_id, &agent_id, card_id).await?;
+            prepare_agent_worktree(gcx.clone(), &task_id, &agent_id, card_id, &agent_chat_id)
+                .await?;
 
-        let dirty_tree_warning = prepared_worktree
-            .as_ref()
-            .map(|w| w.spawned_with_dirty_tree)
-            .unwrap_or(false);
+        let dirty_tree_warning = prepared_worktree.spawned_with_dirty_tree;
 
         let card_id_owned = card_id.to_string();
         let agent_id_clone = agent_id.clone();
         let agent_chat_id_clone = agent_chat_id.clone();
-        let worktree_branch = prepared_worktree.as_ref().map(|w| w.branch_name.clone());
-        let worktree_path_str = prepared_worktree
-            .as_ref()
-            .map(|w| w.worktree_path.to_string_lossy().to_string());
-        let worktree_name = prepared_worktree.as_ref().map(|w| w.worktree_name.clone());
-        let base_branch_from_prep = prepared_worktree
-            .as_ref()
-            .and_then(|w| w.base_branch.clone());
+        let worktree_branch = prepared_worktree.branch_name();
+        let worktree_path_str = Some(
+            prepared_worktree
+                .worktree_path()
+                .to_string_lossy()
+                .to_string(),
+        );
+        let worktree_name = Some(prepared_worktree.worktree_name());
+        let base_branch_from_prep = prepared_worktree.meta.base_branch.clone();
+        let base_commit_from_prep = prepared_worktree.meta.base_commit.clone();
 
-        let (board, commit_info) = storage::update_board_atomic(
+        let board_update_result = storage::update_board_atomic(
             gcx.clone(),
             &task_id,
             move |board| {
@@ -421,30 +479,26 @@ impl Tool for ToolTaskSpawnAgent {
 
                 let original_card = card.clone();
 
-                card.assignee = Some(agent_id_clone.clone());
-                card.agent_chat_id = Some(agent_chat_id_clone.clone());
-                card.started_at = Some(Utc::now().to_rfc3339());
-                if card.column == "planned" {
-                    card.column = "doing".to_string();
-                }
-                card.agent_branch = worktree_branch.clone();
-                card.agent_worktree = worktree_path_str.clone();
-                card.agent_worktree_name = worktree_name.clone();
-                card.status_updates.push(StatusUpdate {
-                    timestamp: Utc::now().to_rfc3339(),
-                    message: "Agent started working on card".to_string(),
-                });
+                mark_card_agent_started(
+                    card,
+                    &agent_id_clone,
+                    &agent_chat_id_clone,
+                    worktree_branch.clone(),
+                    worktree_path_str.clone(),
+                    worktree_name.clone(),
+                );
 
                 Ok(Some((original_card, agents_active_before == 0)))
             },
         )
-        .await
-        .map_err(|e| {
-            if let Some(ref pw) = prepared_worktree {
-                pw.cleanup_sync();
+        .await;
+        let (board, commit_info) = match board_update_result {
+            Ok(result) => result,
+            Err(e) => {
+                prepared_worktree.cleanup(gcx.clone()).await;
+                return Err(e);
             }
-            e
-        })?;
+        };
 
         let (original_card, starting_new_run) = commit_info.unwrap();
 
@@ -453,9 +507,10 @@ impl Tool for ToolTaskSpawnAgent {
             task_id: &str,
             original_card: crate::tasks::types::BoardCard,
             guard_chat_id: String,
-            prepared_worktree: &Option<PreparedWorktree>,
+            prepared_worktree: &PreparedWorktree,
         ) {
             let card_id_rb = original_card.id.clone();
+            let cleanup_gcx = gcx.clone();
             let _ = storage::update_board_atomic(gcx, task_id, move |board| {
                 if let Some(card) = board.get_card_mut(&card_id_rb) {
                     if card.agent_chat_id.as_deref() == Some(&guard_chat_id) {
@@ -465,9 +520,7 @@ impl Tool for ToolTaskSpawnAgent {
                 Ok(Some(()))
             })
             .await;
-            if let Some(pw) = prepared_worktree {
-                pw.cleanup_sync();
-            }
+            prepared_worktree.cleanup(cleanup_gcx).await;
         }
 
         if let Err(e) = storage::update_task_stats(gcx.clone(), &task_id).await {
@@ -499,6 +552,9 @@ impl Tool for ToolTaskSpawnAgent {
         if meta.base_branch.is_none() {
             meta.base_branch = base_branch_from_prep;
         }
+        if meta.base_commit.is_none() {
+            meta.base_commit = base_commit_from_prep;
+        }
         if starting_new_run {
             meta.last_agents_summary_at = Some(Utc::now().to_rfc3339());
         } else if meta.last_agents_summary_at.is_none() {
@@ -521,10 +577,6 @@ impl Tool for ToolTaskSpawnAgent {
             )
             .await;
             return Err(e);
-        }
-
-        if let Some(ref pw) = prepared_worktree {
-            crate::files_in_workspace::add_folder(gcx.clone(), &pw.worktree_path).await;
         }
 
         let card_title = board
@@ -553,41 +605,15 @@ impl Tool for ToolTaskSpawnAgent {
         {
             let mut session = session_arc.lock().await;
 
-            session.thread = ThreadParams {
-                id: agent_chat_id.clone(),
-                title: format!("Agent: {}", card_title),
-                model: model.clone(),
-                mode: "task_agent".to_string(),
-                tool_use: "agent".to_string(),
-                boost_reasoning: Some(false),
-                context_tokens_cap: None,
-                include_project_info: true,
-                checkpoints_enabled: false,
-                is_title_generated: true,
-                auto_approve_editing_tools: true,
-                auto_approve_dangerous_commands: false,
-                task_meta: Some(TaskMeta {
-                    task_id: task_id.clone(),
-                    role: "agents".to_string(),
-                    agent_id: Some(agent_id.clone()),
-                    card_id: Some(card_id.to_string()),
-                }),
-                worktree: None,
-                parent_id: None,
-                link_type: None,
-                root_chat_id: None,
-                reasoning_effort: None,
-                thinking_budget: None,
-                temperature: None,
-                frequency_penalty: None,
-                max_tokens: None,
-                parallel_tool_calls: None,
-                previous_response_id: None,
-                browser_meta: None,
-                active_skill: None,
-                auto_enrichment_enabled: None,
-                buddy_meta: None,
-            };
+            session.thread = build_agent_thread_params(
+                &agent_chat_id,
+                &card_title,
+                &model,
+                &task_id,
+                &agent_id,
+                card_id,
+                prepared_worktree.meta.clone(),
+            );
 
             let user_prompt = build_agent_prompt(
                 &card_title,
@@ -605,14 +631,12 @@ impl Tool for ToolTaskSpawnAgent {
             if !files_to_open.is_empty() {
                 let mut context_files: Vec<ContextFile> = Vec::new();
                 for path_str in &files_to_open {
-                    let resolved = if let Some(ref pw) = prepared_worktree {
-                        let orig = std::path::Path::new(path_str);
-                        match orig.strip_prefix(&pw.workspace_root) {
-                            Ok(rel) => pw.worktree_path.join(rel),
-                            Err(_) => pw.worktree_path.join(path_str.trim_start_matches('/')),
-                        }
-                    } else {
-                        std::path::PathBuf::from(path_str)
+                    let orig = std::path::Path::new(path_str);
+                    let source_root = prepared_worktree.source_workspace_root();
+                    let worktree_path = prepared_worktree.worktree_path();
+                    let resolved = match orig.strip_prefix(&source_root) {
+                        Ok(rel) => worktree_path.join(rel),
+                        Err(_) => worktree_path.join(path_str.trim_start_matches('/')),
                     };
                     match tokio::fs::read_to_string(&resolved).await {
                         Ok(content) => {
@@ -687,8 +711,6 @@ impl Tool for ToolTaskSpawnAgent {
 
         let dirty_note = if dirty_tree_warning {
             "\n\n⚠️ Note: agent works from HEAD. Your uncommitted local changes are not included in the agent's worktree."
-        } else if prepared_worktree.is_none() {
-            "\n\n⚠️ Note: workspace is not a git repository — agent is working directly in the main workspace without isolation."
         } else {
             ""
         };
@@ -726,6 +748,60 @@ The agent will call `task_agent_finish()` when done. Use `task_check_agents` to 
 mod tests {
     use super::*;
     use crate::tasks::types::{BoardCard, TaskBoard};
+    use std::path::Path;
+    use std::process::Command;
+
+    fn run_git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    fn init_repo(root: &Path) {
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test User"]);
+        std::fs::write(root.join("file.txt"), "hello\n").unwrap();
+        run_git(root, &["add", "file.txt"]);
+        run_git(root, &["commit", "-m", "initial"]);
+    }
+
+    async fn set_workspace(gcx: Arc<ARwLock<GlobalContext>>, root: &Path) {
+        let root = root.canonicalize().unwrap();
+        let gcx_locked = gcx.read().await;
+        *gcx_locked.documents_state.workspace_folders.lock().unwrap() = vec![root];
+    }
+
+    fn sample_worktree_meta(temp: &Path) -> WorktreeMeta {
+        let root = temp.join("agent-root");
+        let source = temp.join("source-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        WorktreeMeta {
+            id: "wt-task-agent".to_string(),
+            kind: "task_agent".to_string(),
+            root,
+            source_workspace_root: source.clone(),
+            repo_root: source,
+            branch: Some("refact/task/task-1/card/T-1/agent".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: Some("base".to_string()),
+            task_id: Some("task-1".to_string()),
+            card_id: Some("T-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            enforce: true,
+        }
+    }
 
     fn test_card(id: &str, column: &str, worktree: Option<String>) -> BoardCard {
         BoardCard {
@@ -748,6 +824,126 @@ mod tests {
             agent_worktree_name: None,
             target_files: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn task_spawn_agent_non_git_workspace_fails_clearly() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        set_workspace(gcx.clone(), &source).await;
+
+        let err =
+            prepare_agent_worktree(gcx, "task-1", "agent-12345678", "T-1", "agent-T-1-12345678")
+                .await
+                .unwrap_err();
+
+        assert!(err.contains("not a git repository"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_spawn_agent_prepare_sets_worktree_meta_without_global_workspace_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        set_workspace(gcx.clone(), &source).await;
+        let before = crate::files_correction::get_project_dirs(gcx.clone()).await;
+
+        let prepared = prepare_agent_worktree(
+            gcx.clone(),
+            "task-1",
+            "agent-12345678",
+            "T-1",
+            "agent-T-1-12345678",
+        )
+        .await
+        .unwrap();
+        let after = crate::files_correction::get_project_dirs(gcx.clone()).await;
+
+        assert_eq!(after, before);
+        assert!(!after.contains(&prepared.meta.root));
+        assert_eq!(prepared.meta.kind, "task_agent");
+        assert!(prepared.meta.enforce);
+        assert_eq!(prepared.meta.task_id.as_deref(), Some("task-1"));
+        assert_eq!(prepared.meta.card_id.as_deref(), Some("T-1"));
+        assert_eq!(prepared.meta.agent_id.as_deref(), Some("agent-12345678"));
+        assert!(prepared.meta.root.is_dir());
+
+        prepared.cleanup(gcx).await;
+    }
+
+    #[tokio::test]
+    async fn task_spawn_agent_rollback_cleanup_removes_worktree_branch_and_registry() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        set_workspace(gcx.clone(), &source).await;
+        let prepared = prepare_agent_worktree(
+            gcx.clone(),
+            "task-1",
+            "agent-abcdef12",
+            "T-1",
+            "agent-T-1-abcdef12",
+        )
+        .await
+        .unwrap();
+        let id = prepared.meta.id.clone();
+        let branch = prepared.meta.branch.clone().unwrap();
+        let root = prepared.meta.root.clone();
+        let cache_dir = gcx.read().await.cache_dir.clone();
+        let service = WorktreeService::new(cache_dir, source.canonicalize().unwrap()).unwrap();
+        assert!(service.get_worktree(&id).await.is_ok());
+
+        prepared.cleanup(gcx).await;
+
+        assert!(!root.exists());
+        assert!(service.get_worktree(&id).await.is_err());
+        let branches = run_git(&source, &["branch", "--list", &branch]);
+        assert!(branches.trim().is_empty());
+    }
+
+    #[test]
+    fn task_spawn_agent_successful_spawn_sets_board_mirrors_and_thread_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let worktree = sample_worktree_meta(temp.path());
+        let mut card = test_card("T-1", "planned", None);
+        mark_card_agent_started(
+            &mut card,
+            "agent-1",
+            "agent-chat-1",
+            worktree.branch.clone(),
+            Some(worktree.root.to_string_lossy().to_string()),
+            Some(worktree.id.clone()),
+        );
+
+        assert_eq!(card.column, "doing");
+        assert_eq!(card.assignee.as_deref(), Some("agent-1"));
+        assert_eq!(card.agent_chat_id.as_deref(), Some("agent-chat-1"));
+        assert_eq!(card.agent_branch, worktree.branch.clone());
+        assert_eq!(
+            card.agent_worktree.as_deref(),
+            Some(worktree.root.to_str().unwrap())
+        );
+        assert_eq!(card.agent_worktree_name.as_deref(), Some("wt-task-agent"));
+
+        let thread = build_agent_thread_params(
+            "agent-chat-1",
+            "Card T-1",
+            "model-a",
+            "task-1",
+            "agent-1",
+            "T-1",
+            worktree.clone(),
+        );
+        assert_eq!(thread.mode, "task_agent");
+        assert_eq!(thread.task_meta.as_ref().unwrap().role, "agents");
+        assert_eq!(thread.worktree.as_ref(), Some(&worktree));
+        assert!(thread.worktree.as_ref().unwrap().enforce);
     }
 
     #[test]
