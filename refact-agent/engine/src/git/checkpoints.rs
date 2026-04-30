@@ -70,6 +70,15 @@ async fn open_shadow_repo_and_nested_repos(
             filetime::set_file_times(&git_dir_path, filetime_now, filetime_now)
                 .map_err_to_string()?;
             repo.set_workdir(path, false).map_err_to_string()?;
+            for git_rule in [".git", ".git/**"] {
+                if let Err(e) = repo.add_ignore_rule(git_rule) {
+                    tracing::warn!(
+                        "Failed to add ignore rule for {}: {}",
+                        path.to_string_lossy(),
+                        e
+                    );
+                }
+            }
             for blocklisted_rule in indexing_for_path.blocklist {
                 if let Err(e) =
                     repo.add_ignore_rule(&from_unix_glob_pattern_to_gitignore(&blocklisted_rule))
@@ -166,31 +175,122 @@ fn get_file_changes_from_nested_repos<'a>(
     Ok((file_changes_per_repo, file_changes_flattened))
 }
 
-pub async fn create_workspace_checkpoint(
+fn resolve_checkpoint_workspace_folder(workspace_folder: &Path) -> Result<PathBuf, String> {
+    let resolved = std::fs::canonicalize(workspace_folder).map_err(|e| {
+        format!(
+            "Checkpoint workspace root '{}' does not exist or cannot be resolved: {}",
+            workspace_folder.display(),
+            e
+        )
+    })?;
+    if !resolved.is_dir() {
+        return Err(format!(
+            "Checkpoint workspace root '{}' is not a directory",
+            resolved.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+fn workspace_folder_hash(workspace_folder: &Path) -> String {
+    official_text_hashing_function(&workspace_folder.to_string_lossy().to_string())
+}
+
+fn repo_has_commits(repo: &Repository) -> bool {
+    repo.head()
+        .map(|head| head.target().is_some())
+        .unwrap_or(false)
+}
+
+fn create_initial_shadow_commit(
+    repo: &Repository,
+    nested_repos: &[Repository],
+    abort_flag: &Arc<AtomicBool>,
+) -> Result<(Oid, usize), String> {
+    let (_, mut file_changes) = get_diff_statuses(git2::StatusShow::Workdir, repo, false)?;
+    let (nested_file_changes, all_nested_changes) =
+        get_file_changes_from_nested_repos(repo, nested_repos, false)?;
+    file_changes.extend(all_nested_changes);
+
+    let mut skipped = stage_changes(repo, &file_changes, abort_flag)?;
+
+    let mut index = repo.index().map_err_to_string()?;
+    let tree_id = index.write_tree().map_err_to_string()?;
+    let tree = repo.find_tree(tree_id).map_err_to_string()?;
+    let signature = git2::Signature::now("Refact Agent", "agent@refact.ai").map_err_to_string()?;
+    let commit = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Initial commit",
+            &tree,
+            &[],
+        )
+        .map_err_to_string()?;
+
+    for (nested_repo, changes) in nested_file_changes {
+        skipped += stage_changes(nested_repo, &changes, abort_flag)?;
+    }
+
+    Ok((commit, skipped))
+}
+
+async fn initialize_shadow_repo_for_root_if_needed(
     gcx: Arc<ARwLock<GlobalContext>>,
+    workspace_folder: &Path,
+) -> Result<(), String> {
+    let workspace_folder_str = workspace_folder.to_string_lossy().to_string();
+    let abort_flag: Arc<AtomicBool> = gcx.read().await.git_operations_abort_flag.clone();
+    let (repo, nested_repos, _) =
+        open_shadow_repo_and_nested_repos(gcx.clone(), workspace_folder, true).await?;
+
+    if repo_has_commits(&repo) {
+        tracing::info!(
+            "Shadow git repo for {} is already initialized.",
+            workspace_folder_str
+        );
+        return Ok(());
+    }
+
+    let t0 = Instant::now();
+    let (_, skipped) = create_initial_shadow_commit(&repo, &nested_repos, &abort_flag)?;
+    if skipped > 0 {
+        tracing::warn!(
+            "initial commit for {workspace_folder_str}: {skipped} large file(s) not snapshotted"
+        );
+    }
+    tracing::info!(
+        "Shadow git repo for {} initialized in {:.2}s.",
+        workspace_folder_str,
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+pub async fn create_workspace_checkpoint_for_root(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    workspace_folder: &Path,
     prev_checkpoint: Option<&Checkpoint>,
     chat_id: &str,
 ) -> Result<(Checkpoint, Repository), String> {
     let t0 = Instant::now();
 
-    let abort_flag: Arc<AtomicBool> = gcx.read().await.git_operations_abort_flag.clone();
-    let workspace_folder = get_active_workspace_folder(gcx.clone())
-        .await
-        .ok_or_else(|| "No active workspace folder".to_string())?;
-    let (repo, nested_repos, workspace_folder_hash) =
-        open_shadow_repo_and_nested_repos(gcx.clone(), &workspace_folder, false).await?;
-
+    let workspace_folder = resolve_checkpoint_workspace_folder(workspace_folder)?;
+    let workspace_folder_hash = workspace_folder_hash(&workspace_folder);
     if let Some(prev_checkpoint) = prev_checkpoint {
         if prev_checkpoint.workspace_hash() != workspace_folder_hash {
             return Err("Can not create checkpoint for different workspace folder".to_string());
         }
     }
 
-    let has_commits = repo
-        .head()
-        .map(|head| head.target().is_some())
-        .unwrap_or(false);
-    if !has_commits {
+    initialize_shadow_repo_for_root_if_needed(gcx.clone(), &workspace_folder).await?;
+
+    let abort_flag: Arc<AtomicBool> = gcx.read().await.git_operations_abort_flag.clone();
+    let (repo, nested_repos, _) =
+        open_shadow_repo_and_nested_repos(gcx.clone(), &workspace_folder, false).await?;
+
+    if !repo_has_commits(&repo) {
         return Err("No commits in shadow git repo.".to_string());
     }
 
@@ -213,7 +313,7 @@ pub async fn create_workspace_checkpoint(
         )?;
 
         for (nested_repo, changes) in nested_file_changes {
-            skipped += stage_changes(&nested_repo, &changes, &abort_flag)?;
+            skipped += stage_changes(nested_repo, &changes, &abort_flag)?;
         }
         if skipped > 0 {
             tracing::warn!(
@@ -245,13 +345,30 @@ pub async fn create_workspace_checkpoint(
     Ok((checkpoint, repo))
 }
 
-pub async fn preview_changes_for_workspace_checkpoint(
+pub async fn create_workspace_checkpoint(
     gcx: Arc<ARwLock<GlobalContext>>,
+    prev_checkpoint: Option<&Checkpoint>,
+    chat_id: &str,
+) -> Result<(Checkpoint, Repository), String> {
+    let workspace_folder = get_active_workspace_folder(gcx.clone())
+        .await
+        .ok_or_else(|| "No active workspace folder".to_string())?;
+    create_workspace_checkpoint_for_root(gcx, &workspace_folder, prev_checkpoint, chat_id).await
+}
+
+pub async fn preview_changes_for_workspace_checkpoint_for_root(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    workspace_folder: &Path,
     checkpoint_to_restore: &Checkpoint,
     chat_id: &str,
 ) -> Result<(Vec<FileChange>, DateTime<Utc>, Checkpoint), String> {
-    let (checkpoint_for_undo, repo) =
-        create_workspace_checkpoint(gcx.clone(), Some(checkpoint_to_restore), chat_id).await?;
+    let (checkpoint_for_undo, repo) = create_workspace_checkpoint_for_root(
+        gcx.clone(),
+        workspace_folder,
+        Some(checkpoint_to_restore),
+        chat_id,
+    )
+    .await?;
 
     let commit_to_restore_oid =
         Oid::from_str(&checkpoint_to_restore.commit_hash).map_err_to_string()?;
@@ -285,7 +402,6 @@ pub async fn preview_changes_for_workspace_checkpoint(
         }
     };
 
-    // Invert status since we got changes in reverse order so that if it fails it does not update the workspace
     for change in &mut files_changed {
         change.status = match change.status {
             FileChangeStatus::ADDED => FileChangeStatus::DELETED,
@@ -297,19 +413,37 @@ pub async fn preview_changes_for_workspace_checkpoint(
     Ok((files_changed, reverted_to, checkpoint_for_undo))
 }
 
-pub async fn restore_workspace_checkpoint(
+pub async fn preview_changes_for_workspace_checkpoint(
     gcx: Arc<ARwLock<GlobalContext>>,
     checkpoint_to_restore: &Checkpoint,
     chat_id: &str,
-) -> Result<(), String> {
+) -> Result<(Vec<FileChange>, DateTime<Utc>, Checkpoint), String> {
     let workspace_folder = get_active_workspace_folder(gcx.clone())
         .await
         .ok_or_else(|| "No active workspace folder".to_string())?;
-    let (repo, nested_repos, workspace_folder_hash) =
-        open_shadow_repo_and_nested_repos(gcx.clone(), &workspace_folder, false).await?;
+    preview_changes_for_workspace_checkpoint_for_root(
+        gcx,
+        &workspace_folder,
+        checkpoint_to_restore,
+        chat_id,
+    )
+    .await
+}
+
+pub async fn restore_workspace_checkpoint_for_root(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    workspace_folder: &Path,
+    checkpoint_to_restore: &Checkpoint,
+    chat_id: &str,
+) -> Result<(), String> {
+    let workspace_folder = resolve_checkpoint_workspace_folder(workspace_folder)?;
+    let workspace_folder_hash = workspace_folder_hash(&workspace_folder);
     if checkpoint_to_restore.workspace_hash() != workspace_folder_hash {
         return Err("Can not restore checkpoint for different workspace folder".to_string());
     }
+
+    let (repo, nested_repos, _) =
+        open_shadow_repo_and_nested_repos(gcx.clone(), &workspace_folder, false).await?;
 
     let commit_to_restore_oid =
         Oid::from_str(&checkpoint_to_restore.commit_hash).map_err_to_string()?;
@@ -334,13 +468,11 @@ pub async fn restore_workspace_checkpoint(
                 ["*"],
                 IndexAddOption::DEFAULT,
                 Some(&mut |path, _| {
-                    // path is relative to the workdir, so we need to build absolute path
                     let abs_path = nested_workdir.join(path);
-                    // Skip directories that contain a .git folder (nested git repos)
                     if abs_path.is_dir() && abs_path.join(".git").exists() {
-                        1 // skip
+                        1
                     } else {
-                        0 // include
+                        0
                     }
                 }),
             )?;
@@ -355,6 +487,18 @@ pub async fn restore_workspace_checkpoint(
     }
 
     Ok(())
+}
+
+pub async fn restore_workspace_checkpoint(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    checkpoint_to_restore: &Checkpoint,
+    chat_id: &str,
+) -> Result<(), String> {
+    let workspace_folder = get_active_workspace_folder(gcx.clone())
+        .await
+        .ok_or_else(|| "No active workspace folder".to_string())?;
+    restore_workspace_checkpoint_for_root(gcx, &workspace_folder, checkpoint_to_restore, chat_id)
+        .await
 }
 
 pub async fn init_shadow_repos_if_needed(gcx: Arc<ARwLock<GlobalContext>>) -> () {
@@ -465,4 +609,210 @@ pub async fn abort_init_shadow_repos(gcx: Arc<ARwLock<GlobalContext>>) {
     // holder.abort() already has an internal timeout, but we call it here after releasing the lock
     let mut holder = holder;
     holder.abort().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::FileChangeStatus;
+    use crate::worktrees::types::WorktreeMeta;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        source: PathBuf,
+        worktree: PathBuf,
+        gcx: Arc<ARwLock<GlobalContext>>,
+        worktree_meta: WorktreeMeta,
+    }
+
+    fn write_file(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, text).unwrap();
+    }
+
+    async fn fixture() -> Fixture {
+        let temp = tempfile::Builder::new()
+            .prefix("refact-checkpoint-worktree")
+            .tempdir()
+            .unwrap();
+        let source = temp.path().join("source");
+        let worktree = temp.path().join("worktree");
+        fs::create_dir_all(source.join("src")).unwrap();
+        fs::create_dir_all(worktree.join("src")).unwrap();
+        write_file(&source.join("src/file.txt"), "source\n");
+        write_file(&worktree.join("src/file.txt"), "before\n");
+        let source = fs::canonicalize(source).unwrap();
+        let worktree = fs::canonicalize(worktree).unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+        }
+        let worktree_meta = WorktreeMeta {
+            id: "wt-checkpoint".to_string(),
+            kind: "task_agent".to_string(),
+            root: worktree.clone(),
+            source_workspace_root: source.clone(),
+            repo_root: source.clone(),
+            branch: Some("refact/checkpoint".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: None,
+            task_id: Some("task".to_string()),
+            card_id: Some("card".to_string()),
+            agent_id: Some("agent".to_string()),
+            enforce: true,
+        };
+        Fixture {
+            _temp: temp,
+            source,
+            worktree,
+            gcx,
+            worktree_meta,
+        }
+    }
+
+    #[tokio::test]
+    async fn checkpoint_worktree_create_uses_worktree_root() {
+        let f = fixture().await;
+        let (checkpoint, repo) = create_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &f.worktree_meta.root,
+            None,
+            "checkpoint_worktree_create",
+        )
+        .await
+        .unwrap();
+        assert_eq!(checkpoint.workspace_folder, f.worktree);
+        assert_eq!(repo.workdir().unwrap(), f.worktree.as_path());
+        assert!(!checkpoint.commit_hash.is_empty());
+    }
+
+    #[tokio::test]
+    async fn checkpoint_worktree_preview_reports_worktree_changes() {
+        let f = fixture().await;
+        let (checkpoint, _) = create_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &f.worktree,
+            None,
+            "checkpoint_worktree_preview",
+        )
+        .await
+        .unwrap();
+        write_file(&f.worktree.join("src/file.txt"), "after\n");
+        let (files_changed, _reverted_to, checkpoint_for_undo) =
+            preview_changes_for_workspace_checkpoint_for_root(
+                f.gcx.clone(),
+                &f.worktree,
+                &checkpoint,
+                "checkpoint_worktree_preview",
+            )
+            .await
+            .unwrap();
+        assert_eq!(checkpoint_for_undo.workspace_folder, f.worktree);
+        let changed_file = files_changed
+            .iter()
+            .find(|change| change.relative_path == PathBuf::from("src/file.txt"))
+            .unwrap();
+        assert_eq!(changed_file.status, FileChangeStatus::MODIFIED);
+        assert_eq!(changed_file.absolute_path, f.worktree.join("src/file.txt"));
+        assert!(files_changed
+            .iter()
+            .all(|change| change.absolute_path.starts_with(&f.worktree)));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_worktree_restore_reverts_only_worktree() {
+        let f = fixture().await;
+        let (checkpoint, _) = create_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &f.worktree,
+            None,
+            "checkpoint_worktree_restore",
+        )
+        .await
+        .unwrap();
+        write_file(&f.worktree.join("src/file.txt"), "after\n");
+        restore_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &f.worktree,
+            &checkpoint,
+            "checkpoint_worktree_restore",
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read_to_string(f.worktree.join("src/file.txt")).unwrap(), "before\n");
+        assert_eq!(fs::read_to_string(f.source.join("src/file.txt")).unwrap(), "source\n");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_worktree_root_mismatch_is_rejected() {
+        let f = fixture().await;
+        let (checkpoint, _) = create_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &f.worktree,
+            None,
+            "checkpoint_worktree_mismatch",
+        )
+        .await
+        .unwrap();
+        let other = f.source.parent().unwrap().join("other-worktree");
+        fs::create_dir_all(&other).unwrap();
+        let other = fs::canonicalize(other).unwrap();
+        let error = restore_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &other,
+            &checkpoint,
+            "checkpoint_worktree_mismatch",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("different workspace folder"));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_worktree_stale_root_is_rejected() {
+        let f = fixture().await;
+        let error = match create_workspace_checkpoint_for_root(
+            f.gcx.clone(),
+            &f.worktree.join("deleted-root"),
+            None,
+            "checkpoint_worktree_stale",
+        )
+        .await
+        {
+            Ok(_) => panic!("stale worktree root unexpectedly created a checkpoint"),
+            Err(e) => e,
+        };
+        assert!(error.contains("does not exist or cannot be resolved"));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_worktree_legacy_no_worktree_uses_active_workspace() {
+        let f = fixture().await;
+        write_file(&f.source.join("src/legacy.txt"), "legacy before\n");
+        let (checkpoint, _) = create_workspace_checkpoint(
+            f.gcx.clone(),
+            None,
+            "checkpoint_worktree_legacy",
+        )
+        .await
+        .unwrap();
+        assert_eq!(checkpoint.workspace_folder, f.source);
+        write_file(&f.source.join("src/legacy.txt"), "legacy after\n");
+        restore_workspace_checkpoint(
+            f.gcx.clone(),
+            &checkpoint,
+            "checkpoint_worktree_legacy",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(f.source.join("src/legacy.txt")).unwrap(),
+            "legacy before\n"
+        );
+    }
 }

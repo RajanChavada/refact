@@ -114,17 +114,24 @@ pub async fn inject_priority_messages_if_any(
                 continue;
             }
 
-            let (checkpoints_enabled, chat_id, latest_checkpoint) = {
+            let (checkpoints_enabled, chat_id, latest_checkpoint, worktree) = {
                 let session = session_arc.lock().await;
                 (
                     session.thread.checkpoints_enabled,
                     session.chat_id.clone(),
                     find_latest_checkpoint(&session),
+                    session.thread.worktree.clone(),
                 )
             };
 
             let checkpoints = if checkpoints_enabled {
-                create_checkpoint_async(gcx.clone(), latest_checkpoint.as_ref(), &chat_id).await
+                create_checkpoint_async(
+                    gcx.clone(),
+                    latest_checkpoint.as_ref(),
+                    &chat_id,
+                    worktree.as_ref(),
+                )
+                .await
             } else {
                 Vec::new()
             };
@@ -654,17 +661,24 @@ pub async fn process_command_queue(
                     Vec::new()
                 };
 
-                let (checkpoints_enabled, chat_id, latest_checkpoint) = {
+                let (checkpoints_enabled, chat_id, latest_checkpoint, worktree) = {
                     let session = session_arc.lock().await;
                     (
                         session.thread.checkpoints_enabled,
                         session.chat_id.clone(),
                         find_latest_checkpoint(&session),
+                        session.thread.worktree.clone(),
                     )
                 };
 
                 let checkpoints = if checkpoints_enabled {
-                    create_checkpoint_async(gcx.clone(), latest_checkpoint.as_ref(), &chat_id).await
+                    create_checkpoint_async(
+                        gcx.clone(),
+                        latest_checkpoint.as_ref(),
+                        &chat_id,
+                        worktree.as_ref(),
+                    )
+                    .await
                 } else {
                     Vec::new()
                 };
@@ -1514,10 +1528,19 @@ async fn create_checkpoint_async(
     gcx: Arc<ARwLock<GlobalContext>>,
     latest_checkpoint: Option<&crate::git::checkpoints::Checkpoint>,
     chat_id: &str,
+    worktree: Option<&crate::worktrees::types::WorktreeMeta>,
 ) -> Vec<crate::git::checkpoints::Checkpoint> {
-    use crate::git::checkpoints::create_workspace_checkpoint;
+    use crate::git::checkpoints::{
+        create_workspace_checkpoint, create_workspace_checkpoint_for_root,
+    };
 
-    match create_workspace_checkpoint(gcx, latest_checkpoint, chat_id).await {
+    let result = if let Some(worktree) = worktree {
+        create_workspace_checkpoint_for_root(gcx, &worktree.root, latest_checkpoint, chat_id).await
+    } else {
+        create_workspace_checkpoint(gcx, latest_checkpoint, chat_id).await
+    };
+
+    match result {
         Ok((checkpoint, _)) => {
             tracing::info!("Checkpoint created for chat {}: {:?}", chat_id, checkpoint);
             vec![checkpoint]

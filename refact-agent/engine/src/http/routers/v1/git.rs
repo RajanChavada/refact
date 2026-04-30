@@ -16,9 +16,11 @@ use crate::custom_error::ScratchError;
 use crate::git::{CommitInfo, FileChange};
 use crate::git::operations::{get_configured_author_email_and_name, stage_changes};
 use crate::git::checkpoints::{
-    preview_changes_for_workspace_checkpoint, restore_workspace_checkpoint, Checkpoint,
+    preview_changes_for_workspace_checkpoint, preview_changes_for_workspace_checkpoint_for_root,
+    restore_workspace_checkpoint, restore_workspace_checkpoint_for_root, Checkpoint,
 };
 use crate::global_context::GlobalContext;
+use crate::worktrees::types::WorktreeMeta;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GitCommitPost {
@@ -58,6 +60,31 @@ fn serialize_datetime_utc<S: serde::Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+async fn checkpoint_worktree_for_meta(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    meta: &ChatMeta,
+) -> Option<WorktreeMeta> {
+    if let Some(worktree) = &meta.worktree {
+        return Some(worktree.clone());
+    }
+    if meta.chat_id.is_empty() {
+        return None;
+    }
+    let sessions = {
+        let gcx_locked = gcx.read().await;
+        gcx_locked.chat_sessions.clone()
+    };
+    let session_arc = {
+        let sessions_read = sessions.read().await;
+        sessions_read.get(&meta.chat_id).cloned()
+    };
+    if let Some(session_arc) = session_arc {
+        let session = session_arc.lock().await;
+        return session.thread.worktree.clone();
+    }
+    None
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -201,16 +228,24 @@ pub async fn handle_v1_checkpoints_preview(
         ));
     }
 
-    let response = match preview_changes_for_workspace_checkpoint(
-        gcx.clone(),
-        &post.checkpoints.first().unwrap(),
-        &post.meta.chat_id,
-    )
-    .await
-    {
+    let checkpoint = post.checkpoints.first().unwrap();
+    let worktree = checkpoint_worktree_for_meta(gcx.clone(), &post.meta).await;
+    let preview_result = if let Some(worktree) = worktree.as_ref() {
+        preview_changes_for_workspace_checkpoint_for_root(
+            gcx.clone(),
+            &worktree.root,
+            checkpoint,
+            &post.meta.chat_id,
+        )
+        .await
+    } else {
+        preview_changes_for_workspace_checkpoint(gcx.clone(), checkpoint, &post.meta.chat_id).await
+    };
+
+    let response = match preview_result {
         Ok((files_changed, reverted_to, checkpoint_for_undo)) => CheckpointsPreviewResponse {
             reverted_changes: vec![WorkspaceChanges {
-                workspace_folder: post.checkpoints.first().unwrap().workspace_folder.clone(),
+                workspace_folder: checkpoint.workspace_folder.clone(),
                 files_changed,
             }],
             checkpoints_for_undo: vec![checkpoint_for_undo],
@@ -254,13 +289,21 @@ pub async fn handle_v1_checkpoints_restore(
         ));
     }
 
-    let response = match restore_workspace_checkpoint(
-        gcx.clone(),
-        &post.checkpoints.first().unwrap(),
-        &post.meta.chat_id,
-    )
-    .await
-    {
+    let checkpoint = post.checkpoints.first().unwrap();
+    let worktree = checkpoint_worktree_for_meta(gcx.clone(), &post.meta).await;
+    let restore_result = if let Some(worktree) = worktree.as_ref() {
+        restore_workspace_checkpoint_for_root(
+            gcx.clone(),
+            &worktree.root,
+            checkpoint,
+            &post.meta.chat_id,
+        )
+        .await
+    } else {
+        restore_workspace_checkpoint(gcx.clone(), checkpoint, &post.meta.chat_id).await
+    };
+
+    let response = match restore_result {
         Ok(_) => CheckpointsRestoreResponse {
             success: true,
             error_log: vec![],
