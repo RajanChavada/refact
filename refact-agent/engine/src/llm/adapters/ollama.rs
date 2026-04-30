@@ -205,9 +205,10 @@ fn convert_messages_to_ollama(messages: &[ChatMessage]) -> Vec<Value> {
     let mut pending_user_text = Vec::new();
     let mut pending_user_images = Vec::new();
 
-    // Ollama native chat accepts tool results as role "tool" messages matched by tool_call_id.
-    // Tool-result images are deferred to the next user message because Ollama expects images
-    // on user messages.
+    // Ollama native tool-result handling differs across versions. Refact emits role="tool"
+    // with tool_call_id for correlation and for Ollama versions that validate IDs. Assistant
+    // history tool_calls include matching IDs when available. Tool-result images are deferred
+    // to the next user message because Ollama expects images on user messages.
     for msg in messages {
         if is_context_role(&msg.role) {
             let Some(text) = render_context_message(msg) else {
@@ -286,12 +287,17 @@ fn convert_messages_to_ollama(messages: &[ChatMessage]) -> Vec<Value> {
                         if name.is_empty() {
                             return None;
                         }
-                        Some(json!({
+                        let mut tool_call = json!({
+                            "type": "function",
                             "function": {
                                 "name": name,
                                 "arguments": parse_arguments_object(&tc.function.arguments),
                             }
-                        }))
+                        });
+                        if !tc.id.is_empty() {
+                            tool_call["id"] = json!(tc.id.as_str());
+                        }
+                        Some(tool_call)
                     })
                     .collect();
                 if !converted.is_empty() {
@@ -624,6 +630,8 @@ mod tests {
             messages[2]["tool_calls"][0]["function"]["name"],
             "read_file"
         );
+        assert_eq!(messages[2]["tool_calls"][0]["type"], "function");
+        assert_eq!(messages[2]["tool_calls"][0]["id"], "call_1");
         assert_eq!(
             messages[2]["tool_calls"][0]["function"]["arguments"]["path"],
             "/tmp/a.txt"
@@ -638,6 +646,48 @@ mod tests {
         );
         assert!(http.headers.get(OLLAMA_NUM_CTX_HEADER).is_none());
         assert!(http.headers.get(OLLAMA_KEEP_ALIVE_HEADER).is_none());
+    }
+
+    #[test]
+    fn convert_messages_to_ollama_allows_empty_tool_call_ids() {
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatContent::SimpleText(String::new()),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: String::new(),
+                    index: Some(0),
+                    function: ChatToolFunction {
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"/tmp/a.txt"}"#.to_string(),
+                    },
+                    tool_type: "function".to_string(),
+                    extra_content: None,
+                }]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: ChatContent::SimpleText("contents".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        let converted = convert_messages_to_ollama(&messages);
+
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["tool_calls"][0]["type"], "function");
+        assert!(converted[0]["tool_calls"][0]["id"].is_null());
+        assert_eq!(
+            converted[0]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+        assert_eq!(
+            converted[0]["tool_calls"][0]["function"]["arguments"]["path"],
+            "/tmp/a.txt"
+        );
+        assert_eq!(converted[1]["role"], "tool");
+        assert!(converted[1]["tool_call_id"].is_null());
     }
 
     #[test]
