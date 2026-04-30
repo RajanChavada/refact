@@ -140,8 +140,11 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
       if (item) {
         dispatch(restoreChat(item));
       } else {
-        const { children: _, bubbleChildren: _bubbleChildren, ...historyItem } =
-          node;
+        const {
+          children: _,
+          bubbleChildren: _bubbleChildren,
+          ...historyItem
+        } = node;
         dispatch(restoreChat(historyItem as ChatHistoryItem));
       }
       dispatch(push({ name: "chat" }));

@@ -35,63 +35,6 @@
   image-rendering: pixelated;
 }
 
-.sceneHud {
-  position: absolute;
-  top: var(--space-2);
-  left: var(--space-2);
-  right: var(--space-2);
-  z-index: 3;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
-  pointer-events: none;
-}
-
-.titleGroup {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  padding: 6px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: var(--radius-3);
-  background: rgba(17, 24, 39, 0.42);
-  color: white;
-  backdrop-filter: blur(6px);
-}
-
-.sectionLabel {
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 10px;
-}
-
-.vitalityBadge {
-  padding: 4px 9px;
-  border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(17, 24, 39, 0.42);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  backdrop-filter: blur(6px);
-}
-
-.vitalityLush {
-  color: var(--grass-10);
-}
-
-.vitalityGrowing {
-  color: var(--amber-10);
-}
-
-.vitalityTangled {
-  color: var(--red-10);
-}
-
 .hotspot,
 .objectHotspot,
 .sceneButton,
@@ -109,7 +52,7 @@
   align-items: center;
   justify-content: center;
   transform: translate(-50%, -50%);
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 9999px;
   background: transparent;
   color: rgba(255, 255, 255, 0.82);
@@ -158,10 +101,6 @@
 .homeHotspot {
   width: 78px;
   height: 64px;
-}
-
-.hotspotDot {
-  display: none;
 }
 
 .objectTooltip {
@@ -255,6 +194,7 @@
   flex-wrap: wrap;
   gap: var(--space-1);
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.12s ease;
 }
 
@@ -271,11 +211,14 @@
   max-width: 36%;
 }
 
-.setupDock:hover,
+.scene:hover .setupDock,
+.scene:focus-within .setupDock,
+.scene:hover .careDock,
+.scene:focus-within .careDock,
 .setupDock:focus-within,
-.careDock:hover,
 .careDock:focus-within {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .sceneButton,
@@ -312,31 +255,6 @@
   outline: none;
 }
 
-.caption {
-  position: absolute;
-  z-index: 4;
-  left: var(--space-2);
-  bottom: 56px;
-  max-width: min(420px, 46%);
-  padding: 6px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: var(--radius-3);
-  background: rgba(17, 24, 39, 0.42);
-  color: rgba(255, 255, 255, 0.9);
-  text-align: left;
-  backdrop-filter: blur(6px);
-}
-
-.compact .caption {
-  display: none;
-}
-
-.compact .sceneHud {
-  top: var(--space-1);
-  left: var(--space-1);
-  right: var(--space-1);
-}
-
 .compact .character {
   bottom: -8px;
 }
@@ -357,16 +275,16 @@
   }
 
   .objectHotspot {
+    width: 64px;
+    height: 64px;
+  }
+
+  .objectTooltip {
     display: none;
   }
 
   .setupDock,
   .careDock {
     max-width: 48%;
-  }
-
-  .caption {
-    width: min(360px, 70%);
-    bottom: 56px;
   }
 }

@@ -500,6 +500,7 @@ export const BuddyHome: React.FC = () => {
       </div>
 
       <BuddyWorld
+        homeDoorDisabled
         palette={palette}
         stage={stage}
         state={state}

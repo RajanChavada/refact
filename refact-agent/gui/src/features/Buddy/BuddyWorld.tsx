@@ -37,6 +37,7 @@ interface BuddyWorldProps {
   } | null;
   setupNeeded: boolean;
   compact?: boolean;
+  homeDoorDisabled?: boolean;
   onCanvasEvent: (event: BuddyEvent) => void;
   onCare: (action: BuddyCareAction, toy?: string) => void;
   onOpenPage: (page: BuddyPage) => void;
@@ -604,6 +605,7 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
   activeSpeech,
   setupNeeded,
   compact = false,
+  homeDoorDisabled = false,
   onCanvasEvent,
   onCare,
   onOpenPage,
@@ -647,6 +649,11 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
     let frame = 0;
     let raf = 0;
     const render = () => {
+      if (document.hidden) {
+        raf = window.requestAnimationFrame(render);
+        return;
+      }
+
       frame += 1;
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext("2d");
@@ -699,6 +706,10 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
   };
 
   const handleHomeClick = () => {
+    if (homeDoorDisabled) {
+      setReaction("Buddy is already home.");
+      return;
+    }
     onOpenPage({ type: "buddy" });
     setReaction("Buddy opens the front door.");
   };
@@ -743,8 +754,10 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
         className={classNames(styles.hotspot, styles.homeHotspot)}
         style={{ left: `${HOME_HOTSPOT.x}%`, top: `${HOME_HOTSPOT.y}%` }}
         onClick={handleHomeClick}
-        aria-label="Open Buddy home"
-        title="Open Buddy home"
+        aria-label={
+          homeDoorDisabled ? "Buddy home entrance" : "Open Buddy home"
+        }
+        title={homeDoorDisabled ? "Buddy is home" : "Open Buddy home"}
       />
 
       {world.objects.map((item) => (

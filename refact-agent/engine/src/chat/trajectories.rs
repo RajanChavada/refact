@@ -925,23 +925,25 @@ pub async fn save_trajectory_snapshot(
 
     let now = chrono::Utc::now().to_rfc3339();
     let updated_at = match tokio::fs::read_to_string(&file_path).await {
-        Ok(existing_content) => match serde_json::from_str::<serde_json::Value>(&existing_content) {
-            Ok(existing) => {
-                let existing_messages = existing.get("messages");
-                let same_messages = existing_messages
-                    == Some(&serde_json::Value::Array(messages_json.clone()));
-                if same_messages {
-                    existing
-                        .get("updated_at")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&now)
-                        .to_string()
-                } else {
-                    now.clone()
+        Ok(existing_content) => {
+            match serde_json::from_str::<serde_json::Value>(&existing_content) {
+                Ok(existing) => {
+                    let existing_messages = existing.get("messages");
+                    let same_messages =
+                        existing_messages == Some(&serde_json::Value::Array(messages_json.clone()));
+                    if same_messages {
+                        existing
+                            .get("updated_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&now)
+                            .to_string()
+                    } else {
+                        now.clone()
+                    }
                 }
+                Err(_) => now.clone(),
             }
-            Err(_) => now.clone(),
-        },
+        }
         Err(_) => now.clone(),
     };
     trajectory["updated_at"] = serde_json::Value::String(updated_at.clone());
@@ -3503,7 +3505,10 @@ mod tests {
             .unwrap();
         let retitled_raw: serde_json::Value =
             serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
-        assert_eq!(retitled_raw["updated_at"].as_str().unwrap(), first_updated_at);
+        assert_eq!(
+            retitled_raw["updated_at"].as_str().unwrap(),
+            first_updated_at
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let mut changed_messages = messages;
@@ -3516,7 +3521,10 @@ mod tests {
             .unwrap();
         let changed_raw: serde_json::Value =
             serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
-        assert_ne!(changed_raw["updated_at"].as_str().unwrap(), first_updated_at);
+        assert_ne!(
+            changed_raw["updated_at"].as_str().unwrap(),
+            first_updated_at
+        );
     }
 
     #[tokio::test]

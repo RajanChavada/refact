@@ -89,12 +89,11 @@ function randomBubblePosition(previous?: BubblePosition): BubblePosition {
 interface BubbleView {
   text: string;
   position: BubblePosition;
-  width: "max-content" | "220px" | "270px";
+  width: "max-content" | "240px" | "300px" | "340px";
   whiteSpace: React.CSSProperties["whiteSpace"];
   opacity: number;
   visible: boolean;
   walkOffsetPx: number;
-  scrollable: boolean;
 }
 
 type BubbleStyle = React.CSSProperties & { "--buddy-walk-x"?: string };
@@ -124,7 +123,6 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
     opacity: 0,
     visible: false,
     walkOffsetPx: 0,
-    scrollable: false,
   }));
   const bubbleViewRef = useRef<BubbleView>(bubbleView);
   const bubblePositionRef = useRef<BubblePosition>(bubblePosition);
@@ -176,6 +174,11 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
 
   useEffect(() => {
     const loop = () => {
+      if (document.hidden) {
+        frameIdRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
       const ctx = canvasRef.current?.getContext("2d");
       if (ctx) {
         const sem = semanticRef.current;
@@ -193,14 +196,21 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
         const visible = opacity > 0.02 && text.length > 0;
         const hasControls = speechControlCount > 0;
         const isLongText = text.length > 72;
-        const isVeryLongText = text.length > 180;
         const isMediumText = text.length > 34;
         const fixedWidth = hasControls || isLongText;
-        const width = fixedWidth ? "270px" : isMediumText ? "220px" : "max-content";
-        const whiteSpace = fixedWidth || isMediumText ? "normal" : "nowrap";
-        const scrollable = isVeryLongText;
+        const width: BubbleView["width"] = fixedWidth
+          ? isLongText
+            ? "340px"
+            : "300px"
+          : isMediumText
+            ? "240px"
+            : "max-content";
+        const whiteSpace: BubbleView["whiteSpace"] =
+          fixedWidth || isMediumText ? "normal" : "nowrap";
+        const previousFixedWidth =
+          previous.width === "300px" || previous.width === "340px";
         const position =
-          text !== previous.text || fixedWidth !== (previous.width === "270px")
+          text !== previous.text || fixedWidth !== previousFixedWidth
             ? fixedWidth
               ? "top"
               : randomizeBubblePosition
@@ -217,7 +227,6 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
           opacity: nextOpacity,
           visible,
           walkOffsetPx,
-          scrollable,
         };
 
         if (
@@ -227,7 +236,6 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
           previous.whiteSpace !== nextView.whiteSpace ||
           previous.visible !== nextView.visible ||
           previous.walkOffsetPx !== nextView.walkOffsetPx ||
-          previous.scrollable !== nextView.scrollable ||
           opacityChanged
         ) {
           bubbleViewRef.current = nextView;
@@ -380,12 +388,10 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
             lineHeight: 1.3,
             whiteSpace: bubbleView.whiteSpace,
             width: bubbleView.width,
-            maxWidth: "270px",
-            maxHeight: bubbleView.scrollable ? "110px" : undefined,
+            maxWidth: "340px",
             overflowWrap: "break-word",
-            overflowY: bubbleView.scrollable ? "auto" : "visible",
-            pointerEvents:
-              speechControlCount > 0 || bubbleView.scrollable ? "auto" : "none",
+            overflow: "visible",
+            pointerEvents: speechControlCount > 0 ? "auto" : "none",
             color: palette.light,
             boxShadow: `0 8px 22px rgba(0, 0, 0, 0.26), 0 0 18px ${palette.dark}44`,
             zIndex: 5,
@@ -393,10 +399,7 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
             opacity: bubbleView.opacity,
           };
           return (
-            <div
-              data-bubble-position={bubbleView.position}
-              style={bubbleStyle}
-            >
+            <div data-bubble-position={bubbleView.position} style={bubbleStyle}>
               <span>{bubbleView.text}</span>
               {speechControls?.length ? (
                 <div

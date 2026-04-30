@@ -216,9 +216,9 @@ describe("buildHistoryTree", () => {
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe("b");
       expect(buildDotTrail(result[0]).map((dot) => dot.chatId)).toEqual(["d"]);
-      expect(buildDotTrail(result[0].children[0]).map((dot) => dot.chatId)).toEqual([
-        "c",
-      ]);
+      expect(
+        buildDotTrail(result[0].children[0]).map((dot) => dot.chatId),
+      ).toEqual(["c"]);
     });
   });
 

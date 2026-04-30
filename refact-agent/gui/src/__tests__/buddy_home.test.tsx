@@ -22,6 +22,7 @@ import { BuddySettingsPanel } from "../features/Buddy/BuddySettingsPanel";
 import { BuddyPanel } from "../features/Buddy/BuddyPanel";
 import { BuddyWorld } from "../features/Buddy/BuddyWorld";
 import { buildBuddyWorldState } from "../features/Buddy/buddyWorldModel";
+import { buildBuddySceneSpeech } from "../features/Buddy/buddySceneSpeech";
 import { useExecuteBuddyAction } from "../features/Buddy/hooks/useExecuteBuddyAction";
 import { executeBuddyNavigation } from "../features/Buddy/executeBuddyAction";
 import { PALETTES, STAGES } from "../features/Buddy/constants";
@@ -469,6 +470,92 @@ describe("BuddyWorld_dynamic_environment", () => {
 
     expect(world.weather).toBe("busy");
     expect(world.weatherDescription).toBe("Running browser checks");
+  });
+});
+
+describe("buildBuddySceneSpeech", () => {
+  function makeRuntimeEvent(
+    overrides?: Partial<BuddyRuntimeEvent>,
+  ): BuddyRuntimeEvent {
+    return {
+      id: "runtime-1",
+      signal_type: "info",
+      title: "Runtime notice",
+      source: "test",
+      status: "info",
+      priority: "normal",
+      created_at: "2024-01-01T00:00:00Z",
+      ...overrides,
+    };
+  }
+
+  it("includes runtime descriptions for non-error notifications", () => {
+    const speech = buildBuddySceneSpeech({
+      activeSpeech: null,
+      nowPlaying: makeRuntimeEvent({
+        title: "Setup ready",
+        description: "Connect GitHub to enable issue sync.",
+      }),
+      runtimeQueue: [],
+      activeSuggestion: null,
+    });
+
+    expect(speech?.text).toBe(
+      "Setup ready: Connect GitHub to enable issue sync.",
+    );
+  });
+
+  it("prioritizes critical queued failures over low-priority now playing", () => {
+    const speech = buildBuddySceneSpeech({
+      activeSpeech: null,
+      nowPlaying: makeRuntimeEvent({
+        id: "now-playing",
+        title: "Indexing quietly",
+        priority: "low",
+        status: "progress",
+        created_at: "2024-01-01T10:00:00Z",
+      }),
+      runtimeQueue: [
+        makeRuntimeEvent({
+          id: "critical-error",
+          title: "Provider failed",
+          description: "The default model key was rejected.",
+          priority: "critical",
+          status: "failed",
+          created_at: "2024-01-01T09:00:00Z",
+        }),
+      ],
+      activeSuggestion: null,
+    });
+
+    expect(speech?.runtimeEventId).toBe("critical-error");
+    expect(speech?.text).toBe(
+      "Provider failed: The default model key was rejected.",
+    );
+  });
+
+  it("converts suggestion dismiss controls into dismiss_suggestion actions", () => {
+    const speech = buildBuddySceneSpeech({
+      activeSpeech: null,
+      nowPlaying: null,
+      runtimeQueue: [],
+      activeSuggestion: makeSuggestion({
+        controls: [
+          {
+            id: "dismiss-suggestion",
+            label: "Dismiss",
+            action: "dismiss",
+            style: "secondary",
+          },
+        ],
+      }),
+    });
+
+    expect(speech?.source).toBe("suggestion");
+    expect(speech?.controls[0]).toMatchObject({
+      action: "dismiss_suggestion",
+      action_param: "suggestion-1",
+    });
   });
 });
 
