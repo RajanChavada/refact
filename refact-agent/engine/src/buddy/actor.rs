@@ -484,6 +484,13 @@ impl BuddyService {
                 .iter()
                 .find(|e| e.dedupe_key.as_deref() == Some(key))
                 .cloned()
+                .or_else(|| {
+                    self.runtime_queue
+                        .now_playing
+                        .as_ref()
+                        .filter(|e| e.dedupe_key.as_deref() == Some(key))
+                        .cloned()
+                })
         } else {
             self.runtime_queue
                 .items
@@ -493,6 +500,16 @@ impl BuddyService {
         };
         if let Some(ev) = to_persist {
             self.persist_event(ev);
+        }
+        if dedupe_key.is_some()
+            && self
+                .runtime_queue
+                .now_playing
+                .as_ref()
+                .map(|np| np.dedupe_key == dedupe_key)
+                .unwrap_or(false)
+        {
+            self.persist_now_playing(self.runtime_queue.now_playing.clone());
         }
         // Tombstone every evicted id so replay matches in-memory state.
         for id in evicted {
@@ -859,6 +876,17 @@ impl BuddyService {
             .tool_name
             .as_deref()
             .and_then(redact_diagnostic_metadata);
+        let signature = super::diagnostics::diagnostic_signature(&ctx);
+        let duplicate = self
+            .recent_diagnostics
+            .iter()
+            .rev()
+            .take(20)
+            .any(|existing| super::diagnostics::diagnostic_signature(existing) == signature);
+        if duplicate {
+            self.enqueue_diagnostic_runtime_event(&ctx);
+            return;
+        }
         self.recent_diagnostics.push(ctx.clone());
         if self.recent_diagnostics.len() > 100 {
             self.recent_diagnostics.remove(0);
@@ -898,7 +926,7 @@ impl BuddyService {
         } else {
             format!("{}: {}", ctx.error_type, truncated)
         };
-        let dedupe_key = format!("diag:{}", super::diagnostics::diagnostic_id(ctx));
+        let dedupe_key = format!("diag:{}", super::diagnostics::diagnostic_signature(ctx));
         let source = ctx
             .source_file
             .as_deref()

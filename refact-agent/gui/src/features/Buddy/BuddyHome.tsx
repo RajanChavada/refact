@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ArrowLeftIcon, GearIcon } from "@radix-ui/react-icons";
 import classNames from "classnames";
@@ -29,7 +29,13 @@ import {
   selectBuddyDiagnostics,
   selectRuntimeQueue,
   selectPulse,
+  selectUnreadOpportunities,
+  selectHomeSnoozedUntil,
+  selectSeenNotificationIds,
   dismissRuntimeEvent,
+  snoozeHomeNotifications,
+  markBuddyNotificationSeen,
+  clearExpiredBuddyNotificationSnooze,
 } from "./buddySlice";
 import {
   openChatInModeAndStart,
@@ -39,7 +45,15 @@ import {
   executeBuddyAction,
   navigateFromBuddyPage,
 } from "./executeBuddyAction";
-import { buildBuddySceneSpeech } from "./buddySceneSpeech";
+import {
+  buildBuddySceneSpeechCandidates,
+  type BuddySceneSpeech,
+} from "./buddySceneSpeech";
+import { useExecuteBuddyAction } from "./hooks/useExecuteBuddyAction";
+import {
+  getOpportunityActionFromControl,
+  getOpportunityActionIndexFromControl,
+} from "./buddyOpportunityActions";
 import {
   useDeleteDraftMutation,
   useDismissBuddyRuntimeEventMutation,
@@ -190,11 +204,16 @@ export const BuddyHome: React.FC = () => {
   const diagnostics = useAppSelector(selectBuddyDiagnostics);
   const runtimeQueue = useAppSelector(selectRuntimeQueue);
   const pulse = useAppSelector(selectPulse);
+  const unreadOpportunities = useAppSelector(selectUnreadOpportunities);
+  const homeSnoozedUntil = useAppSelector(selectHomeSnoozedUntil);
+  const seenNotificationIds = useAppSelector(selectSeenNotificationIds);
   const [dismissRuntimeMutation] = useDismissBuddyRuntimeEventMutation();
+  const executeOpportunityAction = useExecuteBuddyAction();
   const buddy = useBuddyState();
   const { state } = buddy;
   const [setupDismissed, setSetupDismissed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [speechIndex, setSpeechIndex] = useState(0);
   const [updateSettings, { isLoading: isSavingSettings }] =
     useUpdateBuddySettingsMutation();
 
@@ -322,12 +341,68 @@ export const BuddyHome: React.FC = () => {
     () => suggestions.find((suggestion) => !suggestion.dismissed) ?? null,
     [suggestions],
   );
-  const heroSpeech = buildBuddySceneSpeech({
+
+  useEffect(() => {
+    dispatch(clearExpiredBuddyNotificationSnooze());
+    if (homeSnoozedUntil == null) return;
+    const remainingMs = homeSnoozedUntil - Date.now();
+    if (remainingMs <= 0) return;
+    const timer = window.setTimeout(() => {
+      dispatch(clearExpiredBuddyNotificationSnooze());
+    }, remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [dispatch, homeSnoozedUntil]);
+
+  const homeNotificationsSnoozed =
+    homeSnoozedUntil != null && homeSnoozedUntil > Date.now();
+  const heroSpeechCandidates = useMemo(() => {
+    if (activeSpeech) {
+      return [
+        {
+          id: `speech-${activeSpeech.id}`,
+          text: activeSpeech.text,
+          controls: activeSpeech.controls,
+          chat_id: activeSpeech.chat_id,
+          source: "speech",
+        } satisfies BuddySceneSpeech,
+      ];
+    }
+    if (homeNotificationsSnoozed) return [];
+    return buildBuddySceneSpeechCandidates({
+      nowPlaying,
+      runtimeQueue,
+      activeSuggestion,
+      activeOpportunities: unreadOpportunities,
+    }).filter((speech) => seenNotificationIds[speech.id] == null);
+  }, [
     activeSpeech,
+    activeSuggestion,
+    homeNotificationsSnoozed,
     nowPlaying,
     runtimeQueue,
-    activeSuggestion,
-  });
+    seenNotificationIds,
+    unreadOpportunities,
+  ]);
+
+  useEffect(() => {
+    if (heroSpeechCandidates.length <= 1) return;
+    const minMs = 18_000;
+    const jitterMs = Math.floor(Math.random() * 12_000);
+    const timer = window.setTimeout(() => {
+      setSpeechIndex((index) => (index + 1) % heroSpeechCandidates.length);
+    }, minMs + jitterMs);
+    return () => window.clearTimeout(timer);
+  }, [heroSpeechCandidates.length, speechIndex]);
+
+  useEffect(() => {
+    if (speechIndex < heroSpeechCandidates.length) return;
+    setSpeechIndex(0);
+  }, [heroSpeechCandidates.length, speechIndex]);
+
+  const heroSpeech =
+    heroSpeechCandidates.length > 0
+      ? heroSpeechCandidates[speechIndex % heroSpeechCandidates.length]
+      : null;
 
   const activeDiagnostic = heroSpeech?.chat_id
     ? diagnostics.find((diag) => diag.chat_id === heroSpeech.chat_id)
@@ -341,9 +416,30 @@ export const BuddyHome: React.FC = () => {
         heroSpeech.runtimeEventId &&
         (ctrl.action === "dismiss" || ctrl.action === "dismiss_speech")
       ) {
+        dispatch(markBuddyNotificationSeen(heroSpeech.id));
+        dispatch(snoozeHomeNotifications(undefined));
         dispatch(dismissRuntimeEvent(heroSpeech.runtimeEventId));
         await dismissRuntimeMutation(heroSpeech.runtimeEventId).unwrap();
         return;
+      }
+      if (heroSpeech.source === "opportunity" && heroSpeech.opportunityId) {
+        const opportunity = unreadOpportunities.find(
+          (opp) => opp.id === heroSpeech.opportunityId,
+        );
+        const actionIndex = getOpportunityActionIndexFromControl(ctrl);
+        if (!opportunity || actionIndex == null) return;
+        const action = getOpportunityActionFromControl(ctrl, opportunity);
+        if (!action) return;
+        dispatch(markBuddyNotificationSeen(heroSpeech.id));
+        if (action.kind === "dismiss") {
+          dispatch(snoozeHomeNotifications(undefined));
+        }
+        await executeOpportunityAction(action, opportunity, actionIndex);
+        return;
+      }
+      if (ctrl.action === "dismiss_suggestion" && heroSpeech.suggestionId) {
+        dispatch(markBuddyNotificationSeen(heroSpeech.id));
+        dispatch(snoozeHomeNotifications(undefined));
       }
       await executeBuddyAction(ctrl, dispatch, {
         triggerText: heroSpeech.text,
@@ -353,7 +449,14 @@ export const BuddyHome: React.FC = () => {
         diagnostic: activeDiagnostic,
       });
     },
-    [activeDiagnostic, dismissRuntimeMutation, dispatch, heroSpeech],
+    [
+      activeDiagnostic,
+      dismissRuntimeMutation,
+      dispatch,
+      executeOpportunityAction,
+      heroSpeech,
+      unreadOpportunities,
+    ],
   );
 
   const handleQuestControl = useCallback(
@@ -401,11 +504,16 @@ export const BuddyHome: React.FC = () => {
         existing.occurrences = (existing.occurrences ?? 1) + 1;
         existing.dismissedAny =
           Boolean(existing.dismissedAny) || Boolean(e.dismissed);
+        existing.dismissedAll =
+          Boolean(existing.dismissedAll) && Boolean(e.dismissed);
+        existing.relatedIds = [...(existing.relatedIds ?? [existing.id]), e.id];
       } else {
         sigMap.set(sig, {
           ...e,
           occurrences: 1,
           dismissedAny: Boolean(e.dismissed),
+          dismissedAll: Boolean(e.dismissed),
+          relatedIds: [e.id],
         });
       }
     }
@@ -439,9 +547,12 @@ export const BuddyHome: React.FC = () => {
 
   const handleDismissError = useCallback(
     (event: BuddyRuntimeEvent) => {
-      if (event.dismissed) return;
-      dispatch(dismissRuntimeEvent(event.id));
-      void dismissRuntimeMutation(event.id).catch(() => undefined);
+      const ids = (event as RecentBuddyError).relatedIds ?? [event.id];
+      for (const id of ids) {
+        dispatch(dismissRuntimeEvent(id));
+        void dismissRuntimeMutation(id).catch(() => undefined);
+      }
+      dispatch(snoozeHomeNotifications(undefined));
     },
     [dispatch, dismissRuntimeMutation],
   );

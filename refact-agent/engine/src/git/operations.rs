@@ -341,13 +341,23 @@ pub fn commit(
 }
 
 pub fn open_or_init_repo(path: &Path) -> Result<Repository, String> {
-    match Repository::open(path) {
+    let repo = match Repository::open(path) {
         Ok(repo) => Ok(repo),
         Err(e) if e.code() == git2::ErrorCode::NotFound => {
             Repository::init(path).map_err_to_string()
         }
         Err(e) => Err(e.to_string()),
+    }?;
+    if let Ok(mut config) = repo.config() {
+        if let Err(err) = config.set_bool("core.autocrlf", false) {
+            tracing::warn!(
+                "Failed to disable autocrlf for shadow git repo '{}': {}",
+                path.display(),
+                err
+            );
+        }
     }
+    Ok(repo)
 }
 
 pub fn get_commit_datetime(

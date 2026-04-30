@@ -27,6 +27,28 @@ impl RuntimeQueue {
         // Coalesce by dedupe_key if present
         if let Some(ref key) = event.dedupe_key {
             if let Some(existing) = self
+                .now_playing
+                .as_mut()
+                .filter(|e| e.dedupe_key.as_deref() == Some(key))
+            {
+                existing.signal_type = event.signal_type;
+                existing.title = event.title;
+                existing.description = event.description;
+                existing.source = event.source;
+                existing.progress = event.progress;
+                existing.status = event.status;
+                existing.priority = event.priority;
+                existing.ttl_ms = event.ttl_ms;
+                existing.speech_text = event.speech_text;
+                existing.scene = event.scene;
+                existing.duration_hint = event.duration_hint;
+                existing.persistent = event.persistent;
+                existing.controls = event.controls;
+                existing.chat_id = event.chat_id;
+                existing.dismissed = existing.dismissed || event.dismissed;
+                return Vec::new();
+            }
+            if let Some(existing) = self
                 .items
                 .iter_mut()
                 .find(|e| e.dedupe_key.as_deref() == Some(key))

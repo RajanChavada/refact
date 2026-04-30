@@ -35,7 +35,7 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     pub fn workspace_hash(&self) -> String {
-        official_text_hashing_function(&self.workspace_folder.to_string_lossy().to_string())
+        workspace_folder_hash(&self.workspace_folder)
     }
 }
 
@@ -54,8 +54,9 @@ async fn open_shadow_repo_and_nested_repos(
         let indexing_everywhere = reload_indexing_everywhere_if_needed(gcx).await;
         let mut result = Vec::new();
         for path in paths {
-            let indexing_for_path = indexing_everywhere.indexing_for_path(path);
-            let path_hash = official_text_hashing_function(&path.to_string_lossy().to_string());
+            let path = normalize_shadow_path(path);
+            let indexing_for_path = indexing_everywhere.indexing_for_path(&path);
+            let path_hash = shadow_repo_hash(&path);
             let git_dir_path = if nested {
                 cache_dir.join("shadow_git").join("nested").join(&path_hash)
             } else {
@@ -69,7 +70,7 @@ async fn open_shadow_repo_and_nested_repos(
             let filetime_now = filetime::FileTime::now();
             filetime::set_file_times(&git_dir_path, filetime_now, filetime_now)
                 .map_err_to_string()?;
-            repo.set_workdir(path, false).map_err_to_string()?;
+            repo.set_workdir(&path, false).map_err_to_string()?;
             for git_rule in [".git", ".git/**"] {
                 if let Err(e) = repo.add_ignore_rule(git_rule) {
                     tracing::warn!(
@@ -116,14 +117,14 @@ async fn open_shadow_repo_and_nested_repos(
     };
     let nested_vcs_roots: Vec<PathBuf> = {
         let vcs_roots_locked = vcs_roots.lock().unwrap();
+        let workspace_key = normalize_shadow_path(workspace_folder);
         vcs_roots_locked
             .iter()
-            .filter(|vcs| vcs.starts_with(&workspace_folder) && **vcs != workspace_folder)
-            .cloned()
+            .map(|vcs| normalize_shadow_path(vcs))
+            .filter(|vcs| vcs.starts_with(&workspace_key) && *vcs != workspace_key)
             .collect()
     };
-    let workspace_folder_hash =
-        official_text_hashing_function(&workspace_folder.to_string_lossy().to_string());
+    let workspace_folder_hash = workspace_folder_hash(workspace_folder);
 
     let repo = open_repos(
         gcx.clone(),
@@ -189,11 +190,25 @@ fn resolve_checkpoint_workspace_folder(workspace_folder: &Path) -> Result<PathBu
             resolved.display()
         ));
     }
-    Ok(resolved)
+    Ok(dunce::simplified(&resolved).to_path_buf())
 }
 
 fn workspace_folder_hash(workspace_folder: &Path) -> String {
-    official_text_hashing_function(&workspace_folder.to_string_lossy().to_string())
+    let normalized = normalize_shadow_path(workspace_folder);
+    official_text_hashing_function(&normalized.to_string_lossy().to_string())
+}
+
+fn shadow_repo_hash(workspace_folder: &Path) -> String {
+    let hash_path = std::fs::canonicalize(workspace_folder)
+        .unwrap_or_else(|_| normalize_shadow_path(workspace_folder));
+    official_text_hashing_function(&hash_path.to_string_lossy().to_string())
+}
+
+fn normalize_shadow_path(path: &Path) -> PathBuf {
+    match std::fs::canonicalize(path) {
+        Ok(canonical) => dunce::simplified(&canonical).to_path_buf(),
+        Err(_) => dunce::simplified(path).to_path_buf(),
+    }
 }
 
 fn repo_has_commits(repo: &Repository) -> bool {
@@ -645,8 +660,8 @@ mod tests {
         fs::create_dir_all(worktree.join("src")).unwrap();
         write_file(&source.join("src/file.txt"), "source\n");
         write_file(&worktree.join("src/file.txt"), "before\n");
-        let source = fs::canonicalize(source).unwrap();
-        let worktree = fs::canonicalize(worktree).unwrap();
+        let source = dunce::simplified(&fs::canonicalize(source).unwrap()).to_path_buf();
+        let worktree = dunce::simplified(&fs::canonicalize(worktree).unwrap()).to_path_buf();
         let gcx = crate::global_context::tests::make_test_gcx().await;
         {
             let gcx_lock = gcx.read().await;

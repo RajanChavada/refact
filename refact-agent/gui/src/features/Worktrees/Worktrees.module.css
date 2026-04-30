@@ -37,6 +37,18 @@
   min-width: 0;
 }
 
+.branchIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-2);
+  color: var(--accent-11);
+  background-color: var(--accent-a3);
+}
+
 .content {
   min-width: 280px;
   max-width: min(360px, 90vw);

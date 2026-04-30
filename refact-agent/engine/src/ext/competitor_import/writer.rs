@@ -160,7 +160,10 @@ fn issue_matches_stale_entry(
         .unwrap_or(true)
         && issue.kind == Some(entry.kind)
         && issue.scope.as_ref() == Some(scope)
-        && issue.path.as_ref() == Some(&entry.source_path)
+        && issue
+            .path
+            .as_ref()
+            .is_some_and(|path| paths_equivalent(path, &entry.source_path))
 }
 
 fn candidate_matches_ownership(
@@ -172,7 +175,7 @@ fn candidate_matches_ownership(
         return false;
     }
     resolve_destination_path(scope_root, &candidate.destination_path)
-        .map(|dest_path| dest_path == entry.dest_path)
+        .map(|dest_path| paths_equivalent(&dest_path, &entry.dest_path))
         .unwrap_or(false)
 }
 
@@ -182,7 +185,7 @@ fn candidate_destination_differs(
     candidate: &ImportCandidate,
 ) -> bool {
     resolve_destination_path(scope_root, &candidate.destination_path)
-        .map(|dest_path| dest_path != entry.dest_path)
+        .map(|dest_path| !paths_equivalent(&dest_path, &entry.dest_path))
         .unwrap_or(false)
 }
 
@@ -521,7 +524,7 @@ fn existing_path_is_under_root(path: &Path, root: &Path) -> Result<Option<bool>>
 
 fn canonical_path_if_exists(path: &Path) -> Result<Option<PathBuf>> {
     match std::fs::canonicalize(path) {
-        Ok(path) => Ok(Some(path)),
+        Ok(path) => Ok(Some(dunce::simplified(&path).to_path_buf())),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
@@ -534,6 +537,7 @@ fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf> {
     loop {
         match std::fs::canonicalize(&probe) {
             Ok(mut canonical) => {
+                canonical = dunce::simplified(&canonical).to_path_buf();
                 for component in suffix.iter().rev() {
                     canonical.push(component);
                 }
@@ -588,7 +592,18 @@ fn manifest_entry_matches_candidate(
 ) -> bool {
     entry.competitor == candidate.competitor
         && entry.kind == candidate.kind
-        && entry.source_path == candidate.source_path
+        && paths_equivalent(&entry.source_path, &candidate.source_path)
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    path_key(left) == path_key(right)
+}
+
+fn path_key(path: &Path) -> PathBuf {
+    canonical_path_if_exists(path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| dunce::simplified(&lexical_normalize(path)).to_path_buf())
 }
 
 fn manifest_entry_metadata_matches_candidate(

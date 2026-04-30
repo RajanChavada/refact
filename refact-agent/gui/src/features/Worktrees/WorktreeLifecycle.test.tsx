@@ -121,6 +121,7 @@ function makeWorktreeList(records: WorktreeRecordView[]): WorktreeListResponse {
   return {
     project_hash: "project-hash",
     source_workspace_root: "/repo",
+    source_current_branch: "main",
     worktrees: records,
   };
 }

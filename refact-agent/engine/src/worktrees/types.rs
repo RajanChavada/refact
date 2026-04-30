@@ -150,6 +150,8 @@ pub struct WorktreeListResponse {
         deserialize_with = "deserialize_path"
     )]
     pub source_workspace_root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_current_branch: Option<String>,
     pub worktrees: Vec<WorktreeRecordView>,
 }
 

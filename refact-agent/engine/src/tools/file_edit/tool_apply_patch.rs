@@ -58,14 +58,17 @@ fn parse_patch_arg(args: &HashMap<String, Value>) -> Result<ParsedPatch, String>
 
 fn absolute_path_inside_workspace(path: &str, project_dirs: &[PathBuf]) -> Option<PathBuf> {
     let path = PathBuf::from(path);
-    if !path.is_absolute() {
+    if !path.is_absolute() && !path.has_root() {
         return None;
     }
 
+    let normalized_path = dunce::simplified(&path);
     project_dirs
         .iter()
         .any(|dir| {
-            path.strip_prefix(dir)
+            let dir = dunce::simplified(dir);
+            normalized_path
+                .strip_prefix(dir)
                 .is_ok_and(|relative| !relative.as_os_str().is_empty())
         })
         .then_some(path)

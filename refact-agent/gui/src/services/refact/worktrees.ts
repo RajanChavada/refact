@@ -68,6 +68,7 @@ export type WorktreeRecordView = {
 export type WorktreeListResponse = {
   project_hash: string;
   source_workspace_root: string;
+  source_current_branch?: string | null;
   worktrees: WorktreeRecordView[];
 };
 

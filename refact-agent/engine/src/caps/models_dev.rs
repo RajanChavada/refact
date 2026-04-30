@@ -470,7 +470,11 @@ fn reasoning_rule_matches(
 ) -> bool {
     let model_id = model.id.to_ascii_lowercase();
     let model_name = model.name.to_ascii_lowercase();
-    let family = model.family.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let family = model
+        .family
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let provider_key = provider_key.to_ascii_lowercase();
     let provider_id = provider.id.to_ascii_lowercase();
     let provider_npm = provider

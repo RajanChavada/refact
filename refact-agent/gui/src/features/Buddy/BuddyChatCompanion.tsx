@@ -12,8 +12,10 @@ import {
   selectIsBuddyEnabled,
   selectRuntimeQueue,
   selectBuddySuggestions,
+  selectActiveSpeech,
   dismissBuddySuggestion,
   dismissRuntimeEvent,
+  clearActiveSpeech,
 } from "./buddySlice";
 import { selectChatErrorById } from "../Chat/Thread";
 import { startBuddyInvestigation } from "../Chat/Thread";
@@ -54,11 +56,25 @@ interface Props {
 interface NotificationItem {
   id: string;
   text: string;
-  source: "thread" | "runtime" | "diagnostic" | "suggestion" | "opportunity";
+  source:
+    | "speech"
+    | "thread"
+    | "runtime"
+    | "diagnostic"
+    | "suggestion"
+    | "opportunity";
   controls: BuddyControl[];
   timestamp: number;
   diagnostic?: DiagnosticContext | null;
   opportunity?: BuddyOpportunity;
+}
+
+function notificationTriggerSource(
+  source: NotificationItem["source"],
+): "thread" | "runtime" | "diagnostic" | "suggestion" | "frontend" {
+  if (source === "speech") return "runtime";
+  if (source === "opportunity") return "suggestion";
+  return source;
 }
 
 export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
@@ -68,6 +84,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const nowPlaying = useAppSelector(selectNowPlaying);
   const diagnostics = useAppSelector(selectBuddyDiagnostics);
   const suggestions = useAppSelector(selectBuddySuggestions);
+  const activeSpeech = useAppSelector(selectActiveSpeech);
   const threadError = useAppSelector((state) =>
     selectChatErrorById(state, chatId),
   );
@@ -81,6 +98,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const [dismissRuntimeMutation] = useDismissBuddyRuntimeEventMutation();
 
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [chatNotificationsMuted, setChatNotificationsMuted] = useState(false);
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const pendingRef = useRef(false);
@@ -90,6 +108,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     if (prevChatIdRef.current !== chatId) {
       prevChatIdRef.current = chatId;
       setDismissedIds(new Set());
+      setChatNotificationsMuted(false);
       setActionError(null);
       setOpportunityIndex(0);
     }
@@ -140,6 +159,19 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   );
 
   const baseNotification: NotificationItem | null = useMemo(() => {
+    if (activeSpeech) {
+      return {
+        id: `speech-${activeSpeech.id}`,
+        text: activeSpeech.text,
+        source: "speech",
+        controls: activeSpeech.controls,
+        timestamp: new Date(activeSpeech.created_at).getTime(),
+        diagnostic: activeSpeech.chat_id
+          ? diagnostics.find((d) => d.chat_id === activeSpeech.chat_id) ?? null
+          : null,
+      };
+    }
+
     const chatDiagnostic =
       diagnostics.find((d) => d.chat_id === chatId) ?? null;
     const normalizedThreadError = threadError?.trim() ?? null;
@@ -221,6 +253,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
 
     return null;
   }, [
+    activeSpeech,
     threadError,
     chatId,
     nowPlaying,
@@ -275,7 +308,14 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   }, [notification?.id]);
 
   useEffect(() => {
-    if (chatCooldownActive || !notification || isDismissed) return;
+    if (
+      chatCooldownActive ||
+      !notification ||
+      notification.source === "speech" ||
+      isDismissed
+    ) {
+      return;
+    }
     const t = setTimeout(() => {
       setDismissedIds((prev) => new Set(prev).add(notification.id));
     }, 15000);
@@ -301,6 +341,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
         setActionError(null);
         try {
           if (action.kind === "dismiss") {
+            setChatNotificationsMuted(true);
             const results = await Promise.allSettled(
               activeOpportunities.map(async (opp) => {
                 const dismissAction = getOpportunityDismissAction(opp);
@@ -351,10 +392,14 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
       }
 
       if (ctrl.action === "dismiss" || ctrl.action === "dismiss_speech") {
-        if (notification.source === "suggestion") {
+        if (notification.source === "speech") {
+          dispatch(clearActiveSpeech());
+        } else if (notification.source === "suggestion") {
+          setChatNotificationsMuted(true);
           await dismissMutation(notification.id);
           dispatch(dismissBuddySuggestion(notification.id));
         } else if (notification.source === "runtime") {
+          setChatNotificationsMuted(true);
           // Optimistically mark dismissed so the bubble disappears immediately,
           // then persist to the backend so it stays dismissed across reloads/SSE.
           dispatch(dismissRuntimeEvent(notification.id));
@@ -364,6 +409,8 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
             // Server unavailable: local-state fallback below still hides it
             // for this session.
           }
+        } else {
+          setChatNotificationsMuted(true);
         }
         setDismissedIds((prev) => new Set(prev).add(notification.id));
         return;
@@ -384,7 +431,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
       if (ctrl.action === "accept_quest") {
         await executeBuddyAction(ctrl, dispatch, {
           triggerText: notification.text,
-          triggerSource: notification.source,
+          triggerSource: notificationTriggerSource(notification.source),
           sourceChatId: chatId,
           diagnostic: notification.diagnostic,
         });
@@ -418,12 +465,13 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
           await dispatch(
             startBuddyInvestigation({
               triggerText: notification.text,
-              triggerSource: notification.source,
+              triggerSource: notificationTriggerSource(notification.source),
               sourceChatId: chatId,
               diagnostic: notification.diagnostic,
             }),
           );
           setDismissedIds((prev) => new Set(prev).add(notification.id));
+          setChatNotificationsMuted(true);
         } catch (error) {
           setActionError(formatOpportunityActionError(error));
         } finally {
@@ -444,8 +492,14 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     ],
   );
 
-  if (!enabled || chatCooldownActive) return null;
+  if (!enabled) return null;
   if (!notification || isDismissed) return null;
+  if (
+    notification.source !== "speech" &&
+    (chatCooldownActive || chatNotificationsMuted)
+  ) {
+    return null;
+  }
 
   return (
     <div className={styles.companion}>

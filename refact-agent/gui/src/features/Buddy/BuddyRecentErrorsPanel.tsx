@@ -7,6 +7,8 @@ import styles from "./BuddyHome.module.css";
 export type RecentBuddyError = BuddyRuntimeEvent & {
   occurrences?: number;
   dismissedAny?: boolean;
+  dismissedAll?: boolean;
+  relatedIds?: string[];
 };
 
 function formatTime(ts: string): string {
@@ -44,7 +46,8 @@ export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
         </Text>
       )}
       {recentErrors.map((e) => {
-        const icon = e.dismissed
+        const acknowledged = Boolean(e.dismissedAll ?? e.dismissed);
+        const icon = acknowledged
           ? "✅"
           : e.priority === "critical"
             ? "🚨"
@@ -62,7 +65,7 @@ export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
             className={classNames(
               styles.listRow,
               styles.errorRow,
-              e.dismissed && styles.errorRowAcknowledged,
+              acknowledged && styles.errorRowAcknowledged,
             )}
           >
             <span className={styles.listIcon}>{icon}</span>
@@ -72,7 +75,7 @@ export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
                 {e.occurrences != null && e.occurrences > 1 && (
                   <span className={styles.countBadge}>×{e.occurrences}</span>
                 )}
-                {e.dismissed && (
+                {acknowledged && (
                   <span className={styles.ackBadge}>acknowledged</span>
                 )}
               </span>
@@ -88,7 +91,7 @@ export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
                   Investigate
                 </button>
               </Tooltip>
-              {!e.dismissed && (
+              {!acknowledged && (
                 <Tooltip content="Mark as acknowledged">
                   <button
                     type="button"

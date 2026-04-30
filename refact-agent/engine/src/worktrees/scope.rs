@@ -174,7 +174,7 @@ impl ExecutionScope {
 
 fn resolve_final_path(path: &Path, require_existing: bool) -> Result<PathBuf, String> {
     match std::fs::canonicalize(path) {
-        Ok(canonical) => Ok(canonical),
+        Ok(canonical) => Ok(simplify_path(&canonical)),
         Err(e) if require_existing => Err(format!(
             "Path '{}' does not exist or cannot be resolved: {}",
             path.display(),
@@ -203,14 +203,14 @@ fn resolve_final_path(path: &Path, require_existing: bool) -> Result<PathBuf, St
                     parent.display()
                 ));
             }
-            Ok(parent.join(file_name))
+            Ok(simplify_path(&parent).join(file_name))
         }
     }
 }
 
 fn resolve_creatable_final_path(path: &Path) -> Result<PathBuf, String> {
     if let Ok(canonical) = std::fs::canonicalize(path) {
-        return Ok(canonical);
+        return Ok(simplify_path(&canonical));
     }
 
     let mut missing = Vec::new();
@@ -243,6 +243,7 @@ fn resolve_creatable_final_path(path: &Path) -> Result<PathBuf, String> {
             resolved.display()
         ));
     }
+    resolved = simplify_path(&resolved);
     for component in missing.iter().rev() {
         resolved.push(component);
     }
@@ -251,7 +252,12 @@ fn resolve_creatable_final_path(path: &Path) -> Result<PathBuf, String> {
 
 fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path)
+        .map(|path| simplify_path(&path))
         .unwrap_or_else(|_| normalize_lexical(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+fn simplify_path(path: &Path) -> PathBuf {
+    dunce::simplified(path).to_path_buf()
 }
 
 fn normalize_lexical(path: &Path) -> Result<PathBuf, String> {

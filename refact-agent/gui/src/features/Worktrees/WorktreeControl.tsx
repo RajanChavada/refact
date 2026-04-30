@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import { Share1Icon } from "@radix-ui/react-icons";
 import { Flex, Popover, Text } from "@radix-ui/themes";
 import {
   DEFAULT_MODE,
@@ -95,10 +96,22 @@ export const WorktreeControl: React.FC = () => {
   );
   const mainWorkspacePath = data?.source_workspace_root;
   const copyPath = currentWorktree?.root ?? mainWorkspacePath ?? null;
-  const label = worktreeLabel(currentWorktree);
+  const sourceBranch = data?.source_current_branch?.trim();
+  const mainLabel = sourceBranch ? compactWorktreeLabel(sourceBranch) : "Main";
+  const label = currentWorktree ? worktreeLabel(currentWorktree) : mainLabel;
   const branchLabel = currentWorktree?.branch?.trim();
-  const fullLabel =
-    branchLabel !== undefined && branchLabel.length > 0 ? branchLabel : label;
+  const fullLabel = currentWorktree
+    ? branchLabel !== undefined && branchLabel.length > 0
+      ? branchLabel
+      : currentWorktree.root
+    : sourceBranch
+      ? `Main workspace · ${sourceBranch}`
+      : "Main workspace";
+  const hasTriggerLabel =
+    currentWorktree !== null
+      ? true
+      : sourceBranch !== undefined && sourceBranch.length > 0;
+  const triggerLabel = hasTriggerLabel ? fullLabel : "Main workspace";
   const hostCanOpenFolder =
     host === "vscode" || host === "jetbrains" || host === "ide";
   const branchSuggestion = useMemo(
@@ -106,7 +119,10 @@ export const WorktreeControl: React.FC = () => {
     [chatId],
   );
   const baseBranch =
-    currentWorktree?.base_branch ?? currentWorktree?.branch ?? "main";
+    currentWorktree?.branch ??
+    currentWorktree?.base_branch ??
+    sourceBranch ??
+    "";
   const baseBranchOptions = useMemo(() => {
     const branches = records.flatMap((record) => [
       record.meta.base_branch,
@@ -157,12 +173,13 @@ export const WorktreeControl: React.FC = () => {
     async ({ branch, baseBranch }: CreateWorktreeValues) => {
       if (!chatId) return;
       setCreateError(null);
+      const request = {
+        branch,
+        kind: "chat" as const,
+        ...(baseBranch ? { base_branch: baseBranch } : {}),
+      };
       try {
-        const response = await createWorktree({
-          branch,
-          base_branch: baseBranch,
-          kind: "chat",
-        }).unwrap();
+        const response = await createWorktree(request).unwrap();
         const attached = await attachWorktree(response.worktree.meta);
         if (attached) {
           setCreateOpen(false);
@@ -228,12 +245,15 @@ export const WorktreeControl: React.FC = () => {
             className={`${styles.trigger} ${
               currentWorktree ? styles.triggerActive : ""
             }`}
-            title={currentWorktree ? fullLabel : "Main workspace"}
-            aria-label={`Worktree scope: ${
-              currentWorktree ? fullLabel : "Main workspace"
-            }`}
+            title={triggerLabel}
+            aria-label={`Worktree scope: ${triggerLabel}`}
           >
             <Flex align="center" gap="1" className={styles.triggerInner}>
+              {!currentWorktree && sourceBranch && (
+                <span className={styles.branchIcon} aria-hidden="true">
+                  <Share1Icon width={12} height={12} />
+                </span>
+              )}
               <Text size="1" className={styles.triggerText}>
                 {label}
               </Text>

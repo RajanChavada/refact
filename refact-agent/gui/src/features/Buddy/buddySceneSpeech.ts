@@ -1,18 +1,30 @@
 import type {
   BuddyControl,
+  BuddyOpportunity,
   BuddyRuntimeEvent,
   BuddySpeechItem,
   BuddySuggestion,
 } from "./types";
+import {
+  opportunityActionControls,
+  opportunitySpeechText,
+} from "./buddyOpportunityActions";
 
-export type BuddySceneSpeechSource = "speech" | "runtime" | "suggestion";
+export type BuddySceneSpeechSource =
+  | "speech"
+  | "runtime"
+  | "suggestion"
+  | "opportunity";
 
 export interface BuddySceneSpeech {
+  id: string;
   text: string;
   controls: BuddyControl[];
   chat_id?: string;
   source: BuddySceneSpeechSource;
   runtimeEventId?: string;
+  suggestionId?: string;
+  opportunityId?: string;
 }
 
 function normalizeRuntimeText(text: string): string {
@@ -92,6 +104,7 @@ function runtimeEventToSpeech(
     ? event.controls
     : defaultRuntimeControls(event);
   return {
+    id: `runtime-${event.id}`,
     text,
     controls,
     chat_id: event.chat_id,
@@ -105,6 +118,7 @@ function suggestionToSpeech(
 ): BuddySceneSpeech | null {
   if (!suggestion || suggestion.dismissed) return null;
   return {
+    id: `suggestion-${suggestion.id}`,
     text: `${suggestion.title}: ${suggestion.description}`,
     controls: suggestion.controls.map((control) =>
       control.action === "dismiss"
@@ -116,13 +130,33 @@ function suggestionToSpeech(
         : control,
     ),
     source: "suggestion",
+    suggestionId: suggestion.id,
   };
 }
 
-function runtimeFromQueue(
+function opportunityToSpeech(
+  opportunity: BuddyOpportunity | null | undefined,
+): BuddySceneSpeech | null {
+  if (
+    !opportunity ||
+    (opportunity.status !== "new" && opportunity.status !== "shown")
+  ) {
+    return null;
+  }
+
+  return {
+    id: `opportunity-${opportunity.id}`,
+    text: opportunitySpeechText(opportunity),
+    controls: opportunityActionControls(opportunity),
+    source: "opportunity",
+    opportunityId: opportunity.id,
+  };
+}
+
+function runtimeCandidatesFromQueue(
   nowPlaying: BuddyRuntimeEvent | null,
   runtimeQueue: BuddyRuntimeEvent[],
-): BuddyRuntimeEvent | null {
+): BuddyRuntimeEvent[] {
   const candidates = [nowPlaying, ...runtimeQueue].filter(
     (event): event is BuddyRuntimeEvent =>
       event !== null &&
@@ -130,7 +164,7 @@ function runtimeFromQueue(
       runtimeEventText(event).trim() !== "",
   );
 
-  return candidates.sort(compareRuntimeEvents)[0] ?? null;
+  return candidates.sort(compareRuntimeEvents).slice(0, 4);
 }
 
 function runtimePriorityScore(event: BuddyRuntimeEvent): number {
@@ -187,9 +221,11 @@ export function buildBuddySceneSpeech(args: {
   nowPlaying: BuddyRuntimeEvent | null;
   runtimeQueue: BuddyRuntimeEvent[];
   activeSuggestion?: BuddySuggestion | null;
+  activeOpportunities?: BuddyOpportunity[];
 }): BuddySceneSpeech | null {
   if (args.activeSpeech) {
     return {
+      id: `speech-${args.activeSpeech.id}`,
       text: args.activeSpeech.text,
       controls: args.activeSpeech.controls,
       chat_id: args.activeSpeech.chat_id,
@@ -197,9 +233,32 @@ export function buildBuddySceneSpeech(args: {
     };
   }
 
-  return (
-    runtimeEventToSpeech(
-      runtimeFromQueue(args.nowPlaying, args.runtimeQueue),
-    ) ?? suggestionToSpeech(args.activeSuggestion)
-  );
+  return buildBuddySceneSpeechCandidates(args)[0] ?? null;
+}
+
+export function buildBuddySceneSpeechCandidates(args: {
+  nowPlaying: BuddyRuntimeEvent | null;
+  runtimeQueue: BuddyRuntimeEvent[];
+  activeSuggestion?: BuddySuggestion | null;
+  activeOpportunities?: BuddyOpportunity[];
+}): BuddySceneSpeech[] {
+  const runtimeCandidates = runtimeCandidatesFromQueue(
+    args.nowPlaying,
+    args.runtimeQueue,
+  )
+    .map(runtimeEventToSpeech)
+    .filter((speech): speech is BuddySceneSpeech => speech !== null);
+
+  const opportunityCandidates = (args.activeOpportunities ?? [])
+    .map(opportunityToSpeech)
+    .filter((speech): speech is BuddySceneSpeech => speech !== null)
+    .slice(0, 3);
+
+  const suggestionCandidate = suggestionToSpeech(args.activeSuggestion);
+
+  return [
+    ...runtimeCandidates,
+    ...opportunityCandidates,
+    ...(suggestionCandidate ? [suggestionCandidate] : []),
+  ];
 }

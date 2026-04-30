@@ -1016,6 +1016,37 @@ fn test_persistent_event_fields_coalesced() {
 }
 
 #[test]
+fn test_now_playing_reemit_preserves_dismissal() {
+    use super::runtime_queue::RuntimeQueue;
+    let mut queue = RuntimeQueue::new();
+    let mut ev1 = super::actor::make_runtime_event(
+        "error",
+        "First",
+        "frontend",
+        "same-error",
+        "failed",
+        Some("high"),
+    );
+    ev1.dismissed = true;
+    queue.now_playing = Some(ev1);
+    let ev2 = super::actor::make_runtime_event(
+        "error",
+        "Second",
+        "frontend",
+        "same-error",
+        "failed",
+        Some("high"),
+    );
+
+    queue.enqueue(ev2);
+
+    let now_playing = queue.now_playing.as_ref().unwrap();
+    assert_eq!(now_playing.title, "Second");
+    assert!(now_playing.dismissed);
+    assert!(queue.items.is_empty());
+}
+
+#[test]
 fn test_completing_persistent_event_makes_it_temporary() {
     use super::runtime_queue::RuntimeQueue;
     let mut queue = RuntimeQueue::new();
@@ -1548,6 +1579,31 @@ async fn diagnostic_metadata_is_redacted_before_storage() {
     assert!(!stored.error_message.contains("secret-token"));
     let event = svc.runtime_queue.items.front().unwrap();
     assert_eq!(event.source, "[REDACTED_PATH]");
+}
+
+#[tokio::test]
+async fn duplicate_diagnostic_coalesces_without_history_spam() {
+    let mut svc = make_service();
+    let ctx = DiagnosticContext {
+        error_type: "frontend".to_string(),
+        error_message: "Repeated render error".to_string(),
+        source_file: Some("frontend/window_error".to_string()),
+        tool_name: None,
+        chat_id: Some("chat-1".to_string()),
+        collected_at: chrono::Utc::now().to_rfc3339(),
+        severity: DiagnosticSeverity::High,
+    };
+    let mut later = ctx.clone();
+    later.collected_at = (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339();
+
+    svc.add_diagnostic(ctx);
+    let event_id = svc.runtime_queue.items.front().unwrap().id.clone();
+    assert!(svc.dismiss_runtime_event_by_id(&event_id));
+    svc.add_diagnostic(later);
+
+    assert_eq!(svc.recent_diagnostics.len(), 1);
+    assert_eq!(svc.runtime_queue.items.len(), 1);
+    assert!(svc.runtime_queue.items.front().unwrap().dismissed);
 }
 
 #[test]

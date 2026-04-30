@@ -3,8 +3,6 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::files_correction::canonical_path;
-
 use super::types::{
     Competitor, ConversionContext, ImportIssue, ImportKind, ImportPrivacyFilter, ImportScope,
     ImportSourceRoot, ImportStatus,
@@ -91,7 +89,30 @@ pub fn discover_project_sources(workspace_root: &Path) -> Vec<ImportSourceRoot> 
 }
 
 pub fn normalize_project_root(root: &Path) -> PathBuf {
-    canonical_path(root.to_string_lossy().to_string())
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(root))
+            .unwrap_or_else(|_| root.to_path_buf())
+    };
+    lexical_normalize(&absolute)
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized
 }
 
 pub fn discover_project_scopes(workspace_roots: &[PathBuf]) -> Vec<ImportScope> {
@@ -99,7 +120,10 @@ pub fn discover_project_scopes(workspace_roots: &[PathBuf]) -> Vec<ImportScope> 
     let mut scopes = Vec::new();
     for root in workspace_roots {
         let normalized_root = normalize_project_root(root);
-        if seen.insert(normalized_root.clone()) {
+        let dedup_key = fs::canonicalize(root)
+            .map(|path| dunce::simplified(&path).to_path_buf())
+            .unwrap_or_else(|_| normalized_root.clone());
+        if seen.insert(dedup_key) {
             scopes.push(ImportScope::Project {
                 root: normalized_root,
             });
@@ -137,8 +161,10 @@ pub(super) fn project_scan_root_allowed(
         return Ok(false);
     }
     let canonical_root = fs::canonicalize(workspace_root)
+        .map(|path| dunce::simplified(&path).to_path_buf())
         .map_err(|err| format!("failed to canonicalize workspace root: {err}"))?;
     let canonical_path = fs::canonicalize(path)
+        .map(|path| dunce::simplified(&path).to_path_buf())
         .map_err(|err| format!("failed to canonicalize source root: {err}"))?;
     if !canonical_path.starts_with(&canonical_root) {
         return Err("project source root resolves outside workspace and was skipped".to_string());

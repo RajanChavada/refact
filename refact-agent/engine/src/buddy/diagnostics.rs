@@ -61,6 +61,16 @@ pub fn diagnostic_id(ctx: &DiagnosticContext) -> String {
     )
 }
 
+pub fn diagnostic_signature(ctx: &DiagnosticContext) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        ctx.error_type,
+        ctx.error_message,
+        ctx.source_file.as_deref().unwrap_or(""),
+        ctx.tool_name.as_deref().unwrap_or("")
+    )
+}
+
 pub(crate) fn classify_error(error: &str) -> String {
     let lower = error.to_lowercase();
     if lower.contains("timeout") {

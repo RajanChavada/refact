@@ -15,6 +15,57 @@ import type {
   BuddyDraft,
 } from "./types";
 
+const HOME_NOTIFICATION_SNOOZE_MS = 10 * 60 * 1000;
+const BUDDY_SEEN_STORAGE_KEY = "refact.buddy.seenNotifications.v1";
+
+function nowMs(): number {
+  return Date.now();
+}
+
+function loadSeenNotificationIds(): Record<string, number> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(BUDDY_SEEN_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return {};
+    }
+    const result: Record<string, number> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        result[id] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistSeenNotificationIds(seen: Record<string, number>): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(BUDDY_SEEN_STORAGE_KEY, JSON.stringify(seen));
+  } catch {}
+}
+
+function pruneSeenNotificationIds(
+  seen: Record<string, number>,
+): Record<string, number> {
+  const cutoff = nowMs() - 24 * 60 * 60 * 1000;
+  return Object.fromEntries(
+    Object.entries(seen)
+      .filter(([, value]) => value >= cutoff)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 200),
+  );
+}
+
 function defaultBuddyState(): BuddyState {
   return {
     identity: {
@@ -230,6 +281,8 @@ export interface BuddySliceState {
   opportunities: BuddyOpportunity[];
   pulse: BuddyPulse | null;
   activeDrafts: BuddyDraft[];
+  homeSnoozedUntil: number | null;
+  seenNotificationIds: Record<string, number>;
 }
 
 const initialState: BuddySliceState = {
@@ -243,6 +296,8 @@ const initialState: BuddySliceState = {
   opportunities: [],
   pulse: null,
   activeDrafts: [],
+  homeSnoozedUntil: null,
+  seenNotificationIds: pruneSeenNotificationIds(loadSeenNotificationIds()),
 };
 function syncSnapshotRuntime(state: BuddySliceState) {
   if (state.snapshot) {
@@ -521,6 +576,25 @@ export const buddySlice = createSlice({
       );
       syncSnapshotDrafts(state);
     },
+    snoozeHomeNotifications: (
+      state,
+      action: PayloadAction<number | undefined>,
+    ) => {
+      const durationMs = action.payload ?? HOME_NOTIFICATION_SNOOZE_MS;
+      state.homeSnoozedUntil = nowMs() + durationMs;
+    },
+    markBuddyNotificationSeen: (state, action: PayloadAction<string>) => {
+      state.seenNotificationIds = pruneSeenNotificationIds({
+        ...state.seenNotificationIds,
+        [action.payload]: nowMs(),
+      });
+      persistSeenNotificationIds(state.seenNotificationIds);
+    },
+    clearExpiredBuddyNotificationSnooze: (state) => {
+      if (state.homeSnoozedUntil != null && state.homeSnoozedUntil <= nowMs()) {
+        state.homeSnoozedUntil = null;
+      }
+    },
     replaceOpportunities: (
       state,
       action: PayloadAction<BuddyOpportunity[]>,
@@ -549,6 +623,8 @@ export const buddySlice = createSlice({
     selectUnreadOpportunities: selectUnreadOpportunitiesFromSlice,
     selectPulse: (state) => state.pulse,
     selectActiveDrafts: (state) => state.activeDrafts,
+    selectHomeSnoozedUntil: (state) => state.homeSnoozedUntil,
+    selectSeenNotificationIds: (state) => state.seenNotificationIds,
   },
 });
 
@@ -576,6 +652,9 @@ export const {
   addDraft,
   consumeDraft,
   removeDraft,
+  snoozeHomeNotifications,
+  markBuddyNotificationSeen,
+  clearExpiredBuddyNotificationSnooze,
   replaceOpportunities,
 } = buddySlice.actions;
 
@@ -596,6 +675,8 @@ export const {
   selectUnreadOpportunities,
   selectPulse,
   selectActiveDrafts,
+  selectHomeSnoozedUntil,
+  selectSeenNotificationIds,
 } = buddySlice.selectors;
 
 export const selectOpportunityById = (

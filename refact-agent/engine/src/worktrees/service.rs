@@ -91,9 +91,13 @@ impl WorktreeService {
             .map(|record| self.record_view(record))
             .collect::<Result<Vec<_>, _>>()?;
         worktrees.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let source_current_branch = git::discover_repo(&self.source_workspace_root)
+            .ok()
+            .and_then(|repo| git::current_branch(&repo));
         Ok(WorktreeListResponse {
             project_hash: self.project_hash.clone(),
             source_workspace_root: self.source_workspace_root.clone(),
+            source_current_branch,
             worktrees,
         })
     }
@@ -156,7 +160,7 @@ impl WorktreeService {
         let meta = WorktreeMeta {
             id: id.clone(),
             kind,
-            root: worktree_path.clone(),
+            root: normalized_path_key(&worktree_path)?,
             source_workspace_root: self.source_workspace_root.clone(),
             repo_root: created.repo_root,
             branch: Some(branch.clone()),
@@ -271,17 +275,17 @@ impl WorktreeService {
     ) -> Result<WorktreeMeta, String> {
         validate_worktree_id(&meta.id)?;
         let meta_source = canonicalize_existing_dir(&meta.source_workspace_root)?;
-        if meta_source != self.source_workspace_root {
+        if normalized_path_key(&meta_source)? != normalized_path_key(&self.source_workspace_root)? {
             return Err("Worktree source root does not match current workspace".to_string());
         }
-        let meta_root = normalize_lexical(&meta.root)?;
+        let meta_root = normalized_path_key(&meta.root)?;
         let registry = self.load_registry_unlocked().await?;
         let record = registry
             .records
             .iter()
             .find(|record| record.meta.id == meta.id)
             .ok_or_else(|| format!("Worktree '{}' is not registered", meta.id))?;
-        let record_root = normalize_lexical(&record.meta.root)?;
+        let record_root = normalized_path_key(&record.meta.root)?;
         if record_root != meta_root {
             return Err(format!(
                 "Worktree '{}' root mismatch: '{}' != '{}'",
@@ -291,7 +295,7 @@ impl WorktreeService {
             ));
         }
         let record_source = canonicalize_existing_dir(&record.meta.source_workspace_root)?;
-        if record_source != meta_source {
+        if normalized_path_key(&record_source)? != normalized_path_key(&meta_source)? {
             return Err(format!("Worktree '{}' source root mismatch", meta.id));
         }
         Ok(record.meta.clone())
@@ -312,17 +316,17 @@ impl WorktreeService {
             return Err("Legacy task-agent worktree metadata is missing identity".to_string());
         }
         let meta_source = canonicalize_existing_dir(&meta.source_workspace_root)?;
-        if meta_source != self.source_workspace_root {
+        if normalized_path_key(&meta_source)? != normalized_path_key(&self.source_workspace_root)? {
             return Err("Worktree source root does not match current workspace".to_string());
         }
-        let meta_root = normalize_lexical(&meta.root)?;
+        let meta_root = normalized_path_key(&meta.root)?;
         if let Ok(validated) = self.validate_worktree_meta_strict(meta).await {
             return Ok(validated);
         }
         let discovered = git::list_git_worktrees(&self.source_workspace_root)
             .into_iter()
             .any(|entry| {
-                normalize_lexical(&entry.root)
+                normalized_path_key(&entry.root)
                     .map(|root| root == meta_root)
                     .unwrap_or(false)
             });
@@ -1183,8 +1187,8 @@ impl WorktreeService {
         if registry.project_hash != self.project_hash {
             return Err("Worktree registry project hash mismatch".to_string());
         }
-        let registry_root = normalize_lexical(&registry.source_workspace_root)?;
-        if registry_root != self.source_workspace_root {
+        let registry_root = normalized_path_key(&registry.source_workspace_root)?;
+        if registry_root != normalized_path_key(&self.source_workspace_root)? {
             return Err("Worktree registry source root mismatch".to_string());
         }
         for record in &registry.records {
@@ -1308,6 +1312,12 @@ fn canonicalize_existing_dir(path: &Path) -> Result<PathBuf, String> {
         ));
     }
     Ok(canonical)
+}
+
+fn normalized_path_key(path: &Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path)
+        .map(|path| dunce::simplified(&path).to_path_buf())
+        .or_else(|_| normalize_lexical(path).map(|path| dunce::simplified(&path).to_path_buf()))
 }
 
 fn normalize_lexical(path: &Path) -> Result<PathBuf, String> {
@@ -1641,6 +1651,7 @@ mod worktree_registry_tests {
     fn init_repo(root: &Path) {
         run_git(root, &["init"]);
         run_git(root, &["checkout", "-b", "main"]);
+        run_git(root, &["config", "core.autocrlf", "false"]);
         run_git(root, &["config", "user.email", "test@example.com"]);
         run_git(root, &["config", "user.name", "Test User"]);
         std::fs::write(root.join("file.txt"), "hello\n").unwrap();
@@ -1825,6 +1836,35 @@ mod worktree_registry_tests {
 
         assert_eq!(view.reference_count, 0);
         assert!(view.references.is_empty());
+    }
+
+    #[tokio::test]
+    async fn worktree_registry_create_without_base_uses_current_branch_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        run_git(&source, &["checkout", "-b", "dev"]);
+        commit_file(&source, "dev_only.txt", "only on dev\n", "dev-only");
+        let dev_head = run_git(&source, &["rev-parse", "HEAD"]).trim().to_string();
+        let service = WorktreeService::new(cache, source).unwrap();
+
+        let created = service
+            .create_worktree(CreateWorktreeRequest {
+                branch: Some("refact/chat/current-branch".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(created.worktree.meta.base_branch.as_deref(), Some("dev"));
+        assert_eq!(
+            created.worktree.meta.base_commit.as_deref(),
+            Some(dev_head.as_str())
+        );
+        assert!(created.worktree.meta.root.join("dev_only.txt").is_file());
     }
 
     #[tokio::test]
@@ -2826,6 +2866,28 @@ mod worktree_registry_tests {
         record.meta.root = service.registry_dir();
         registry.records.push(record);
         let error = service.save_registry(&registry).await.unwrap_err();
+        assert!(error.contains("must exactly match registry path"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktree_registry_rejects_symlink_escape_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let cache = temp.path().join("cache");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let service = WorktreeService::new(cache, source).unwrap();
+        std::fs::create_dir_all(service.registry_dir()).unwrap();
+        std::os::unix::fs::symlink(&outside, service.registry_dir().join("wt_1")).unwrap();
+        let mut registry = service.load_registry().await.unwrap();
+        let mut record = sample_record(&service, "wt_1");
+        record.meta.root = outside;
+        registry.records.push(record);
+
+        let error = service.save_registry(&registry).await.unwrap_err();
+
         assert!(error.contains("must exactly match registry path"));
     }
 }
