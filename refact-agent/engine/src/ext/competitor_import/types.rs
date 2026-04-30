@@ -174,6 +174,8 @@ pub struct ImportCandidate {
     pub dest_name: String,
     pub destination_path: PathBuf,
     pub artifact: ImportArtifact,
+    pub source_hash: String,
+    pub artifact_hash: String,
     pub metadata: Value,
 }
 
@@ -780,6 +782,7 @@ fn sanitize_report_message_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::manifest::hash_string;
 
     fn candidate_summary() -> ImportCandidateSummary {
         ImportCandidateSummary {
@@ -865,6 +868,8 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: "secret artifact content".to_string(),
             },
+            source_hash: hash_string("secret source content"),
+            artifact_hash: hash_string("secret artifact content"),
             metadata: serde_json::json!({"original_name": "secret"}),
         };
         let mut summary = ImportSummary::default();
@@ -873,6 +878,8 @@ mod tests {
         let json = serde_json::to_string(&summary).unwrap();
 
         assert!(!json.contains("secret artifact content"));
+        assert!(!json.contains("source_hash"));
+        assert!(!json.contains("artifact_hash"));
         assert!(json.contains("secret.md"));
     }
 
@@ -889,6 +896,8 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: "secret artifact content".to_string(),
             },
+            source_hash: hash_string("secret source content"),
+            artifact_hash: hash_string("secret artifact content"),
             metadata: serde_json::json!({"original_description": "secret artifact content"}),
         };
         let mut summary = ImportSummary::from_scopes(vec![ImportScope::Global]);

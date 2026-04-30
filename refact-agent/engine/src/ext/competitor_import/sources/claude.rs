@@ -5,10 +5,10 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 
 use super::super::converters::{
-    convert_command_markdown, convert_skill_package, convert_subagent, read_markdown_file_limited,
-    validate_skill_package_privacy,
+    convert_command_markdown, convert_skill_package, convert_subagent_with_source_hash,
+    read_markdown_file_limited, validate_skill_package_privacy,
 };
-use super::super::manifest::{MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES};
+use super::super::manifest::{hash_string, MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES};
 use super::super::markdown::{
     first_useful_line_or_heading, sanitize_subagent_id, yaml_string, yaml_string_any,
     yaml_string_list_any,
@@ -236,7 +236,7 @@ fn collect_agent_candidates(
     issues: &mut Vec<ImportIssue>,
 ) {
     for path in markdown_files(context, ImportKind::Subagent, agents_root, issues) {
-        let (frontmatter, body, _) =
+        let (frontmatter, body, content) =
             match read_valid_markdown(context, ImportKind::Subagent, &path, filter) {
                 Ok(parsed) => parsed,
                 Err(issue) => {
@@ -245,7 +245,7 @@ fn collect_agent_candidates(
                 }
             };
         let input = normalized_agent(agents_root, &path, &frontmatter, &body);
-        match convert_subagent(context, &path, &input) {
+        match convert_subagent_with_source_hash(context, &path, &input, hash_string(&content)) {
             Ok(candidate) => candidates.push(candidate),
             Err(err) => issues.push(err.into_issue()),
         }

@@ -6,10 +6,11 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 
 use super::super::converters::{
-    convert_command_markdown, convert_skill_package, convert_subagent, read_config_file_limited,
-    read_markdown_file_limited, validate_skill_package_privacy,
+    convert_command_markdown, convert_command_markdown_with_source_hash, convert_skill_package,
+    convert_subagent_with_source_hash, read_config_file_limited, read_markdown_file_limited,
+    validate_skill_package_privacy,
 };
-use super::super::manifest::{MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES};
+use super::super::manifest::{hash_string, MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES};
 use super::super::markdown::{
     parse_markdown_frontmatter, render_markdown_with_frontmatter, set_yaml_string,
     set_yaml_string_list, yaml_string,
@@ -451,7 +452,12 @@ fn scan_markdown_agents(
     );
     for agent_path in agent_paths.paths {
         match normalized_markdown_agent(context, agent_root, &agent_path, filter, display_name) {
-            Ok(agent) => scan.push_candidate_result(convert_subagent(context, &agent_path, &agent)),
+            Ok((content, agent)) => scan.push_candidate_result(convert_subagent_with_source_hash(
+                context,
+                &agent_path,
+                &agent,
+                hash_string(&content),
+            )),
             Err(issue) => scan.push_issue(issue),
         }
     }
@@ -474,7 +480,14 @@ fn scan_config_files(
             continue;
         }
         match read_json_or_jsonc(config_path) {
-            Ok(config) => scan_config_value(scan, context, config_path, &config, display_name),
+            Ok((content, config)) => scan_config_value(
+                scan,
+                context,
+                config_path,
+                &config,
+                hash_string(&content),
+                display_name,
+            ),
             Err(err) => scan.push_issue(error_issue(
                 context,
                 ImportKind::Command,
@@ -490,12 +503,18 @@ fn scan_config_value(
     context: &ConversionContext,
     config_path: &Path,
     config: &JsonValue,
+    source_hash: String,
     display_name: &str,
 ) {
     match config.get("command") {
-        Some(JsonValue::Object(commands)) => {
-            scan_config_commands(scan, context, config_path, commands, display_name)
-        }
+        Some(JsonValue::Object(commands)) => scan_config_commands(
+            scan,
+            context,
+            config_path,
+            commands,
+            &source_hash,
+            display_name,
+        ),
         Some(_) => scan.push_issue(unsupported_issue(
             context,
             ImportKind::Command,
@@ -505,9 +524,14 @@ fn scan_config_value(
         None => {}
     }
     match config.get("agent") {
-        Some(JsonValue::Object(agents)) => {
-            scan_config_agents(scan, context, config_path, agents, display_name)
-        }
+        Some(JsonValue::Object(agents)) => scan_config_agents(
+            scan,
+            context,
+            config_path,
+            agents,
+            &source_hash,
+            display_name,
+        ),
         Some(_) => scan.push_issue(unsupported_issue(
             context,
             ImportKind::Subagent,
@@ -523,6 +547,7 @@ fn scan_config_commands(
     context: &ConversionContext,
     config_path: &Path,
     commands: &JsonMap<String, JsonValue>,
+    source_hash: &str,
     display_name: &str,
 ) {
     let mut names = commands.keys().collect::<Vec<_>>();
@@ -532,11 +557,12 @@ fn scan_config_commands(
             continue;
         };
         match config_command_markdown(name, value) {
-            Ok(markdown) => scan.push_candidate_result(convert_command_markdown(
+            Ok(markdown) => scan.push_candidate_result(convert_command_markdown_with_source_hash(
                 context,
                 config_path,
                 &markdown,
                 Some(name),
+                source_hash.to_string(),
             )),
             Err(message) => scan.push_issue(unsupported_issue(
                 context,
@@ -553,6 +579,7 @@ fn scan_config_agents(
     context: &ConversionContext,
     config_path: &Path,
     agents: &JsonMap<String, JsonValue>,
+    source_hash: &str,
     display_name: &str,
 ) {
     let mut names = agents.keys().collect::<Vec<_>>();
@@ -562,7 +589,12 @@ fn scan_config_agents(
             continue;
         };
         match normalized_config_agent(name, value) {
-            Ok(agent) => scan.push_candidate_result(convert_subagent(context, config_path, &agent)),
+            Ok(agent) => scan.push_candidate_result(convert_subagent_with_source_hash(
+                context,
+                config_path,
+                &agent,
+                source_hash.to_string(),
+            )),
             Err(message) => scan.push_issue(unsupported_issue(
                 context,
                 ImportKind::Subagent,
@@ -579,7 +611,7 @@ fn normalized_markdown_agent(
     agent_path: &Path,
     filter: &ImportPrivacyFilter,
     display_name: &str,
-) -> Result<NormalizedSubagent, ImportIssue> {
+) -> Result<(String, NormalizedSubagent), ImportIssue> {
     super::check_privacy(filter, context, ImportKind::Subagent, agent_path)?;
     let content = read_markdown_file_limited(agent_path).map_err(|err| {
         error_issue(
@@ -614,16 +646,19 @@ fn normalized_markdown_agent(
     insert_string(&mut metadata, "source", "markdown");
     insert_string(&mut metadata, "mode", &mode);
 
-    Ok(NormalizedSubagent {
-        id: id.clone(),
-        title: first_non_empty(&[title.as_str(), id.as_str()]).to_string(),
-        description,
-        prompt,
-        tool_policy,
-        max_steps,
-        model,
-        metadata: JsonValue::Object(metadata),
-    })
+    Ok((
+        content,
+        NormalizedSubagent {
+            id: id.clone(),
+            title: first_non_empty(&[title.as_str(), id.as_str()]).to_string(),
+            description,
+            prompt,
+            tool_policy,
+            max_steps,
+            model,
+            metadata: JsonValue::Object(metadata),
+        },
+    ))
 }
 
 fn normalized_config_agent(name: &str, value: &JsonValue) -> Result<NormalizedSubagent, String> {
@@ -743,13 +778,14 @@ fn config_command_object_markdown(
     render_markdown_with_frontmatter(&frontmatter, body.trim())
 }
 
-fn read_json_or_jsonc(path: &Path) -> Result<JsonValue, String> {
+fn read_json_or_jsonc(path: &Path) -> Result<(String, JsonValue), String> {
     let content = read_config_file_limited(path).map_err(|err| err.to_string())?;
     match serde_json::from_str::<JsonValue>(&content) {
-        Ok(value) => Ok(value),
+        Ok(value) => Ok((content, value)),
         Err(first_err) => {
             let stripped = strip_jsonc(&content)?;
             serde_json::from_str::<JsonValue>(&stripped)
+                .map(|value| (content, value))
                 .map_err(|err| format!("{err}; original JSON parse error: {first_err}"))
         }
     }

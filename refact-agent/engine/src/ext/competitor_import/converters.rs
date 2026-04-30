@@ -1,13 +1,13 @@
 use std::fs;
 use std::io::{Error, ErrorKind, Result as IoResult};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 
 use crate::yaml_configs::customization_types::SubagentConfig;
 
-use super::manifest::hash_string;
+use super::manifest::{hash_directory, hash_string};
 use super::markdown::{
     first_useful_line_or_heading, frontmatter_mapping, parse_markdown_frontmatter,
     render_markdown_with_frontmatter, sanitize_command_name, sanitize_skill_id,
@@ -59,6 +59,22 @@ pub fn convert_command_markdown(
     source_path: &Path,
     content: &str,
     explicit_name: Option<&str>,
+) -> Result<ImportCandidate, ConversionError> {
+    convert_command_markdown_with_source_hash(
+        context,
+        source_path,
+        content,
+        explicit_name,
+        hash_string(content),
+    )
+}
+
+pub(crate) fn convert_command_markdown_with_source_hash(
+    context: &ConversionContext,
+    source_path: &Path,
+    content: &str,
+    explicit_name: Option<&str>,
+    source_hash: String,
 ) -> Result<ImportCandidate, ConversionError> {
     let raw_name = explicit_name
         .filter(|name| !name.trim().is_empty())
@@ -126,6 +142,8 @@ pub fn convert_command_markdown(
         source_path: source_path.to_path_buf(),
         dest_name: name.clone(),
         destination_path: PathBuf::from("commands").join(format!("{name}.md")),
+        source_hash,
+        artifact_hash: hash_string(&rendered),
         artifact: ImportArtifact::FileContent { content: rendered },
         metadata: JsonValue::Object(metadata),
     })
@@ -192,20 +210,23 @@ pub fn convert_skill_package(
             )
         })?;
     let needs_rewrite = normalized_content != content;
-    let source_dir = if needs_rewrite {
-        let staged = stage_skill_package(skill_dir, staging_root, &skill_id, &normalized_content)
-            .map_err(|err| {
-            ConversionError::new(
-                context,
-                ImportKind::Skill,
-                skill_dir.to_path_buf(),
-                format!("failed to stage generated skill package: {err}"),
-            )
-        })?;
-        staged
-    } else {
-        skill_dir.to_path_buf()
-    };
+    let source_dir = stage_skill_package(skill_dir, staging_root, &skill_id, &normalized_content)
+        .map_err(|err| {
+        ConversionError::new(
+            context,
+            ImportKind::Skill,
+            skill_dir.to_path_buf(),
+            format!("failed to stage generated skill package: {err}"),
+        )
+    })?;
+    let directory_hash = hash_directory(&source_dir).map_err(|err| {
+        ConversionError::new(
+            context,
+            ImportKind::Skill,
+            skill_dir.to_path_buf(),
+            format!("failed to hash staged skill package: {err}"),
+        )
+    })?;
 
     let mut metadata = JsonMap::new();
     insert_string(&mut metadata, "original_name", &original_name);
@@ -225,14 +246,26 @@ pub fn convert_skill_package(
         dest_name: skill_id.clone(),
         destination_path: PathBuf::from("skills").join(&skill_id),
         artifact: ImportArtifact::DirectoryCopy { source_dir },
+        source_hash: directory_hash.clone(),
+        artifact_hash: directory_hash,
         metadata: JsonValue::Object(metadata),
     })
 }
 
+#[cfg(test)]
 pub fn convert_subagent(
     context: &ConversionContext,
     source_path: &Path,
     input: &NormalizedSubagent,
+) -> Result<ImportCandidate, ConversionError> {
+    convert_subagent_with_source_hash(context, source_path, input, hash_string(&input.prompt))
+}
+
+pub(crate) fn convert_subagent_with_source_hash(
+    context: &ConversionContext,
+    source_path: &Path,
+    input: &NormalizedSubagent,
+    source_hash: String,
 ) -> Result<ImportCandidate, ConversionError> {
     let fallback_stem = source_path
         .file_stem()
@@ -300,6 +333,8 @@ pub fn convert_subagent(
         source_path: source_path.to_path_buf(),
         dest_name: id.clone(),
         destination_path: PathBuf::from("subagents").join(format!("{id}.yaml")),
+        source_hash,
+        artifact_hash: hash_string(&yaml),
         artifact: ImportArtifact::FileContent { content: yaml },
         metadata: JsonValue::Object(metadata),
     })
@@ -442,7 +477,8 @@ fn stage_skill_package(
     skill_id: &str,
     normalized_skill_md: &str,
 ) -> IoResult<PathBuf> {
-    fs::create_dir_all(staging_root)?;
+    create_dir_all_no_symlinks(staging_root)?;
+    let canonical_staging_root = fs::canonicalize(staging_root)?;
     let hash = hash_string(&format!(
         "{}\n{}\n{}",
         skill_dir.to_string_lossy(),
@@ -450,10 +486,89 @@ fn stage_skill_package(
         normalized_skill_md
     ));
     let staged = staging_root.join(format!("{}-{}", skill_id, &hash[..16]));
+    ensure_existing_components_are_not_symlinks(&staged)?;
+    let canonical_parent = fs::canonicalize(staged.parent().unwrap_or(staging_root))?;
+    if !canonical_parent.starts_with(&canonical_staging_root) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "staged skill path escapes staging root: {}",
+                staged.display()
+            ),
+        ));
+    }
     remove_existing_path(&staged)?;
+    create_dir_all_no_symlinks(&staged)?;
     copy_directory_contents(skill_dir, &staged)?;
     fs::write(staged.join("SKILL.md"), normalized_skill_md)?;
     Ok(staged)
+}
+
+fn create_dir_all_no_symlinks(path: &Path) -> IoResult<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("staging path contains parent component: {}", path.display()),
+                ));
+            }
+            Component::Normal(value) => current.push(value),
+        }
+        if current.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "staging path component is not a regular directory: {}",
+                            current.display()
+                        ),
+                    ));
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => fs::create_dir(&current)?,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+fn ensure_existing_components_are_not_symlinks(path: &Path) -> IoResult<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("staging path contains parent component: {}", path.display()),
+                ));
+            }
+            Component::Normal(value) => current.push(value),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("staging path component is a symlink: {}", current.display()),
+                ));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 fn remove_existing_path(path: &Path) -> IoResult<()> {
@@ -462,7 +577,16 @@ fn remove_existing_path(path: &Path) -> IoResult<()> {
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
-    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+    if metadata.file_type().is_symlink() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "refusing to remove symlinked staged path: {}",
+                path.display()
+            ),
+        ));
+    }
+    if metadata.file_type().is_dir() {
         fs::remove_dir_all(path)
     } else {
         fs::remove_file(path)
@@ -707,6 +831,57 @@ mod tests {
         assert_eq!(second_source_dir, source_dir);
         assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
         assert!(!second_source_dir.join("stale.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_competitor_staging_root_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("source skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: My Skill\n---\n# Helps review code\nUse carefully.",
+        )
+        .unwrap();
+        let staging = temp.path().join(".refact/imports/staging/claude");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(staging.parent().unwrap()).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, &staging).unwrap();
+
+        let err = convert_skill_package(&context(temp.path()), &skill_dir, &staging).unwrap_err();
+
+        assert!(err.message.contains("staging"));
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_final_staged_path_is_rejected_without_removing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("source skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: My Skill\n---\n# Helps review code\nUse carefully.",
+        )
+        .unwrap();
+        let staging = temp.path().join("staging");
+        let first = convert_skill_package(&context(temp.path()), &skill_dir, &staging).unwrap();
+        let ImportArtifact::DirectoryCopy { source_dir } = first.artifact else {
+            panic!("expected directory copy");
+        };
+        fs::remove_dir_all(&source_dir).unwrap();
+        let victim = temp.path().join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("keep.txt"), "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, &source_dir).unwrap();
+
+        let err = convert_skill_package(&context(temp.path()), &skill_dir, &staging).unwrap_err();
+
+        assert!(err.message.contains("symlink"));
+        assert_eq!(fs::read_to_string(victim.join("keep.txt")).unwrap(), "keep");
     }
 
     #[test]

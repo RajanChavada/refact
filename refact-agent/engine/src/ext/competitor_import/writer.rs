@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use super::manifest::{
-    hash_directory, hash_file, hash_string, is_hash_limit_error, manifest_path_for_scope_root,
+    hash_directory, hash_file, is_hash_limit_error, manifest_path_for_scope_root,
     write_string_atomic, ImportManifest, ImportManifestEntry, IMPORTER_VERSION,
 };
 use super::types::{
@@ -280,8 +280,8 @@ async fn try_write_candidate(
                 }
                 Err(err) => return Err(err),
             };
-            let source_hash = candidate_source_hash(candidate)?;
-            let desired_dest_hash = candidate_artifact_hash(candidate)?;
+            let source_hash = candidate.source_hash.clone();
+            let desired_dest_hash = candidate.artifact_hash.clone();
             if current_dest_hash != entry.dest_hash && current_dest_hash != desired_dest_hash {
                 return Ok(outcome(
                     candidate,
@@ -335,7 +335,7 @@ async fn try_write_candidate(
         ));
     }
 
-    let source_hash = candidate_source_hash(candidate)?;
+    let source_hash = candidate.source_hash.clone();
     write_artifact(candidate, &dest_path).await?;
     let dest_hash = hash_existing_path(&dest_path)?;
     manifest.upsert_entry(manifest_entry_from_candidate(
@@ -445,13 +445,64 @@ fn validate_directory_source_path(
         Some(false) => {}
     }
     let staging_root = scope_root.join("imports").join("staging");
-    match existing_path_is_under_root(source_dir, &staging_root)? {
-        Some(true) => Ok(()),
-        None | Some(false) => Err(invalid_path_error(format!(
+    validate_staged_directory_source(scope_root, &staging_root, source_dir)
+}
+
+fn validate_staged_directory_source(
+    scope_root: &Path,
+    staging_root: &Path,
+    source_dir: &Path,
+) -> Result<()> {
+    let canonical_scope = canonical_directory_without_symlinks(scope_root)?;
+    let canonical_staging = canonical_directory_without_symlinks(staging_root)?;
+    if !canonical_staging.starts_with(&canonical_scope) {
+        return Err(invalid_path_error(format!(
+            "staging root escapes import scope: {}",
+            staging_root.display()
+        )));
+    }
+    let source_metadata = std::fs::symlink_metadata(source_dir)?;
+    if source_metadata.file_type().is_symlink() || !source_metadata.file_type().is_dir() {
+        return Err(invalid_path_error(format!(
+            "directory source is not a regular directory: {}",
+            source_dir.display()
+        )));
+    }
+    let canonical_source = std::fs::canonicalize(source_dir)?;
+    if canonical_source.starts_with(&canonical_staging) {
+        Ok(())
+    } else {
+        Err(invalid_path_error(format!(
             "directory source is outside source root: {}",
             source_dir.display()
-        ))),
+        )))
     }
+}
+
+fn canonical_directory_without_symlinks(path: &Path) -> Result<PathBuf> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(component.as_os_str()),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(invalid_path_error(format!(
+                    "path contains parent component: {}",
+                    path.display()
+                )));
+            }
+            Component::Normal(value) => current.push(value),
+        }
+        let metadata = std::fs::symlink_metadata(&current)?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(invalid_path_error(format!(
+                "path component is not a regular directory: {}",
+                current.display()
+            )));
+        }
+    }
+    std::fs::canonicalize(path)
 }
 
 fn existing_path_is_under_root(path: &Path, root: &Path) -> Result<Option<bool>> {
@@ -534,20 +585,6 @@ fn manifest_entry_matches_candidate(
     entry.competitor == candidate.competitor
         && entry.kind == candidate.kind
         && entry.source_path == candidate.source_path
-}
-
-fn candidate_source_hash(candidate: &ImportCandidate) -> Result<String> {
-    match &candidate.artifact {
-        ImportArtifact::FileContent { .. } => hash_file(&candidate.source_path),
-        ImportArtifact::DirectoryCopy { source_dir } => hash_directory(source_dir),
-    }
-}
-
-fn candidate_artifact_hash(candidate: &ImportCandidate) -> Result<String> {
-    match &candidate.artifact {
-        ImportArtifact::FileContent { content } => Ok(hash_string(content)),
-        ImportArtifact::DirectoryCopy { source_dir } => hash_directory(source_dir),
-    }
 }
 
 fn manifest_entry_metadata_matches_candidate(
@@ -714,8 +751,9 @@ fn issue(candidate: &ImportCandidate, status: ImportStatus, message: String) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::converters::convert_skill_package;
     use super::super::manifest::{
-        hash_directory, hash_file, manifest_path_for_scope_root, MAX_HASH_FILE_BYTES,
+        hash_directory, hash_file, hash_string, manifest_path_for_scope_root, MAX_HASH_FILE_BYTES,
     };
     use super::super::types::{Competitor, ImportKind, ImportScope};
 
@@ -742,6 +780,8 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: content.to_string(),
             },
+            source_hash: hash_string(content),
+            artifact_hash: hash_string(content),
             metadata: serde_json::json!({"original_name": "hello"}),
         }
     }
@@ -758,6 +798,8 @@ mod tests {
             source_path: source_dir.clone(),
             dest_name: "skill".to_string(),
             destination_path: dest_path,
+            source_hash: hash_directory(&source_dir).unwrap(),
+            artifact_hash: hash_directory(&source_dir).unwrap(),
             artifact: ImportArtifact::DirectoryCopy { source_dir },
             metadata: serde_json::json!({"original_name": "skill"}),
         }
@@ -802,6 +844,8 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: content.to_string(),
             },
+            source_hash: hash_string("subagent source"),
+            artifact_hash: hash_string(content),
             metadata: serde_json::json!({"original_name": "reviewer"}),
         }
     }
@@ -866,7 +910,7 @@ mod tests {
                 competitor: candidate.competitor,
                 kind: candidate.kind,
                 source_path: source_path.clone(),
-                source_hash: hash_file(&source_path).unwrap(),
+                source_hash: candidate.source_hash.clone(),
                 dest_path: dest_path.clone(),
                 dest_hash: hash_file(&dest_path).unwrap(),
                 importer_version: "competitor_import_v1".to_string(),
@@ -910,7 +954,7 @@ mod tests {
                 competitor: candidate.competitor,
                 kind: candidate.kind,
                 source_path: source_path.clone(),
-                source_hash: hash_file(&source_path).unwrap(),
+                source_hash: candidate.source_hash.clone(),
                 dest_path: dest_path.clone(),
                 dest_hash: old_dest_hash,
                 importer_version: "competitor_import_v1".to_string(),
@@ -946,6 +990,7 @@ mod tests {
         let dest_path = scope_root.join(&dest_rel);
         let current_yaml = "schema_version: 2\nid: reviewer\n";
         let candidate = subagent_candidate(source_path.clone(), dest_rel, current_yaml);
+        let candidate_source_hash = candidate.source_hash.clone();
         tokio::fs::create_dir_all(dest_path.parent().unwrap())
             .await
             .unwrap();
@@ -974,10 +1019,7 @@ mod tests {
         assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Unchanged));
         assert!(!summary.has_imported_changes());
         assert_eq!(manifest.entries[0].importer_version, IMPORTER_VERSION);
-        assert_eq!(
-            manifest.entries[0].source_hash,
-            hash_file(&source_path).unwrap()
-        );
+        assert_eq!(manifest.entries[0].source_hash, candidate_source_hash);
         assert_eq!(
             manifest.entries[0].dest_hash,
             hash_file(&dest_path).unwrap()
@@ -1003,6 +1045,83 @@ mod tests {
 
         assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Updated));
         assert_eq!(tokio::fs::read_to_string(&dest_path).await.unwrap(), "two");
+    }
+
+    #[tokio::test]
+    async fn mutated_file_source_after_candidate_creation_keeps_snapshot_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("hello.md");
+        let dest_rel = command_destination();
+        let dest_path = scope_root.join(&dest_rel);
+        let candidate = file_candidate(source_path.clone(), dest_rel, "original");
+        tokio::fs::write(&source_path, "mutated").await.unwrap();
+
+        let summary = write_candidates(&scope_root, &[candidate]).await;
+        let manifest = ImportManifest::read_from_path(&manifest_path_for_scope_root(&scope_root))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Created));
+        assert_eq!(
+            tokio::fs::read_to_string(&dest_path).await.unwrap(),
+            "original"
+        );
+        assert_eq!(manifest.entries[0].source_hash, hash_string("original"));
+        assert_ne!(
+            manifest.entries[0].source_hash,
+            hash_file(&source_path).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn mutated_skill_source_after_candidate_creation_keeps_staged_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let scope_root = workspace.join(".refact");
+        let skill_dir = workspace.join(".claude").join("skills").join("foo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Foo Skill\n---\n# Foo\nUse foo.",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("notes.txt"), "original notes").unwrap();
+        let context = super::super::types::ConversionContext {
+            competitor: Competitor::ClaudeCode,
+            scope: ImportScope::Project {
+                root: workspace.clone(),
+            },
+            source_root: workspace.join(".claude"),
+        };
+        let candidate = convert_skill_package(
+            &context,
+            &skill_dir,
+            &scope_root.join("imports").join("staging").join("claude"),
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("notes.txt"), "mutated notes").unwrap();
+
+        let summary = write_candidates_for_scope(
+            &scope_root,
+            &ImportScope::Project { root: workspace },
+            &[candidate.clone()],
+        )
+        .await;
+        let dest_path = scope_root.join(&candidate.destination_path);
+        let manifest = ImportManifest::read_from_path(&manifest_path_for_scope_root(&scope_root))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Created));
+        assert_eq!(
+            tokio::fs::read_to_string(dest_path.join("notes.txt"))
+                .await
+                .unwrap(),
+            "original notes"
+        );
+        assert_eq!(manifest.entries[0].source_hash, candidate.source_hash);
+        assert_eq!(manifest.entries[0].dest_hash, candidate.artifact_hash);
     }
 
     #[tokio::test]
@@ -1214,6 +1333,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_staging_root_directory_source_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let outside = temp.path().join("outside-staging");
+        let source_dir = outside.join("claude").join("skill");
+        tokio::fs::create_dir_all(&source_dir).await.unwrap();
+        tokio::fs::write(source_dir.join("SKILL.md"), "skill")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(scope_root.join("imports"))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, scope_root.join("imports").join("staging")).unwrap();
+        let mut candidate = directory_candidate(source_dir, PathBuf::from("skills").join("skill"));
+        candidate.source_root = temp.path().join("source-root");
+        candidate.source_path = candidate.source_root.join("skill");
+        std::fs::create_dir_all(&candidate.source_root).unwrap();
+
+        let summary = write_candidates(&scope_root, &[candidate]).await;
+
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Error));
+        assert!(!scope_root.join("skills").join("skill").exists());
+    }
+
     #[tokio::test]
     async fn source_path_outside_source_root_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
@@ -1236,6 +1381,8 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: "generated".to_string(),
             },
+            source_hash: hash_string("source"),
+            artifact_hash: hash_string("generated"),
             metadata: serde_json::json!({"original_name": "hello"}),
         };
 
@@ -1275,6 +1422,8 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: "generated".to_string(),
             },
+            source_hash: hash_string("source"),
+            artifact_hash: hash_string("generated"),
             metadata: serde_json::json!({"original_name": "hello"}),
         };
 
@@ -1386,7 +1535,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_source_reports_error_and_preserves_destination() {
+    async fn missing_source_candidate_uses_snapshot_and_updates_destination() {
         let temp = tempfile::tempdir().unwrap();
         let scope_root = temp.path().join("refact");
         let source_path = temp.path().join("source").join("hello.md");
@@ -1416,17 +1565,25 @@ mod tests {
             artifact: ImportArtifact::FileContent {
                 content: "changed".to_string(),
             },
+            source_hash: hash_string("changed source"),
+            artifact_hash: hash_string("changed"),
             metadata: serde_json::json!({"original_name": "hello"}),
         };
 
         let summary = write_candidates(&scope_root, &[candidate]).await;
+        let manifest = ImportManifest::read_from_path(&manifest_path_for_scope_root(&scope_root))
+            .await
+            .unwrap();
 
-        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Error));
-        assert_eq!(summary.errors.len(), 1);
-        assert!(!summary.errors[0].message.contains("outside source root"));
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Updated));
+        assert!(summary.errors.is_empty());
         assert_eq!(
             tokio::fs::read_to_string(&dest_path).await.unwrap(),
-            "hello"
+            "changed"
+        );
+        assert_eq!(
+            manifest.entries[0].source_hash,
+            hash_string("changed source")
         );
     }
 

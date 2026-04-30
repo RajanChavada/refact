@@ -4,10 +4,12 @@ use serde_yaml::{Mapping, Value as YamlValue};
 use walkdir::WalkDir;
 
 use super::super::converters::{
-    convert_command_markdown, convert_skill_package, convert_subagent, read_markdown_file_limited,
-    validate_skill_package_privacy,
+    convert_command_markdown, convert_skill_package, convert_subagent_with_source_hash,
+    read_markdown_file_limited, validate_skill_package_privacy,
 };
-use super::super::manifest::{MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES, MAX_UNSUPPORTED_RULE_REPORTS};
+use super::super::manifest::{
+    hash_string, MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES, MAX_UNSUPPORTED_RULE_REPORTS,
+};
 use super::super::markdown::{first_useful_line_or_heading, yaml_string};
 use super::super::types::{
     Competitor, ConversionContext, ConversionError, ImportCandidate, ImportIssue, ImportKind,
@@ -274,7 +276,7 @@ fn scan_checks(
     );
     for check_path in check_files.paths {
         match read_parsed_markdown(&check_path, filter, context, ImportKind::Subagent, "check") {
-            Ok((_, parsed)) => {
+            Ok((content, parsed)) => {
                 let fallback_name = relative_stem_name(&check_path, &checks_root);
                 let name = yaml_string(&parsed.frontmatter, "name");
                 let title = first_non_empty(&[name.as_str(), fallback_name.as_str()]);
@@ -302,7 +304,12 @@ fn scan_checks(
                     model,
                     metadata: serde_json::json!({"source": "continue_check"}),
                 };
-                match convert_subagent(context, &check_path, &input) {
+                match convert_subagent_with_source_hash(
+                    context,
+                    &check_path,
+                    &input,
+                    hash_string(&content),
+                ) {
                     Ok(candidate) => result.add_candidate(candidate),
                     Err(err) => result.add_issue(err.into_issue()),
                 }
