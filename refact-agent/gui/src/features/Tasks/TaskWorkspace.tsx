@@ -7,6 +7,8 @@ import {
   Heading,
   Badge,
   Card,
+  Dialog,
+  Checkbox,
 } from "@radix-ui/themes";
 import {
   ArrowLeftIcon,
@@ -28,13 +30,18 @@ import {
   useUpdateTaskMetaMutation,
   useCreatePlannerChatMutation,
   BoardCard,
+  tasksApi,
 } from "../../services/refact/tasks";
 import { ModelPickerPopover } from "../../components/ChatForm/ModelPickerPopover";
 import { Markdown } from "../../components/Markdown";
 import styles from "./Tasks.module.css";
 import { Chat } from "../Chat";
 import { selectConfig } from "../Config/configSlice";
-import { createChatWithId, switchToThread } from "../Chat/Thread";
+import {
+  createChatWithId,
+  setThreadWorktree,
+  switchToThread,
+} from "../Chat/Thread";
 import {
   openTask,
   addPlannerChat,
@@ -47,11 +54,122 @@ import {
 import { selectThreadById } from "../Chat/Thread";
 import { InternalLinkProvider } from "../../contexts/InternalLinkContext";
 import { parseRefactLink } from "../../contexts/internalLinkUtils";
+import {
+  useDeleteWorktreeMutation,
+  useListWorktreesQuery,
+  useOpenWorktreeMutation,
+  type MergeWorktreeResponse,
+  type WorktreeMeta,
+  type WorktreeRecordView,
+} from "../../services/refact";
+import {
+  sendUserMessage,
+  updateChatParams,
+} from "../../services/refact/chatCommands";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { useEventsBusForIDE } from "../../hooks/useEventBusForIDE";
+import {
+  WorktreeDiffPanel,
+  MergeWorktreeModal,
+  WorktreeStatusBadge,
+  buildWorktreeConflictPrompt,
+} from "../Worktrees";
 
 type ActiveChat =
   | { type: "planner"; chatId: string }
   | { type: "agent"; cardId: string; chatId: string }
   | null;
+
+type CardWorktreeTarget = {
+  id: string;
+  label: string;
+  record?: WorktreeRecordView;
+  meta?: WorktreeMeta | null;
+  stale: boolean;
+  referenceCount?: number;
+};
+
+function compactPath(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return normalized || path;
+  return parts.slice(-2).join("/");
+}
+
+function worktreeLabel(
+  card: BoardCard,
+  record?: WorktreeRecordView,
+  meta?: WorktreeMeta | null,
+): string | null {
+  return (
+    card.agent_worktree_name ??
+    card.agent_branch ??
+    record?.meta.branch ??
+    meta?.branch ??
+    record?.meta.root ??
+    meta?.root ??
+    card.agent_worktree ??
+    null
+  );
+}
+
+function resolveCardWorktree(
+  taskId: string,
+  card: BoardCard,
+  records: WorktreeRecordView[],
+  threadWorktree?: WorktreeMeta | null,
+): CardWorktreeTarget | null {
+  const byId = card.agent_worktree
+    ? records.find((record) => record.meta.id === card.agent_worktree)
+    : undefined;
+  const byThread = threadWorktree
+    ? records.find((record) => record.meta.id === threadWorktree.id)
+    : undefined;
+  const byCard = records.find(
+    (record) =>
+      record.meta.task_id === taskId && record.meta.card_id === card.id,
+  );
+  const byBranch = card.agent_branch
+    ? records.find(
+        (record) =>
+          record.meta.branch === card.agent_branch &&
+          (!record.meta.task_id || record.meta.task_id === taskId),
+      )
+    : undefined;
+  const record = byId ?? byThread ?? byCard ?? byBranch;
+  const meta = record?.meta ?? threadWorktree ?? null;
+  const id = record?.meta.id ?? threadWorktree?.id ?? card.agent_worktree;
+  const label = worktreeLabel(card, record, meta);
+  if (!id || !label) return null;
+  return {
+    id,
+    label:
+      label.includes("/") || label.includes("\\") ? compactPath(label) : label,
+    record,
+    meta,
+    stale:
+      record?.status.path_exists === false ||
+      record?.meta.lifecycle_state === "deleted" ||
+      meta?.deleted === true ||
+      meta?.stale === true,
+    referenceCount: record?.reference_count ?? meta?.reference_count,
+  };
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "data" in error) {
+    const data = (error as { data: unknown }).data;
+    if (typeof data === "string") return data;
+    if (typeof data === "object" && data !== null && "detail" in data) {
+      return String((data as { detail: unknown }).detail);
+    }
+  }
+  if (typeof error === "object" && error !== null && "error" in error) {
+    return String((error as { error: unknown }).error);
+  }
+  return String(error);
+}
 
 interface PlannerPanelProps {
   plannerChats: PlannerInfo[];
@@ -298,14 +416,28 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
 
 interface CardDetailProps {
   card: BoardCard;
+  worktree: CardWorktreeTarget | null;
+  worktreeLabel: string | null;
+  isWorktreeLoading: boolean;
   onClose: () => void;
   onInternalLink?: (url: string) => boolean;
+  onViewDiff: (worktree: CardWorktreeTarget) => void;
+  onMerge: (worktree: CardWorktreeTarget) => void;
+  onOpenWorktree: (worktree: CardWorktreeTarget) => void;
+  onDeleteWorktree: (worktree: CardWorktreeTarget) => void;
 }
 
 const CardDetail: React.FC<CardDetailProps> = ({
   card,
+  worktree,
+  worktreeLabel,
+  isWorktreeLoading,
   onClose,
   onInternalLink,
+  onViewDiff,
+  onMerge,
+  onOpenWorktree,
+  onDeleteWorktree,
 }) => {
   return (
     <Box className={styles.cardDetailOverlay} onClick={onClose}>
@@ -342,6 +474,87 @@ const CardDetail: React.FC<CardDetailProps> = ({
                     {dep}
                   </Badge>
                 ))}
+              </Flex>
+            </Box>
+          )}
+
+          {worktreeLabel && (
+            <Box>
+              <Text size="2" weight="medium" color="gray">
+                Worktree
+              </Text>
+              <Flex direction="column" gap="2" mt="1">
+                <Flex gap="2" align="center" wrap="wrap">
+                  <Badge size="1" color="green" variant="soft">
+                    🌿 {worktreeLabel}
+                  </Badge>
+                  {worktree?.record ?? worktree?.meta ? (
+                    <WorktreeStatusBadge
+                      worktree={worktree.meta ?? worktree.record?.meta}
+                      record={worktree.record}
+                    />
+                  ) : null}
+                  {worktree?.referenceCount && worktree.referenceCount > 1 ? (
+                    <Badge size="1" color="amber" variant="soft">
+                      shared by {worktree.referenceCount}
+                    </Badge>
+                  ) : null}
+                </Flex>
+                {isWorktreeLoading && (
+                  <Text size="1" color="gray">
+                    Loading worktree metadata...
+                  </Text>
+                )}
+                {!isWorktreeLoading && !worktree && (
+                  <Text size="1" color="gray">
+                    Worktree metadata is unavailable or stale.
+                  </Text>
+                )}
+                {worktree?.stale && (
+                  <Text size="1" color="amber">
+                    This worktree appears stale, missing, or deleted.
+                  </Text>
+                )}
+                <Flex gap="2" wrap="wrap">
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    disabled={!worktree}
+                    onClick={() => worktree && onViewDiff(worktree)}
+                  >
+                    View Diff
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    disabled={!worktree}
+                    onClick={() => worktree && onMerge(worktree)}
+                  >
+                    Merge
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    disabled={!worktree}
+                    onClick={() => worktree && onOpenWorktree(worktree)}
+                  >
+                    Open
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="red"
+                    disabled={!worktree}
+                    onClick={() => worktree && onDeleteWorktree(worktree)}
+                  >
+                    Discard/Delete
+                  </Button>
+                </Flex>
               </Flex>
             </Box>
           )}
@@ -428,6 +641,12 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const { data: board, isLoading: boardLoading } = useGetBoardQuery(taskId, {
     pollingInterval: 0,
   });
+  const { data: worktreesData, isLoading: worktreesLoading } =
+    useListWorktreesQuery(undefined);
+  const [openWorktree] = useOpenWorktreeMutation();
+  const [deleteWorktree, deleteWorktreeState] = useDeleteWorktreeMutation();
+  const copyToClipboard = useCopyToClipboard();
+  const { openFolderInNewWindow } = useEventsBusForIDE();
   const { data: savedPlanners } = useListTaskTrajectoriesQuery({
     taskId,
     role: "planner",
@@ -451,9 +670,44 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     selectTaskActiveChat(state, taskId),
   );
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null);
+  const [diffTarget, setDiffTarget] = useState<CardWorktreeTarget | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<{
+    card: BoardCard;
+    worktree: CardWorktreeTarget;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    card: BoardCard;
+    worktree: CardWorktreeTarget;
+  } | null>(null);
+  const [deleteBranch, setDeleteBranch] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [chatExpanded, setChatExpanded] = useState(false);
   const prevTaskStatusRef = React.useRef<string | undefined>(undefined);
+  const worktreeRecords = useMemo(
+    () => worktreesData?.worktrees ?? [],
+    [worktreesData?.worktrees],
+  );
+  const selectedCardThread = useAppSelector((state) =>
+    selectedCard?.agent_chat_id
+      ? selectThreadById(state, selectedCard.agent_chat_id)
+      : null,
+  );
+  const selectedCardWorktree = useMemo(
+    () =>
+      selectedCard
+        ? resolveCardWorktree(
+            taskId,
+            selectedCard,
+            worktreeRecords,
+            selectedCardThread?.worktree,
+          )
+        : null,
+    [selectedCard, selectedCardThread?.worktree, taskId, worktreeRecords],
+  );
+  const selectedCardWorktreeLabel = selectedCard
+    ? selectedCardWorktree?.label ??
+      worktreeLabel(selectedCard, undefined, selectedCardThread?.worktree)
+    : null;
 
   useEffect(() => {
     if (task) {
@@ -728,6 +982,206 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     [taskId, updateTaskMeta],
   );
 
+  const showNotification = useCallback((message: string) => {
+    setNotification(message);
+    window.setTimeout(() => setNotification(null), 3000);
+  }, []);
+
+  const invalidateTaskQueries = useCallback(() => {
+    dispatch(
+      tasksApi.util.invalidateTags([
+        { type: "Tasks", id: taskId },
+        { type: "Board", id: taskId },
+        "Tasks",
+      ]),
+    );
+  }, [dispatch, taskId]);
+
+  const handleViewCardDiff = useCallback((worktree: CardWorktreeTarget) => {
+    setDiffTarget(worktree);
+  }, []);
+
+  const handleMergeCardWorktree = useCallback(
+    (worktree: CardWorktreeTarget) => {
+      if (!selectedCard) return;
+      setMergeTarget({ card: selectedCard, worktree });
+    },
+    [selectedCard],
+  );
+
+  const handleOpenCardWorktree = useCallback(
+    async (worktree: CardWorktreeTarget) => {
+      try {
+        const response = await openWorktree({
+          id: worktree.id,
+          source_workspace_root:
+            worktree.record?.meta.source_workspace_root ??
+            worktree.meta?.source_workspace_root,
+        }).unwrap();
+        const hostCanOpenFolder =
+          config.host === "vscode" ||
+          config.host === "jetbrains" ||
+          config.host === "ide";
+        if (response.can_open_folder && hostCanOpenFolder) {
+          openFolderInNewWindow(response.path);
+          showNotification("Opening worktree in a new window.");
+        } else {
+          copyToClipboard(response.path);
+          showNotification("Worktree path copied to clipboard.");
+        }
+      } catch (error) {
+        showNotification(`Open failed: ${errorText(error)}`);
+      }
+    },
+    [
+      config.host,
+      copyToClipboard,
+      openFolderInNewWindow,
+      openWorktree,
+      showNotification,
+    ],
+  );
+
+  const handleDeleteCardWorktree = useCallback(
+    (worktree: CardWorktreeTarget) => {
+      if (!selectedCard) return;
+      setDeleteBranch(false);
+      setDeleteTarget({ card: selectedCard, worktree });
+    },
+    [selectedCard],
+  );
+
+  const handleConfirmDeleteCardWorktree = useCallback(async () => {
+    if (!deleteTarget) return;
+    try {
+      await deleteWorktree({
+        id: deleteTarget.worktree.id,
+        source_workspace_root:
+          deleteTarget.worktree.record?.meta.source_workspace_root ??
+          deleteTarget.worktree.meta?.source_workspace_root,
+        delete_branch: deleteBranch,
+      }).unwrap();
+      if (deleteTarget.card.agent_chat_id) {
+        dispatch(
+          setThreadWorktree({
+            chatId: deleteTarget.card.agent_chat_id,
+            worktree: null,
+          }),
+        );
+      }
+      setDeleteTarget(null);
+      invalidateTaskQueries();
+      showNotification("Worktree deleted.");
+    } catch (error) {
+      showNotification(`Delete failed: ${errorText(error)}`);
+    }
+  }, [
+    deleteBranch,
+    deleteTarget,
+    deleteWorktree,
+    dispatch,
+    invalidateTaskQueries,
+    showNotification,
+  ]);
+
+  const handleCardMergeCompleted = useCallback(
+    (response: MergeWorktreeResponse) => {
+      if (
+        response.cleanup?.worktree_deleted &&
+        mergeTarget?.card.agent_chat_id
+      ) {
+        dispatch(
+          setThreadWorktree({
+            chatId: mergeTarget.card.agent_chat_id,
+            worktree: null,
+          }),
+        );
+      }
+      invalidateTaskQueries();
+      showNotification("Worktree merge completed.");
+    },
+    [dispatch, invalidateTaskQueries, mergeTarget, showNotification],
+  );
+
+  const handleAskRefactForMerge = useCallback(
+    async (files: string[], response: MergeWorktreeResponse) => {
+      if (!mergeTarget) throw new Error("No task worktree is selected.");
+      const chatId = mergeTarget.card.agent_chat_id ?? activePlannerId;
+      if (!chatId) throw new Error("No agent or planner chat is available.");
+      if (!config.lspPort) throw new Error("LSP port is unavailable.");
+      const apiKey = config.apiKey ?? undefined;
+      const prompt = buildWorktreeConflictPrompt({
+        worktree: mergeTarget.worktree.meta,
+        record: mergeTarget.worktree.record,
+        response,
+        files,
+        taskId,
+        cardId: mergeTarget.card.id,
+      });
+      if (mergeTarget.card.agent_chat_id) {
+        dispatch(
+          createChatWithId({
+            id: chatId,
+            title: formatAgentChatTitle(
+              mergeTarget.card.id,
+              mergeTarget.card.title,
+            ),
+            isTaskChat: true,
+            mode: "TASK_AGENT",
+            taskMeta: {
+              task_id: taskId,
+              role: "agents",
+              card_id: mergeTarget.card.id,
+            },
+            model: task?.default_agent_model,
+            worktree: mergeTarget.worktree.meta ?? null,
+          }),
+        );
+        dispatch(
+          setTaskActiveChat({
+            taskId,
+            activeChat: {
+              type: "agent",
+              cardId: mergeTarget.card.id,
+              chatId,
+            },
+          }),
+        );
+      } else {
+        dispatch(
+          setTaskActiveChat({
+            taskId,
+            activeChat: { type: "planner", chatId },
+          }),
+        );
+      }
+      dispatch(switchToThread({ id: chatId, openTab: false }));
+      if (mergeTarget.worktree.meta) {
+        dispatch(
+          setThreadWorktree({ chatId, worktree: mergeTarget.worktree.meta }),
+        );
+      }
+      await updateChatParams(
+        chatId,
+        { worktree_id: mergeTarget.worktree.id },
+        config.lspPort,
+        apiKey,
+      );
+      await sendUserMessage(chatId, prompt, config.lspPort, apiKey, true);
+      showNotification("Conflict resolution request sent to Refact.");
+    },
+    [
+      activePlannerId,
+      config.apiKey,
+      config.lspPort,
+      dispatch,
+      mergeTarget,
+      showNotification,
+      task?.default_agent_model,
+      taskId,
+    ],
+  );
+
   if (taskLoading || boardLoading || !task || !board) {
     return <ChatLoading />;
   }
@@ -845,10 +1299,104 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       {selectedCard && (
         <CardDetail
           card={selectedCard}
+          worktree={selectedCardWorktree}
+          worktreeLabel={selectedCardWorktreeLabel}
+          isWorktreeLoading={worktreesLoading}
           onClose={() => setSelectedCard(null)}
           onInternalLink={handleInternalLink}
+          onViewDiff={handleViewCardDiff}
+          onMerge={handleMergeCardWorktree}
+          onOpenWorktree={(worktree) => void handleOpenCardWorktree(worktree)}
+          onDeleteWorktree={handleDeleteCardWorktree}
         />
       )}
+
+      <WorktreeDiffPanel
+        open={Boolean(diffTarget)}
+        worktreeId={diffTarget?.id}
+        worktree={diffTarget?.meta}
+        record={diffTarget?.record}
+        onOpenChange={(open) => {
+          if (!open) setDiffTarget(null);
+        }}
+      />
+
+      <MergeWorktreeModal
+        open={Boolean(mergeTarget)}
+        worktreeId={mergeTarget?.worktree.id}
+        worktree={mergeTarget?.worktree.meta}
+        record={mergeTarget?.worktree.record}
+        taskId={taskId}
+        defaultTargetBranch={task.base_branch}
+        onOpenChange={(open) => {
+          if (!open) setMergeTarget(null);
+        }}
+        onMerged={handleCardMergeCompleted}
+        onAskRefact={handleAskRefactForMerge}
+        onOpenWorktree={() =>
+          mergeTarget ? handleOpenCardWorktree(mergeTarget.worktree) : undefined
+        }
+      />
+
+      <Dialog.Root
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <Dialog.Content maxWidth="420px">
+          <Dialog.Title>Delete worktree</Dialog.Title>
+          <Dialog.Description size="2" color="gray">
+            Delete or discard this task agent worktree from disk.
+          </Dialog.Description>
+          <Flex direction="column" gap="3" mt="3">
+            <Text size="2" weight="medium">
+              {deleteTarget?.worktree.label ?? "Worktree"}
+            </Text>
+            {deleteTarget?.worktree.referenceCount !== undefined &&
+              deleteTarget.worktree.referenceCount > 1 && (
+                <Text size="2" color="amber">
+                  This worktree is shared by{" "}
+                  {deleteTarget.worktree.referenceCount} references.
+                </Text>
+              )}
+            <Text as="label" size="2">
+              <Flex align="center" gap="2">
+                <Checkbox
+                  checked={deleteBranch}
+                  onCheckedChange={(checked) =>
+                    setDeleteBranch(checked === true)
+                  }
+                  disabled={deleteWorktreeState.isLoading}
+                />
+                Delete git branch too
+              </Flex>
+            </Text>
+          </Flex>
+          <Flex justify="end" gap="2" mt="4">
+            <Dialog.Close>
+              <Button
+                type="button"
+                variant="soft"
+                color="gray"
+                disabled={deleteWorktreeState.isLoading}
+              >
+                Cancel
+              </Button>
+            </Dialog.Close>
+            <Button
+              type="button"
+              color="red"
+              disabled={!deleteTarget || deleteWorktreeState.isLoading}
+              onClick={() => void handleConfirmDeleteCardWorktree()}
+            >
+              {deleteWorktreeState.isLoading
+                ? "Deleting..."
+                : "Delete worktree"}
+            </Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
 
       {notification && (
         <Box

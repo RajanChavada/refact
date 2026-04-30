@@ -50,6 +50,7 @@ export interface BoardCard {
   last_heartbeat_at?: string | null;
   agent_branch?: string;
   agent_worktree?: string;
+  agent_worktree_name?: string;
   target_files: string[];
 }
 

@@ -21,6 +21,19 @@ const getPriorityColor = (priority: string): "red" | "orange" | "gray" => {
   return "gray";
 };
 
+function compactWorktreeLabel(label: string): string {
+  const normalized = label.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return normalized || label;
+  return parts.slice(-2).join("/");
+}
+
+function cardWorktreeLabel(card: BoardCard): string | null {
+  const label =
+    card.agent_worktree_name ?? card.agent_branch ?? card.agent_worktree;
+  return label ? compactWorktreeLabel(label) : null;
+}
+
 const columnColors: Record<string, string> = {
   planned: "var(--gray-5)",
   doing: "var(--blue-5)",
@@ -40,6 +53,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({ card, onClick }) => {
 
   const hasAgent = card.assignee !== null;
   const hasDeps = card.depends_on.length > 0;
+  const worktree = cardWorktreeLabel(card);
 
   return (
     <Card
@@ -70,6 +84,13 @@ const KanbanCard: React.FC<KanbanCardProps> = ({ card, onClick }) => {
             <Tooltip content={`Agent: ${card.assignee}`}>
               <Badge size="1" color="blue" variant="soft">
                 🤖 Agent
+              </Badge>
+            </Tooltip>
+          )}
+          {worktree && (
+            <Tooltip content={`Worktree: ${worktree}`}>
+              <Badge size="1" color="green" variant="soft">
+                🌿 {worktree}
               </Badge>
             </Tooltip>
           )}

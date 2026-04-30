@@ -60,6 +60,14 @@ function makeWorktreeRecord(id = "wt-1"): WorktreeRecordView {
 function makeDiffResponse(id = "wt-1"): WorktreeDiffResponse {
   return {
     id,
+    status: {
+      path_exists: true,
+      is_git_worktree: true,
+      dirty: false,
+      staged_count: 0,
+      unstaged_count: 0,
+      untracked_count: 0,
+    },
     files: [],
     stats: {
       committed_files: 0,

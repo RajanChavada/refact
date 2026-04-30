@@ -98,6 +98,8 @@ export type WorktreeDiffFile = {
   path: string;
   status: string;
   source: string;
+  additions?: number | null;
+  deletions?: number | null;
 };
 
 export type WorktreeDiffStats = {
@@ -113,6 +115,7 @@ export type WorktreeDiffResponse = {
   branch?: string | null;
   base_branch?: string | null;
   base_commit?: string | null;
+  status: WorktreeStatus;
   files: WorktreeDiffFile[];
   stats: WorktreeDiffStats;
   patch: string;
@@ -123,17 +126,44 @@ export type GetWorktreeDiffRequest = GetWorktreeRequest & {
   max_patch_bytes?: number;
 };
 
+export type WorktreeMergeStrategy = "merge" | "squash";
+
 export type MergeWorktreeRequest = {
   id: string;
   source_workspace_root?: string;
+  strategy?: WorktreeMergeStrategy;
   target_branch?: string;
-  squash?: boolean;
   delete_after_merge?: boolean;
-  delete_branch?: boolean;
+  include_uncommitted?: boolean;
+  commit_message?: string;
+};
+
+export type WorktreeCleanupResult = {
+  worktree_deleted: boolean;
+  branch_deleted: boolean;
+  registry_deleted: boolean;
+  stale_path: boolean;
+  warnings: string[];
+};
+
+export type WorktreeConflictState = {
+  files: string[];
+  aborted: boolean;
+  merge_in_progress: boolean;
+  instructions: string;
 };
 
 export type MergeWorktreeResponse = {
+  id?: string;
+  status?: string;
   merged?: boolean;
+  strategy?: string;
+  source_branch?: string;
+  target_branch?: string;
+  committed_uncommitted?: string | null;
+  merge_commit?: string | null;
+  cleanup?: WorktreeCleanupResult | null;
+  conflict?: WorktreeConflictState | null;
   success?: boolean;
   message?: string;
   has_conflicts?: boolean;
