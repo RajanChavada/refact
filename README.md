@@ -16,6 +16,10 @@
 
 </div>
 
+## **Refact Cloud is shutting down soon.** [Read the announcement.](https://example.com/refact-cloud-is-shutting-down)
+
+Refact continues as an open-source, local-first/BYOK coding agent. The local engine, VS Code and JetBrains plugins, BYOK providers, local models, and agent integrations continue to work.
+
 
 
 Refact.ai is the open-source AI Agent that handles engineering tasks end-to-end. It deeply understands your codebases and integrates with your tools, databases, and browsers to automate complex, multi-step tasks.
