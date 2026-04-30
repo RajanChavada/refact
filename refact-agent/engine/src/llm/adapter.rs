@@ -12,6 +12,7 @@ pub enum WireFormat {
     OpenaiChatCompletions,
     OpenaiResponses,
     AnthropicMessages,
+    OllamaNative,
 }
 
 impl Default for WireFormat {
@@ -26,6 +27,7 @@ impl std::fmt::Display for WireFormat {
             Self::OpenaiChatCompletions => write!(f, "openai_chat_completions"),
             Self::OpenaiResponses => write!(f, "openai_responses"),
             Self::AnthropicMessages => write!(f, "anthropic_messages"),
+            Self::OllamaNative => write!(f, "ollama_native"),
         }
     }
 }
@@ -75,6 +77,7 @@ static OPENAI_RESPONSES_ADAPTER: OnceLock<
 > = OnceLock::new();
 static ANTHROPIC_ADAPTER: OnceLock<crate::llm::adapters::anthropic::AnthropicAdapter> =
     OnceLock::new();
+static OLLAMA_ADAPTER: OnceLock<crate::llm::adapters::ollama::OllamaAdapter> = OnceLock::new();
 
 pub fn get_adapter(format: WireFormat) -> &'static dyn LlmWireAdapter {
     match format {
@@ -85,6 +88,9 @@ pub fn get_adapter(format: WireFormat) -> &'static dyn LlmWireAdapter {
             .get_or_init(|| crate::llm::adapters::openai_responses::OpenAiResponsesAdapter),
         WireFormat::AnthropicMessages => {
             ANTHROPIC_ADAPTER.get_or_init(|| crate::llm::adapters::anthropic::AnthropicAdapter)
+        }
+        WireFormat::OllamaNative => {
+            OLLAMA_ADAPTER.get_or_init(|| crate::llm::adapters::ollama::OllamaAdapter)
         }
     }
 }
@@ -180,6 +186,7 @@ mod tests {
             WireFormat::AnthropicMessages.to_string(),
             "anthropic_messages"
         );
+        assert_eq!(WireFormat::OllamaNative.to_string(), "ollama_native");
     }
 
     #[test]
@@ -188,6 +195,18 @@ mod tests {
         assert_eq!(json, "\"anthropic_messages\"");
         let parsed: WireFormat = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, WireFormat::AnthropicMessages);
+
+        let json = serde_json::to_string(&WireFormat::OllamaNative).unwrap();
+        assert_eq!(json, "\"ollama_native\"");
+        let parsed: WireFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, WireFormat::OllamaNative);
+    }
+
+    #[test]
+    fn test_ollama_adapter_registration() {
+        let adapter = get_adapter(WireFormat::OllamaNative);
+        let deltas = adapter.parse_stream_chunk(r#"{"done":true}"#).unwrap();
+        assert!(matches!(deltas.last(), Some(LlmStreamDelta::Done)));
     }
 
     #[test]

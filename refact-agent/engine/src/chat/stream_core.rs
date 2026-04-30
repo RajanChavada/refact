@@ -11,7 +11,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use crate::call_validation::ChatUsage;
 use crate::caps::BaseModelRecord;
 use crate::global_context::GlobalContext;
-use crate::llm::{LlmRequest, LlmStreamDelta, get_adapter, safe_truncate};
+use crate::llm::{LlmRequest, LlmStreamDelta, WireFormat, get_adapter, safe_truncate};
 use crate::llm::adapter::{AdapterSettings, HttpParts, StreamParseError};
 
 use super::types::{DeltaOp, stream_heartbeat, stream_idle_timeout, stream_total_timeout};
@@ -87,11 +87,16 @@ pub struct StreamRunParams {
 async fn send_llm_http_request(
     client: &reqwest::Client,
     http_parts: &HttpParts,
+    wire_format: WireFormat,
 ) -> Result<reqwest::Response, String> {
+    let accept = match wire_format {
+        WireFormat::OllamaNative => "application/x-ndjson",
+        _ => "text/event-stream",
+    };
     client
         .post(&http_parts.url)
         .headers(http_parts.headers.clone())
-        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(reqwest::header::ACCEPT, accept)
         .json(&http_parts.body)
         .send()
         .await
@@ -544,6 +549,67 @@ fn process_stream_event_data<C: StreamCollector>(
     Ok(stream_done)
 }
 
+fn process_ndjson_bytes<C: StreamCollector>(
+    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
+    auth_token: &str,
+    pending: &mut Vec<u8>,
+    bytes: &[u8],
+    accumulators: &mut [ChoiceAccumulator],
+    collector: &mut C,
+) -> Result<bool, String> {
+    pending.extend_from_slice(bytes);
+    process_complete_ndjson_lines(adapter, auth_token, pending, accumulators, collector)
+}
+
+fn process_complete_ndjson_lines<C: StreamCollector>(
+    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
+    auth_token: &str,
+    pending: &mut Vec<u8>,
+    accumulators: &mut [ChoiceAccumulator],
+    collector: &mut C,
+) -> Result<bool, String> {
+    loop {
+        let Some(pos) = pending.iter().position(|b| *b == b'\n') else {
+            return Ok(false);
+        };
+        let mut line: Vec<u8> = pending.drain(..=pos).collect();
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if line.iter().all(|b| b.is_ascii_whitespace()) {
+            continue;
+        }
+        let data = std::str::from_utf8(&line)
+            .map_err(|e| format!("Malformed stream chunk: utf8: {}", e))?;
+        if process_stream_event_data(adapter, auth_token, data, accumulators, collector, true)? {
+            return Ok(true);
+        }
+    }
+}
+
+fn process_ndjson_eof<C: StreamCollector>(
+    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
+    auth_token: &str,
+    pending: &mut Vec<u8>,
+    accumulators: &mut [ChoiceAccumulator],
+    collector: &mut C,
+) -> Result<bool, String> {
+    if pending.iter().all(|b| b.is_ascii_whitespace()) {
+        pending.clear();
+        return Ok(false);
+    }
+    let mut line = std::mem::take(pending);
+    while line.last().is_some_and(|b| b.is_ascii_whitespace()) {
+        line.pop();
+    }
+    let data =
+        std::str::from_utf8(&line).map_err(|e| format!("Malformed stream chunk: utf8: {}", e))?;
+    process_stream_event_data(adapter, auth_token, data, accumulators, collector, true)
+}
+
 fn finalize_accumulators<C: StreamCollector>(
     mut accumulators: Vec<ChoiceAccumulator>,
     collector: &mut C,
@@ -809,6 +875,76 @@ async fn run_llm_websocket_request<C: StreamCollector>(
     Ok(finalize_accumulators(accumulators, collector))
 }
 
+async fn run_llm_ndjson_request<C: StreamCollector>(
+    response: reqwest::Response,
+    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
+    auth_token: &str,
+    abort_flag: Option<Arc<AtomicBool>>,
+    collector: &mut C,
+) -> Result<Vec<ChoiceFinal>, String> {
+    let mut stream = response.bytes_stream();
+    let mut pending = Vec::new();
+    let mut accumulators: Vec<ChoiceAccumulator> = vec![ChoiceAccumulator::default()];
+    let mut stream_done = false;
+    let stream_started_at = Instant::now();
+    let mut last_event_at = Instant::now();
+    let mut heartbeat = tokio::time::interval(stream_heartbeat());
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        if stream_done {
+            break;
+        }
+        let bytes = tokio::select! {
+            _ = heartbeat.tick() => {
+                if let Some(ref flag) = abort_flag {
+                    if flag.load(Ordering::SeqCst) {
+                        return Err("Aborted".to_string());
+                    }
+                }
+                if stream_started_at.elapsed() > stream_total_timeout() {
+                    return Err("LLM stream timeout".to_string());
+                }
+                if last_event_at.elapsed() > stream_idle_timeout() {
+                    return Err("LLM stream stalled".to_string());
+                }
+                continue;
+            }
+            maybe_bytes = stream.next() => {
+                match maybe_bytes {
+                    Some(Ok(bytes)) => bytes,
+                    Some(Err(e)) => {
+                        return Err(format!("Stream error: {}", e));
+                    }
+                    None => {
+                        if process_ndjson_eof(
+                            adapter,
+                            auth_token,
+                            &mut pending,
+                            &mut accumulators,
+                            collector,
+                        )? {
+                            break;
+                        }
+                        return Err("LLM stream ended unexpectedly without completion signal".to_string());
+                    }
+                }
+            }
+        };
+        last_event_at = Instant::now();
+        stream_done = process_ndjson_bytes(
+            adapter,
+            auth_token,
+            &mut pending,
+            &bytes,
+            &mut accumulators,
+            collector,
+        )?;
+    }
+
+    Ok(finalize_accumulators(accumulators, collector))
+}
+
 pub async fn run_llm_stream<C: StreamCollector>(
     gcx: Arc<ARwLock<GlobalContext>>,
     params: StreamRunParams,
@@ -911,7 +1047,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
         }
     }
 
-    let mut response = send_llm_http_request(&client, &http_parts).await?;
+    let mut response = send_llm_http_request(&client, &http_parts, wire_format).await?;
     let mut status = response.status();
     if !status.is_success()
         && is_openai_codex_chatgpt_backend(&params.model_rec)
@@ -942,7 +1078,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
                 retry_parts
                     .headers
                     .insert(reqwest::header::AUTHORIZATION, auth_value);
-                response = send_llm_http_request(&client, &retry_parts).await?;
+                response = send_llm_http_request(&client, &retry_parts, wire_format).await?;
                 status = response.status();
             }
             None => {}
@@ -960,6 +1096,17 @@ pub async fn run_llm_stream<C: StreamCollector>(
         sanitized_for_commit,
     )
     .await;
+
+    if wire_format == WireFormat::OllamaNative {
+        return run_llm_ndjson_request(
+            response,
+            adapter,
+            &params.model_rec.auth_token,
+            params.abort_flag.clone(),
+            collector,
+        )
+        .await;
+    }
 
     let mut stream = response.bytes_stream().eventsource();
 
@@ -1273,6 +1420,93 @@ mod tests {
 
         assert!(err.contains("Malformed stream chunk"));
         assert!(collector.events.is_empty());
+    }
+
+    #[test]
+    fn ollama_ndjson_handles_split_and_multiple_lines() {
+        let adapter = get_adapter(crate::llm::WireFormat::OllamaNative);
+        let mut accumulators = vec![ChoiceAccumulator::default()];
+        let mut collector = ReplayCollector::default();
+        let mut pending = Vec::new();
+
+        let done = process_ndjson_bytes(
+            adapter,
+            "",
+            &mut pending,
+            br#"{"message":{"content":"Hel"#,
+            &mut accumulators,
+            &mut collector,
+        )
+        .unwrap();
+        assert!(!done);
+        assert!(collector.events.is_empty());
+
+        let done = process_ndjson_bytes(
+            adapter,
+            "",
+            &mut pending,
+            br#"lo"}}
+{"message":{"content":"!"}}
+{"prompt_eval_count":7,"eval_count":3,"done":true}
+"#,
+            &mut accumulators,
+            &mut collector,
+        )
+        .unwrap();
+
+        assert!(done);
+        assert_eq!(accumulators[0].content, "Hello!");
+        let usage = accumulators[0].usage.as_ref().unwrap();
+        assert_eq!(usage.prompt_tokens, 7);
+        assert_eq!(usage.completion_tokens, 3);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn ollama_ndjson_malformed_line_is_fatal() {
+        let adapter = get_adapter(crate::llm::WireFormat::OllamaNative);
+        let mut accumulators = vec![ChoiceAccumulator::default()];
+        let mut collector = ReplayCollector::default();
+        let mut pending = Vec::new();
+
+        let err = process_ndjson_bytes(
+            adapter,
+            "",
+            &mut pending,
+            b"not-json\n",
+            &mut accumulators,
+            &mut collector,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("Malformed stream chunk"));
+        assert!(collector.events.is_empty());
+    }
+
+    #[test]
+    fn ollama_ndjson_processes_final_line_without_newline() {
+        let adapter = get_adapter(crate::llm::WireFormat::OllamaNative);
+        let mut accumulators = vec![ChoiceAccumulator::default()];
+        let mut collector = ReplayCollector::default();
+        let mut pending = Vec::new();
+
+        process_ndjson_bytes(
+            adapter,
+            "",
+            &mut pending,
+            br#"{"message":{"content":"done"}}"#,
+            &mut accumulators,
+            &mut collector,
+        )
+        .unwrap();
+        assert_eq!(accumulators[0].content, "");
+
+        let done = process_ndjson_eof(adapter, "", &mut pending, &mut accumulators, &mut collector)
+            .unwrap();
+
+        assert!(!done);
+        assert_eq!(accumulators[0].content, "done");
+        assert!(pending.is_empty());
     }
 
     #[test]

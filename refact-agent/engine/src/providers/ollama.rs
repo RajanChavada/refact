@@ -34,6 +34,10 @@ pub struct OllamaProvider {
     #[serde(default)]
     pub supports_cache_control: bool,
     #[serde(default)]
+    pub num_ctx: Option<usize>,
+    #[serde(default)]
+    pub keep_alive: Option<String>,
+    #[serde(default)]
     pub enabled_models: Vec<String>,
     #[serde(default)]
     pub custom_models: HashMap<String, CustomModelConfig>,
@@ -46,6 +50,8 @@ impl Default for OllamaProvider {
             api_key: String::new(),
             enabled: false,
             supports_cache_control: false,
+            num_ctx: None,
+            keep_alive: None,
             enabled_models: Vec::new(),
             custom_models: HashMap::new(),
         }
@@ -348,7 +354,7 @@ impl ProviderTrait for OllamaProvider {
     }
 
     fn default_wire_format(&self) -> WireFormat {
-        WireFormat::OpenaiChatCompletions
+        WireFormat::OllamaNative
     }
 
     fn model_filter_regex(&self) -> Option<&'static str> {
@@ -375,6 +381,18 @@ fields:
     f_desc: "Send Anthropic-style cache-control fields to the Ollama server"
     f_label: "Enable Cache Control"
     f_default: false
+    f_extra: true
+  num_ctx:
+    f_type: string
+    f_desc: "Optional Ollama num_ctx runtime option"
+    f_label: "Context Window Override"
+    f_default: ""
+    f_extra: true
+  keep_alive:
+    f_type: string
+    f_desc: "Optional Ollama keep_alive value, for example 5m or -1"
+    f_label: "Keep Alive"
+    f_default: ""
     f_extra: true
 description: |
   Local Ollama server for running open-source models.
@@ -405,6 +423,26 @@ available:
         {
             self.supports_cache_control = supports_cache_control;
         }
+        if let Some(num_ctx) = yaml
+            .get("num_ctx")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+            .and_then(|v| usize::try_from(v).ok())
+            .filter(|v| *v > 0)
+        {
+            self.num_ctx = Some(num_ctx);
+        } else if yaml.get("num_ctx").is_some() {
+            self.num_ctx = None;
+        }
+        if let Some(keep_alive) = yaml
+            .get("keep_alive")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+        {
+            self.keep_alive = (!keep_alive.is_empty()).then(|| keep_alive.to_string());
+        }
         parse_enabled_models(&yaml, &mut self.enabled_models);
         parse_custom_models(&yaml, &mut self.custom_models);
         Ok(())
@@ -416,6 +454,8 @@ available:
             "api_key": if self.api_key.is_empty() { "" } else { "***" },
             "enabled": self.enabled,
             "supports_cache_control": self.supports_cache_control,
+            "num_ctx": self.num_ctx,
+            "keep_alive": self.keep_alive,
             "enabled_models": self.enabled_models,
             "custom_models": self.custom_models
         })
@@ -423,6 +463,19 @@ available:
 
     fn build_runtime(&self) -> Result<ProviderRuntime, String> {
         let base_url = normalize_endpoint(&self.endpoint);
+        let mut extra_headers = HashMap::new();
+        if let Some(num_ctx) = self.num_ctx {
+            extra_headers.insert(
+                crate::llm::adapters::ollama::OLLAMA_NUM_CTX_HEADER.to_string(),
+                num_ctx.to_string(),
+            );
+        }
+        if let Some(keep_alive) = self.keep_alive.as_deref().filter(|v| !v.trim().is_empty()) {
+            extra_headers.insert(
+                crate::llm::adapters::ollama::OLLAMA_KEEP_ALIVE_HEADER.to_string(),
+                keep_alive.trim().to_string(),
+            );
+        }
 
         Ok(ProviderRuntime {
             name: self.name().to_string(),
@@ -430,13 +483,13 @@ available:
             enabled: self.enabled && !self.endpoint.is_empty() && !self.enabled_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
-            chat_endpoint: format!("{}/v1/chat/completions", base_url),
+            chat_endpoint: format!("{}/api/chat", base_url),
             completion_endpoint: format!("{}/v1/completions", base_url),
             embedding_endpoint: format!("{}/v1/embeddings", base_url),
             api_key: self.api_key.clone(),
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
-            extra_headers: HashMap::new(),
+            extra_headers,
             supports_cache_control: self.supports_cache_control,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
@@ -561,6 +614,68 @@ mod tests {
         let runtime = provider.build_runtime().unwrap();
 
         assert!(runtime.supports_cache_control);
+    }
+
+    #[test]
+    fn ollama_runtime_uses_native_chat_endpoint_and_wire_format() {
+        let mut provider = OllamaProvider::default();
+        provider.endpoint = "http://localhost:11434/".to_string();
+        provider.api_key = "secret".to_string();
+        provider.enabled = true;
+        provider.enabled_models = vec!["llama3.1:8b".to_string()];
+
+        let runtime = provider.build_runtime().unwrap();
+
+        assert!(runtime.enabled);
+        assert_eq!(runtime.wire_format, WireFormat::OllamaNative);
+        assert_eq!(runtime.chat_endpoint, "http://localhost:11434/api/chat");
+        assert_eq!(
+            runtime.completion_endpoint,
+            "http://localhost:11434/v1/completions"
+        );
+        assert_eq!(
+            runtime.embedding_endpoint,
+            "http://localhost:11434/v1/embeddings"
+        );
+        assert_eq!(runtime.api_key, "secret");
+    }
+
+    #[test]
+    fn ollama_runtime_stores_options_as_internal_headers() {
+        let mut provider = OllamaProvider::default();
+        provider
+            .provider_settings_apply(
+                serde_yaml::from_str("num_ctx: 65536\nkeep_alive: 30m\n").unwrap(),
+            )
+            .unwrap();
+
+        let runtime = provider.build_runtime().unwrap();
+
+        assert_eq!(
+            runtime
+                .extra_headers
+                .get(crate::llm::adapters::ollama::OLLAMA_NUM_CTX_HEADER)
+                .map(String::as_str),
+            Some("65536")
+        );
+        assert_eq!(
+            runtime
+                .extra_headers
+                .get(crate::llm::adapters::ollama::OLLAMA_KEEP_ALIVE_HEADER)
+                .map(String::as_str),
+            Some("30m")
+        );
+        let settings = provider.provider_settings_as_json();
+        assert_eq!(settings["num_ctx"], 65536);
+        assert_eq!(settings["keep_alive"], "30m");
+    }
+
+    #[test]
+    fn ollama_default_wire_format_is_native() {
+        assert_eq!(
+            OllamaProvider::default().default_wire_format(),
+            WireFormat::OllamaNative
+        );
     }
 
     #[test]

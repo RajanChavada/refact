@@ -202,6 +202,7 @@ pub fn derive_models_dev_endpoint(api: &str, wire_format: WireFormat) -> String 
         WireFormat::OpenaiChatCompletions => "chat/completions",
         WireFormat::OpenaiResponses => "responses",
         WireFormat::AnthropicMessages => "messages",
+        WireFormat::OllamaNative => "api/chat",
     };
     format!("{trimmed}/{suffix}")
 }
