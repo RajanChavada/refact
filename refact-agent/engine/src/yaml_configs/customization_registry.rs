@@ -590,6 +590,45 @@ mod tests {
         .unwrap_or_default()
     }
 
+    fn write_file(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn imported_competitor_subagent_loads_through_registry() {
+        use crate::ext::competitor_import::types::ImportStatus;
+
+        let workspace = tempfile::tempdir().unwrap();
+        write_file(
+            &workspace.path().join(".claude/agents/registry-reviewer.md"),
+            "---\nname: Registry Reviewer\ndescription: Reviews imported registry behavior\ntools:\n  - Read\n  - Grep\n  - Edit\ndenied-tools:\n  - Edit\nmaxTurns: 7\nmodel: sonnet\n---\nUse registry context to review {{task}}.",
+        );
+
+        let summary = crate::ext::competitor_import::run_project_import_with_paths(&[
+            workspace.path().to_path_buf(),
+        ])
+        .await;
+        let registry = load_registry_from_dir(&workspace.path().join(".refact")).await;
+
+        assert_eq!(summary.status_counts.get(&ImportStatus::Created), Some(&1));
+        assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+        let subagent = registry
+            .subagents
+            .get("registry-reviewer")
+            .expect("imported subagent should load through registry");
+        assert_eq!(subagent.schema_version, 2);
+        assert_eq!(subagent.title, "Registry Reviewer");
+        assert_eq!(subagent.description, "Reviews imported registry behavior");
+        assert_eq!(subagent.subchat.max_steps, Some(7));
+        assert_eq!(subagent.subchat.model.as_deref(), Some("sonnet"));
+        assert_eq!(subagent.messages.user_template.as_deref(), Some("{{task}}\n"));
+        assert_eq!(subagent.tools, vec!["cat", "search_pattern"]);
+        let tool = subagent.tool.as_ref().unwrap();
+        assert!(tool.agentic);
+        assert_eq!(tool.required, vec!["task"]);
+    }
+
     #[test]
     fn test_model_matches_pattern_exact() {
         assert!(model_matches_pattern("gpt-4o", "gpt-4o"));

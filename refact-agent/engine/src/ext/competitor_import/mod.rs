@@ -1077,6 +1077,7 @@ mod tests {
             strings(&["tree", "cat", "search_pattern"])
         );
         for config in [&claude, &opencode, &kilo, &continue_check] {
+            assert_eq!(config.schema_version, 2);
             assert!(!config.tools.contains(&"shell".to_string()));
             assert!(!config.tools.contains(&"unknownDanger".to_string()));
             assert!(config.expose_as_tool);

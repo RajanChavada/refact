@@ -315,7 +315,7 @@ fn render_subagent_yaml(
     model: Option<&str>,
 ) -> Result<String, String> {
     let mut yaml = String::new();
-    yaml.push_str("schema_version: 1\n");
+    yaml.push_str("schema_version: 2\n");
     yaml.push_str(&format!("id: {}\n", quoted(id)?));
     yaml.push_str(&format!("title: {}\n", quoted(title)?));
     yaml.push_str(&format!("description: {}\n", quoted(description)?));
@@ -760,6 +760,7 @@ mod tests {
             panic!("expected file content");
         };
         let config: SubagentConfig = serde_yaml::from_str(&content).unwrap();
+        assert_eq!(config.schema_version, 2);
         assert_eq!(config.id, "code-reviewer");
         assert!(config.expose_as_tool);
         let tool = config.tool.unwrap();
