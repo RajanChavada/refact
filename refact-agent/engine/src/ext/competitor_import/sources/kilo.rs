@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 use super::opencode::{scan_compatible_roots_with_filter, CompatibleScanRoots, OpenCodeScan};
+use super::super::manifest::{MAX_SCAN_DEPTH, MAX_UNSUPPORTED_RULE_REPORTS};
 use super::super::types::{
     Competitor, ConversionContext, ImportIssue, ImportKind, ImportPrivacyFilter, ImportScope,
     ImportStatus, ImportSummary,
@@ -255,6 +256,7 @@ fn report_project_rule_files(
     context: &ConversionContext,
     workspace_root: &Path,
 ) {
+    let mut limiter = RuleReportLimiter::default();
     for path in [
         workspace_root.join("AGENTS.md"),
         workspace_root.join("AGENT.md"),
@@ -262,13 +264,16 @@ fn report_project_rule_files(
         workspace_root.join("CONTEXT.md"),
     ] {
         if is_regular_file(&path) {
-            scan.issues.push(unsupported_rule_issue(context, &path));
+            limiter.push_rule(scan, context, &path);
         }
     }
     for root in [
         workspace_root.join(".kilo"),
         workspace_root.join(".kilocode"),
     ] {
+        if limiter.is_capped() {
+            return;
+        }
         match super::project_scan_root_allowed(&root, workspace_root) {
             Ok(true) => {}
             Ok(false) => continue,
@@ -282,19 +287,20 @@ fn report_project_rule_files(
                 continue;
             }
         }
-        report_rule_root(scan, context, &root.join("rules"));
-        report_prefixed_rule_dirs(scan, context, &root, "rules-");
+        report_rule_root(scan, context, &root.join("rules"), &mut limiter);
+        report_prefixed_rule_dirs(scan, context, &root, "rules-", &mut limiter);
     }
 }
 
 fn report_global_rule_files(scan: &mut KiloScan, context: &ConversionContext, source_root: &Path) {
+    let mut limiter = RuleReportLimiter::default();
     for path in [source_root.join("AGENTS.md"), source_root.join("AGENT.md")] {
         if is_regular_file(&path) {
-            scan.issues.push(unsupported_rule_issue(context, &path));
+            limiter.push_rule(scan, context, &path);
         }
     }
-    report_rule_root(scan, context, &source_root.join("rules"));
-    report_prefixed_rule_dirs(scan, context, source_root, "rules-");
+    report_rule_root(scan, context, &source_root.join("rules"), &mut limiter);
+    report_prefixed_rule_dirs(scan, context, source_root, "rules-", &mut limiter);
 }
 
 fn report_prefixed_rule_dirs(
@@ -302,7 +308,11 @@ fn report_prefixed_rule_dirs(
     context: &ConversionContext,
     root: &Path,
     prefix: &str,
+    limiter: &mut RuleReportLimiter,
 ) {
+    if limiter.is_capped() {
+        return;
+    }
     match super::scan_root_allowed(context, root) {
         Ok(true) => {}
         Ok(false) => return,
@@ -322,17 +332,28 @@ fn report_prefixed_rule_dirs(
         Err(_) => return,
     };
     for entry in entries.filter_map(Result::ok) {
+        if limiter.is_capped() {
+            return;
+        }
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         if name.starts_with(prefix) {
-            report_rule_root(scan, context, &path);
+            report_rule_root(scan, context, &path, limiter);
         }
     }
 }
 
-fn report_rule_root(scan: &mut KiloScan, context: &ConversionContext, rule_root: &Path) {
+fn report_rule_root(
+    scan: &mut KiloScan,
+    context: &ConversionContext,
+    rule_root: &Path,
+    limiter: &mut RuleReportLimiter,
+) {
+    if limiter.is_capped() {
+        return;
+    }
     match super::scan_root_allowed(context, rule_root) {
         Ok(true) => {}
         Ok(false) => return,
@@ -346,18 +367,58 @@ fn report_rule_root(scan: &mut KiloScan, context: &ConversionContext, rule_root:
             return;
         }
     }
-    for entry in walkdir::WalkDir::new(rule_root)
+    let mut entries = walkdir::WalkDir::new(rule_root)
         .follow_links(false)
         .sort_by_file_name()
         .min_depth(1)
-    {
+        .max_depth(MAX_SCAN_DEPTH + 1)
+        .into_iter();
+    while let Some(entry) = entries.next() {
         let Ok(entry) = entry else {
             continue;
         };
-        if entry.file_type().is_file() {
-            scan.issues
-                .push(unsupported_rule_issue(context, entry.path()));
+        if entry.depth() > MAX_SCAN_DEPTH {
+            limiter.push_cap(scan, context, rule_root);
+            if entry.file_type().is_dir() {
+                entries.skip_current_dir();
+            }
+            break;
         }
+        if entry.file_type().is_file() {
+            limiter.push_rule(scan, context, entry.path());
+            if limiter.is_capped() {
+                break;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct RuleReportLimiter {
+    reported: usize,
+    capped: bool,
+}
+
+impl RuleReportLimiter {
+    fn is_capped(&self) -> bool {
+        self.capped
+    }
+
+    fn push_rule(&mut self, scan: &mut KiloScan, context: &ConversionContext, path: &Path) {
+        if self.reported >= MAX_UNSUPPORTED_RULE_REPORTS {
+            self.push_cap(scan, context, path);
+            return;
+        }
+        scan.issues.push(unsupported_rule_issue(context, path));
+        self.reported += 1;
+    }
+
+    fn push_cap(&mut self, scan: &mut KiloScan, context: &ConversionContext, path: &Path) {
+        if self.capped {
+            return;
+        }
+        self.capped = true;
+        scan.issues.push(unsupported_rule_cap_issue(context, path));
     }
 }
 
@@ -369,6 +430,19 @@ fn unsupported_rule_issue(context: &ConversionContext, path: &Path) -> ImportIss
         path: Some(path.to_path_buf()),
         status: ImportStatus::Unsupported,
         message: "Kilo Code rules and instruction files are report-only in v1".to_string(),
+    }
+}
+
+fn unsupported_rule_cap_issue(context: &ConversionContext, path: &Path) -> ImportIssue {
+    ImportIssue {
+        competitor: Some(context.competitor),
+        kind: Some(ImportKind::UnsupportedRules),
+        scope: Some(context.scope.clone()),
+        path: Some(path.to_path_buf()),
+        status: ImportStatus::Unsupported,
+        message: format!(
+            "Kilo Code rules scan capped after {MAX_UNSUPPORTED_RULE_REPORTS} reports"
+        ),
     }
 }
 
@@ -587,6 +661,30 @@ mod tests {
             .issues
             .iter()
             .all(|issue| issue.kind == Some(ImportKind::UnsupportedRules)));
+    }
+
+    #[test]
+    fn huge_rule_tree_is_capped_non_fatally() {
+        let temp = tempfile::tempdir().unwrap();
+        let rules_root = temp.path().join(".kilo").join("rules");
+        fs::create_dir_all(&rules_root).unwrap();
+        for index in 0..=MAX_UNSUPPORTED_RULE_REPORTS {
+            write(&rules_root.join(format!("rule-{index}.md")), "# Rule");
+        }
+
+        let scan = scan_project_root_with_staging(temp.path(), &temp.path().join("staging"));
+
+        assert!(scan.candidates.is_empty());
+        assert_eq!(
+            scan.issues
+                .iter()
+                .filter(|issue| issue.kind == Some(ImportKind::UnsupportedRules))
+                .count(),
+            MAX_UNSUPPORTED_RULE_REPORTS + 1
+        );
+        assert!(scan.issues.iter().any(|issue| {
+            issue.status == ImportStatus::Unsupported && issue.message.contains("scan capped")
+        }));
     }
 
     #[test]

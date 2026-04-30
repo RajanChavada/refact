@@ -7,6 +7,7 @@ use super::super::converters::{
     convert_command_markdown, convert_skill_package, convert_subagent, read_markdown_file_limited,
     validate_skill_package_privacy,
 };
+use super::super::manifest::{MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES, MAX_UNSUPPORTED_RULE_REPORTS};
 use super::super::markdown::{first_useful_line_or_heading, yaml_string};
 use super::super::types::{
     Competitor, ConversionContext, ConversionError, ImportCandidate, ImportIssue, ImportKind,
@@ -144,7 +145,17 @@ fn scan_skills(
             return;
         }
     }
-    for skill_md in collect_named_files_at_depth(&skills_root, "SKILL.md", 2) {
+    let skill_files = collect_named_files_at_depth(&skills_root, "SKILL.md", 2);
+    report_scan_caps(
+        context,
+        ImportKind::Skill,
+        &skills_root,
+        &skill_files,
+        "Continue skills",
+        MAX_SCAN_MARKDOWN_FILES,
+        result,
+    );
+    for skill_md in skill_files.paths {
         let Some(skill_dir) = skill_md.parent() else {
             continue;
         };
@@ -186,7 +197,17 @@ fn scan_prompts(
             return;
         }
     }
-    for prompt_path in collect_markdown_files(&prompts_root) {
+    let prompt_files = collect_markdown_files(&prompts_root, MAX_SCAN_MARKDOWN_FILES);
+    report_scan_caps(
+        context,
+        ImportKind::Command,
+        &prompts_root,
+        &prompt_files,
+        "Continue prompts",
+        MAX_SCAN_MARKDOWN_FILES,
+        result,
+    );
+    for prompt_path in prompt_files.paths {
         match read_parsed_markdown(&prompt_path, filter, context, ImportKind::Command, "prompt") {
             Ok((content, parsed)) => {
                 if !yaml_bool_true(&parsed.frontmatter, "invokable") {
@@ -235,7 +256,17 @@ fn scan_checks(
             return;
         }
     }
-    for check_path in collect_markdown_files(&checks_root) {
+    let check_files = collect_markdown_files(&checks_root, MAX_SCAN_MARKDOWN_FILES);
+    report_scan_caps(
+        context,
+        ImportKind::Subagent,
+        &checks_root,
+        &check_files,
+        "Continue checks",
+        MAX_SCAN_MARKDOWN_FILES,
+        result,
+    );
+    for check_path in check_files.paths {
         match read_parsed_markdown(&check_path, filter, context, ImportKind::Subagent, "check") {
             Ok((_, parsed)) => {
                 let fallback_name = relative_stem_name(&check_path, &checks_root);
@@ -279,14 +310,16 @@ fn report_continue_rule_files(context: &ConversionContext, result: &mut Continue
     let rules_root = context.source_root.join("rules");
     match super::scan_root_allowed(context, &rules_root) {
         Ok(true) => {
-            for path in collect_markdown_files(&rules_root) {
+            let rule_files = collect_markdown_files(&rules_root, MAX_UNSUPPORTED_RULE_REPORTS);
+            for path in &rule_files.paths {
                 result.add_issue(unsupported_issue(
                     context,
                     ImportKind::UnsupportedRules,
-                    &path,
+                    path,
                     "Continue rules are report-only in v1",
                 ));
             }
+            report_rule_scan_caps(context, &rules_root, &rule_files, result);
         }
         Ok(false) => {}
         Err(message) => result.add_issue(super::skipped_root_issue(
@@ -400,16 +433,23 @@ fn parse_frontmatter_mapping(frontmatter_text: &str) -> Result<YamlValue, String
     }
 }
 
-fn collect_markdown_files(root: &Path) -> Vec<PathBuf> {
-    collect_files(root, |path| {
+#[derive(Debug, Default)]
+struct CollectedFiles {
+    paths: Vec<PathBuf>,
+    depth_capped: bool,
+    file_capped: bool,
+}
+
+fn collect_markdown_files(root: &Path, max_files: usize) -> CollectedFiles {
+    collect_files(root, max_files, |path| {
         path.extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
     })
 }
 
-fn collect_named_files_at_depth(root: &Path, file_name: &str, depth: usize) -> Vec<PathBuf> {
-    collect_files(root, |path| {
+fn collect_named_files_at_depth(root: &Path, file_name: &str, depth: usize) -> CollectedFiles {
+    collect_files(root, MAX_SCAN_MARKDOWN_FILES, |path| {
         path.file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name == file_name)
@@ -420,19 +460,84 @@ fn collect_named_files_at_depth(root: &Path, file_name: &str, depth: usize) -> V
     })
 }
 
-fn collect_files(root: &Path, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+fn collect_files(root: &Path, max_files: usize, keep: impl Fn(&Path) -> bool) -> CollectedFiles {
     if !super::regular_dir_exists(root) {
-        return Vec::new();
+        return CollectedFiles::default();
     }
-    WalkDir::new(root)
+    let mut collected = CollectedFiles::default();
+    let mut entries = WalkDir::new(root)
         .follow_links(false)
         .sort_by_file_name()
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| entry.into_path())
-        .filter(|path| keep(path))
-        .collect()
+        .max_depth(MAX_SCAN_DEPTH + 1)
+        .into_iter();
+    while let Some(entry) = entries.next() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if entry.depth() > MAX_SCAN_DEPTH {
+            collected.depth_capped = true;
+            if entry.file_type().is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.into_path();
+        if !keep(&path) {
+            continue;
+        }
+        if collected.paths.len() >= max_files {
+            collected.file_capped = true;
+            break;
+        }
+        collected.paths.push(path);
+    }
+    collected
+}
+
+fn report_scan_caps(
+    context: &ConversionContext,
+    kind: ImportKind,
+    root: &Path,
+    files: &CollectedFiles,
+    label: &str,
+    max_files: usize,
+    result: &mut ContinueScanResult,
+) {
+    if files.depth_capped {
+        result.add_issue(error_issue(
+            context,
+            kind,
+            root,
+            format!("{label} scan reached {MAX_SCAN_DEPTH} depth limit"),
+        ));
+    }
+    if files.file_capped {
+        result.add_issue(error_issue(
+            context,
+            kind,
+            root,
+            format!("{label} scan capped after {max_files} markdown files"),
+        ));
+    }
+}
+
+fn report_rule_scan_caps(
+    context: &ConversionContext,
+    root: &Path,
+    files: &CollectedFiles,
+    result: &mut ContinueScanResult,
+) {
+    if files.depth_capped || files.file_capped {
+        result.add_issue(unsupported_issue(
+            context,
+            ImportKind::UnsupportedRules,
+            root,
+            format!("Continue rules scan capped after {MAX_UNSUPPORTED_RULE_REPORTS} reports"),
+        ));
+    }
 }
 
 fn optional_yaml_string(frontmatter: &YamlValue, key: &str) -> Option<String> {

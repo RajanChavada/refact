@@ -5,8 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use chrono::Utc;
 
 use super::manifest::{
-    hash_directory, hash_file, manifest_path_for_scope_root, write_string_atomic, ImportManifest,
-    ImportManifestEntry, IMPORTER_VERSION,
+    hash_directory, hash_file, is_hash_limit_error, manifest_path_for_scope_root,
+    write_string_atomic, ImportManifest, ImportManifestEntry, IMPORTER_VERSION,
 };
 use super::types::{
     ImportArtifact, ImportCandidate, ImportCandidateSummary, ImportIssue, ImportOutcome,
@@ -19,6 +19,9 @@ pub async fn write_candidates(scope_root: &Path, candidates: &[ImportCandidate])
     if candidates.is_empty() && !manifest_path.exists() {
         return summary;
     }
+    for candidate in candidates {
+        summary.record_candidate(candidate);
+    }
     let mut manifest = match ImportManifest::read_from_path(&manifest_path).await {
         Ok(manifest) => manifest,
         Err(err) => {
@@ -30,12 +33,12 @@ pub async fn write_candidates(scope_root: &Path, candidates: &[ImportCandidate])
                 status: ImportStatus::Error,
                 message: format!("failed to read import manifest: {err}"),
             });
+            summary.mark_completed();
             return summary;
         }
     };
 
     for candidate in candidates {
-        summary.record_candidate(candidate);
         match write_candidate(scope_root, &mut manifest, candidate).await {
             CandidateWriteResult::Outcome(outcome) => summary.add_outcome(outcome),
             CandidateWriteResult::Error { outcome, issue } => {
@@ -109,7 +112,17 @@ async fn try_write_candidate(
             ));
         }
         if dest_meta.is_some() {
-            let current_dest_hash = hash_existing_path(&dest_path)?;
+            let current_dest_hash = match hash_existing_path(&dest_path) {
+                Ok(hash) => hash,
+                Err(err) if is_hash_limit_error(&err) => {
+                    return Ok(outcome(
+                        candidate,
+                        ImportStatus::UserModified,
+                        "destination too large to verify safely".to_string(),
+                    ));
+                }
+                Err(err) => return Err(err),
+            };
             if current_dest_hash != entry.dest_hash {
                 return Ok(outcome(
                     candidate,
@@ -508,7 +521,9 @@ fn issue(candidate: &ImportCandidate, status: ImportStatus, message: String) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::manifest::{hash_directory, hash_file, manifest_path_for_scope_root};
+    use super::super::manifest::{
+        hash_directory, hash_file, manifest_path_for_scope_root, MAX_HASH_FILE_BYTES,
+    };
     use super::super::types::{Competitor, ImportKind, ImportScope};
 
     fn command_destination() -> PathBuf {
@@ -646,6 +661,37 @@ mod tests {
         assert_eq!(
             tokio::fs::read_to_string(&dest_path).await.unwrap(),
             "user edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_generated_destination_is_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("hello.md");
+        let dest_rel = command_destination();
+        let dest_path = scope_root.join(&dest_rel);
+        write_candidates(
+            &scope_root,
+            &[file_candidate(source_path.clone(), dest_rel.clone(), "one")],
+        )
+        .await;
+        std::fs::File::create(&dest_path)
+            .unwrap()
+            .set_len(MAX_HASH_FILE_BYTES + 1)
+            .unwrap();
+
+        let summary =
+            write_candidates(&scope_root, &[file_candidate(source_path, dest_rel, "two")]).await;
+
+        assert_eq!(
+            outcome_status(&summary, 0),
+            Some(ImportStatus::UserModified)
+        );
+        assert!(summary.outcomes[0].message.contains("too large"));
+        assert_eq!(
+            std::fs::metadata(&dest_path).unwrap().len(),
+            MAX_HASH_FILE_BYTES + 1
         );
     }
 
@@ -935,6 +981,30 @@ mod tests {
             tokio::fs::read_to_string(&dest_path).await.unwrap(),
             "hello"
         );
+    }
+
+    #[tokio::test]
+    async fn corrupt_manifest_reports_discovered_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("hello.md");
+        let dest_rel = command_destination();
+        let manifest_path = manifest_path_for_scope_root(&scope_root);
+        tokio::fs::create_dir_all(manifest_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&manifest_path, "not-json").await.unwrap();
+        let candidate = file_candidate(source_path, dest_rel, "hello");
+
+        let summary = write_candidates(&scope_root, &[candidate]).await;
+
+        assert_eq!(summary.candidates.len(), 1);
+        assert!(summary.outcomes.is_empty());
+        assert_eq!(summary.errors.len(), 1);
+        assert!(summary.errors[0]
+            .message
+            .contains("failed to read import manifest"));
+        assert!(!scope_root.join(command_destination()).exists());
     }
 
     #[tokio::test]

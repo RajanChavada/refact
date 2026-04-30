@@ -8,6 +8,7 @@ use super::super::converters::{
     convert_command_markdown, convert_skill_package, convert_subagent, read_markdown_file_limited,
     validate_skill_package_privacy,
 };
+use super::super::manifest::{MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES};
 use super::super::markdown::{
     first_useful_line_or_heading, sanitize_subagent_id, yaml_string, yaml_string_any,
     yaml_string_list_any,
@@ -334,10 +335,14 @@ fn markdown_files(
         }
     }
     let mut paths = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
+    let mut depth_capped = false;
+    let mut file_capped = false;
+    let mut entries = walkdir::WalkDir::new(root)
         .follow_links(false)
         .sort_by_file_name()
-    {
+        .max_depth(MAX_SCAN_DEPTH + 1)
+        .into_iter();
+    while let Some(entry) = entries.next() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
@@ -354,13 +359,40 @@ fn markdown_files(
                 continue;
             }
         };
+        if entry.depth() > MAX_SCAN_DEPTH {
+            depth_capped = true;
+            if entry.file_type().is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
         if entry.path().extension().and_then(|ext| ext.to_str()) != Some("md") {
             continue;
         }
+        if paths.len() >= MAX_SCAN_MARKDOWN_FILES {
+            file_capped = true;
+            break;
+        }
         paths.push(entry.path().to_path_buf());
+    }
+    if depth_capped {
+        issues.push(issue(
+            context,
+            kind,
+            root,
+            format!("markdown scan reached {MAX_SCAN_DEPTH} depth limit"),
+        ));
+    }
+    if file_capped {
+        issues.push(issue(
+            context,
+            kind,
+            root,
+            format!("markdown scan capped after {MAX_SCAN_MARKDOWN_FILES} markdown files"),
+        ));
     }
     paths
 }

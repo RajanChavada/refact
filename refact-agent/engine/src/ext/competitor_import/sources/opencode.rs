@@ -9,6 +9,7 @@ use super::super::converters::{
     convert_command_markdown, convert_skill_package, convert_subagent, read_config_file_limited,
     read_markdown_file_limited, validate_skill_package_privacy,
 };
+use super::super::manifest::{MAX_SCAN_DEPTH, MAX_SCAN_MARKDOWN_FILES};
 use super::super::markdown::{
     parse_markdown_frontmatter, render_markdown_with_frontmatter, set_yaml_string,
     set_yaml_string_list, yaml_string,
@@ -356,7 +357,16 @@ fn scan_markdown_commands(
             return;
         }
     };
-    for command_path in command_paths {
+    report_markdown_scan_caps(
+        scan,
+        context,
+        ImportKind::Command,
+        command_root,
+        &command_paths,
+        display_name,
+        "commands",
+    );
+    for command_path in command_paths.paths {
         if let Err(issue) =
             super::check_privacy(filter, context, ImportKind::Command, &command_path)
         {
@@ -415,7 +425,16 @@ fn scan_markdown_agents(
             return;
         }
     };
-    for agent_path in agent_paths {
+    report_markdown_scan_caps(
+        scan,
+        context,
+        ImportKind::Subagent,
+        agent_root,
+        &agent_paths,
+        display_name,
+        "agents",
+    );
+    for agent_path in agent_paths.paths {
         match normalized_markdown_agent(context, agent_root, &agent_path, filter, display_name) {
             Ok(agent) => scan.push_candidate_result(convert_subagent(context, &agent_path, &agent)),
             Err(issue) => scan.push_issue(issue),
@@ -863,22 +882,38 @@ fn direct_child_dirs(root: &Path) -> IoResult<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-fn recursive_markdown_files(root: &Path) -> IoResult<Vec<PathBuf>> {
+#[derive(Debug, Default)]
+struct MarkdownFileScan {
+    paths: Vec<PathBuf>,
+    depth_capped: bool,
+    file_capped: bool,
+}
+
+fn recursive_markdown_files(root: &Path) -> IoResult<MarkdownFileScan> {
     let metadata = match fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(MarkdownFileScan::default()),
         Err(err) => return Err(err),
     };
     if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
-        return Ok(Vec::new());
+        return Ok(MarkdownFileScan::default());
     }
-    let mut paths = Vec::new();
-    for entry in walkdir::WalkDir::new(root)
+    let mut scan = MarkdownFileScan::default();
+    let mut entries = walkdir::WalkDir::new(root)
         .follow_links(false)
         .sort_by_file_name()
         .min_depth(1)
-    {
+        .max_depth(MAX_SCAN_DEPTH + 1)
+        .into_iter();
+    while let Some(entry) = entries.next() {
         let entry = entry.map_err(|err| std::io::Error::new(ErrorKind::Other, err.to_string()))?;
+        if entry.depth() > MAX_SCAN_DEPTH {
+            scan.depth_capped = true;
+            if entry.file_type().is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -889,11 +924,44 @@ fn recursive_markdown_files(root: &Path) -> IoResult<Vec<PathBuf>> {
             .map(|extension| extension.eq_ignore_ascii_case("md"))
             .unwrap_or(false)
         {
-            paths.push(entry.path().to_path_buf());
+            if scan.paths.len() >= MAX_SCAN_MARKDOWN_FILES {
+                scan.file_capped = true;
+                break;
+            }
+            scan.paths.push(entry.path().to_path_buf());
         }
     }
-    paths.sort();
-    Ok(paths)
+    scan.paths.sort();
+    Ok(scan)
+}
+
+fn report_markdown_scan_caps(
+    scan: &mut OpenCodeScan,
+    context: &ConversionContext,
+    kind: ImportKind,
+    root: &Path,
+    markdown_scan: &MarkdownFileScan,
+    display_name: &str,
+    label: &str,
+) {
+    if markdown_scan.depth_capped {
+        scan.push_issue(error_issue(
+            context,
+            kind,
+            root,
+            format!("{display_name} {label} scan reached {MAX_SCAN_DEPTH} depth limit"),
+        ));
+    }
+    if markdown_scan.file_capped {
+        scan.push_issue(error_issue(
+            context,
+            kind,
+            root,
+            format!(
+                "{display_name} {label} scan capped after {MAX_SCAN_MARKDOWN_FILES} markdown files"
+            ),
+        ));
+    }
 }
 
 fn is_regular_file(path: &Path) -> bool {
@@ -1493,6 +1561,23 @@ mod tests {
         assert_eq!(scan.issues.len(), 1);
         assert_eq!(scan.issues[0].status, ImportStatus::Error);
         assert!(scan.issues[0].message.contains("exceeds"));
+    }
+
+    #[test]
+    fn markdown_command_scan_caps_file_count_non_fatally() {
+        let temp = tempfile::tempdir().unwrap();
+        let command_root = temp.path().join(".opencode").join("commands");
+        fs::create_dir_all(&command_root).unwrap();
+        for index in 0..=MAX_SCAN_MARKDOWN_FILES {
+            fs::write(command_root.join(format!("cmd-{index}.md")), "Run command").unwrap();
+        }
+
+        let scan = scan_project_root_with_staging(temp.path(), &temp.path().join("staging"));
+
+        assert_eq!(scan.candidates.len(), MAX_SCAN_MARKDOWN_FILES);
+        assert!(scan.issues.iter().any(|issue| {
+            issue.status == ImportStatus::Error && issue.message.contains("scan capped")
+        }));
     }
 
     #[test]

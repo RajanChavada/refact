@@ -1,4 +1,4 @@
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, Read, Result};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -9,7 +9,14 @@ use tokio::io::AsyncWriteExt;
 use super::types::{Competitor, ImportKind, ImportReport, ImportSummary};
 
 pub const IMPORTER_VERSION: &str = "competitor_import_v1";
+pub const MAX_HASH_FILE_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_HASH_DIRECTORY_FILES: usize = 256;
+pub const MAX_HASH_DIRECTORY_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_SCAN_MARKDOWN_FILES: usize = 256;
+pub const MAX_SCAN_DEPTH: usize = 8;
+pub const MAX_UNSUPPORTED_RULE_REPORTS: usize = 64;
 const MANIFEST_VERSION: u32 = 1;
+const HASH_BUFFER_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportManifest {
@@ -111,12 +118,39 @@ pub fn hash_string(content: &str) -> String {
 }
 
 pub fn hash_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path)?;
-    Ok(hash_bytes(&bytes))
+    let metadata = std::fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("hash target is not a regular file: {}", path.display()),
+        ));
+    }
+    if metadata.len() > MAX_HASH_FILE_BYTES {
+        return Err(hash_limit_error(format!(
+            "hash file exceeds {MAX_HASH_FILE_BYTES} byte limit: {} bytes",
+            metadata.len()
+        )));
+    }
+
+    let mut hasher = Sha256::new();
+    hash_file_content_into(path, &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub fn hash_directory(path: &Path) -> Result<String> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_dir() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("hash target is not a regular directory: {}", path.display()),
+        ));
+    }
+
     let mut files = Vec::new();
+    let mut file_count = 0usize;
+    let mut total_bytes = 0u64;
     for entry in walkdir::WalkDir::new(path)
         .follow_links(false)
         .sort_by_file_name()
@@ -126,32 +160,65 @@ pub fn hash_directory(path: &Path) -> Result<String> {
         if entry_path == path {
             continue;
         }
-        let file_type = entry.file_type();
-        if file_type.is_symlink() || file_type.is_dir() {
+        let metadata = std::fs::symlink_metadata(entry_path)?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() || file_type.is_dir() || !file_type.is_file() {
             continue;
         }
-        if !file_type.is_file() {
-            continue;
+        file_count += 1;
+        if file_count > MAX_HASH_DIRECTORY_FILES {
+            return Err(hash_limit_error(format!(
+                "hash directory exceeds {MAX_HASH_DIRECTORY_FILES} file limit: {file_count} files"
+            )));
+        }
+        total_bytes = total_bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| hash_limit_error("hash directory byte count overflow"))?;
+        if total_bytes > MAX_HASH_DIRECTORY_BYTES {
+            return Err(hash_limit_error(format!(
+                "hash directory exceeds {MAX_HASH_DIRECTORY_BYTES} byte limit: {total_bytes} bytes"
+            )));
         }
         let relative_path = entry_path
             .strip_prefix(path)
             .map_err(|err| Error::new(ErrorKind::InvalidData, err.to_string()))?
             .to_path_buf();
-        files.push((relative_path, std::fs::read(entry_path)?));
+        files.push((relative_path, entry_path.to_path_buf(), metadata.len()));
     }
     files.sort_by(|left, right| left.0.cmp(&right.0));
 
     let mut hasher = Sha256::new();
-    for (relative_path, content) in files {
+    for (relative_path, entry_path, len) in files {
         let relative = relative_path.to_string_lossy().replace('\\', "/");
         hasher.update(relative.as_bytes());
         hasher.update([0]);
-        hasher.update((content.len() as u64).to_le_bytes());
+        hasher.update(len.to_le_bytes());
         hasher.update([0]);
-        hasher.update(content);
+        hash_file_content_into(&entry_path, &mut hasher)?;
         hasher.update([0]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+pub fn is_hash_limit_error(err: &Error) -> bool {
+    err.kind() == ErrorKind::InvalidData && err.to_string().starts_with("hash ")
+}
+
+fn hash_file_content_into(path: &Path, hasher: &mut Sha256) -> Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let mut buffer = [0u8; HASH_BUFFER_BYTES];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(())
+}
+
+fn hash_limit_error(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidData, message.into())
 }
 
 pub async fn write_string_atomic(path: &Path, content: &str) -> Result<()> {
@@ -210,6 +277,45 @@ mod tests {
 
         assert_eq!(loaded.entries.len(), 1);
         assert_eq!(loaded.entries[0].source_hash, hash_string("source"));
+    }
+
+    #[test]
+    fn hash_file_rejects_oversized_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("huge.bin");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_HASH_FILE_BYTES + 1)
+            .unwrap();
+
+        let err = hash_file(&path).unwrap_err();
+
+        assert!(is_hash_limit_error(&err));
+        assert!(err.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn hash_directory_rejects_file_count_and_byte_caps() {
+        let too_many = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_HASH_DIRECTORY_FILES {
+            std::fs::write(too_many.path().join(format!("file-{index}.txt")), "x").unwrap();
+        }
+
+        let err = hash_directory(too_many.path()).unwrap_err();
+
+        assert!(is_hash_limit_error(&err));
+        assert!(err.to_string().contains("file limit"));
+
+        let too_large = tempfile::tempdir().unwrap();
+        std::fs::File::create(too_large.path().join("huge.bin"))
+            .unwrap()
+            .set_len(MAX_HASH_DIRECTORY_BYTES + 1)
+            .unwrap();
+
+        let err = hash_directory(too_large.path()).unwrap_err();
+
+        assert!(is_hash_limit_error(&err));
+        assert!(err.to_string().contains("byte limit"));
     }
 
     #[test]
