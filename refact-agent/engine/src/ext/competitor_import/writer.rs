@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use super::manifest::{
-    hash_directory, hash_file, is_hash_limit_error, manifest_path_for_scope_root,
+    hash_directory, hash_file, hash_string, is_hash_limit_error, manifest_path_for_scope_root,
     write_string_atomic, ImportManifest, ImportManifestEntry, IMPORTER_VERSION,
 };
 use super::types::{
@@ -23,6 +23,15 @@ pub async fn write_candidates_for_scope(
     scope_root: &Path,
     scope: &ImportScope,
     candidates: &[ImportCandidate],
+) -> ImportSummary {
+    write_candidates_for_scope_with_issues(scope_root, scope, candidates, &[]).await
+}
+
+pub(crate) async fn write_candidates_for_scope_with_issues(
+    scope_root: &Path,
+    scope: &ImportScope,
+    candidates: &[ImportCandidate],
+    existing_issues: &[ImportIssue],
 ) -> ImportSummary {
     let mut summary = ImportSummary::default();
     let manifest_path = manifest_path_for_scope_root(scope_root);
@@ -48,7 +57,14 @@ pub async fn write_candidates_for_scope(
         }
     };
 
-    record_stale_entries(scope_root, scope, &manifest, candidates, &mut summary);
+    record_stale_entries(
+        scope_root,
+        scope,
+        &manifest,
+        candidates,
+        existing_issues,
+        &mut summary,
+    );
     for candidate in candidates {
         match write_candidate(scope_root, &mut manifest, candidate).await {
             CandidateWriteResult::Outcome(outcome) => summary.add_outcome(outcome),
@@ -88,16 +104,89 @@ fn record_stale_entries(
     scope: &ImportScope,
     manifest: &ImportManifest,
     candidates: &[ImportCandidate],
+    existing_issues: &[ImportIssue],
     summary: &mut ImportSummary,
 ) {
     for entry in &manifest.entries {
-        if candidates
+        if existing_issues
             .iter()
-            .any(|candidate| manifest_entry_matches_candidate(entry, candidate))
+            .any(|issue| issue_matches_stale_entry(scope, entry, issue))
         {
             continue;
         }
-        summary.add_outcome(stale_outcome(scope_root, scope, entry));
+        let source_matches = candidates
+            .iter()
+            .filter(|candidate| manifest_entry_matches_candidate(entry, candidate))
+            .collect::<Vec<_>>();
+        if source_matches
+            .iter()
+            .any(|candidate| candidate_matches_ownership(scope_root, entry, candidate))
+        {
+            continue;
+        }
+        if source_matches
+            .iter()
+            .any(|candidate| candidate_destination_differs(scope_root, entry, candidate))
+        {
+            summary.add_outcome(stale_outcome(
+                scope_root,
+                scope,
+                entry,
+                "source now maps to a different destination; generated destination preserved",
+            ));
+        } else if !source_path_exists(&entry.source_path) {
+            summary.add_outcome(stale_outcome(
+                scope_root,
+                scope,
+                entry,
+                "source no longer exists; generated destination preserved",
+            ));
+        }
+    }
+}
+
+fn issue_matches_stale_entry(
+    scope: &ImportScope,
+    entry: &ImportManifestEntry,
+    issue: &ImportIssue,
+) -> bool {
+    issue
+        .competitor
+        .map(|competitor| competitor == entry.competitor)
+        .unwrap_or(true)
+        && issue.kind == Some(entry.kind)
+        && issue.scope.as_ref() == Some(scope)
+        && issue.path.as_ref() == Some(&entry.source_path)
+}
+
+fn candidate_matches_ownership(
+    scope_root: &Path,
+    entry: &ImportManifestEntry,
+    candidate: &ImportCandidate,
+) -> bool {
+    if !manifest_entry_matches_candidate(entry, candidate) {
+        return false;
+    }
+    resolve_destination_path(scope_root, &candidate.destination_path)
+        .map(|dest_path| dest_path == entry.dest_path)
+        .unwrap_or(false)
+}
+
+fn candidate_destination_differs(
+    scope_root: &Path,
+    entry: &ImportManifestEntry,
+    candidate: &ImportCandidate,
+) -> bool {
+    resolve_destination_path(scope_root, &candidate.destination_path)
+        .map(|dest_path| dest_path != entry.dest_path)
+        .unwrap_or(false)
+}
+
+fn source_path_exists(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(err) if err.kind() == ErrorKind::NotFound => false,
+        Err(_) => true,
     }
 }
 
@@ -105,6 +194,7 @@ fn stale_outcome(
     scope_root: &Path,
     scope: &ImportScope,
     entry: &ImportManifestEntry,
+    message: &str,
 ) -> ImportOutcome {
     let destination_path = entry
         .dest_path
@@ -127,7 +217,7 @@ fn stale_outcome(
             metadata: entry.metadata.clone().unwrap_or(Value::Null),
         },
         status: ImportStatus::Stale,
-        message: "source no longer exists; generated destination preserved".to_string(),
+        message: message.to_string(),
     }
 }
 
@@ -190,15 +280,33 @@ async fn try_write_candidate(
                 }
                 Err(err) => return Err(err),
             };
-            if current_dest_hash != entry.dest_hash {
+            let source_hash = candidate_source_hash(candidate)?;
+            let desired_dest_hash = candidate_artifact_hash(candidate)?;
+            if current_dest_hash != entry.dest_hash && current_dest_hash != desired_dest_hash {
                 return Ok(outcome(
                     candidate,
                     ImportStatus::UserModified,
                     "destination differs from previous generated hash".to_string(),
                 ));
             }
-            let source_hash = candidate_source_hash(candidate)?;
-            if source_hash == entry.source_hash {
+            if current_dest_hash == desired_dest_hash {
+                if entry.source_hash != source_hash
+                    || entry.dest_hash != current_dest_hash
+                    || entry.importer_version != IMPORTER_VERSION
+                    || !manifest_entry_metadata_matches_candidate(&entry, candidate)
+                {
+                    manifest.upsert_entry(manifest_entry_from_candidate(
+                        candidate,
+                        dest_path,
+                        source_hash,
+                        current_dest_hash,
+                    ));
+                    return Ok(outcome(
+                        candidate,
+                        ImportStatus::Unchanged,
+                        "generated destination is unchanged; refreshed import metadata".to_string(),
+                    ));
+                }
                 return Ok(outcome(
                     candidate,
                     ImportStatus::Unchanged,
@@ -435,6 +543,28 @@ fn candidate_source_hash(candidate: &ImportCandidate) -> Result<String> {
     }
 }
 
+fn candidate_artifact_hash(candidate: &ImportCandidate) -> Result<String> {
+    match &candidate.artifact {
+        ImportArtifact::FileContent { content } => Ok(hash_string(content)),
+        ImportArtifact::DirectoryCopy { source_dir } => hash_directory(source_dir),
+    }
+}
+
+fn manifest_entry_metadata_matches_candidate(
+    entry: &ImportManifestEntry,
+    candidate: &ImportCandidate,
+) -> bool {
+    entry.metadata == candidate_manifest_metadata(candidate)
+}
+
+fn candidate_manifest_metadata(candidate: &ImportCandidate) -> Option<Value> {
+    if candidate.metadata.is_null() {
+        None
+    } else {
+        Some(candidate.metadata.clone())
+    }
+}
+
 fn hash_existing_path(path: &Path) -> Result<String> {
     let metadata = std::fs::symlink_metadata(path)?;
     let file_type = metadata.file_type();
@@ -558,11 +688,7 @@ fn manifest_entry_from_candidate(
         dest_hash,
         importer_version: IMPORTER_VERSION.to_string(),
         last_imported_at: Utc::now(),
-        metadata: if candidate.metadata.is_null() {
-            None
-        } else {
-            Some(candidate.metadata.clone())
-        },
+        metadata: candidate_manifest_metadata(candidate),
     }
 }
 
@@ -644,6 +770,37 @@ mod tests {
             .map(|outcome| outcome.status.clone())
     }
 
+    async fn write_manifest_entry(scope_root: &Path, entry: ImportManifestEntry) {
+        let mut manifest = ImportManifest::default();
+        manifest.entries.push(entry);
+        manifest.write_to_path(&manifest_path_for_scope_root(scope_root))
+            .await
+            .unwrap();
+    }
+
+    fn subagent_candidate(source_path: PathBuf, dest_path: PathBuf, content: &str) -> ImportCandidate {
+        if let Some(parent) = source_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&source_path, "subagent source").unwrap();
+        ImportCandidate {
+            competitor: Competitor::ClaudeCode,
+            kind: ImportKind::Subagent,
+            scope: ImportScope::Global,
+            source_root: source_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(PathBuf::new),
+            source_path,
+            dest_name: "reviewer".to_string(),
+            destination_path: dest_path,
+            artifact: ImportArtifact::FileContent {
+                content: content.to_string(),
+            },
+            metadata: serde_json::json!({"original_name": "reviewer"}),
+        }
+    }
+
     #[tokio::test]
     async fn first_file_import_creates_destination_and_manifest() {
         let temp = tempfile::tempdir().unwrap();
@@ -682,6 +839,130 @@ mod tests {
 
         assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Unchanged));
         assert_eq!(hash_file(&dest_path).unwrap(), first_hash);
+    }
+
+    #[tokio::test]
+    async fn old_importer_version_regenerates_unmodified_subagent_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("reviewer.md");
+        let dest_rel = PathBuf::from("subagents").join("reviewer.yaml");
+        let dest_path = scope_root.join(&dest_rel);
+        let old_yaml = "schema_version: 1\nid: reviewer\n";
+        let new_yaml = "schema_version: 2\nid: reviewer\n";
+        let candidate = subagent_candidate(source_path.clone(), dest_rel, new_yaml);
+        tokio::fs::create_dir_all(dest_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&dest_path, old_yaml).await.unwrap();
+        write_manifest_entry(
+            &scope_root,
+            ImportManifestEntry {
+                competitor: candidate.competitor,
+                kind: candidate.kind,
+                source_path: source_path.clone(),
+                source_hash: hash_file(&source_path).unwrap(),
+                dest_path: dest_path.clone(),
+                dest_hash: hash_file(&dest_path).unwrap(),
+                importer_version: "competitor_import_v1".to_string(),
+                last_imported_at: Utc::now(),
+                metadata: Some(candidate.metadata.clone()),
+            },
+        )
+        .await;
+
+        let summary = write_candidates(&scope_root, &[candidate]).await;
+        let manifest = ImportManifest::read_from_path(&manifest_path_for_scope_root(&scope_root))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Updated));
+        assert_eq!(tokio::fs::read_to_string(&dest_path).await.unwrap(), new_yaml);
+        assert_eq!(manifest.entries[0].importer_version, IMPORTER_VERSION);
+    }
+
+    #[tokio::test]
+    async fn old_importer_version_preserves_user_modified_subagent_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("reviewer.md");
+        let dest_rel = PathBuf::from("subagents").join("reviewer.yaml");
+        let dest_path = scope_root.join(&dest_rel);
+        let old_yaml = "schema_version: 1\nid: reviewer\n";
+        let new_yaml = "schema_version: 2\nid: reviewer\n";
+        let candidate = subagent_candidate(source_path.clone(), dest_rel, new_yaml);
+        tokio::fs::create_dir_all(dest_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&dest_path, old_yaml).await.unwrap();
+        let old_dest_hash = hash_file(&dest_path).unwrap();
+        write_manifest_entry(
+            &scope_root,
+            ImportManifestEntry {
+                competitor: candidate.competitor,
+                kind: candidate.kind,
+                source_path: source_path.clone(),
+                source_hash: hash_file(&source_path).unwrap(),
+                dest_path: dest_path.clone(),
+                dest_hash: old_dest_hash,
+                importer_version: "competitor_import_v1".to_string(),
+                last_imported_at: Utc::now(),
+                metadata: Some(candidate.metadata.clone()),
+            },
+        )
+        .await;
+        tokio::fs::write(&dest_path, "user edit").await.unwrap();
+
+        let summary = write_candidates(&scope_root, &[candidate]).await;
+        let manifest = ImportManifest::read_from_path(&manifest_path_for_scope_root(&scope_root))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::UserModified));
+        assert_eq!(tokio::fs::read_to_string(&dest_path).await.unwrap(), "user edit");
+        assert_eq!(manifest.entries[0].importer_version, "competitor_import_v1");
+    }
+
+    #[tokio::test]
+    async fn matching_generated_destination_refreshes_stale_manifest_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("reviewer.md");
+        let dest_rel = PathBuf::from("subagents").join("reviewer.yaml");
+        let dest_path = scope_root.join(&dest_rel);
+        let current_yaml = "schema_version: 2\nid: reviewer\n";
+        let candidate = subagent_candidate(source_path.clone(), dest_rel, current_yaml);
+        tokio::fs::create_dir_all(dest_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&dest_path, current_yaml).await.unwrap();
+        write_manifest_entry(
+            &scope_root,
+            ImportManifestEntry {
+                competitor: candidate.competitor,
+                kind: candidate.kind,
+                source_path: source_path.clone(),
+                source_hash: hash_string("old source"),
+                dest_path: dest_path.clone(),
+                dest_hash: hash_string("schema_version: 1\nid: reviewer\n"),
+                importer_version: "competitor_import_v1".to_string(),
+                last_imported_at: Utc::now(),
+                metadata: None,
+            },
+        )
+        .await;
+
+        let summary = write_candidates(&scope_root, &[candidate]).await;
+        let manifest = ImportManifest::read_from_path(&manifest_path_for_scope_root(&scope_root))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome_status(&summary, 0), Some(ImportStatus::Unchanged));
+        assert!(!summary.has_imported_changes());
+        assert_eq!(manifest.entries[0].importer_version, IMPORTER_VERSION);
+        assert_eq!(manifest.entries[0].source_hash, hash_file(&source_path).unwrap());
+        assert_eq!(manifest.entries[0].dest_hash, hash_file(&dest_path).unwrap());
+        assert!(manifest.entries[0].metadata.is_some());
     }
 
     #[tokio::test]
@@ -992,7 +1273,7 @@ mod tests {
         let dest_path = scope_root.join(&dest_rel);
         write_candidates(
             &scope_root,
-            &[file_candidate(source_path, dest_rel, "hello")],
+            &[file_candidate(source_path.clone(), dest_rel, "hello")],
         )
         .await;
         let before_entries =
@@ -1000,6 +1281,7 @@ mod tests {
                 .await
                 .unwrap()
                 .entries;
+        tokio::fs::remove_file(&source_path).await.unwrap();
 
         let summary = write_candidates(&scope_root, &[]).await;
         let after_entries =
@@ -1019,6 +1301,58 @@ mod tests {
             tokio::fs::read_to_string(&dest_path).await.unwrap(),
             "hello"
         );
+    }
+
+    #[tokio::test]
+    async fn absent_candidate_with_existing_source_is_not_reported_stale() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("hello.md");
+        let dest_rel = command_destination();
+        write_candidates(
+            &scope_root,
+            &[file_candidate(source_path.clone(), dest_rel, "hello")],
+        )
+        .await;
+
+        let summary = write_candidates(&scope_root, &[]).await;
+
+        assert!(source_path.exists());
+        assert!(summary.outcomes.is_empty());
+        assert_eq!(summary.status_counts.get(&ImportStatus::Stale), None);
+    }
+
+    #[tokio::test]
+    async fn remapped_destination_reports_old_entry_stale_and_creates_new_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let scope_root = temp.path().join("refact");
+        let source_path = temp.path().join("source").join("hello.md");
+        let old_dest_rel = PathBuf::from("commands").join("old.md");
+        let new_dest_rel = PathBuf::from("commands").join("new.md");
+        let old_dest_path = scope_root.join(&old_dest_rel);
+        let new_dest_path = scope_root.join(&new_dest_rel);
+        write_candidates(
+            &scope_root,
+            &[file_candidate(source_path.clone(), old_dest_rel.clone(), "hello")],
+        )
+        .await;
+
+        let summary = write_candidates(
+            &scope_root,
+            &[file_candidate(source_path, new_dest_rel, "hello")],
+        )
+        .await;
+
+        assert_eq!(summary.status_counts.get(&ImportStatus::Stale), Some(&1));
+        assert_eq!(summary.status_counts.get(&ImportStatus::Created), Some(&1));
+        assert!(summary.outcomes.iter().any(|outcome| {
+            outcome.status == ImportStatus::Stale
+                && outcome.candidate.destination_path == old_dest_rel
+                && outcome.message
+                    == "source now maps to a different destination; generated destination preserved"
+        }));
+        assert_eq!(tokio::fs::read_to_string(old_dest_path).await.unwrap(), "hello");
+        assert_eq!(tokio::fs::read_to_string(new_dest_path).await.unwrap(), "hello");
     }
 
     #[tokio::test]

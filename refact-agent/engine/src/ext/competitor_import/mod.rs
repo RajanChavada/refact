@@ -232,7 +232,11 @@ async fn write_candidates_and_merge(
     summary: &mut ImportSummary,
     candidates: &[ImportCandidate],
 ) {
-    summary.merge(writer::write_candidates_for_scope(scope_root, scope, candidates).await);
+    let existing_issues = summary.issues.clone();
+    let writer_summary =
+        writer::write_candidates_for_scope_with_issues(scope_root, scope, candidates, &existing_issues)
+            .await;
+    summary.merge(writer_summary);
 }
 
 async fn persist_last_report_if_needed(scope_root: &Path, summary: &mut ImportSummary) {
@@ -762,6 +766,26 @@ mod tests {
         assert!(!report_json.contains("Private command body must not leak"));
         assert!(!manifest_json.contains("Private command body must not leak"));
         assert!(!manifest_json.contains(&private_path.to_string_lossy().to_string()));
+    }
+
+    #[tokio::test]
+    async fn privacy_blocked_existing_import_is_not_reported_stale() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source_path = workspace.path().join(".claude/commands/private.md");
+        let dest_path = workspace.path().join(".refact/commands/private.md");
+        write(&source_path, "Private command body.");
+
+        let first = run_project_import_with_paths(&[workspace.path().to_path_buf()]).await;
+        let filter = privacy_filter(&[source_path.clone()]);
+        let blocked =
+            run_project_import_with_paths_and_filter(&[workspace.path().to_path_buf()], &filter)
+                .await;
+
+        assert_eq!(status_count(&first, ImportStatus::Created), 1);
+        assert_eq!(status_count(&blocked, ImportStatus::Unsupported), 1);
+        assert_eq!(status_count(&blocked, ImportStatus::Stale), 0);
+        assert!(source_path.exists());
+        assert_eq!(fs::read_to_string(dest_path).unwrap(), "Private command body.");
     }
 
     #[tokio::test]

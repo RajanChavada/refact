@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::types::{Competitor, ImportKind, ImportReport, ImportSummary};
 
-pub const IMPORTER_VERSION: &str = "competitor_import_v1";
+pub const IMPORTER_VERSION: &str = "competitor_import_v2";
 pub const MAX_HASH_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_HASH_DIRECTORY_FILES: usize = 256;
 pub const MAX_HASH_DIRECTORY_BYTES: u64 = 8 * 1024 * 1024;
