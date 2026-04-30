@@ -11,12 +11,26 @@ use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 
 use super::types::*;
+use super::queue::resolve_worktree_setparams_update;
 use super::session::get_or_create_session_with_trajectory;
 use super::content::{validate_content_with_attachments, validate_context_files};
 use super::queue::process_command_queue;
 use super::trajectory_ops::sanitize_messages_for_model_switch;
 use super::trajectories::validate_trajectory_id;
 use crate::yaml_configs::customization_registry::{get_mode_config, map_legacy_mode_to_id};
+
+fn command_error_response(status: StatusCode, code: &str, error: String) -> Response<Body> {
+    let body = serde_json::to_string(&serde_json::json!({
+        "code": code,
+        "error": error,
+    }))
+    .unwrap_or_else(|_| r#"{"code":"command_error","error":"command failed"}"#.to_string());
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
 
 pub async fn handle_v1_chat_subscribe(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
@@ -169,10 +183,49 @@ pub async fn handle_v1_chat_command(
     }
 
     if let ChatCommand::SetParams { ref patch } = request.command {
+        if !patch.is_object() {
+            let error = "SetParams patch must be an object".to_string();
+            session.emit(ChatEvent::Ack {
+                client_request_id: request.client_request_id,
+                accepted: false,
+                result: Some(serde_json::json!({"error": error.clone()})),
+            });
+            return Ok(command_error_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                error,
+            ));
+        }
+        let thread_before = session.thread.clone();
+        drop(session);
+        let worktree_update =
+            match resolve_worktree_setparams_update(gcx.clone(), &chat_id, &thread_before, patch)
+                .await
+            {
+                Ok(update) => update,
+                Err(e) => {
+                    let mut session = session_arc.lock().await;
+                    session.emit(ChatEvent::Ack {
+                        client_request_id: request.client_request_id,
+                        accepted: false,
+                        result: Some(serde_json::json!({"error": e.clone()})),
+                    });
+                    return Ok(command_error_response(
+                        StatusCode::BAD_REQUEST,
+                        "bad_request",
+                        e,
+                    ));
+                }
+            };
+        let mut session = session_arc.lock().await;
         let old_model = session.thread.model.clone();
         let old_mode = session.thread.mode.clone();
         let (mut changed, sanitized_patch) =
             super::queue::apply_setparams_patch(&mut session.thread, patch);
+        if let Some(update) = worktree_update.clone() {
+            session.thread.worktree = update.worktree;
+            changed |= update.changed;
+        }
 
         let mode_in_patch = patch.get("mode").and_then(|v| v.as_str());
         if let Some(mode_str) = mode_in_patch {
@@ -241,6 +294,9 @@ pub async fn handle_v1_chat_command(
         if let Some(obj) = patch_for_chat_sse.as_object_mut() {
             obj.remove("title");
             obj.remove("is_title_generated");
+            if let Some(update) = worktree_update {
+                obj.insert("worktree".to_string(), update.sse_value);
+            }
             if mode_changed {
                 obj.insert("mode".to_string(), serde_json::json!(session.thread.mode));
                 obj.insert(

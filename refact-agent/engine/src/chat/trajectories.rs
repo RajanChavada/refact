@@ -19,6 +19,7 @@ use crate::global_context::GlobalContext;
 use crate::files_correction::get_project_dirs;
 use crate::subchat::run_subchat_once;
 use crate::yaml_configs::customization_registry::get_subagent_config;
+use crate::worktrees::service::WorktreeService;
 use crate::worktrees::types::WorktreeMeta;
 
 pub async fn atomic_write_file(tmp_path: &Path, dest_path: &Path) -> Result<(), String> {
@@ -424,6 +425,67 @@ fn sanitize_worktree_extra(
     }
 }
 
+async fn worktree_service_from_gcx(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    requested_source_root: Option<&Path>,
+) -> Result<WorktreeService, String> {
+    let cache_dir = gcx.read().await.cache_dir.clone();
+    let project_dirs = get_project_dirs(gcx).await;
+    if project_dirs.is_empty() {
+        return Err("No project root available".to_string());
+    }
+    let source_root = match requested_source_root {
+        Some(requested) => {
+            let requested = std::fs::canonicalize(requested).map_err(|e| {
+                format!(
+                    "Failed to resolve worktree source root '{}': {}",
+                    requested.display(),
+                    e
+                )
+            })?;
+            let matches = project_dirs.iter().any(|dir| {
+                std::fs::canonicalize(dir)
+                    .map(|canonical| canonical == requested)
+                    .unwrap_or(false)
+            });
+            if !matches {
+                return Err("Worktree source root is not a current workspace directory".to_string());
+            }
+            requested
+        }
+        None => project_dirs[0].clone(),
+    };
+    WorktreeService::new(cache_dir, source_root)
+}
+
+async fn validate_loaded_worktree(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    chat_id: &str,
+    worktree: WorktreeMeta,
+) -> Option<WorktreeMeta> {
+    let service =
+        match worktree_service_from_gcx(gcx.clone(), Some(&worktree.source_workspace_root)).await {
+            Ok(service) => service,
+            Err(e) => {
+                warn!(
+                    "Ignoring trajectory worktree metadata for chat {}: {}",
+                    chat_id, e
+                );
+                return None;
+            }
+        };
+    match service.validate_worktree_meta(&worktree).await {
+        Ok(validated) => Some(validated),
+        Err(e) => {
+            warn!(
+                "Ignoring untrusted trajectory worktree metadata for chat {}: {}",
+                chat_id, e
+            );
+            None
+        }
+    }
+}
+
 async fn synthesize_legacy_task_agent_worktree(
     gcx: Arc<ARwLock<GlobalContext>>,
     chat_id: &str,
@@ -543,6 +605,9 @@ pub async fn load_trajectory_for_chat(
     if worktree.is_none() {
         worktree =
             synthesize_legacy_task_agent_worktree(gcx.clone(), chat_id, task_meta.as_ref()).await;
+    }
+    if let Some(candidate) = worktree.take() {
+        worktree = validate_loaded_worktree(gcx.clone(), chat_id, candidate).await;
     }
 
     let thread = ThreadParams {
@@ -2680,6 +2745,31 @@ pub async fn handle_v1_trajectories_subscribe(
 mod tests {
     use super::*;
     use crate::chat::types::ActiveCommandContext;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo(root: &Path) {
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test User"]);
+        std::fs::write(root.join("file.txt"), "hello\n").unwrap();
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-m", "initial"]);
+    }
 
     fn trajectory_worktree_sample() -> WorktreeMeta {
         WorktreeMeta {
@@ -3382,14 +3472,28 @@ mod tests {
     #[tokio::test]
     async fn trajectory_worktree_save_load_roundtrips_top_level_field() {
         let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("repo");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
         let gcx = crate::global_context::tests::make_test_gcx().await;
         {
             let gcx_lock = gcx.read().await;
-            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
-                vec![dir.path().to_path_buf()];
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+            drop(gcx_lock);
+            gcx.write().await.cache_dir = cache.clone();
         }
+        let service = WorktreeService::new(cache, source.clone()).unwrap();
+        let created = service
+            .create_worktree(crate::worktrees::types::CreateWorktreeRequest {
+                branch: Some("refact/chat/roundtrip".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
 
-        let worktree = trajectory_worktree_sample();
+        let worktree = created.worktree.meta.clone();
         let chat_id = "wt-roundtrip".to_string();
         let snapshot = TrajectorySnapshot {
             chat_id: chat_id.clone(),
@@ -3427,15 +3531,14 @@ mod tests {
         save_trajectory_snapshot(gcx.clone(), snapshot)
             .await
             .unwrap();
-        let path = dir
-            .path()
+        let path = source
             .join(".refact")
             .join("trajectories")
             .join(format!("{}.json", chat_id));
         let raw = tokio::fs::read_to_string(path).await.unwrap();
         let raw_json: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(raw_json["worktree"]["id"], worktree.id);
-        assert_eq!(raw_json["worktree"]["branch"], "refact/task/card");
+        assert_eq!(raw_json["worktree"]["branch"], "refact/chat/roundtrip");
 
         let loaded = load_trajectory_for_chat(gcx, &chat_id).await.unwrap();
         assert_eq!(loaded.thread.worktree, Some(worktree));
@@ -3550,20 +3653,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trajectory_worktree_legacy_task_agent_hydrates_from_board_mirror() {
+    async fn trajectory_worktree_unregistered_top_level_metadata_is_stripped() {
         let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("repo");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
         let gcx = crate::global_context::tests::make_test_gcx().await;
         {
             let gcx_lock = gcx.read().await;
-            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
-                vec![dir.path().to_path_buf()];
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+            drop(gcx_lock);
+            gcx.write().await.cache_dir = cache;
+        }
+        let traj_dir = source.join(".refact").join("trajectories");
+        tokio::fs::create_dir_all(&traj_dir).await.unwrap();
+        let untrusted = json!({
+            "id": "untrusted-wt-chat",
+            "title": "Untrusted",
+            "model": "m",
+            "mode": "agent",
+            "tool_use": "agent",
+            "messages": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "include_project_info": true,
+            "checkpoints_enabled": true,
+            "worktree": {
+                "id": "wt-evil",
+                "kind": "chat",
+                "root": dir.path().join("evil").to_string_lossy().to_string(),
+                "source_workspace_root": source.to_string_lossy().to_string(),
+                "repo_root": source.to_string_lossy().to_string(),
+                "enforce": true
+            }
+        });
+        tokio::fs::write(
+            traj_dir.join("untrusted-wt-chat.json"),
+            serde_json::to_string(&untrusted).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let loaded = load_trajectory_for_chat(gcx, "untrusted-wt-chat")
+            .await
+            .unwrap();
+        assert!(loaded.thread.worktree.is_none());
+    }
+
+    #[tokio::test]
+    async fn trajectory_worktree_legacy_task_agent_hydrates_from_board_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("repo");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+            drop(gcx_lock);
+            gcx.write().await.cache_dir = cache;
         }
 
         let task_id = "task-legacy";
         let agent_id = "agent-1";
         let card_id = "card-1";
         let chat_id = "legacy-agent-chat";
-        let task_dir = dir.path().join(".refact").join("tasks").join(task_id);
+        let task_dir = source.join(".refact").join("tasks").join(task_id);
         tokio::fs::create_dir_all(task_dir.join("trajectories").join("agents").join(agent_id))
             .await
             .unwrap();
@@ -3592,6 +3749,18 @@ mod tests {
         .await
         .unwrap();
         let agent_worktree = dir.path().join("agent-worktree");
+        let agent_worktree_arg = agent_worktree.to_string_lossy().to_string();
+        run_git(
+            &source,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "refact/task/card",
+                &agent_worktree_arg,
+                "main",
+            ],
+        );
         let board = crate::tasks::types::TaskBoard {
             schema_version: 1,
             rev: 1,

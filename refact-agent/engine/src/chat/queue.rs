@@ -6,6 +6,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
+use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, first_block_reason, get_project_dir_string, run_hooks};
@@ -18,6 +19,8 @@ use super::tools::{execute_tools_with_session, resolve_tool_call_aliases};
 use super::trajectories::maybe_save_trajectory;
 use crate::ext::slash_expand::expand_slash_command;
 use crate::ext::skills_context::{expand_skill_includes, SKILLS_CONTEXT_MARKER};
+use crate::worktrees::service::WorktreeService;
+use crate::worktrees::types::{WorktreeMeta, WorktreeReference};
 
 fn apply_manual_context_files(
     session: &mut super::types::ChatSession,
@@ -474,6 +477,7 @@ pub fn apply_setparams_patch(
         obj.remove("type");
         obj.remove("chat_id");
         obj.remove("seq");
+        obj.remove("worktree_id");
         if patch.get("mode").and_then(|v| v.as_str()).is_some() {
             obj.insert("mode".to_string(), serde_json::json!(thread.mode));
         }
@@ -487,6 +491,132 @@ pub fn apply_setparams_patch(
     }
 
     (changed, sanitized_patch)
+}
+
+#[derive(Clone)]
+pub struct WorktreeSetParamsUpdate {
+    pub worktree: Option<WorktreeMeta>,
+    pub changed: bool,
+    pub sse_value: serde_json::Value,
+}
+
+fn reference_for_thread(
+    chat_id: &str,
+    thread: &ThreadParams,
+    worktree_kind: &str,
+) -> WorktreeReference {
+    let task_meta = thread.task_meta.as_ref();
+    WorktreeReference {
+        kind: worktree_kind.to_string(),
+        chat_id: Some(chat_id.to_string()),
+        task_id: task_meta.map(|meta| meta.task_id.clone()),
+        card_id: task_meta.and_then(|meta| meta.card_id.clone()),
+        agent_id: task_meta.and_then(|meta| meta.agent_id.clone()),
+    }
+}
+
+async fn worktree_service_from_gcx(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    requested_source_root: Option<&std::path::Path>,
+) -> Result<WorktreeService, String> {
+    let cache_dir = gcx.read().await.cache_dir.clone();
+    let project_dirs = get_project_dirs(gcx).await;
+    if project_dirs.is_empty() {
+        return Err("No project root available".to_string());
+    }
+    let source_root = match requested_source_root {
+        Some(requested) => {
+            let requested = std::fs::canonicalize(requested).map_err(|e| {
+                format!(
+                    "Failed to resolve worktree source root '{}': {}",
+                    requested.display(),
+                    e
+                )
+            })?;
+            let matches = project_dirs.iter().any(|dir| {
+                std::fs::canonicalize(dir)
+                    .map(|canonical| canonical == requested)
+                    .unwrap_or(false)
+            });
+            if !matches {
+                return Err("Worktree source root is not a current workspace directory".to_string());
+            }
+            requested
+        }
+        None => project_dirs[0].clone(),
+    };
+    WorktreeService::new(cache_dir, source_root)
+}
+
+async fn remove_thread_reference(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    chat_id: &str,
+    thread: &ThreadParams,
+    worktree: &WorktreeMeta,
+) {
+    let reference = reference_for_thread(chat_id, thread, &worktree.kind);
+    let Ok(service) = worktree_service_from_gcx(gcx, Some(&worktree.source_workspace_root)).await
+    else {
+        warn!(
+            "Failed to resolve worktree service while detaching '{}'",
+            worktree.id
+        );
+        return;
+    };
+    if let Err(e) = service.remove_reference(&worktree.id, &reference).await {
+        warn!(
+            "Failed to remove worktree reference '{}': {}",
+            worktree.id, e
+        );
+    }
+}
+
+pub async fn resolve_worktree_setparams_update(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    chat_id: &str,
+    thread: &ThreadParams,
+    patch: &serde_json::Value,
+) -> Result<Option<WorktreeSetParamsUpdate>, String> {
+    if let Some(worktree_id) = patch.get("worktree_id") {
+        let worktree_id = worktree_id
+            .as_str()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "worktree_id must be a non-empty string".to_string())?;
+        let service = worktree_service_from_gcx(gcx.clone(), None).await?;
+        let view = service.get_worktree(worktree_id).await?;
+        let reference = reference_for_thread(chat_id, thread, &view.meta.kind);
+        let view = service.add_reference(worktree_id, reference).await?;
+        if let Some(old) = thread
+            .worktree
+            .as_ref()
+            .filter(|old| old.id != view.meta.id)
+        {
+            remove_thread_reference(gcx, chat_id, thread, old).await;
+        }
+        let changed = thread
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.id.as_str())
+            != Some(view.meta.id.as_str());
+        return Ok(Some(WorktreeSetParamsUpdate {
+            worktree: Some(view.meta.clone()),
+            changed,
+            sse_value: serde_json::to_value(view.meta).unwrap_or(serde_json::Value::Null),
+        }));
+    }
+
+    if patch.get("worktree").map_or(false, |value| value.is_null()) {
+        if let Some(old) = thread.worktree.as_ref() {
+            remove_thread_reference(gcx, chat_id, thread, old).await;
+        }
+        return Ok(Some(WorktreeSetParamsUpdate {
+            worktree: None,
+            changed: thread.worktree.is_some(),
+            sse_value: serde_json::Value::Null,
+        }));
+    }
+
+    Ok(None)
 }
 
 pub async fn process_command_queue(
@@ -921,9 +1051,37 @@ pub async fn process_command_queue(
                     warn!("SetParams patch must be an object, ignoring");
                     continue;
                 }
+                let (chat_id, thread_before) = {
+                    let session = session_arc.lock().await;
+                    (session.chat_id.clone(), session.thread.clone())
+                };
+                let worktree_update = match resolve_worktree_setparams_update(
+                    gcx.clone(),
+                    &chat_id,
+                    &thread_before,
+                    &patch,
+                )
+                .await
+                {
+                    Ok(update) => update,
+                    Err(e) => {
+                        warn!("SetParams worktree update rejected: {}", e);
+                        let mut session = session_arc.lock().await;
+                        session.emit(ChatEvent::RuntimeUpdated {
+                            state: SessionState::Error,
+                            error: Some(e),
+                        });
+                        session.set_runtime_state(SessionState::Idle, None);
+                        continue;
+                    }
+                };
                 let mut session = session_arc.lock().await;
                 let (mut changed, sanitized_patch) =
                     apply_setparams_patch(&mut session.thread, &patch);
+                if let Some(update) = worktree_update.clone() {
+                    session.thread.worktree = update.worktree;
+                    changed |= update.changed;
+                }
 
                 let title_in_patch = patch.get("title").and_then(|v| v.as_str());
                 let is_gen_in_patch = patch.get("is_title_generated").and_then(|v| v.as_bool());
@@ -941,6 +1099,9 @@ pub async fn process_command_queue(
                 if let Some(obj) = patch_for_chat_sse.as_object_mut() {
                     obj.remove("title");
                     obj.remove("is_title_generated");
+                    if let Some(update) = worktree_update {
+                        obj.insert("worktree".to_string(), update.sse_value);
+                    }
                 }
                 session.emit(ChatEvent::ThreadUpdated {
                     params: patch_for_chat_sse,
@@ -948,6 +1109,10 @@ pub async fn process_command_queue(
                 if changed {
                     session.increment_version();
                     session.touch();
+                }
+                drop(session);
+                if changed {
+                    maybe_save_trajectory(gcx.clone(), session_arc.clone()).await;
                 }
             }
             ChatCommand::Abort {} => {
@@ -1554,6 +1719,8 @@ async fn create_checkpoint_async(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
+    use std::process::Command;
 
     fn make_request(cmd: ChatCommand) -> CommandRequest {
         CommandRequest {
@@ -1561,6 +1728,30 @@ mod tests {
             priority: false,
             command: cmd,
         }
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo(root: &Path) {
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test User"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn source() {}\n").unwrap();
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-m", "initial"]);
     }
 
     #[test]
@@ -1830,6 +2021,95 @@ mod tests {
         assert!(!changed);
         assert!(thread.worktree.is_none());
         assert!(sanitized.get("worktree").is_none());
+    }
+
+    #[tokio::test]
+    async fn worktree_setparams_attach_by_id_resolves_registry_and_scopes_create() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+            drop(gcx_lock);
+            gcx.write().await.cache_dir = cache.clone();
+        }
+        let service = WorktreeService::new(cache, source.clone()).unwrap();
+        let created = service
+            .create_worktree(crate::worktrees::types::CreateWorktreeRequest {
+                branch: Some("refact/chat/attach-id".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut thread = ThreadParams::default();
+        thread.id = "chat-attach".to_string();
+        let update = resolve_worktree_setparams_update(
+            gcx,
+            "chat-attach",
+            &thread,
+            &json!({"worktree_id": created.worktree.meta.id.clone()}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        thread.worktree = update.worktree;
+        let scope = crate::worktrees::scope::ExecutionScope::from_thread(&thread).unwrap();
+        let resolved = scope
+            .resolve_creatable_path(Path::new("nested/file.rs"))
+            .unwrap();
+        assert!(resolved.path.starts_with(&created.worktree.meta.root));
+        assert!(!resolved.path.starts_with(&source));
+        let registry = service.load_registry().await.unwrap();
+        assert_eq!(registry.records[0].references.len(), 1);
+        assert_eq!(
+            registry.records[0].references[0].chat_id.as_deref(),
+            Some("chat-attach")
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_setparams_detach_clears_registry_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+            drop(gcx_lock);
+            gcx.write().await.cache_dir = cache.clone();
+        }
+        let service = WorktreeService::new(cache, source.clone()).unwrap();
+        let created = service
+            .create_worktree(crate::worktrees::types::CreateWorktreeRequest {
+                branch: Some("refact/chat/detach-id".to_string()),
+                chat_id: Some("chat-detach".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut thread = ThreadParams::default();
+        thread.worktree = Some(created.worktree.meta.clone());
+        let update = resolve_worktree_setparams_update(
+            gcx,
+            "chat-detach",
+            &thread,
+            &json!({"worktree": null}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(update.worktree.is_none());
+        let registry = service.load_registry().await.unwrap();
+        assert!(registry.records[0].references.is_empty());
     }
 
     #[test]

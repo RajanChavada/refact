@@ -104,8 +104,8 @@ export const WorktreeControl: React.FC = () => {
   }, [records]);
 
   const attachWorktree = useCallback(
-    async (worktree: WorktreeMeta | null) => {
-      if (!chatId || !lspPort) return;
+    async (worktree: WorktreeMeta | null): Promise<boolean> => {
+      if (!chatId || !lspPort) return false;
       const previousWorktree = currentWorktree;
       dispatch(setThreadWorktree({ chatId, worktree }));
       setFeedback(worktree ? "Worktree attached." : "Using main workspace.");
@@ -116,9 +116,11 @@ export const WorktreeControl: React.FC = () => {
           lspPort,
           apiKey,
         );
+        return true;
       } catch (error) {
         dispatch(setThreadWorktree({ chatId, worktree: previousWorktree }));
         setFeedback(`Worktree update failed: ${worktreeErrorText(error)}`);
+        return false;
       }
     },
     [apiKey, chatId, currentWorktree, dispatch, lspPort],
@@ -126,15 +128,17 @@ export const WorktreeControl: React.FC = () => {
 
   const handleSelect = useCallback(
     (record: WorktreeRecordView) => {
-      void attachWorktree(record.meta);
-      setMenuOpen(false);
+      void attachWorktree(record.meta).then((attached) => {
+        if (attached) setMenuOpen(false);
+      });
     },
     [attachWorktree],
   );
 
   const handleDetach = useCallback(() => {
-    void attachWorktree(null);
-    setMenuOpen(false);
+    void attachWorktree(null).then((detached) => {
+      if (detached) setMenuOpen(false);
+    });
   }, [attachWorktree]);
 
   const handleCreate = useCallback(
@@ -148,9 +152,11 @@ export const WorktreeControl: React.FC = () => {
           chat_id: chatId,
           kind: "chat",
         }).unwrap();
-        await attachWorktree(response.worktree.meta);
-        setCreateOpen(false);
-        setMenuOpen(false);
+        const attached = await attachWorktree(response.worktree.meta);
+        if (attached) {
+          setCreateOpen(false);
+          setMenuOpen(false);
+        }
       } catch (error) {
         setCreateError(worktreeErrorText(error));
       }

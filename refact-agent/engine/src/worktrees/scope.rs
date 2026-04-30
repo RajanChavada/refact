@@ -71,18 +71,23 @@ impl ExecutionScope {
 
     pub fn resolve_path(&self, raw: &Path) -> Result<ScopedPath, String> {
         let candidate = self.candidate_for_raw_path(raw)?;
-        self.finalize_candidate(raw, candidate, false, false)
+        self.finalize_candidate(raw, candidate, false, false, false)
+    }
+
+    pub fn resolve_creatable_path(&self, raw: &Path) -> Result<ScopedPath, String> {
+        let candidate = self.candidate_for_raw_path(raw)?;
+        self.finalize_candidate(raw, candidate, false, false, true)
     }
 
     pub fn resolve_existing_path(&self, raw: &Path) -> Result<ScopedPath, String> {
         let candidate = self.candidate_for_raw_path(raw)?;
-        self.finalize_candidate(raw, candidate, true, false)
+        self.finalize_candidate(raw, candidate, true, false, false)
     }
 
     pub fn resolve_workdir(&self, raw: Option<&str>) -> Result<ScopedPath, String> {
         let raw_path = raw.map(PathBuf::from).unwrap_or_else(|| self.root.clone());
         let candidate = self.candidate_for_raw_path(&raw_path)?;
-        self.finalize_candidate(&raw_path, candidate, true, true)
+        self.finalize_candidate(&raw_path, candidate, true, true, false)
     }
 
     fn candidate_for_raw_path(&self, raw: &Path) -> Result<PathCandidate, String> {
@@ -139,8 +144,13 @@ impl ExecutionScope {
         candidate: PathCandidate,
         require_existing: bool,
         require_dir: bool,
+        allow_missing_parent: bool,
     ) -> Result<ScopedPath, String> {
-        let path = resolve_final_path(&candidate.path, require_existing)?;
+        let path = if allow_missing_parent && !candidate.outside_absolute_path {
+            resolve_creatable_final_path(&candidate.path)?
+        } else {
+            resolve_final_path(&candidate.path, require_existing)?
+        };
         if require_dir && !path.is_dir() {
             return Err(format!("Path '{}' is not a directory", path.display()));
         }
@@ -196,6 +206,47 @@ fn resolve_final_path(path: &Path, require_existing: bool) -> Result<PathBuf, St
             Ok(parent.join(file_name))
         }
     }
+}
+
+fn resolve_creatable_final_path(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+
+    let mut missing = Vec::new();
+    let mut cursor = path.to_path_buf();
+    while !cursor.exists() {
+        let file_name = cursor
+            .file_name()
+            .ok_or_else(|| format!("Path '{}' has no file name to create", cursor.display()))?
+            .to_os_string();
+        missing.push(file_name);
+        let parent = cursor.parent().ok_or_else(|| {
+            format!(
+                "Path '{}' has no parent directory to validate",
+                cursor.display()
+            )
+        })?;
+        cursor = parent.to_path_buf();
+    }
+
+    let mut resolved = std::fs::canonicalize(&cursor).map_err(|e| {
+        format!(
+            "Parent directory '{}' does not exist or cannot be resolved: {}",
+            cursor.display(),
+            e
+        )
+    })?;
+    if !resolved.is_dir() {
+        return Err(format!(
+            "Parent path '{}' is not a directory",
+            resolved.display()
+        ));
+    }
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
@@ -364,6 +415,22 @@ mod tests {
         assert_eq!(resolved.path, root.join("src").join("new.rs"));
         assert!(!resolved.used_absolute_path);
         assert!(!resolved.outside_absolute_path);
+    }
+
+    #[test]
+    fn worktree_execution_scope_resolves_creatable_nested_path() {
+        let (_temp, root, source, repo, _outside) = setup_dirs();
+        let scope = make_scope(&root, &source, &repo);
+        let resolved = scope
+            .resolve_creatable_path(Path::new("nested/new/file.rs"))
+            .unwrap();
+        assert_eq!(
+            resolved.path,
+            root.join("nested").join("new").join("file.rs")
+        );
+        assert!(!resolved.outside_absolute_path);
+        let escaped = scope.resolve_creatable_path(Path::new("../escaped/file.rs"));
+        assert!(escaped.is_err());
     }
 
     #[test]

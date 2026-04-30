@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -303,6 +304,17 @@ pub fn run_git(path: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+pub fn run_git_with_refact_author(path: &Path, args: &[&str]) -> Result<String, String> {
+    let mut full_args = vec![
+        "-c",
+        "user.name=Refact Agent",
+        "-c",
+        "user.email=agent@refact.ai",
+    ];
+    full_args.extend_from_slice(args);
+    run_git(path, &full_args)
+}
+
 pub fn run_git_lossy(path: &Path, args: &[&str]) -> String {
     run_git(path, args).unwrap_or_default()
 }
@@ -408,6 +420,11 @@ fn parse_name_status(output: &str, numstat: &str, source: &str) -> Vec<WorktreeD
 }
 
 fn count_file_lines(path: &Path) -> Option<usize> {
+    const MAX_LINE_COUNT_BYTES: u64 = 1_000_000;
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_LINE_COUNT_BYTES {
+        return None;
+    }
     std::fs::read_to_string(path)
         .ok()
         .map(|content| content.lines().count())
@@ -470,36 +487,81 @@ fn append_untracked_patch(
     max_bytes: usize,
     truncated: &mut bool,
 ) {
+    const MAX_UNTRACKED_PREVIEW_BYTES: usize = 64_000;
     for file in files {
         if *truncated {
             return;
         }
         let file_path = root.join(&file.path);
-        let Ok(content) = std::fs::read_to_string(&file_path) else {
+        let Ok(mut source) = std::fs::File::open(&file_path) else {
             continue;
         };
-        let mut body = format!(
-            "diff --git a/{} b/{}\nnew file mode 100644\n--- /dev/null\n+++ b/{}\n@@\n",
-            file.path, file.path, file.path
-        );
-        for line in content.lines() {
-            body.push('+');
-            body.push_str(line);
-            body.push('\n');
-        }
         append_patch_section(
             patch,
             &format!("untracked {}", file.path),
-            &body,
+            &format!(
+                "diff --git a/{} b/{}\nnew file mode 100644\n--- /dev/null\n+++ b/{}\n@@\n",
+                file.path, file.path, file.path
+            ),
             max_bytes,
             truncated,
         );
+        if *truncated {
+            return;
+        }
+        let remaining = max_bytes.saturating_sub(patch.len());
+        let read_cap = remaining.min(MAX_UNTRACKED_PREVIEW_BYTES);
+        if read_cap == 0 {
+            *truncated = true;
+            return;
+        }
+        let mut buffer = Vec::new();
+        let mut reader = source.by_ref().take(read_cap as u64 + 1);
+        if reader.read_to_end(&mut buffer).is_err() {
+            continue;
+        }
+        let over_limit = buffer.len() > read_cap;
+        if over_limit {
+            buffer.truncate(read_cap);
+        }
+        let content = String::from_utf8_lossy(&buffer);
+        for line in content.lines() {
+            push_bounded(patch, "+", max_bytes, truncated);
+            push_bounded(patch, line, max_bytes, truncated);
+            push_bounded(patch, "\n", max_bytes, truncated);
+            if *truncated {
+                return;
+            }
+        }
+        if over_limit {
+            *truncated = true;
+            return;
+        }
     }
+}
+
+fn resolve_diff_base(
+    root: &Path,
+    base_commit: Option<&str>,
+    base_branch: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(base) = base_commit {
+        let refish = format!("{}^{{commit}}", base);
+        let resolved = run_git(root, &["rev-parse", "--verify", &refish])?;
+        return Ok(Some(resolved.trim().to_string()));
+    }
+    if let Some(base) = base_branch {
+        let resolved = run_git(root, &["merge-base", base, "HEAD"])
+            .map_err(|e| format!("Failed to resolve merge-base for '{}': {}", base, e))?;
+        return Ok(Some(resolved.trim().to_string()));
+    }
+    Ok(None)
 }
 
 pub fn diff_for_path(
     root: &Path,
     base_commit: Option<&str>,
+    base_branch: Option<&str>,
     max_patch_bytes: usize,
 ) -> Result<WorktreeDiffParts, String> {
     discover_repo(root)?;
@@ -508,14 +570,15 @@ pub fn diff_for_path(
     let mut patch = String::new();
     let mut patch_truncated = false;
 
-    if let Some(base) = base_commit {
+    let committed_base = resolve_diff_base(root, base_commit, base_branch)?;
+    if let Some(base) = committed_base {
         let range = format!("{}..HEAD", base);
-        let committed_name_status = run_git_lossy(root, &["diff", "--name-status", &range]);
-        let committed_numstat = run_git_lossy(root, &["diff", "--numstat", &range]);
+        let committed_name_status = run_git(root, &["diff", "--name-status", &range])?;
+        let committed_numstat = run_git(root, &["diff", "--numstat", &range])?;
         let committed = parse_name_status(&committed_name_status, &committed_numstat, "committed");
         stats.committed_files = committed.len();
         files.extend(committed);
-        let committed_patch = run_git_lossy(root, &["diff", "--no-ext-diff", &range]);
+        let committed_patch = run_git(root, &["diff", "--no-ext-diff", &range])?;
         append_patch_section(
             &mut patch,
             "committed",
@@ -670,8 +733,20 @@ pub fn conflict_files_for_path(root: &Path) -> Vec<String> {
 }
 
 pub fn abort_merge(root: &Path) -> bool {
-    run_git(root, &["merge", "--abort"]).is_ok()
-        || run_git(root, &["reset", "--hard", "HEAD"]).is_ok()
+    cleanup_failed_merge(root).is_empty()
+}
+
+pub fn cleanup_failed_merge(root: &Path) -> Vec<String> {
+    if run_git(root, &["merge", "--abort"]).is_ok() {
+        return Vec::new();
+    }
+    match run_git(root, &["reset", "--hard", "HEAD"]) {
+        Ok(_) => Vec::new(),
+        Err(e) => vec![format!(
+            "Failed to reset target workspace after merge failure: {}",
+            e
+        )],
+    }
 }
 
 pub fn preflight_merge_conflicts(

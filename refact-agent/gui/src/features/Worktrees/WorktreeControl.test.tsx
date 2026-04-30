@@ -430,6 +430,37 @@ describe("WorktreeControl", () => {
     );
   });
 
+  test("attach failure displays structured backend error and rolls back label", async () => {
+    const record = makeWorktreeRecord("wt-error", "refact/chat/error");
+    server.use(
+      worktreesList([record]),
+      http.post("http://127.0.0.1:8001/v1/chats/:id/commands", () =>
+        HttpResponse.json(
+          { code: "bad_request", error: "Worktree 'wt-error' not found" },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    const { user } = renderControl([record]);
+
+    await user.click(screen.getByTestId("worktree-control-trigger"));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /Select worktree refact\/chat\/error/,
+      }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Worktree update failed: Worktree 'wt-error' not found",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+      "Main",
+    );
+  });
+
   test("open-in-new-window falls back to copied path when host cannot open folders", async () => {
     const record = makeWorktreeRecord("wt-open", "refact/chat/open");
     const openCalls: string[] = [];

@@ -88,7 +88,7 @@ pub fn resolve_path_with_scope(
     let scoped = if require_existing {
         scope.resolve_existing_path(raw_path)
     } else {
-        scope.resolve_path(raw_path)
+        scope.resolve_creatable_path(raw_path)
     };
     let scoped = match scoped {
         Ok(scoped) => scoped,
@@ -1379,6 +1379,29 @@ mod tests {
                 fs::read_to_string(f.root.join("src/create_relative.txt")).unwrap(),
                 "created\n"
             );
+            let nested_create_args = args(vec![
+                ("path", json!("new_dir/deep/file.rs")),
+                ("content", json!("nested")),
+            ]);
+            tool_create_text_doc_exec(f.gcx.clone(), &nested_create_args, false, Some(&f.scope))
+                .await
+                .unwrap();
+            assert_eq!(
+                fs::read_to_string(f.root.join("new_dir/deep/file.rs")).unwrap(),
+                "nested\n"
+            );
+            let escaped_create_args = args(vec![
+                ("path", json!("../escaped/file.rs")),
+                ("content", json!("escaped")),
+            ]);
+            assert!(tool_create_text_doc_exec(
+                f.gcx.clone(),
+                &escaped_create_args,
+                false,
+                Some(&f.scope),
+            )
+            .await
+            .is_err());
             let create_source_args = args(vec![
                 ("path", path_value(&f.source.join("src/create_source.txt"))),
                 ("content", json!("created source")),
