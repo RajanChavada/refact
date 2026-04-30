@@ -345,6 +345,7 @@ pub struct WorktreeInventorySummary {
     pub total: usize,
     pub clean: usize,
     pub dirty: usize,
+    pub unknown: usize,
     pub stale: usize,
     pub conflicted: usize,
     pub shared: usize,

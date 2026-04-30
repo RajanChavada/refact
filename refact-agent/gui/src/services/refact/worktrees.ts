@@ -211,6 +211,7 @@ export type WorktreeInventorySummary = {
   total: number;
   clean: number;
   dirty: number;
+  unknown: number;
   stale: number;
   conflicted: number;
   shared: number;

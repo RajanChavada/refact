@@ -458,7 +458,7 @@ async fn worktree_service_from_gcx(
     WorktreeService::new(cache_dir, source_root)
 }
 
-async fn validate_loaded_worktree(
+async fn validate_loaded_worktree_strict(
     gcx: Arc<ARwLock<GlobalContext>>,
     chat_id: &str,
     worktree: WorktreeMeta,
@@ -474,11 +474,42 @@ async fn validate_loaded_worktree(
                 return None;
             }
         };
-    match service.validate_worktree_meta(&worktree).await {
+    match service.validate_worktree_meta_strict(&worktree).await {
         Ok(validated) => Some(validated),
         Err(e) => {
             warn!(
                 "Ignoring untrusted trajectory worktree metadata for chat {}: {}",
+                chat_id, e
+            );
+            None
+        }
+    }
+}
+
+async fn validate_loaded_legacy_task_agent_worktree(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    chat_id: &str,
+    worktree: WorktreeMeta,
+) -> Option<WorktreeMeta> {
+    let service =
+        match worktree_service_from_gcx(gcx.clone(), Some(&worktree.source_workspace_root)).await {
+            Ok(service) => service,
+            Err(e) => {
+                warn!(
+                    "Ignoring legacy task-agent worktree metadata for chat {}: {}",
+                    chat_id, e
+                );
+                return None;
+            }
+        };
+    match service
+        .validate_legacy_task_agent_worktree_meta(&worktree)
+        .await
+    {
+        Ok(validated) => Some(validated),
+        Err(e) => {
+            warn!(
+                "Ignoring untrusted legacy task-agent worktree metadata for chat {}: {}",
                 chat_id, e
             );
             None
@@ -504,24 +535,22 @@ async fn synthesize_legacy_task_agent_worktree(
         .await
         .ok()?;
 
-    let card = task_meta
-        .card_id
-        .as_deref()
-        .and_then(|card_id| board.cards.iter().find(|card| card.id == card_id))
-        .or_else(|| {
-            board
-                .cards
-                .iter()
-                .find(|card| card.agent_chat_id.as_deref() == Some(chat_id))
-        })
-        .or_else(|| {
-            task_meta.agent_id.as_deref().and_then(|agent_id| {
-                board
-                    .cards
-                    .iter()
-                    .find(|card| card.assignee.as_deref() == Some(agent_id))
-            })
-        })?;
+    let card = if let Some(card_id) = task_meta.card_id.as_deref() {
+        board.cards.iter().find(|card| card.id == card_id)?
+    } else {
+        board
+            .cards
+            .iter()
+            .find(|card| card.agent_chat_id.as_deref() == Some(chat_id))?
+    };
+    if card.agent_chat_id.as_deref() != Some(chat_id) {
+        return None;
+    }
+    if let Some(agent_id) = task_meta.agent_id.as_deref() {
+        if card.assignee.as_deref() != Some(agent_id) {
+            return None;
+        }
+    }
 
     let root = PathBuf::from(card.agent_worktree.as_ref()?);
     let source_workspace_root = source_workspace_root.unwrap_or_else(|| root.clone());
@@ -601,14 +630,15 @@ pub async fn load_trajectory_for_chat(
         .get("task_meta")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    let mut worktree = t.get("worktree").and_then(parse_worktree_meta);
-    if worktree.is_none() {
-        worktree =
-            synthesize_legacy_task_agent_worktree(gcx.clone(), chat_id, task_meta.as_ref()).await;
-    }
-    if let Some(candidate) = worktree.take() {
-        worktree = validate_loaded_worktree(gcx.clone(), chat_id, candidate).await;
-    }
+    let worktree = if let Some(candidate) = t.get("worktree").and_then(parse_worktree_meta) {
+        validate_loaded_worktree_strict(gcx.clone(), chat_id, candidate).await
+    } else if let Some(candidate) =
+        synthesize_legacy_task_agent_worktree(gcx.clone(), chat_id, task_meta.as_ref()).await
+    {
+        validate_loaded_legacy_task_agent_worktree(gcx.clone(), chat_id, candidate).await
+    } else {
+        None
+    };
 
     let thread = ThreadParams {
         id: chat_id.to_string(),
@@ -1758,7 +1788,11 @@ fn spawn_title_generation_task(
         }
         info!("Updated trajectory {} with generated title: {}", id, title);
         let (session_state, session_error) = get_session_state_for_chat(&sessions, &id).await;
-        let worktree = trajectory_worktree_from_extra(&data.extra);
+        let worktree = if let Some(candidate) = trajectory_worktree_from_extra(&data.extra) {
+            validate_loaded_worktree_strict(gcx.clone(), &id, candidate).await
+        } else {
+            None
+        };
         let event = TrajectoryEvent {
             event_type: "updated".to_string(),
             id: id.clone(),
@@ -2182,7 +2216,7 @@ fn trajectory_data_to_meta(data: &TrajectoryData) -> TrajectoryMeta {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let worktree = trajectory_worktree_from_extra(&data.extra);
+    let worktree = None;
 
     let (total_lines_added, total_lines_removed) =
         calculate_line_changes_from_messages(&data.messages);
@@ -2255,6 +2289,17 @@ fn decode_cursor(cursor: &str) -> Option<(String, String)> {
     }
 }
 
+async fn trajectory_data_to_meta_validated(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    data: &TrajectoryData,
+) -> TrajectoryMeta {
+    let mut meta = trajectory_data_to_meta(data);
+    if let Some(worktree) = trajectory_worktree_from_extra(&data.extra) {
+        meta.worktree = validate_loaded_worktree_strict(gcx, &data.id, worktree).await;
+    }
+    meta
+}
+
 pub async fn handle_v1_trajectories_list(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     axum::extract::Query(params): axum::extract::Query<TrajectoriesListQuery>,
@@ -2296,7 +2341,7 @@ pub async fn handle_v1_trajectories_list(
                         continue;
                     }
                     if seen_ids.insert(data.id.clone()) {
-                        all_items.push(trajectory_data_to_meta(&data));
+                        all_items.push(trajectory_data_to_meta_validated(gcx.clone(), &data).await);
                     }
                 }
             }
@@ -2384,7 +2429,7 @@ pub async fn list_all_trajectories_meta(
                         continue;
                     }
                     if seen_ids.insert(data.id.clone()) {
-                        result.push(trajectory_data_to_meta(&data));
+                        result.push(trajectory_data_to_meta_validated(gcx.clone(), &data).await);
                     }
                 }
             }
@@ -2573,7 +2618,23 @@ pub async fn handle_v1_trajectories_save(
         .unwrap_or(false);
     let should_generate_title =
         is_placeholder_title(&data.title) && !is_title_generated && !data.messages.is_empty();
-    let worktree = sanitize_worktree_extra(&mut data.extra);
+    let worktree = if let Some(candidate) = sanitize_worktree_extra(&mut data.extra) {
+        match validate_loaded_worktree_strict(gcx.clone(), &id, candidate).await {
+            Some(validated) => {
+                data.extra.insert(
+                    "worktree".to_string(),
+                    serde_json::to_value(&validated).unwrap_or_default(),
+                );
+                Some(validated)
+            }
+            None => {
+                data.extra.remove("worktree");
+                None
+            }
+        }
+    } else {
+        None
+    };
     atomic_write_json(&file_path, &data)
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -3435,7 +3496,7 @@ mod tests {
     }
 
     #[test]
-    fn trajectory_worktree_meta_creation_includes_worktree() {
+    fn trajectory_worktree_meta_creation_omits_unvalidated_worktree() {
         let worktree = trajectory_worktree_sample();
         let mut extra = serde_json::Map::new();
         extra.insert(
@@ -3454,10 +3515,7 @@ mod tests {
             extra,
         };
         let meta = trajectory_data_to_meta(&data);
-        let meta_worktree = meta.worktree.unwrap();
-        assert_eq!(meta_worktree.id, worktree.id);
-        assert_eq!(meta_worktree.branch, worktree.branch);
-        assert_eq!(meta_worktree.root, worktree.root);
+        assert!(meta.worktree.is_none());
     }
 
     #[test]
@@ -3540,8 +3598,17 @@ mod tests {
         assert_eq!(raw_json["worktree"]["id"], worktree.id);
         assert_eq!(raw_json["worktree"]["branch"], "refact/chat/roundtrip");
 
-        let loaded = load_trajectory_for_chat(gcx, &chat_id).await.unwrap();
-        assert_eq!(loaded.thread.worktree, Some(worktree));
+        let loaded = load_trajectory_for_chat(gcx.clone(), &chat_id)
+            .await
+            .unwrap();
+        assert_eq!(loaded.thread.worktree, Some(worktree.clone()));
+        let listed = list_all_trajectories_meta(gcx).await.unwrap();
+        let listed_worktree = listed
+            .iter()
+            .find(|item| item.id == chat_id)
+            .and_then(|item| item.worktree.clone())
+            .unwrap();
+        assert_eq!(listed_worktree.id, worktree.id);
     }
 
     #[tokio::test]
@@ -3695,10 +3762,16 @@ mod tests {
         .await
         .unwrap();
 
-        let loaded = load_trajectory_for_chat(gcx, "untrusted-wt-chat")
+        let loaded = load_trajectory_for_chat(gcx.clone(), "untrusted-wt-chat")
             .await
             .unwrap();
         assert!(loaded.thread.worktree.is_none());
+        let listed = list_all_trajectories_meta(gcx).await.unwrap();
+        let listed_worktree = listed
+            .iter()
+            .find(|item| item.id == "untrusted-wt-chat")
+            .and_then(|item| item.worktree.clone());
+        assert!(listed_worktree.is_none());
     }
 
     #[tokio::test]
@@ -3830,6 +3903,130 @@ mod tests {
         assert_eq!(worktree.base_branch.as_deref(), Some("main"));
         assert_eq!(worktree.base_commit.as_deref(), Some("base123"));
         assert!(worktree.enforce);
+    }
+
+    #[tokio::test]
+    async fn trajectory_worktree_legacy_task_agent_rejects_mismatched_chat_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("repo");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
+            drop(gcx_lock);
+            gcx.write().await.cache_dir = cache;
+        }
+
+        let task_id = "task-legacy-mismatch";
+        let agent_id = "agent-1";
+        let card_id = "card-1";
+        let chat_id = "wrong-agent-chat";
+        let task_dir = source.join(".refact").join("tasks").join(task_id);
+        tokio::fs::create_dir_all(task_dir.join("trajectories").join("agents").join(agent_id))
+            .await
+            .unwrap();
+        let meta = crate::tasks::types::TaskMeta {
+            schema_version: 1,
+            id: task_id.to_string(),
+            name: "Task".to_string(),
+            status: crate::tasks::types::TaskStatus::Active,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            cards_total: 1,
+            cards_done: 0,
+            cards_failed: 0,
+            agents_active: 1,
+            base_branch: Some("main".to_string()),
+            base_commit: Some("base123".to_string()),
+            default_agent_model: None,
+            is_name_generated: true,
+            last_agents_summary_at: None,
+            planner_session_state: None,
+        };
+        tokio::fs::write(
+            task_dir.join("meta.yaml"),
+            serde_yaml::to_string(&meta).unwrap(),
+        )
+        .await
+        .unwrap();
+        let agent_worktree = dir.path().join("agent-worktree-mismatch");
+        let agent_worktree_arg = agent_worktree.to_string_lossy().to_string();
+        run_git(
+            &source,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "refact/task/card-mismatch",
+                &agent_worktree_arg,
+                "main",
+            ],
+        );
+        let board = crate::tasks::types::TaskBoard {
+            schema_version: 1,
+            rev: 1,
+            columns: Vec::new(),
+            cards: vec![crate::tasks::types::BoardCard {
+                id: card_id.to_string(),
+                title: "Card".to_string(),
+                column: "doing".to_string(),
+                priority: "P1".to_string(),
+                depends_on: Vec::new(),
+                instructions: String::new(),
+                assignee: Some(agent_id.to_string()),
+                agent_chat_id: Some("actual-agent-chat".to_string()),
+                status_updates: Vec::new(),
+                final_report: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                started_at: None,
+                last_heartbeat_at: None,
+                completed_at: None,
+                agent_branch: Some("refact/task/card-mismatch".to_string()),
+                agent_worktree: Some(agent_worktree.to_string_lossy().to_string()),
+                agent_worktree_name: Some("wt-legacy-mismatch".to_string()),
+                target_files: Vec::new(),
+            }],
+        };
+        tokio::fs::write(
+            task_dir.join("board.yaml"),
+            serde_yaml::to_string(&board).unwrap(),
+        )
+        .await
+        .unwrap();
+        let trajectory = json!({
+            "id": chat_id,
+            "title": "Legacy Agent",
+            "model": "m",
+            "mode": "task_agent",
+            "tool_use": "agent",
+            "messages": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "include_project_info": true,
+            "checkpoints_enabled": true,
+            "task_meta": {
+                "task_id": task_id,
+                "role": "agents",
+                "agent_id": agent_id,
+                "card_id": card_id
+            }
+        });
+        tokio::fs::write(
+            task_dir
+                .join("trajectories")
+                .join("agents")
+                .join(agent_id)
+                .join(format!("{}.json", chat_id)),
+            serde_json::to_string(&trajectory).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let loaded = load_trajectory_for_chat(gcx, chat_id).await.unwrap();
+        assert!(loaded.thread.worktree.is_none());
     }
 
     #[tokio::test]

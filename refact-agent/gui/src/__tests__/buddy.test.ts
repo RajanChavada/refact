@@ -1601,6 +1601,7 @@ describe("buddy opportunities, pulse, and drafts", () => {
         total: 1,
         clean: 1,
         dirty: 0,
+        unknown: 0,
         stale: 0,
         conflicted: 0,
         shared: 0,

@@ -391,9 +391,9 @@ describe("WorktreeControl", () => {
     expect(createCalls[0]).toMatchObject({
       branch: "refact/chat/new",
       base_branch: "main",
-      chat_id: "chat-1",
       kind: "chat",
     });
+    expect(createCalls[0]).not.toHaveProperty("chat_id");
     await waitFor(() => expect(commandCalls).toHaveLength(1));
     expect(commandCalls[0]).toMatchObject({
       type: "set_params",
@@ -404,6 +404,48 @@ describe("WorktreeControl", () => {
         "refact/chat/new",
       );
     });
+  });
+
+  test("create attach failure deletes unreferenced orphan and rolls back", async () => {
+    const created = makeWorktreeRecord("wt-orphan", "refact/chat/orphan", 0);
+    const createCalls: JsonObject[] = [];
+    const deleteCalls: string[] = [];
+    server.use(
+      worktreesList([]),
+      createWorktreeHandler(created, createCalls),
+      deleteWorktreeHandler(deleteCalls),
+      http.post("http://127.0.0.1:8001/v1/chats/:id/commands", () =>
+        HttpResponse.json(
+          { code: "bad_request", error: "attach failed" },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    const { user } = renderControl([]);
+
+    await user.click(screen.getByTestId("worktree-control-trigger"));
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Create worktree",
+      }),
+    );
+    const branchInput = await screen.findByLabelText(/Branch name/);
+    await user.clear(branchInput);
+    await user.type(branchInput, "refact/chat/orphan");
+    await user.click(screen.getByRole("button", { name: /^Create$/ }));
+
+    await waitFor(() => expect(createCalls).toHaveLength(1));
+    expect(createCalls[0]).not.toHaveProperty("chat_id");
+    await waitFor(() => expect(deleteCalls).toEqual(["wt-orphan"]));
+    expect(
+      await screen.findByText(
+        "Worktree attach failed; created worktree was deleted.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("worktree-control-trigger")).toHaveTextContent(
+      "Main",
+    );
   });
 
   test("selecting existing shared worktree attaches it to current chat", async () => {

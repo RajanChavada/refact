@@ -262,29 +262,62 @@ impl WorktreeService {
         &self,
         meta: &WorktreeMeta,
     ) -> Result<WorktreeMeta, String> {
+        self.validate_worktree_meta_strict(meta).await
+    }
+
+    pub async fn validate_worktree_meta_strict(
+        &self,
+        meta: &WorktreeMeta,
+    ) -> Result<WorktreeMeta, String> {
         validate_worktree_id(&meta.id)?;
         let meta_source = canonicalize_existing_dir(&meta.source_workspace_root)?;
         if meta_source != self.source_workspace_root {
             return Err("Worktree source root does not match current workspace".to_string());
         }
         let meta_root = normalize_lexical(&meta.root)?;
-        if let Ok(registry) = self.load_registry_unlocked().await {
-            if let Some(record) = registry
-                .records
-                .iter()
-                .find(|record| record.meta.id == meta.id)
-            {
-                let record_root = normalize_lexical(&record.meta.root)?;
-                if record_root != meta_root {
-                    return Err(format!(
-                        "Worktree '{}' root mismatch: '{}' != '{}'",
-                        meta.id,
-                        meta_root.display(),
-                        record_root.display()
-                    ));
-                }
-                return Ok(record.meta.clone());
-            }
+        let registry = self.load_registry_unlocked().await?;
+        let record = registry
+            .records
+            .iter()
+            .find(|record| record.meta.id == meta.id)
+            .ok_or_else(|| format!("Worktree '{}' is not registered", meta.id))?;
+        let record_root = normalize_lexical(&record.meta.root)?;
+        if record_root != meta_root {
+            return Err(format!(
+                "Worktree '{}' root mismatch: '{}' != '{}'",
+                meta.id,
+                meta_root.display(),
+                record_root.display()
+            ));
+        }
+        let record_source = canonicalize_existing_dir(&record.meta.source_workspace_root)?;
+        if record_source != meta_source {
+            return Err(format!("Worktree '{}' source root mismatch", meta.id));
+        }
+        Ok(record.meta.clone())
+    }
+
+    pub async fn validate_legacy_task_agent_worktree_meta(
+        &self,
+        meta: &WorktreeMeta,
+    ) -> Result<WorktreeMeta, String> {
+        validate_worktree_id(&meta.id)?;
+        if meta.kind != "task_agent" {
+            return Err("Legacy worktree metadata must be task_agent kind".to_string());
+        }
+        if meta.task_id.as_deref().unwrap_or_default().is_empty()
+            || meta.card_id.as_deref().unwrap_or_default().is_empty()
+            || meta.agent_id.as_deref().unwrap_or_default().is_empty()
+        {
+            return Err("Legacy task-agent worktree metadata is missing identity".to_string());
+        }
+        let meta_source = canonicalize_existing_dir(&meta.source_workspace_root)?;
+        if meta_source != self.source_workspace_root {
+            return Err("Worktree source root does not match current workspace".to_string());
+        }
+        let meta_root = normalize_lexical(&meta.root)?;
+        if let Ok(validated) = self.validate_worktree_meta_strict(meta).await {
+            return Ok(validated);
         }
         let discovered = git::list_git_worktrees(&self.source_workspace_root)
             .into_iter()
@@ -1422,7 +1455,8 @@ fn cleanup_blockers_for_item(
     }
     if !request.allow_shared && item.shared {
         blockers.push("shared".to_string());
-    } else if !request.allow_shared && item.reference_count > 0 {
+    }
+    if item.reference_count > 0 {
         blockers.push("referenced".to_string());
     }
     match item.age_hours {
@@ -1460,9 +1494,14 @@ fn summarize_inventory(worktrees: &[WorktreeInspection]) -> WorktreeInventorySum
         if item.shared {
             summary.shared += 1;
         }
+        let unknown = item.status.error.is_some()
+            || (item.base_commit.is_none() && item.base_branch.is_none());
+        if unknown {
+            summary.unknown += 1;
+        }
         if item.changed_files > 0 || item.status.dirty {
             summary.dirty += 1;
-        } else if !item.stale && !item.conflicted {
+        } else if !item.stale && !item.conflicted && !unknown {
             summary.clean += 1;
         }
         if item.cleanup_candidate {
@@ -1762,6 +1801,32 @@ mod worktree_registry_tests {
     }
 
     #[tokio::test]
+    async fn worktree_registry_create_without_identity_has_no_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let service = WorktreeService::new(cache, source).unwrap();
+        let created = service
+            .create_worktree(CreateWorktreeRequest {
+                branch: Some("refact/chat/unreferenced-create".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let view = service
+            .get_worktree(&created.worktree.meta.id)
+            .await
+            .unwrap();
+
+        assert_eq!(view.reference_count, 0);
+        assert!(view.references.is_empty());
+    }
+
+    #[tokio::test]
     async fn worktree_registry_diff_returns_changed_files_and_patch() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("repo");
@@ -1939,6 +2004,9 @@ mod worktree_registry_tests {
             .unwrap();
         assert!(plan.candidates.is_empty());
         assert!(plan.skipped.iter().any(|item| item.reason == "diff_error"));
+        let inventory = service.inspect_worktrees_with_min_age(24).await.unwrap();
+        assert_eq!(inventory.summary.clean, 0);
+        assert_eq!(inventory.summary.unknown, 1);
     }
 
     #[tokio::test]
@@ -2601,6 +2669,81 @@ mod worktree_registry_tests {
         let plan = service
             .cleanup_worktrees_dry_run(WorktreeCleanupRequest {
                 ids: vec![referenced.worktree.meta.id.clone()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(plan.candidates.is_empty());
+        assert!(plan.skipped.iter().any(|item| item.reason == "referenced"));
+    }
+
+    #[tokio::test]
+    async fn worktree_hygiene_allow_shared_still_blocks_single_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let service = WorktreeService::new(cache, source).unwrap();
+        let referenced = service
+            .create_worktree(CreateWorktreeRequest {
+                branch: Some("refact/chat/allow-shared-single".to_string()),
+                chat_id: Some("chat-referenced".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        mark_worktree_old(&service, &referenced.worktree.meta.id, 48).await;
+
+        let plan = service
+            .cleanup_worktrees_dry_run(WorktreeCleanupRequest {
+                ids: vec![referenced.worktree.meta.id.clone()],
+                allow_shared: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(plan.candidates.is_empty());
+        assert!(plan.skipped.iter().any(|item| item.reason == "referenced"));
+    }
+
+    #[tokio::test]
+    async fn worktree_hygiene_allow_shared_still_blocks_shared_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let service = WorktreeService::new(cache, source).unwrap();
+        let referenced = service
+            .create_worktree(CreateWorktreeRequest {
+                branch: Some("refact/chat/allow-shared-many".to_string()),
+                chat_id: Some("chat-referenced".to_string()),
+                kind: Some("chat".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        service
+            .add_reference(
+                &referenced.worktree.meta.id,
+                WorktreeReference {
+                    kind: "chat".to_string(),
+                    chat_id: Some("chat-referenced-2".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        mark_worktree_old(&service, &referenced.worktree.meta.id, 48).await;
+
+        let plan = service
+            .cleanup_worktrees_dry_run(WorktreeCleanupRequest {
+                ids: vec![referenced.worktree.meta.id.clone()],
+                allow_shared: true,
                 ..Default::default()
             })
             .await

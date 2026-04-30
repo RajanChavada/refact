@@ -103,6 +103,7 @@ function makePulse(): BuddyPulse {
       total: 4,
       clean: 2,
       dirty: 1,
+      unknown: 0,
       stale: 1,
       conflicted: 0,
       shared: 1,

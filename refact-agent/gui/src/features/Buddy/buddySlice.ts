@@ -129,6 +129,7 @@ export function defaultBuddyPulse(): BuddyPulse {
       total: 0,
       clean: 0,
       dirty: 0,
+      unknown: 0,
       stale: 0,
       conflicted: 0,
       shared: 0,

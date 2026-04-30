@@ -13,6 +13,7 @@ import { useEventsBusForIDE } from "../../hooks/useEventBusForIDE";
 import {
   updateChatParams,
   useCreateWorktreeMutation,
+  useDeleteWorktreeMutation,
   useListWorktreesQuery,
   useOpenWorktreeMutation,
   type WorktreeMeta,
@@ -77,6 +78,7 @@ export const WorktreeControl: React.FC = () => {
   const { openFolderInNewWindow } = useEventsBusForIDE();
   const { data, isLoading } = useListWorktreesQuery(undefined);
   const [createWorktree, createState] = useCreateWorktreeMutation();
+  const [deleteWorktree] = useDeleteWorktreeMutation();
   const [openWorktree] = useOpenWorktreeMutation();
 
   const records = data?.worktrees ?? EMPTY_WORKTREE_RECORDS;
@@ -149,19 +151,26 @@ export const WorktreeControl: React.FC = () => {
         const response = await createWorktree({
           branch,
           base_branch: baseBranch,
-          chat_id: chatId,
           kind: "chat",
         }).unwrap();
         const attached = await attachWorktree(response.worktree.meta);
         if (attached) {
           setCreateOpen(false);
           setMenuOpen(false);
+        } else {
+          await deleteWorktree({
+            id: response.worktree.meta.id,
+            delete_branch: true,
+          }).unwrap();
+          setCreateError(
+            "Worktree attach failed; created worktree was deleted.",
+          );
         }
       } catch (error) {
         setCreateError(worktreeErrorText(error));
       }
     },
-    [attachWorktree, chatId, createWorktree],
+    [attachWorktree, chatId, createWorktree, deleteWorktree],
   );
 
   const handleCopyPath = useCallback(() => {
