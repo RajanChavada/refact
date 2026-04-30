@@ -4,142 +4,81 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://docs.refact.ai/_astro/logo-dark.CCzD55EA.svg">
     <source media="(prefers-color-scheme: light)" srcset="https://docs.refact.ai/_astro/logo-light.CblxRz3x.svg">
-    <!-- Fallback if neither preference is set -->
-    <img alt="Refact.ai logo" src="https://docs.refact.ai/_astro/logo-dark.CCzD55EA.svg" width="200">
+    <img alt="Refact logo" src="https://docs.refact.ai/_astro/logo-dark.CCzD55EA.svg" width="200">
   </picture>
-  <h1 align="center">Refact - Open Sourced AI Software Development Agent</h1>
+  <h1 align="center">Refact</h1>
+  <p align="center">Open-source, local-first AI coding assistant for IDE chat, autonomous agent workflows, and code completion.</p>
 </div>
 
 <div align="center">
-  <a href="https://github.com/smallcloudai/refact/stargazers"><img src="https://img.shields.io/github/stars/smallcloudai/refact?style=for-the-badge&color=blue" alt="Stargazers"></a>
-  <a href="https://docs.refact.ai"><img src="https://img.shields.io/badge/documentation-blue?logo=googledocs&logoColor=FFE165&style=for-the-badge" alt="Check out the documentation"></a>
-
+  <a href="https://github.com/smallcloudai/refact/stargazers"><img src="https://img.shields.io/github/stars/smallcloudai/refact?style=for-the-badge&color=blue" alt="GitHub stars"></a>
+  <a href="https://docs.refact.ai"><img src="https://img.shields.io/badge/documentation-blue?logo=googledocs&logoColor=FFE165&style=for-the-badge" alt="Documentation"></a>
+  <a href="https://github.com/smallcloudai/refact/issues"><img src="https://img.shields.io/badge/issues-github?style=for-the-badge" alt="GitHub issues"></a>
 </div>
 
-## **Refact Cloud is shutting down soon.** [Read the announcement.](https://example.com/refact-cloud-is-shutting-down)
+Refact runs a local Rust engine (`refact-lsp`) from your IDE and connects only to the BYOK providers or local model runtimes you configure. The supported path is local-first: install the IDE plugin, choose your model provider, and keep project context, indexes, trajectories, and task state on your machine.
 
-Refact continues as an open-source, local-first/BYOK coding agent. The local engine, VS Code and JetBrains plugins, BYOK providers, local models, and agent integrations continue to work.
+## What Refact does
 
+- **IDE chat** with project-aware context, file mentions, selected code, images, and streaming responses.
+- **Autonomous agent mode** that can inspect, edit, test, and iterate on code with confirmation controls.
+- **Code completion** powered by the local engine, workspace files, AST context, and provider capabilities.
+- **Local code intelligence** through AST indexes, semantic search, workspace tree/search tools, and file-aware prompts.
+- **Provider choice** across BYOK APIs, OpenAI-compatible endpoints, hosted provider APIs, and local runtimes such as Ollama, LM Studio, and vLLM.
+- **Tool integrations** for GitHub, GitLab, Bitbucket, PostgreSQL, MySQL, PDB, command-line tools, long-running services, browser automation, and MCP.
+- **Knowledge, tasks, and trajectories** for reusable project memory, Kanban-style agent work, checkpoints, and resumable chat history.
 
+## Quickstart
 
-Refact.ai is the open-source AI Agent that handles engineering tasks end-to-end. It deeply understands your codebases and integrates with your tools, databases, and browsers to automate complex, multi-step tasks.
+1. **Install an IDE plugin**
+   - VS Code: follow the [VS Code installation guide](https://docs.refact.ai/installation/vs-code/).
+   - JetBrains IDEs: follow the [JetBrains installation guide](https://docs.refact.ai/installation/jetbrains/).
+2. **Open a workspace** and launch the Refact sidebar or tool window. The plugin starts the local `refact-lsp` engine on localhost.
+3. **Configure a provider** in **Provider Setup**.
+   - Add a BYOK provider such as OpenAI, Anthropic, Google Gemini, OpenRouter, DeepSeek, Groq, xAI, Qwen, Kimi, Zhipu, MiniMax, Doubao, GitHub Copilot, Claude Code, or a custom OpenAI-compatible endpoint.
+   - Or add a local runtime such as Ollama, LM Studio, or vLLM.
+   - Refact discovers available models from the provider/runtime configuration instead of relying on a fixed model list.
+4. **Pick defaults** in **Default Models** for chat, agent work, and completion where applicable.
+5. **Start using Refact**: ask questions in chat, run agent tasks, request code edits, or accept completions in the editor.
 
+No hosted Refact account, managed inference endpoint, or Refact-issued API key is required for local/BYOK usage.
 
-## 🚀 Seamless Integration with Your Workflow
+## Repository map
 
+| Area | Path | Purpose |
+| --- | --- | --- |
+| Agent Engine | `refact-agent/engine/` | Rust `refact-lsp` HTTP/LSP engine, providers, tools, indexes, integrations |
+| Agent GUI | `refact-agent/gui/` | React/Vite chat UI package used by IDE webviews and standalone development |
+| VS Code extension | `extra/refact-vscode/` | VS Code host integration |
+| JetBrains plugin | `extra/refact-intellij/` | JetBrains host integration |
+| Docs site | `docs/` | Astro/Starlight documentation site |
 
-### ⚡ Why Choose Refact Agent?
+## Developer quick commands
 
-- ✅ **Local/BYOK by default:** Run the local Refact engine and connect only the model providers or local runtimes you configure.
-- 🧠 **Access State-of-the-Art Models:** Use GPT-5, Claude 4.5, Gemini 3.0, DeepSeek, local models, and more with AI Agent or for chat queries.
-- 🔑 **Bring Your Own Key (BYOK):** Connect your API key and use any LLM: OpenAI, Anthropic, Google, DeepSeek, Qwen, and others.
-- 💬 **Integrated IDE Chat:** Integrate with GitHub, PostgreSQL, Docker, and more. Refact.ai Agent accesses your resources and handles related operations autonomously, mimicking your workflow.
-
-### 🎉  Hear from our Community
-
-Our Ambassadors shared remarkable stories of how they transform weeks of coding into minutes with Refact.ai Agent!
-
-1️. How Refact.ai built 99.9% of an IoT cloud app [Read](https://www.linkedin.com/posts/refactai_refactai-agent-activity-7308103386451578881-FO23/)
-
-2️. How AI-coded prototypes help UX teams deliver real value [Read](https://medium.com/@siarheimardovich/how-ai-coded-prototypes-help-ux-teams-deliver-real-value-b51eb2ea5167)
-
-3️. 80 hours of building from scratch — instead done in 30 minutes [Read more](https://www.linkedin.com/posts/refactai_refactai-users-stories-activity-7310996174864289793-692-/)
-
-4️. 3 weeks of waiting for a functional GUI? Built in just 14 minutes [Read more](https://www.linkedin.com/posts/refactai_refactai-users-stories-activity-7310996174864289793-692-/)
-
-5. Built an automated SEO Content Generator in 60 minutes with Refact.ai [Read more](https://refact.ai/blog/2025/automated-seo-content-generator-in-60-minutes/)
-
-
-
-📜 [View Full List of Supported Models](https://docs.refact.ai/supported-models/)
-
-## 📚 Table of Contents
-
-- 🚀 [Core Features and Functionality](#-core-features-and-functionality)
-- 🤖 [Which Tasks Can Refact Help You With?](#-which-tasks-can-refact-help-you-with)
-- ⚙️ [QuickStart](#%EF%B8%8F-quickstart)
-- 🔌 [Getting Started with Plugins](#-getting-started-with-plugins)
-- 📖 [Documentation](#-documentation)
-- 🥇 [Contribution](#-contribution)
-
-## 🚀 Core Features and Functionality
-
-✅ **Unlimited accurate auto-completion** with context awareness – Powered by Qwen2.5-Coder-1.5B, utilizing Retrieval-Augmented Generation (RAG).
-
-![auto-completion](https://lh7-rt.googleusercontent.com/docsz/AD_4nXfClhl11Ul0YQjDTZJvrfhsj3bqK_VIz6bFfbTRc62dsMOz4LK4u72i9-gLTQDIgm0yChmFe57hvUxSoI2fQ5DSntna7_Ch0qbGx5zcB-othfwKnoYkbt3M3YgGFlrqFszuDEBhUw?key=zllGjEBckkx13bRZ6JIqX6qr)
-
-✅ **Integrated in-IDE Chat** – AI deeply understands your code and provides relevant, intelligent answers.
-
-✅ **Integrated with Tools** – Works with GitHub, GitLab, PostgreSQL, MySQL, Pdb, Docker, and shell commands.
-
-![integrations](https://lh7-rt.googleusercontent.com/docsz/AD_4nXc4DWYXF73AgPWAaFFGLTqEprWwA0im8R_A1QMo4QW4pTnSi1MCoP9L8udMZb5FPyN-CdgefaxJFGpX2ndn5nkjGBF2b_hZBNHogM7IM6SPvUIvUd9iE1lYIq7q-TB2qKzSGLk00A?key=zllGjEBckkx13bRZ6JIqX6qr)
-
-✅ **State-of-the-Art Models** – Use GPT-5, Claude 4.5, Gemini 3.0, DeepSeek Reasoner, and more with AI Agent or for chat queries.
-
-✅ **Bring Your Own Key (BYOK)** – Use your own API keys for external LLMs.
-
-![BYOK](https://lh7-rt.googleusercontent.com/docsz/AD_4nXe1UDsuaER6WMxAnKEwz15T3OPslkpSo2vNGMGaNoEiZOJvAptY8yEvND_rI23q_5Sof1DceexyrW5x6oUwcpVr5KQvWUByrN_TnLGVY2HG_0sg8uWnRb14jKAes2MBDPM37EQO?key=zllGjEBckkx13bRZ6JIqX6qr)
-
-
-## 🤖 Which Tasks Can Refact Help You With?
-
-- 🏗 **Generate code** from natural language prompts (even with typos).
-
-- 🔄 **Refactor code** for better quality and readability.
-
-- 📖 **Explain code** to quickly understand unfamiliar code.
-
-- 🐞 **Debug code** to detect and fix errors faster.
-
-- 🧪 **Generate unit tests** for reliable code.
-
-- 📌 **Code Review** with AI-assisted suggestions.
-
-- 📜 **Create Documentation** to keep knowledge up to date.
-
-- 🏷 **Generate Docstrings** for structured documentation.
-
-
-
-## ⚙️ QuickStart
-
-You can install the Refact repository without Docker:
 ```bash
-pip install .
+# Engine
+(cd refact-agent/engine && cargo check && cargo test --lib)
+
+# GUI
+(cd refact-agent/gui && npm ci && npm run types && npm run lint && npm run test)
+
+# Docs
+(cd docs && npm ci && npm run build)
 ```
 
-For GPU with CUDA capability >= 8.0 and flash-attention v2 support:
-```bash
-FLASH_ATTENTION_FORCE_BUILD=TRUE MAX_JOBS=4 INSTALL_OPTIONAL=TRUE pip install .
-```
+See the dedicated READMEs in each subproject for full development workflows.
 
+## Documentation and support
 
+- [Documentation](https://docs.refact.ai/)
+- [Provider setup (BYOK)](https://docs.refact.ai/byok/)
+- [GitHub issues](https://github.com/smallcloudai/refact/issues)
+- [GitHub discussions](https://github.com/smallcloudai/refact/discussions)
 
-### 🔌 Getting Started with Plugins
+## Contributing
 
-1. **Download Refact** for VS Code or JetBrains.
-2. Open the Refact sidebar/tool window.
-3. Configure at least one BYOK or local provider in **Provider Setup**.
-4. Select default models in **Default Models**.
+Contributions are welcome. Please open an issue or discussion for larger changes, and run the relevant engine, GUI, or docs checks before submitting a pull request.
 
+## License
 
-
-## 📖 Documentation
-
-For detailed guidance and best practices, check out our [documentation.](https://docs.refact.ai/)
-
-
-## 🥇 Contribution
-
-Want to contribute to our project? We're always open to new ideas and features!
-- **Check out GitHub Issues** – See what we're working on or suggest your own ideas.
-- **Read our Contributing Guide** – Check out `Contributing.md` to get started.
-
-Your contributions help shape the future of Refact Agent! 🚀
-
-
-### ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=smallcloudai/refact&type=Date)](https://www.star-history.com/#smallcloudai/refact&Date)
-
-**Made with ❤️ by developers who automate the boring, so you can focus on building the future.**
+Refact is distributed under the BSD-3-Clause license. See the repository license for details.
