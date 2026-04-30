@@ -938,6 +938,9 @@ pub async fn on_did_open(
     text: &String,
     _language_id: &String,
 ) {
+    if path_is_refact_import_internal(cpath) {
+        return;
+    }
     let mut doc = Document::new(cpath);
     doc.update_text(text);
     info!(
@@ -978,6 +981,9 @@ pub async fn on_did_close(gcx: Arc<ARwLock<GlobalContext>>, cpath: &PathBuf) {
 }
 
 pub async fn on_did_change(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, text: &String) {
+    if path_is_refact_import_internal(path) {
+        return;
+    }
     let t0 = Instant::now();
     let (doc_arc, dirty_arc, mark_dirty) = {
         let mut doc = Document::new(path);
@@ -1025,6 +1031,9 @@ pub async fn on_did_change(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, tex
 }
 
 pub async fn on_did_delete(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf) {
+    if path_is_refact_import_internal(path) {
+        return;
+    }
     info!(
         "on_did_delete {}",
         crate::nicer_logs::last_n_chars(&path.to_string_lossy().to_string(), 30)
@@ -1275,6 +1284,15 @@ mod tests {
         files
     }
 
+    async fn cache_dirty_value(gcx: &Arc<ARwLock<GlobalContext>>) -> f64 {
+        let dirty = {
+            let gcx_locked = gcx.read().await;
+            gcx_locked.documents_state.cache_dirty.clone()
+        };
+        let value = *dirty.lock().await;
+        value
+    }
+
     #[tokio::test]
     async fn workspace_scan_excludes_refact_import_manifest() {
         let temp = tempfile::tempdir().unwrap();
@@ -1327,6 +1345,135 @@ mod tests {
         let files = scan_workspace(temp.path()).await;
 
         assert!(files.contains(&normalized(&skill)));
+    }
+
+    #[tokio::test]
+    async fn on_did_open_ignores_refact_import_internal_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("staging")
+            .join("x.md");
+        let text = "staged content".to_string();
+        let language_id = "markdown".to_string();
+
+        on_did_open(gcx.clone(), &path, &text, &language_id).await;
+
+        let (has_doc, active_file_path) = {
+            let gcx_locked = gcx.read().await;
+            (
+                gcx_locked
+                    .documents_state
+                    .memory_document_map
+                    .contains_key(&path),
+                gcx_locked.documents_state.active_file_path.clone(),
+            )
+        };
+        assert!(!has_doc);
+        assert!(active_file_path.is_none());
+        assert_eq!(cache_dirty_value(&gcx).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn on_did_change_ignores_refact_import_internal_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("staging")
+            .join("x.md");
+        let text = "changed staged content".to_string();
+
+        on_did_change(gcx.clone(), &path, &text).await;
+
+        let (has_doc, active_file_path, workspace_files_len) = {
+            let gcx_locked = gcx.read().await;
+            let workspace_files_len = gcx_locked
+                .documents_state
+                .workspace_files
+                .lock()
+                .unwrap()
+                .len();
+            (
+                gcx_locked
+                    .documents_state
+                    .memory_document_map
+                    .contains_key(&path),
+                gcx_locked.documents_state.active_file_path.clone(),
+                workspace_files_len,
+            )
+        };
+        assert!(!has_doc);
+        assert!(active_file_path.is_none());
+        assert_eq!(workspace_files_len, 0);
+        assert_eq!(cache_dirty_value(&gcx).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn on_did_delete_ignores_refact_import_internal_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("competitors.json");
+        let mut doc = Document::new(&path);
+        doc.update_text(&"{}".to_string());
+        {
+            let mut gcx_locked = gcx.write().await;
+            gcx_locked
+                .documents_state
+                .memory_document_map
+                .insert(path.clone(), Arc::new(ARwLock::new(doc)));
+        }
+
+        on_did_delete(gcx.clone(), &path).await;
+
+        let has_doc = {
+            let gcx_locked = gcx.read().await;
+            gcx_locked
+                .documents_state
+                .memory_document_map
+                .contains_key(&path)
+        };
+        assert!(has_doc);
+        assert_eq!(cache_dirty_value(&gcx).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn on_did_open_keeps_refact_skills_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("skills")
+            .join("example")
+            .join("SKILL.md");
+        let text = "# Example skill".to_string();
+        let language_id = "markdown".to_string();
+
+        on_did_open(gcx.clone(), &path, &text, &language_id).await;
+
+        let (has_doc, active_file_path) = {
+            let gcx_locked = gcx.read().await;
+            (
+                gcx_locked
+                    .documents_state
+                    .memory_document_map
+                    .contains_key(&path),
+                gcx_locked.documents_state.active_file_path.clone(),
+            )
+        };
+        assert!(has_doc);
+        assert_eq!(active_file_path, Some(path));
+        assert!(cache_dirty_value(&gcx).await > 0.0);
     }
 
     #[test]

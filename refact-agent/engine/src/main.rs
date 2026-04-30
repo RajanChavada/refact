@@ -193,6 +193,8 @@ async fn main() {
         std::process::exit(0);
     }
 
+    // Buddy starts in background tasks below, so startup import runtime events are best-effort.
+    // The persisted last_report is picked up by Buddy pulse after initialization.
     let _ = ext::competitor_import::run_global_import(gcx.clone()).await;
 
     if cmdline.ast {
