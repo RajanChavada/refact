@@ -996,7 +996,19 @@ mod tests {
 
         let req = LlmRequest::new(
             "minimax/MiniMax-M2".to_string(),
-            vec![ChatMessage::new("user".to_string(), "test".to_string())],
+            vec![
+                ChatMessage::new("user".to_string(), "test".to_string()),
+                ChatMessage {
+                    role: "assistant".to_string(),
+                    content: crate::call_validation::ChatContent::SimpleText("visible".to_string()),
+                    thinking_blocks: Some(vec![json!({
+                        "type": "thinking",
+                        "thinking": "hidden",
+                        "signature": "sig"
+                    })]),
+                    ..Default::default()
+                },
+            ],
         )
         .with_cache_control(CacheControl::Ephemeral)
         .with_reasoning(ReasoningIntent::High)
@@ -1024,6 +1036,14 @@ mod tests {
         assert!(http.body.get("tools").is_none());
         assert!(http.body.get("tool_choice").is_none());
         assert!(http.headers.get("anthropic-beta").is_none());
+        let messages = http.body["messages"].as_array().unwrap();
+        assert!(!messages.iter().any(|message| {
+            message["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|block| block["type"] == "thinking")
+        }));
     }
 
     #[test]

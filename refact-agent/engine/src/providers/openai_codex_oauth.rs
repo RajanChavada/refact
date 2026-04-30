@@ -636,8 +636,11 @@ fn raw_http_response(status: u16, body: &str) -> String {
         _ => "Error",
     };
     format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status, reason, body.len(), body
+        "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason,
+        body.as_bytes().len(),
+        body
     )
 }
 
@@ -690,6 +693,7 @@ mod tests {
 
         assert!(response
             .contains("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'"));
-        assert!(response.contains("Content-Type: text/html"));
+        assert!(response.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(response.contains("Content-Length: 2"));
     }
 }

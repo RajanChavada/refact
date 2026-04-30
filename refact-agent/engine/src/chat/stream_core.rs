@@ -165,18 +165,26 @@ async fn force_refresh_openai_codex_for_retry(
         .await;
 
     if !provider.auth_state_matches(&previous_tokens, &previous_session_id) {
-        {
+        let changed = {
             let gcx_locked = gcx.read().await;
             let mut registry = gcx_locked.providers.write().await;
-            if let Some(current) = registry.get_mut("openai_codex").and_then(|p| {
-                p.as_any_mut()
-                    .downcast_mut::<crate::providers::openai_codex::OpenAICodexProvider>()
-            }) {
-                current.update_auth_state_from(&provider);
-            }
-        }
+            registry
+                .get_mut("openai_codex")
+                .and_then(|p| {
+                    p.as_any_mut()
+                        .downcast_mut::<crate::providers::openai_codex::OpenAICodexProvider>()
+                })
+                .map(|current| {
+                    current.update_auth_state_from_if_current(
+                        &provider,
+                        &previous_tokens,
+                        &previous_session_id,
+                    )
+                })
+                .unwrap_or(false)
+        };
 
-        {
+        if changed {
             let mut gcx_locked = gcx.write().await;
             gcx_locked.caps = None;
             gcx_locked.caps_last_attempted_ts = 0;

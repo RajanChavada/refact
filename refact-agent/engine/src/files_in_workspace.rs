@@ -507,6 +507,34 @@ pub fn get_vcs_type(path: &Path) -> Option<&'static str> {
 //         .unwrap_or(false)
 // }
 
+fn path_has_hidden_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
+    })
+}
+
+fn path_has_allowed_hidden_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, Component::Normal(name) if name.to_string_lossy() == ".refact")
+    })
+}
+
+fn is_valid_file_for_scan(
+    path: &PathBuf,
+    scan_root: &Path,
+    allow_hidden_folders: bool,
+    ignore_size_thresholds: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    is_valid_file(path, true, ignore_size_thresholds)?;
+    if !allow_hidden_folders {
+        let rel_path = path.strip_prefix(scan_root).unwrap_or(path.as_path());
+        if path_has_hidden_component(rel_path) && !path_has_allowed_hidden_component(rel_path) {
+            return Err("Parent dir starts with a dot".into());
+        }
+    }
+    Ok(())
+}
+
 async fn _ls_files_under_version_control_recursive(
     all_files: &mut Vec<PathBuf>,
     vcs_folders: &mut Vec<PathBuf>,
@@ -517,16 +545,16 @@ async fn _ls_files_under_version_control_recursive(
     ignore_size_thresholds: bool,
     check_blocklist: bool,
 ) {
-    let mut candidates: Vec<PathBuf> = vec![crate::files_correction::canonical_path(
-        &path.to_string_lossy().to_string(),
-    )];
+    let scan_root = crate::files_correction::canonical_path(&path.to_string_lossy().to_string());
+    let mut candidates: Vec<PathBuf> = vec![scan_root.clone()];
     let mut rejected_reasons: HashMap<String, usize> = HashMap::new();
     let mut blocklisted_dirs_cnt: usize = 0;
     while !candidates.is_empty() {
         let checkme = candidates.pop().unwrap();
         if checkme.is_file() {
-            let maybe_valid = is_valid_file(
+            let maybe_valid = is_valid_file_for_scan(
                 &checkme,
+                &scan_root,
                 allow_files_in_hidden_folders,
                 ignore_size_thresholds,
             );
@@ -580,8 +608,18 @@ async fn _ls_files_under_version_control_recursive(
                     };
                 }
                 for x in v.iter() {
-                    let maybe_valid =
-                        is_valid_file(x, allow_files_in_hidden_folders, ignore_size_thresholds);
+                    let indexing_settings = indexing_everywhere.indexing_for_path(x);
+                    let rel_for_blocklist = x.strip_prefix(&scan_root).unwrap_or(x);
+                    if check_blocklist && is_blocklisted(&indexing_settings, rel_for_blocklist) {
+                        blocklisted_dirs_cnt += 1;
+                        continue;
+                    }
+                    let maybe_valid = is_valid_file_for_scan(
+                        x,
+                        &scan_root,
+                        allow_files_in_hidden_folders,
+                        ignore_size_thresholds,
+                    );
                     match maybe_valid {
                         Ok(_) => {
                             all_files.push(x.clone());
@@ -597,7 +635,8 @@ async fn _ls_files_under_version_control_recursive(
             } else {
                 // Don't have version control
                 let indexing_settings = indexing_everywhere.indexing_for_path(&checkme);
-                if check_blocklist && is_blocklisted(&indexing_settings, &checkme) {
+                let rel_for_blocklist = checkme.strip_prefix(&scan_root).unwrap_or(&checkme);
+                if check_blocklist && is_blocklisted(&indexing_settings, rel_for_blocklist) {
                     blocklisted_dirs_cnt += 1;
                     continue;
                 }

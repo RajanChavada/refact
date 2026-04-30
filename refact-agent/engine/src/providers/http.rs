@@ -51,7 +51,7 @@ use crate::providers::traits::{
 use super::openrouter::OpenRouterProvider;
 use super::google_gemini::GoogleGeminiProvider;
 use super::claude_code::ClaudeCodeProvider;
-use super::openai_codex::{AuthSource, OpenAICodexProvider, UsageRequestError};
+use super::openai_codex::{OpenAICodexProvider, UsageRequestError};
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -1266,8 +1266,7 @@ async fn handle_v1_provider_remove_custom_model_impl(
         ));
     }
 
-    // Capture previous state for rollback
-    let (config_dir, previous_custom_models) = {
+    let (config_dir, previous_custom_models, previous_enabled_models, previous_disabled_models) = {
         let gcx_locked = gcx.read().await;
         let mut registry = gcx_locked.providers.write().await;
 
@@ -1285,8 +1284,9 @@ async fn handle_v1_provider_remove_custom_model_impl(
             ));
         }
 
-        // Capture previous state for rollback
         let previous = provider.custom_models().clone();
+        let previous_enabled = provider.enabled_models().to_vec();
+        let previous_disabled = provider.disabled_models().to_vec();
 
         if !provider.remove_custom_model(&request.model_id) {
             return Err(ScratchError::new(
@@ -1294,8 +1294,14 @@ async fn handle_v1_provider_remove_custom_model_impl(
                 format!("Custom model '{}' not found", request.model_id),
             ));
         }
+        provider.set_model_enabled(&request.model_id, false);
 
-        (gcx_locked.config_dir.clone(), previous)
+        (
+            gcx_locked.config_dir.clone(),
+            previous,
+            previous_enabled,
+            previous_disabled,
+        )
     };
 
     // Try to save updated config, rollback on failure
@@ -1304,9 +1310,20 @@ async fn handle_v1_provider_remove_custom_model_impl(
         let gcx_locked = gcx.read().await;
         let mut registry = gcx_locked.providers.write().await;
         if let Some(provider) = registry.get_mut(provider_name) {
-            // Restore the removed model
             if let Some(config) = previous_custom_models.get(&request.model_id) {
                 provider.add_custom_model(request.model_id.clone(), config.clone());
+            }
+            for model in provider.enabled_models().to_vec() {
+                provider.set_model_enabled(&model, false);
+            }
+            for model in provider.disabled_models().to_vec() {
+                provider.set_model_enabled(&model, true);
+            }
+            for model in &previous_enabled_models {
+                provider.set_model_enabled(model, true);
+            }
+            for model in &previous_disabled_models {
+                provider.set_model_enabled(model, false);
             }
         }
         return Err(e);
@@ -1323,7 +1340,10 @@ async fn handle_v1_provider_remove_custom_model_impl(
 /// Merge new settings with existing config, preserving secret fields when value is "***"
 const DERIVED_SETTINGS_KEYS: &[&str] = &[
     "auth_status",
+    "auth_source",
     "oauth_connected",
+    "cli_refresh_managed",
+    "api_key_ready",
     "claude_cli_path",
     "readonly",
 ];
@@ -1982,7 +2002,7 @@ fn html_response(
 
     Response::builder()
         .status(StatusCode::OK)
-        .header("Content-Type", "text/html")
+        .header("Content-Type", "text/html; charset=utf-8")
         .header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'",
@@ -2373,10 +2393,7 @@ async fn fetch_openai_codex_usage_with_refresh(
                 )
                 .await
                 .map_err(|error| {
-                    OpenAICodexProvider::usage_request_error_to_string(
-                        error,
-                        AuthSource::InAppOAuth,
-                    )
+                    OpenAICodexProvider::usage_request_error_to_string(error, retry_context.source)
                 })
         }
         Err(error) => Err(OpenAICodexProvider::usage_request_error_to_string(
@@ -2410,8 +2427,7 @@ async fn sync_openai_codex_auth_state(
             "Failed to resolve OpenAI Codex provider type".to_string(),
         ));
     };
-    current.update_auth_state_from(source);
-    Ok(true)
+    Ok(current.update_auth_state_from_if_current(source, previous_tokens, previous_session_id))
 }
 
 fn ensure_openai_codex_session_id(yaml_map: &mut serde_yaml::Mapping) -> String {
@@ -2434,6 +2450,15 @@ async fn save_provider_oauth_tokens(
     provider_name: &str,
     tokens_value: &serde_yaml::Value,
 ) -> Result<(), ScratchError> {
+    let _openai_codex_refresh_guard = if provider_name == "openai_codex" {
+        Some(
+            OpenAICodexProvider::lock_refresh_guard()
+                .await
+                .map_err(|e| ScratchError::new(StatusCode::CONFLICT, e))?,
+        )
+    } else {
+        None
+    };
     let providers_dir = config_dir.join("providers.d");
     let config_path = providers_dir.join(format!("{}.yaml", provider_name));
 
@@ -2566,6 +2591,13 @@ mod tests {
             "<script>alert('xss')</script> & \"quote\"",
         )
         .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("Content-Type")
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
         let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
 
@@ -2746,6 +2778,90 @@ mod tests {
         );
     }
 
+    async fn assert_remove_custom_model_clears_enabled_entry(
+        provider_name: &'static str,
+        provider: Box<dyn crate::providers::traits::ProviderTrait>,
+    ) {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let config_dir = gcx.read().await.config_dir.clone();
+        {
+            let gcx_locked = gcx.read().await;
+            let mut registry = gcx_locked.providers.write().await;
+            registry.add(provider);
+        }
+
+        handle_v1_provider_remove_custom_model_impl(
+            gcx.clone(),
+            provider_name,
+            hyper::body::Bytes::from(r#"{"model_id":"stale-custom"}"#),
+        )
+        .await
+        .unwrap();
+
+        let (enabled_models, has_custom_model) = {
+            let gcx_locked = gcx.read().await;
+            let registry = gcx_locked.providers.read().await;
+            let provider = registry.get(provider_name).unwrap();
+            (
+                provider.enabled_models().to_vec(),
+                provider.custom_models().contains_key("stale-custom"),
+            )
+        };
+        assert!(!enabled_models.iter().any(|model| model == "stale-custom"));
+        assert!(!has_custom_model);
+
+        let content = tokio::fs::read_to_string(
+            config_dir
+                .join("providers.d")
+                .join(format!("{provider_name}.yaml")),
+        )
+        .await
+        .unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
+        assert!(yaml
+            .get("enabled_models")
+            .and_then(|value| value.as_sequence())
+            .map(|models| models.is_empty())
+            .unwrap_or(false));
+        assert!(yaml
+            .get("custom_models")
+            .and_then(|value| value.as_mapping())
+            .map(|models| models.is_empty())
+            .unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn custom_provider_remove_custom_model_clears_stale_enabled_entry() {
+        let provider = crate::providers::custom::CustomProvider {
+            chat_endpoint: "https://example.com/v1/chat/completions".to_string(),
+            enabled: true,
+            enabled_models: vec!["stale-custom".to_string()],
+            custom_models: HashMap::from([(
+                "stale-custom".to_string(),
+                CustomModelConfig::default(),
+            )]),
+            ..Default::default()
+        };
+
+        assert_remove_custom_model_clears_enabled_entry("custom", Box::new(provider)).await;
+    }
+
+    #[tokio::test]
+    async fn doubao_remove_custom_model_clears_stale_enabled_entry() {
+        let provider = crate::providers::doubao::DoubaoProvider {
+            api_key: "sk-test".to_string(),
+            enabled: true,
+            enabled_models: vec!["stale-custom".to_string()],
+            custom_models: HashMap::from([(
+                "stale-custom".to_string(),
+                CustomModelConfig::default(),
+            )]),
+            ..Default::default()
+        };
+
+        assert_remove_custom_model_clears_enabled_entry("doubao", Box::new(provider)).await;
+    }
+
     #[tokio::test]
     async fn openai_codex_usage_no_token_change_does_not_replace_registry_provider() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
@@ -2795,6 +2911,55 @@ mod tests {
         assert!(!changed);
         assert_eq!(stored.enabled_models, vec!["keep-enabled".to_string()]);
         assert!(stored.custom_models.contains_key("keep-custom"));
+    }
+
+    #[tokio::test]
+    async fn openai_codex_stale_auth_sync_does_not_overwrite_newer_registry_token() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let mut current = OpenAICodexProvider::default();
+        current.oauth_tokens.access_token = "newer-access".to_string();
+        current.oauth_tokens.refresh_token = "newer-refresh".to_string();
+        current.session_id = "newer-session".to_string();
+        let previous_tokens = crate::providers::openai_codex_oauth::OAuthTokens {
+            access_token: "old-access".to_string(),
+            refresh_token: "old-refresh".to_string(),
+            ..Default::default()
+        };
+        let previous_session_id = "old-session".to_string();
+        {
+            let gcx_locked = gcx.read().await;
+            let mut registry = gcx_locked.providers.write().await;
+            registry.add(Box::new(current));
+        }
+        let mut source = OpenAICodexProvider::default();
+        source.oauth_tokens.access_token = "stale-refresh-access".to_string();
+        source.oauth_tokens.refresh_token = "stale-refresh".to_string();
+        source.session_id = "stale-refresh-session".to_string();
+
+        let changed = sync_openai_codex_auth_state(
+            gcx.clone(),
+            &source,
+            &previous_tokens,
+            &previous_session_id,
+        )
+        .await
+        .unwrap();
+
+        let stored = {
+            let gcx_locked = gcx.read().await;
+            let registry = gcx_locked.providers.read().await;
+            registry
+                .get("openai_codex")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<OpenAICodexProvider>()
+                .unwrap()
+                .clone()
+        };
+        assert!(!changed);
+        assert_eq!(stored.oauth_tokens.access_token, "newer-access");
+        assert_eq!(stored.oauth_tokens.refresh_token, "newer-refresh");
+        assert_eq!(stored.session_id, "newer-session");
     }
 
     #[tokio::test]

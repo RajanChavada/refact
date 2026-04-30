@@ -68,21 +68,66 @@ pub fn apply_openai_chat_body_quirks(
     }
 }
 
-pub fn remove_anthropic_unsupported_fields(body: &mut Value, settings: &AdapterSettings) {
-    let Some(obj) = body.as_object_mut() else {
+fn remove_key_recursively(value: &mut Value, key: &str) {
+    match value {
+        Value::Object(obj) => {
+            obj.remove(key);
+            for value in obj.values_mut() {
+                remove_key_recursively(value, key);
+            }
+        }
+        Value::Array(items) => {
+            for value in items {
+                remove_key_recursively(value, key);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn remove_anthropic_reasoning_blocks(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
+    for message in messages {
+        let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        content.retain(|block| {
+            !matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("thinking" | "redacted_thinking")
+            )
+        });
+        if content.is_empty() {
+            content.push(json!({"type": "text", "text": "(empty)"}));
+        }
+    }
+}
+
+pub fn remove_anthropic_unsupported_fields(body: &mut Value, settings: &AdapterSettings) {
+    if !body.is_object() {
+        return;
+    }
 
     if !settings.supports_cache_control {
-        obj.remove("cache_control");
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("cache_control");
+        }
+        remove_key_recursively(body, "cache_control");
     }
     if !settings.supports_tools {
-        obj.remove("tools");
-        obj.remove("tool_choice");
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("tools");
+            obj.remove("tool_choice");
+        }
     }
     if !settings.supports_reasoning {
-        obj.remove("thinking");
-        obj.remove("output_config");
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("thinking");
+            obj.remove("output_config");
+        }
+        remove_anthropic_reasoning_blocks(body);
     }
 }
 
@@ -138,5 +183,55 @@ mod tests {
         apply_openai_chat_body_quirks(&mut body, &req, &settings());
 
         assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    }
+
+    fn contains_key_recursively(value: &Value, key: &str) -> bool {
+        match value {
+            Value::Object(obj) => {
+                obj.contains_key(key)
+                    || obj
+                        .values()
+                        .any(|value| contains_key_recursively(value, key))
+            }
+            Value::Array(items) => items
+                .iter()
+                .any(|value| contains_key_recursively(value, key)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn anthropic_unsupported_flags_strip_top_level_and_nested_fields() {
+        let mut body = json!({
+            "cache_control": {"type": "ephemeral"},
+            "tools": [{"name": "blocked"}],
+            "tool_choice": {"type": "any"},
+            "thinking": {"type": "enabled", "budget_tokens": 4096},
+            "output_config": {"effort": "high"},
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "visible", "cache_control": {"type": "ephemeral"}},
+                    {"type": "thinking", "thinking": "hidden", "cache_control": {"type": "ephemeral"}},
+                    {"type": "redacted_thinking", "data": "encrypted"}
+                ]
+            }]
+        });
+        let mut settings = settings();
+        settings.supports_cache_control = false;
+        settings.supports_tools = false;
+        settings.supports_reasoning = false;
+
+        remove_anthropic_unsupported_fields(&mut body, &settings);
+
+        assert!(body.get("cache_control").is_none());
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+        assert!(!contains_key_recursively(&body, "cache_control"));
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
     }
 }

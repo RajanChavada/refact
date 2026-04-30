@@ -33,7 +33,23 @@ fn new_codex_session_id() -> String {
 }
 
 fn is_codex_model(id: &str) -> bool {
-    id.to_lowercase().contains("codex")
+    let normalized = id.trim().to_ascii_lowercase();
+    let parts: Vec<&str> = normalized
+        .split(|c| c == '-' || c == '_')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() < 3 || parts.first() != Some(&"gpt") {
+        return false;
+    }
+    let Some(codex_index) = parts.iter().position(|part| *part == "codex") else {
+        return false;
+    };
+    if codex_index < 2 {
+        return false;
+    }
+    parts[codex_index + 1..]
+        .iter()
+        .all(|part| matches!(*part, "latest" | "preview" | "mini"))
 }
 
 fn openai_codex_catalog_model_id(capability_key: &str) -> Option<&str> {
@@ -329,7 +345,7 @@ impl OpenAICodexProvider {
             .get("https://chatgpt.com/backend-api/wham/usage")
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json");
-        for (key, value) in self.chatgpt_backend_headers(chatgpt_account_id) {
+        for (key, value) in self.chatgpt_backend_metadata_headers(chatgpt_account_id) {
             req = req.header(key, value);
         }
         let resp = req.send().await.map_err(|e| {
@@ -571,7 +587,10 @@ impl OpenAICodexProvider {
         "No credentials found".to_string()
     }
 
-    fn chatgpt_backend_headers(&self, chatgpt_account_id: &str) -> HashMap<String, String> {
+    fn chatgpt_backend_metadata_headers(
+        &self,
+        chatgpt_account_id: &str,
+    ) -> HashMap<String, String> {
         let mut headers = HashMap::new();
         if !chatgpt_account_id.is_empty() {
             headers.insert(
@@ -579,10 +598,6 @@ impl OpenAICodexProvider {
                 chatgpt_account_id.to_string(),
             );
         }
-        headers.insert(
-            "OpenAI-Beta".to_string(),
-            "responses=experimental".to_string(),
-        );
         headers.insert("originator".to_string(), CODEX_ORIGINATOR.to_string());
         headers.insert("session_id".to_string(), self.session_id.clone());
         headers
@@ -592,7 +607,11 @@ impl OpenAICodexProvider {
         &self,
         chatgpt_account_id: &str,
     ) -> HashMap<String, String> {
-        let mut headers = self.chatgpt_backend_headers(chatgpt_account_id);
+        let mut headers = self.chatgpt_backend_metadata_headers(chatgpt_account_id);
+        headers.insert(
+            "OpenAI-Beta".to_string(),
+            "responses=experimental".to_string(),
+        );
         headers.insert("accept".to_string(), "text/event-stream".to_string());
         headers
     }
@@ -608,7 +627,7 @@ impl OpenAICodexProvider {
             reqwest::header::AUTHORIZATION,
             format!("Bearer {access_token}"),
         );
-        for (key, value) in self.chatgpt_backend_headers(chatgpt_account_id) {
+        for (key, value) in self.chatgpt_backend_metadata_headers(chatgpt_account_id) {
             req = req.header(key, value);
         }
 
@@ -1105,6 +1124,21 @@ impl OpenAICodexProvider {
         self.session_id = source.session_id.clone();
     }
 
+    pub(crate) fn update_auth_state_from_if_current(
+        &mut self,
+        source: &OpenAICodexProvider,
+        previous_tokens: &OAuthTokens,
+        previous_session_id: &str,
+    ) -> bool {
+        if source.auth_state_matches(previous_tokens, previous_session_id)
+            || !self.auth_state_matches(previous_tokens, previous_session_id)
+        {
+            return false;
+        }
+        self.update_auth_state_from(source);
+        true
+    }
+
     pub(crate) fn codex_cli_unmanaged_refresh_message(
         rejected_access_token: &str,
     ) -> Option<String> {
@@ -1181,7 +1215,7 @@ impl ProviderTrait for OpenAICodexProvider {
     }
 
     fn model_filter_regex(&self) -> Option<&'static str> {
-        Some(r"(?i)^gpt.*codex")
+        Some(r"(?i)^gpt[-_][a-z0-9.]+(?:[-_][a-z0-9.]+)*[-_]codex(?:[-_](?:latest|preview|mini))?$")
     }
 
     fn provider_schema(&self) -> &'static str {
@@ -1229,13 +1263,26 @@ available:
 
     fn provider_settings_as_json(&self) -> serde_json::Value {
         let auth_status = self.diagnose_auth_status();
-        let oauth_connected =
-            self.oauth_tokens.has_valid_access_token() || self.oauth_tokens.has_refresh_token();
-        let api_key_ready = !self.oauth_tokens.openai_api_key.is_empty();
+        let (resolved_source, resolved_auth) = self.resolve_auth();
+        let resolved_oauth = matches!(&resolved_auth, CodexAuth::ChatGptBackendOAuth { .. });
+        let oauth_connected = self.oauth_tokens.has_valid_access_token()
+            || self.oauth_tokens.has_refresh_token()
+            || resolved_oauth;
+        let api_key_ready = !self.oauth_tokens.openai_api_key.is_empty()
+            || matches!(&resolved_auth, CodexAuth::PlatformApiKey { .. });
+        let auth_source = match resolved_source {
+            AuthSource::InAppOAuth => "in_app_oauth",
+            AuthSource::CodexCli => "codex_cli",
+            AuthSource::None => "none",
+        };
+        let cli_refresh_managed = resolved_source == AuthSource::CodexCli
+            && matches!(&resolved_auth, CodexAuth::ChatGptBackendOAuth { .. });
 
         json!({
             "auth_status": auth_status,
+            "auth_source": auth_source,
             "oauth_connected": oauth_connected,
+            "cli_refresh_managed": cli_refresh_managed,
             "api_key_ready": api_key_ready,
             "api_key_exchange_error": self.oauth_tokens.api_key_exchange_error,
             "use_websocket": self.use_websocket,
@@ -1640,6 +1687,10 @@ mod tests {
                 p.diagnose_auth_status(),
                 "Connected (Codex CLI ChatGPT backend; refresh managed by Codex CLI)"
             );
+            let settings = p.provider_settings_as_json();
+            assert_eq!(settings["auth_source"], "codex_cli");
+            assert_eq!(settings["oauth_connected"], true);
+            assert_eq!(settings["cli_refresh_managed"], true);
         });
     }
 
@@ -1699,6 +1750,9 @@ mod tests {
     fn is_codex_model_matches_codex_named_models_only() {
         assert!(super::is_codex_model("gpt-5.3-codex"));
         assert!(super::is_codex_model("GPT-5.3-CODEX"));
+        assert!(super::is_codex_model("gpt-5-codex-preview"));
+        assert!(!super::is_codex_model("not-codex-compatible"));
+        assert!(!super::is_codex_model("gpt-5-codex-api-off"));
         assert!(!super::is_codex_model("gpt-5.4"));
         assert!(!super::is_codex_model("gpt-5.5"));
         assert!(!super::is_codex_model("gpt-4o"));
@@ -1712,6 +1766,9 @@ mod tests {
 
         assert!(re.is_match("gpt-5.3-codex"));
         assert!(re.is_match("GPT-5.3-CODEX"));
+        assert!(re.is_match("gpt-5-codex-preview"));
+        assert!(!re.is_match("not-codex-compatible"));
+        assert!(!re.is_match("gpt-5-codex-api-off"));
         assert!(!re.is_match("gpt-5.4"));
         assert!(!re.is_match("gpt-4o"));
     }
@@ -1895,6 +1952,41 @@ mod tests {
     }
 
     #[test]
+    fn openai_codex_auth_state_update_if_current_rejects_stale_current_state() {
+        let previous_tokens = OAuthTokens {
+            access_token: "old-access".to_string(),
+            ..Default::default()
+        };
+        let previous_session_id = "old-session";
+        let mut current = OpenAICodexProvider {
+            oauth_tokens: OAuthTokens {
+                access_token: "newer-access".to_string(),
+                ..Default::default()
+            },
+            session_id: "newer-session".to_string(),
+            ..Default::default()
+        };
+        let source = OpenAICodexProvider {
+            oauth_tokens: OAuthTokens {
+                access_token: "stale-refresh".to_string(),
+                ..Default::default()
+            },
+            session_id: "stale-session".to_string(),
+            ..Default::default()
+        };
+
+        let changed = current.update_auth_state_from_if_current(
+            &source,
+            &previous_tokens,
+            previous_session_id,
+        );
+
+        assert!(!changed);
+        assert_eq!(current.oauth_tokens.access_token, "newer-access");
+        assert_eq!(current.session_id, "newer-session");
+    }
+
+    #[test]
     fn openai_codex_auth_state_update_preserves_model_settings() {
         let mut current = OpenAICodexProvider {
             enabled_models: vec!["keep-enabled".to_string()],
@@ -1992,11 +2084,11 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_backend_headers_include_session_originator_and_account() {
+    fn chatgpt_backend_metadata_headers_include_only_json_safe_metadata() {
         let mut p = provider_with_oauth("tok", "acct-123");
         p.session_id = "session-test".to_string();
 
-        let headers = p.chatgpt_backend_headers("acct-123");
+        let headers = p.chatgpt_backend_metadata_headers("acct-123");
 
         assert_eq!(
             headers.get("originator").map(String::as_str),
@@ -2010,11 +2102,18 @@ mod tests {
             headers.get("chatgpt-account-id").map(String::as_str),
             Some("acct-123")
         );
+        assert!(headers.get("OpenAI-Beta").is_none());
+        assert!(headers.get("accept").is_none());
+
+        let streaming_headers = p.chatgpt_backend_streaming_headers("acct-123");
         assert_eq!(
-            headers.get("OpenAI-Beta").map(String::as_str),
+            streaming_headers.get("OpenAI-Beta").map(String::as_str),
             Some("responses=experimental")
         );
-        assert!(headers.get("accept").is_none());
+        assert_eq!(
+            streaming_headers.get("accept").map(String::as_str),
+            Some("text/event-stream")
+        );
     }
 
     #[test]
