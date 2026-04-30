@@ -1,10 +1,11 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_yaml::{Mapping, Value as YamlValue};
 use walkdir::WalkDir;
 
-use super::super::converters::{convert_command_markdown, convert_skill_package, convert_subagent};
+use super::super::converters::{
+    convert_command_markdown, convert_skill_package, convert_subagent, read_markdown_file_limited,
+};
 use super::super::markdown::{first_useful_line_or_heading, yaml_string};
 use super::super::types::{
     Competitor, ConversionContext, ConversionError, ImportCandidate, ImportIssue, ImportKind,
@@ -285,7 +286,8 @@ fn report_workspace_rule_files(
 }
 
 fn read_parsed_markdown(path: &Path) -> Result<(String, ParsedMarkdown), String> {
-    let content = fs::read_to_string(path).map_err(|err| format!("failed to read file: {err}"))?;
+    let content =
+        read_markdown_file_limited(path).map_err(|err| format!("failed to read file: {err}"))?;
     let parsed = parse_markdown_with_errors(&content)?;
     Ok((content, parsed))
 }
@@ -433,6 +435,7 @@ fn unsupported_issue(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use crate::yaml_configs::customization_types::SubagentConfig;
     use super::super::super::types::ImportArtifact;
 

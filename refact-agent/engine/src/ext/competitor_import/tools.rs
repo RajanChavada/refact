@@ -42,7 +42,7 @@ pub fn map_allowed_tools(input: &[String]) -> ToolMappingResult {
     let mut seen = HashSet::new();
     for raw in input {
         if is_broad_tool_alias(raw) {
-            push_all_tools(&mut result.tools, &mut seen);
+            push_read_only_tools(&mut result.tools, &mut seen);
             continue;
         }
         match map_known_tool_alias(raw) {
@@ -99,8 +99,8 @@ fn read_only_default() -> ToolMappingResult {
     }
 }
 
-fn push_all_tools(out: &mut Vec<String>, seen: &mut HashSet<String>) {
-    for tool in ALL_CANONICAL_TOOLS {
+fn push_read_only_tools(out: &mut Vec<String>, seen: &mut HashSet<String>) {
+    for tool in READ_ONLY_TOOLS {
         push_tool(out, seen, tool);
     }
 }
@@ -200,6 +200,25 @@ mod tests {
         assert_eq!(result.tools, strings(&["tree", "cat", "search_pattern"]));
         assert_eq!(result.unknown, strings(&["unknown_tool"]));
         assert!(result.used_default);
+    }
+
+    #[test]
+    fn broad_allowed_policy_maps_to_read_only_tools() {
+        let result = resolve_subagent_tools(&ToolPolicy::allow(strings(&["all", "*"])));
+
+        assert_eq!(result.tools, strings(&["tree", "cat", "search_pattern"]));
+        assert!(!result.tools.contains(&"shell".to_string()));
+        assert!(!result.tools.contains(&"apply_patch".to_string()));
+    }
+
+    #[test]
+    fn explicit_bash_and_edit_are_preserved_when_listed() {
+        let result = resolve_subagent_tools(&ToolPolicy::allow(strings(&["all", "bash", "edit"])));
+
+        assert_eq!(
+            result.tools,
+            strings(&["tree", "cat", "search_pattern", "shell", "apply_patch"])
+        );
     }
 
     #[test]

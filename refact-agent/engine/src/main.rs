@@ -179,7 +179,7 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let _ = ext::competitor_import::run_global_import(gcx.clone()).await;
+    let _ = crate::privacy::load_privacy_if_needed(gcx.clone()).await;
 
     if cmdline.print_customization {
         if let Some(registry) = get_project_registry(gcx.clone()).await {
@@ -193,6 +193,8 @@ async fn main() {
         std::process::exit(0);
     }
 
+    let _ = ext::competitor_import::run_global_import(gcx.clone()).await;
+
     if cmdline.ast {
         let tmp = Some(
             crate::ast::ast_indexer_thread::ast_service_init(
@@ -204,9 +206,6 @@ async fn main() {
         let mut gcx_locked = gcx.write().await;
         gcx_locked.ast_service = tmp;
     }
-
-    // Privacy before we do anything else, the default is to block everything
-    let _ = crate::privacy::load_privacy_if_needed(gcx.clone()).await;
 
     // Start or connect to mcp servers
     let _ = running_integrations::load_integrations(gcx.clone(), &["**/mcp_*".to_string()]).await;

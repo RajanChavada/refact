@@ -4,7 +4,9 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::{Mapping, Value as YamlValue};
 
-use super::super::converters::{convert_command_markdown, convert_skill_package, convert_subagent};
+use super::super::converters::{
+    convert_command_markdown, convert_skill_package, convert_subagent, read_markdown_file_limited,
+};
 use super::super::markdown::{
     first_useful_line_or_heading, sanitize_subagent_id, yaml_string, yaml_string_any,
     yaml_string_list_any,
@@ -317,7 +319,7 @@ fn read_valid_markdown(
     kind: ImportKind,
     path: &Path,
 ) -> Result<(YamlValue, String, String), ImportIssue> {
-    let content = fs::read_to_string(path).map_err(|err| {
+    let content = read_markdown_file_limited(path).map_err(|err| {
         issue(
             context,
             kind,

@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
 
-use super::super::converters::{convert_command_markdown, convert_skill_package, convert_subagent};
+use super::super::converters::{
+    convert_command_markdown, convert_skill_package, convert_subagent, read_config_file_limited,
+    read_markdown_file_limited,
+};
 use super::super::markdown::{
     parse_markdown_frontmatter, render_markdown_with_frontmatter, set_yaml_string,
     set_yaml_string_list, yaml_string,
@@ -264,7 +267,7 @@ fn scan_markdown_commands(
         }
     };
     for command_path in command_paths {
-        match fs::read_to_string(&command_path) {
+        match read_markdown_file_limited(&command_path) {
             Ok(content) => {
                 let name = relative_markdown_name(command_root, &command_path);
                 scan.push_candidate_result(convert_command_markdown(
@@ -439,7 +442,7 @@ fn normalized_markdown_agent(
     agent_path: &Path,
     display_name: &str,
 ) -> Result<NormalizedSubagent, ImportIssue> {
-    let content = fs::read_to_string(agent_path).map_err(|err| {
+    let content = read_markdown_file_limited(agent_path).map_err(|err| {
         error_issue(
             context,
             ImportKind::Subagent,
@@ -602,7 +605,7 @@ fn config_command_object_markdown(
 }
 
 fn read_json_or_jsonc(path: &Path) -> Result<JsonValue, String> {
-    let content = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    let content = read_config_file_limited(path).map_err(|err| err.to_string())?;
     match serde_json::from_str::<JsonValue>(&content) {
         Ok(value) => Ok(value),
         Err(first_err) => {
@@ -1143,6 +1146,9 @@ impl StringIfEmpty for String {
 mod tests {
     use super::*;
     use super::super::super::markdown::{yaml_string as markdown_yaml_string, yaml_string_list_any};
+    use super::super::super::converters::{
+        MAX_CONFIG_FILE_BYTES, MAX_MARKDOWN_FILE_BYTES, MAX_SKILL_PACKAGE_FILES,
+    };
     use crate::yaml_configs::customization_types::SubagentConfig;
 
     fn strings(values: &[&str]) -> Vec<String> {
@@ -1359,6 +1365,81 @@ mod tests {
         find_candidate(&scan, ImportKind::Command, "review");
         assert_eq!(scan.issues.len(), 1);
         assert_eq!(scan.issues[0].status, ImportStatus::Error);
+    }
+
+    #[test]
+    fn oversized_markdown_command_is_skipped_without_candidate_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let command_path = temp
+            .path()
+            .join(".opencode")
+            .join("commands")
+            .join("huge.md");
+        fs::create_dir_all(command_path.parent().unwrap()).unwrap();
+        fs::write(
+            &command_path,
+            "x".repeat((MAX_MARKDOWN_FILE_BYTES + 1) as usize),
+        )
+        .unwrap();
+
+        let scan = scan_project_root_with_staging(temp.path(), &temp.path().join("staging"));
+
+        assert!(scan.candidates.is_empty());
+        assert_eq!(scan.issues.len(), 1);
+        assert_eq!(scan.issues[0].status, ImportStatus::Error);
+        assert!(scan.issues[0].message.contains("exceeds"));
+    }
+
+    #[test]
+    fn oversized_config_is_reported_without_blocking_markdown_imports() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("opencode.jsonc"),
+            "{".to_string() + &"x".repeat(MAX_CONFIG_FILE_BYTES as usize) + "}",
+        )
+        .unwrap();
+        let command_path = temp
+            .path()
+            .join(".opencode")
+            .join("commands")
+            .join("review.md");
+        fs::create_dir_all(command_path.parent().unwrap()).unwrap();
+        fs::write(&command_path, "Review anyway").unwrap();
+
+        let scan = scan_project_root_with_staging(temp.path(), &temp.path().join("staging"));
+
+        find_candidate(&scan, ImportKind::Command, "review");
+        assert_eq!(scan.issues.len(), 1);
+        assert_eq!(scan.issues[0].status, ImportStatus::Error);
+        assert!(scan.issues[0].message.contains("exceeds"));
+    }
+
+    #[test]
+    fn excessive_skill_package_file_count_is_skipped_without_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp
+            .path()
+            .join(".opencode")
+            .join("skills")
+            .join("too-many");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Too Many\n---\nUse it.",
+        )
+        .unwrap();
+        for index in 0..MAX_SKILL_PACKAGE_FILES {
+            fs::write(skill_dir.join(format!("file-{index}.txt")), "x").unwrap();
+        }
+        let staging = temp.path().join("staging");
+
+        let scan = scan_project_root_with_staging(temp.path(), &staging);
+
+        assert!(scan.candidates.is_empty());
+        assert_eq!(scan.issues.len(), 1);
+        assert_eq!(scan.issues[0].status, ImportStatus::Error);
+        assert!(scan.issues[0].message.contains("file limit"));
+        assert!(!staging.exists());
     }
 
     #[cfg(unix)]

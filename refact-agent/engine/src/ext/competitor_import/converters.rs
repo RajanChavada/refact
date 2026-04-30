@@ -20,6 +20,40 @@ use super::types::{
     NormalizedSubagent,
 };
 
+pub(crate) const MAX_MARKDOWN_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_CONFIG_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_SKILL_PACKAGE_FILES: usize = 128;
+pub(crate) const MAX_SKILL_PACKAGE_BYTES: u64 = 4 * 1024 * 1024;
+
+pub(crate) fn read_markdown_file_limited(path: &Path) -> IoResult<String> {
+    read_text_file_limited(path, MAX_MARKDOWN_FILE_BYTES, "markdown file")
+}
+
+pub(crate) fn read_config_file_limited(path: &Path) -> IoResult<String> {
+    read_text_file_limited(path, MAX_CONFIG_FILE_BYTES, "config file")
+}
+
+fn read_text_file_limited(path: &Path, max_bytes: u64, label: &str) -> IoResult<String> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("{label} is not a regular file: {}", path.display()),
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "{label} exceeds {max_bytes} byte limit: {} bytes",
+                metadata.len()
+            ),
+        ));
+    }
+    fs::read_to_string(path)
+}
+
 pub fn convert_command_markdown(
     context: &ConversionContext,
     source_path: &Path,
@@ -102,8 +136,16 @@ pub fn convert_skill_package(
     skill_dir: &Path,
     staging_root: &Path,
 ) -> Result<ImportCandidate, ConversionError> {
+    validate_skill_package_limits(skill_dir).map_err(|err| {
+        ConversionError::new(
+            context,
+            ImportKind::Skill,
+            skill_dir.to_path_buf(),
+            format!("skill package skipped: {err}"),
+        )
+    })?;
     let skill_md = skill_dir.join("SKILL.md");
-    let content = fs::read_to_string(&skill_md).map_err(|err| {
+    let content = read_markdown_file_limited(&skill_md).map_err(|err| {
         ConversionError::new(
             context,
             ImportKind::Skill,
@@ -311,6 +353,57 @@ fn render_subagent_yaml(
         }
     }
     Ok(yaml)
+}
+
+fn validate_skill_package_limits(skill_dir: &Path) -> IoResult<()> {
+    let metadata = fs::symlink_metadata(skill_dir)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_dir() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "skill package is not a regular directory: {}",
+                skill_dir.display()
+            ),
+        ));
+    }
+    let mut file_count = 0usize;
+    let mut total_bytes = 0u64;
+    for entry in walkdir::WalkDir::new(skill_dir)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
+        let entry = entry.map_err(|err| Error::new(ErrorKind::Other, err.to_string()))?;
+        let path = entry.path();
+        if path == skill_dir || !entry.file_type().is_file() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            continue;
+        }
+        file_count += 1;
+        if file_count > MAX_SKILL_PACKAGE_FILES {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "skill package exceeds {MAX_SKILL_PACKAGE_FILES} file limit: {file_count} files"
+                ),
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "skill package size overflow"))?;
+        if total_bytes > MAX_SKILL_PACKAGE_BYTES {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "skill package exceeds {MAX_SKILL_PACKAGE_BYTES} byte limit: {total_bytes} bytes"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn stage_skill_package(
@@ -584,6 +677,28 @@ mod tests {
         assert_eq!(second_source_dir, source_dir);
         assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
         assert!(!second_source_dir.join("stale.txt").exists());
+    }
+
+    #[test]
+    fn oversized_skill_package_bytes_are_rejected_before_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("large skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Large\n---\nUse carefully.",
+        )
+        .unwrap();
+        std::fs::File::create(skill_dir.join("large.bin"))
+            .unwrap()
+            .set_len(MAX_SKILL_PACKAGE_BYTES + 1)
+            .unwrap();
+        let staging = temp.path().join("staging");
+
+        let err = convert_skill_package(&context(temp.path()), &skill_dir, &staging).unwrap_err();
+
+        assert!(err.message.contains("byte limit"));
+        assert!(!staging.exists());
     }
 
     #[test]
