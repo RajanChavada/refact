@@ -152,8 +152,9 @@ function drawCelestial(
   height: number,
 ): void {
   const x = pctX(width, world.celestialX);
-  const y = pctY(height, world.celestialY) + Math.sin(frame / 34) * 2;
   const isNight = world.phase === "night";
+  const rawY = pctY(height, world.celestialY) + Math.sin(frame / 34) * 2;
+  const y = Math.max(isNight ? 38 : 50, rawY);
   const color = isNight ? "#E0E7FF" : "#FBBF24";
   const glow = isNight ? "rgba(129,140,248,0.24)" : "rgba(251,191,36,0.26)";
 
@@ -174,6 +175,45 @@ function drawCelestial(
     fillPixelRect(ctx, x - 32, y - 2, 8, 4, "#F59E0B");
     fillPixelRect(ctx, x + 24, y - 2, 8, 4, "#F59E0B");
   }
+}
+
+function drawDistantHills(
+  ctx: CanvasRenderingContext2D,
+  world: BuddyWorldState,
+  frame: number,
+  width: number,
+  height: number,
+): void {
+  const farY = height * 0.62;
+  const nearY = height * 0.69;
+  const farColor = world.phase === "night" ? "#1E3A5F" : "#2F855A";
+  const nearColor = world.phase === "night" ? "#155E49" : "#166534";
+
+  ctx.save();
+  ctx.fillStyle = `${farColor}66`;
+  ctx.beginPath();
+  ctx.moveTo(0, farY + 18);
+  for (let x = 0; x <= width; x += 20) {
+    const y = farY + Math.sin(x / 56 + frame / 210) * 8;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(width, height);
+  ctx.lineTo(0, height);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = `${nearColor}88`;
+  ctx.beginPath();
+  ctx.moveTo(0, nearY + 16);
+  for (let x = 0; x <= width; x += 16) {
+    const y = nearY + Math.sin(x / 42 + frame / 180) * 6 + Math.sin(x / 19) * 2;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(width, height);
+  ctx.lineTo(0, height);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawWeather(
@@ -403,9 +443,38 @@ function drawBuddyHomeDoor(
   fillPixelRect(ctx, x + 9, y + 9, 4, 4, palette.light);
   fillPixelRect(ctx, x - 12, y + 31, 24, 3, "#FBBF24");
 
+  fillPixelRect(ctx, x - 26, y - 43, 52, 12, "rgba(15,23,42,0.86)");
+  fillPixelRect(ctx, x - 23, y - 40, 46, 2, palette.body);
+  drawPixelText(ctx, "HOME", x, y - 36, palette.light);
+  fillPixelRect(ctx, x - 2, y - 31, 4, 7, palette.body);
+
   const sparkleY = y - 7 + Math.sin(frame / 18) * 2;
   fillPixelRect(ctx, x + 27, sparkleY, 3, 3, "#FDE68A");
   fillPixelRect(ctx, x + 30, sparkleY + 3, 3, 3, palette.light);
+  ctx.restore();
+}
+
+function drawHomePath(
+  ctx: CanvasRenderingContext2D,
+  frame: number,
+  width: number,
+  height: number,
+): void {
+  const startX = pctX(width, HOME_HOTSPOT.x) + 28;
+  const startY = pctY(height, HOME_HOTSPOT.y) + 38;
+  const endX = width / 2;
+  const endY = height * 0.84;
+
+  ctx.save();
+  for (let i = 0; i < 12; i += 1) {
+    const t = i / 11;
+    const x = startX + (endX - startX) * t + Math.sin(i * 1.6) * 5;
+    const y = startY + (endY - startY) * t + Math.sin(frame / 50 + i) * 1.1;
+    ctx.fillStyle = `rgba(146,64,14,${0.32 - t * 0.1})`;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 8 - t * 2, 3.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -425,6 +494,12 @@ function drawObject(
   ctx.beginPath();
   ctx.arc(x, y + 12, item.size + 9, 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.strokeStyle = `${tone}80`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(x, y + item.size + 10, item.size + 9, 5, 0, 0, Math.PI * 2);
+  ctx.stroke();
 
   switch (item.sprite) {
     case "task_grove":
@@ -478,6 +553,24 @@ function drawObject(
       fillPixelRect(ctx, x + 1, y - 16, 15, 10, "#86EFAC");
       break;
   }
+
+  const glint = 0.38 + Math.sin(frame / 20 + item.x) * 0.18;
+  fillPixelRect(
+    ctx,
+    x + item.size + 4,
+    y - item.size + pulse,
+    3,
+    3,
+    `rgba(253,224,71,${glint})`,
+  );
+  fillPixelRect(
+    ctx,
+    x + item.size + 7,
+    y - item.size + 3 + pulse,
+    3,
+    3,
+    `rgba(255,255,255,${glint})`,
+  );
 }
 
 function drawVitality(
@@ -566,6 +659,8 @@ function drawScene(
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
 
+  drawDistantHills(ctx, world, frame, width, height);
+
   for (let i = 0; i < 52; i += 1) {
     const sx = (i * 47 + frame * 0.08) % width;
     const sy = (i * 31) % (height * 0.58);
@@ -584,6 +679,7 @@ function drawScene(
   drawWeather(ctx, world, frame, width, height);
 
   drawGround(ctx, frame, width, height);
+  drawHomePath(ctx, frame, width, height);
 
   drawBuddyHomeDoor(ctx, frame, width, height, palette);
   drawVitality(ctx, world, frame, width, height);
@@ -784,7 +880,7 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
         state={state}
         stage={stage}
         palette={palette}
-        displaySize={compact ? 210 : 252}
+        displaySize={compact ? 230 : 282}
         speechText={speechOverride}
         speechControls={activeSpeech ? activeSpeech.controls : undefined}
         randomizeBubblePosition

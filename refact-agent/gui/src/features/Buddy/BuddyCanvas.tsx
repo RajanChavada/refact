@@ -30,7 +30,7 @@ const BUBBLE_STYLES: Record<
 > = {
   top: {
     container: {
-      bottom: "60%",
+      bottom: "56%",
       left: "calc(50% + var(--buddy-walk-x, 0px))",
       transform: "translateX(-50%)",
     },
@@ -38,44 +38,47 @@ const BUBBLE_STYLES: Record<
       top: "100%",
       left: "50%",
       transform: "translateX(-50%)",
-      borderLeft: "11px solid transparent",
-      borderRight: "11px solid transparent",
+      borderLeft: "14px solid transparent",
+      borderRight: "14px solid transparent",
       /* borderTop set dynamically via palette */
     },
   },
   left: {
     container: {
-      right: "calc(56% - var(--buddy-walk-x, 0px))",
-      top: "42%",
-      marginRight: "-6px",
+      right: "calc(52% - var(--buddy-walk-x, 0px))",
+      top: "47%",
+      marginRight: "-2px",
       transform: "translateY(-50%)",
     },
     tail: {
       left: "100%",
       top: "50%",
       transform: "translateY(-50%)",
-      borderTop: "11px solid transparent",
-      borderBottom: "11px solid transparent",
+      borderTop: "16px solid transparent",
+      borderBottom: "16px solid transparent",
       /* borderLeft set dynamically via palette */
     },
   },
   right: {
     container: {
-      left: "calc(56% + var(--buddy-walk-x, 0px))",
-      top: "42%",
-      marginLeft: "-6px",
+      left: "calc(52% + var(--buddy-walk-x, 0px))",
+      top: "47%",
+      marginLeft: "-2px",
       transform: "translateY(-50%)",
     },
     tail: {
       right: "100%",
       top: "50%",
       transform: "translateY(-50%)",
-      borderTop: "11px solid transparent",
-      borderBottom: "11px solid transparent",
+      borderTop: "16px solid transparent",
+      borderBottom: "16px solid transparent",
       /* borderRight set dynamically via palette */
     },
   },
 };
+
+const BUBBLE_FILL = "rgba(244, 250, 255, 0.9)";
+const BUBBLE_TEXT = "#102033";
 
 const BUBBLE_POSITIONS: BubblePosition[] = ["top", "left", "right"];
 
@@ -89,7 +92,16 @@ function randomBubblePosition(previous?: BubblePosition): BubblePosition {
 interface BubbleView {
   text: string;
   position: BubblePosition;
-  width: "max-content" | "240px" | "300px" | "340px";
+  width:
+    | "max-content"
+    | "200px"
+    | "220px"
+    | "230px"
+    | "240px"
+    | "260px"
+    | "270px"
+    | "300px"
+    | "330px";
   whiteSpace: React.CSSProperties["whiteSpace"];
   opacity: number;
   visible: boolean;
@@ -97,6 +109,51 @@ interface BubbleView {
 }
 
 type BubbleStyle = React.CSSProperties & { "--buddy-walk-x"?: string };
+
+function innerTailStyle(
+  position: BubblePosition,
+  compact: boolean,
+): React.CSSProperties {
+  const sideTransparent = compact
+    ? "8px solid transparent"
+    : "10px solid transparent";
+  const sideFill = compact
+    ? `10px solid ${BUBBLE_FILL}`
+    : `14px solid ${BUBBLE_FILL}`;
+
+  if (position === "left") {
+    return {
+      left: "calc(100% - 4px)",
+      top: "50%",
+      transform: "translateY(-50%)",
+      borderTop: sideTransparent,
+      borderBottom: sideTransparent,
+      borderLeft: sideFill,
+    };
+  }
+
+  if (position === "right") {
+    return {
+      right: "calc(100% - 4px)",
+      top: "50%",
+      transform: "translateY(-50%)",
+      borderTop: sideTransparent,
+      borderBottom: sideTransparent,
+      borderRight: sideFill,
+    };
+  }
+
+  return {
+    top: "calc(100% - 4px)",
+    left: "50%",
+    transform: "translateX(-50%)",
+    borderLeft: compact ? "8px solid transparent" : "11px solid transparent",
+    borderRight: compact ? "8px solid transparent" : "11px solid transparent",
+    borderTop: compact
+      ? `10px solid ${BUBBLE_FILL}`
+      : `14px solid ${BUBBLE_FILL}`,
+  };
+}
 
 export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
   state,
@@ -195,27 +252,39 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
         const opacity = overrideText ? 1 : anim.statusOpacity;
         const visible = opacity > 0.02 && text.length > 0;
         const hasControls = speechControlCount > 0;
+        const compactBubble = displaySize <= 180;
+        const isVeryLongText = text.length > 130;
         const isLongText = text.length > 72;
         const isMediumText = text.length > 34;
         const fixedWidth = hasControls || isLongText;
-        const width: BubbleView["width"] = fixedWidth
+        const width: BubbleView["width"] = compactBubble
           ? isLongText
-            ? "340px"
-            : "300px"
-          : isMediumText
             ? "240px"
-            : "max-content";
+            : hasControls
+              ? "200px"
+              : isMediumText
+                ? "200px"
+                : "max-content"
+          : isVeryLongText
+            ? "300px"
+            : isLongText
+              ? "270px"
+              : hasControls
+                ? "230px"
+                : isMediumText
+                  ? "200px"
+                  : "max-content";
         const whiteSpace: BubbleView["whiteSpace"] =
           fixedWidth || isMediumText ? "normal" : "nowrap";
         const previousFixedWidth =
-          previous.width === "300px" || previous.width === "340px";
+          previous.width !== "max-content" && previous.width !== "220px";
         const position =
           text !== previous.text || fixedWidth !== previousFixedWidth
-            ? fixedWidth
-              ? "top"
-              : randomizeBubblePosition
-                ? randomBubblePosition(previous.position)
-                : bubblePositionRef.current
+            ? randomizeBubblePosition
+              ? fixedWidth
+                ? "top"
+                : randomBubblePosition(previous.position)
+              : bubblePositionRef.current
             : previous.position;
         const nextOpacity = visible ? Math.min(1, opacity) : 0;
         const opacityChanged = Math.abs(previous.opacity - nextOpacity) > 0.03;
@@ -366,34 +435,55 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
       {displaySize >= 100 &&
         (() => {
           const pos = BUBBLE_STYLES[bubbleView.position];
+          const compactBubble = displaySize <= 180;
           const tailColor: React.CSSProperties =
             bubbleView.position === "left"
-              ? { borderLeft: `13px solid ${palette.body}` }
+              ? {
+                  borderLeft: `${compactBubble ? 12 : 18}px solid ${
+                    palette.body
+                  }`,
+                }
               : bubbleView.position === "right"
-                ? { borderRight: `13px solid ${palette.body}` }
-                : { borderTop: `13px solid ${palette.body}` };
+                ? {
+                    borderRight: `${compactBubble ? 12 : 18}px solid ${
+                      palette.body
+                    }`,
+                  }
+                : {
+                    borderTop: `${compactBubble ? 14 : 18}px solid ${
+                      palette.body
+                    }`,
+                  };
+          const compactSideContainer: React.CSSProperties = compactBubble
+            ? bubbleView.position === "left"
+              ? { right: "calc(66% - var(--buddy-walk-x, 0px))" }
+              : bubbleView.position === "right"
+                ? { left: "calc(66% + var(--buddy-walk-x, 0px))" }
+                : {}
+            : {};
           const bubbleStyle: BubbleStyle = {
             position: "absolute",
             ...pos.container,
+            ...compactSideContainer,
             "--buddy-walk-x": `${bubbleView.walkOffsetPx}px`,
-            background: "rgba(12, 20, 34, 0.88)",
-            border: `2px solid ${palette.body}`,
-            borderRadius: "14px",
-            padding: "7px 12px",
-            fontSize: "11px",
+            background: BUBBLE_FILL,
+            border: `3px solid ${palette.body}`,
+            borderRadius: "8px",
+            padding: "6px 10px",
+            fontSize: "10.5px",
             fontFamily:
               "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
             fontWeight: 700,
-            letterSpacing: "0.1px",
-            lineHeight: 1.3,
+            letterSpacing: "0.05px",
+            lineHeight: 1.36,
             whiteSpace: bubbleView.whiteSpace,
             width: bubbleView.width,
-            maxWidth: "340px",
+            maxWidth: "300px",
             overflowWrap: "break-word",
             overflow: "visible",
             pointerEvents: speechControlCount > 0 ? "auto" : "none",
-            color: palette.light,
-            boxShadow: `0 8px 22px rgba(0, 0, 0, 0.26), 0 0 18px ${palette.dark}44`,
+            color: BUBBLE_TEXT,
+            boxShadow: `4px 4px 0 rgba(0, 0, 0, 0.34), 0 0 0 1px ${palette.dark}`,
             zIndex: 5,
             visibility: bubbleView.visible ? "visible" : "hidden",
             opacity: bubbleView.opacity,
@@ -405,9 +495,9 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
                 <div
                   style={{
                     display: "flex",
-                    gap: "5px",
+                    gap: "6px",
                     flexWrap: "wrap",
-                    marginTop: "7px",
+                    marginTop: "6px",
                   }}
                 >
                   {speechControls.map((ctrl) => (
@@ -422,16 +512,16 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
                         background:
                           ctrl.style === "primary"
                             ? palette.body
-                            : "rgba(255, 255, 255, 0.08)",
-                        border: `1px solid ${palette.body}`,
-                        borderRadius: "999px",
+                            : "rgba(16, 32, 51, 0.06)",
+                        border: `2px solid ${palette.body}`,
+                        borderRadius: "8px",
                         color:
-                          ctrl.style === "primary" ? "#0d0d16" : palette.light,
+                          ctrl.style === "primary" ? "#0d0d16" : BUBBLE_TEXT,
                         fontFamily:
                           "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
                         fontWeight: 700,
                         fontSize: "10px",
-                        padding: "3px 8px",
+                        padding: "2px 7px",
                         cursor: "pointer",
                         letterSpacing: "0.1px",
                       }}
@@ -448,7 +538,17 @@ export const BuddyCanvas: React.FC<BuddyCanvasProps> = ({
                   height: 0,
                   ...pos.tail,
                   ...tailColor,
-                  filter: `drop-shadow(0 0 3px ${palette.dark})`,
+                  filter: `drop-shadow(3px 3px 0 rgba(0, 0, 0, 0.32))`,
+                  zIndex: 1,
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  width: 0,
+                  height: 0,
+                  ...innerTailStyle(bubbleView.position, compactBubble),
+                  zIndex: 2,
                 }}
               />
             </div>

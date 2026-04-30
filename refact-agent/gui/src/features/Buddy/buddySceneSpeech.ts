@@ -15,16 +15,71 @@ export interface BuddySceneSpeech {
   runtimeEventId?: string;
 }
 
+function normalizeRuntimeText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function stripNoisyRuntimePrefixes(text: string): string {
+  return normalizeRuntimeText(text)
+    .replace(/\bgeneric:\s*/gi, "")
+    .replace(/(?:\bLLM error:\s*){2,}/gi, "LLM error: ")
+    .replace(/\bLLM error:\s*LLM error:\s*/gi, "LLM error: ")
+    .trim();
+}
+
+function isContextWindowError(text: string): boolean {
+  return /context window|exceeds?\s+(?:the\s+)?context|input exceeds/i.test(
+    text,
+  );
+}
+
 function runtimeEventText(event: BuddyRuntimeEvent): string {
   const speechText = event.speech_text?.trim();
-  if (speechText) return speechText;
+  if (speechText) return normalizeRuntimeText(speechText);
 
   const description = event.description?.trim();
-  if (description) {
-    return `${event.title}: ${description}`;
+  const rawText = stripNoisyRuntimePrefixes(
+    description ? `${event.title}: ${description}` : event.title,
+  );
+
+  if (isContextWindowError(rawText)) {
+    return "I ran out of context room. Want me to compress this and try again?";
   }
 
-  return event.title;
+  if (event.status === "failed" && /\bLLM error\b/i.test(rawText)) {
+    return rawText.replace(/^LLM error:\s*/i, "I hit an LLM snag: ");
+  }
+
+  if (description) {
+    return rawText;
+  }
+
+  return rawText;
+}
+
+function defaultRuntimeControls(event: BuddyRuntimeEvent): BuddyControl[] {
+  if (
+    event.status !== "failed" &&
+    event.priority !== "critical" &&
+    event.priority !== "high"
+  ) {
+    return [];
+  }
+
+  return [
+    {
+      id: `investigate-${event.id}`,
+      label: "Help me fix it",
+      action: "investigate_error",
+      style: "primary",
+    },
+    {
+      id: `dismiss-${event.id}`,
+      label: "Dismiss",
+      action: "dismiss",
+      style: "secondary",
+    },
+  ];
 }
 
 function runtimeEventToSpeech(
@@ -33,9 +88,12 @@ function runtimeEventToSpeech(
   if (!event || event.dismissed) return null;
   const text = runtimeEventText(event).trim();
   if (!text) return null;
+  const controls = event.controls?.length
+    ? event.controls
+    : defaultRuntimeControls(event);
   return {
     text,
-    controls: event.controls ?? [],
+    controls,
     chat_id: event.chat_id,
     source: "runtime",
     runtimeEventId: event.id,

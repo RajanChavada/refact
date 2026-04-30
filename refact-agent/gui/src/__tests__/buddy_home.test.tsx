@@ -534,6 +534,30 @@ describe("buildBuddySceneSpeech", () => {
     );
   });
 
+  it("turns repeated context-window errors into Buddy language", () => {
+    const speech = buildBuddySceneSpeech({
+      activeSpeech: null,
+      nowPlaying: makeRuntimeEvent({
+        id: "context-error",
+        title: "generic: LLM error",
+        description:
+          "LLM error: Your input exceeds the context window of this model. Please adjust your input and try again. LLM error: Your input exceeds the context window of this model.",
+        priority: "high",
+        status: "failed",
+      }),
+      runtimeQueue: [],
+      activeSuggestion: null,
+    });
+
+    expect(speech?.text).toBe(
+      "I ran out of context room. Want me to compress this and try again?",
+    );
+    expect(speech?.controls.map((control) => control.action)).toEqual([
+      "investigate_error",
+      "dismiss",
+    ]);
+  });
+
   it("converts suggestion dismiss controls into dismiss_suggestion actions", () => {
     const speech = buildBuddySceneSpeech({
       activeSpeech: null,
