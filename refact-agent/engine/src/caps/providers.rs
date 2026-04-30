@@ -12,6 +12,7 @@ use crate::caps::{
 use crate::custom_error::{MapErrToString, YamlError};
 
 use crate::llm::adapter::WireFormat;
+use crate::providers::traits::{extra_headers_mapping_to_hash_map, parse_extra_headers_value};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CapsProvider {
@@ -105,6 +106,10 @@ impl CapsProvider {
         set_field_if_exists::<String>(&mut self.embedding_endpoint, "embedding_endpoint", &value)?;
         set_field_if_exists::<String>(&mut self.api_key, "api_key", &value)?;
         set_field_if_exists::<String>(&mut self.tokenizer_api_key, "tokenizer_api_key", &value)?;
+        if let Some(extra_headers) = value.get("extra_headers") {
+            let headers = parse_extra_headers_value(extra_headers)?;
+            self.extra_headers = extra_headers_mapping_to_hash_map(None, &headers);
+        }
         set_field_if_exists::<EmbeddingModelRecord>(
             &mut self.embedding_model,
             "embedding_model",
@@ -1141,6 +1146,92 @@ mod tests {
             !provider.chat_models.is_empty(),
             "chat models should still be populated regardless of supports_completion"
         );
+    }
+
+    #[tokio::test]
+    async fn custom_provider_extra_headers_reach_caps_model_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers_dir = temp.path().join("providers.d");
+        tokio::fs::create_dir_all(&providers_dir).await.unwrap();
+        tokio::fs::write(
+            providers_dir.join("custom.yaml"),
+            r#"
+enabled: true
+api_key: sk-test
+chat_endpoint: https://example.com/v1/chat/completions
+enabled_models:
+  - my-model
+extra_headers:
+  X-Proxy-Token: secret-token
+  X-Tenant: team-a
+"#,
+        )
+        .await
+        .unwrap();
+
+        let provider =
+            get_provider_from_template_and_config_file(temp.path(), "custom", true, true, false)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            provider
+                .extra_headers
+                .get("X-Proxy-Token")
+                .map(String::as_str),
+            Some("secret-token")
+        );
+        assert_eq!(
+            provider.extra_headers.get("X-Tenant").map(String::as_str),
+            Some("team-a")
+        );
+
+        let mut caps = CodeAssistantCaps::default();
+        add_models_to_caps(&mut caps, vec![provider]);
+        let model = caps.chat_models.get("custom/my-model").unwrap();
+
+        assert_eq!(
+            model
+                .base
+                .extra_headers
+                .get("X-Proxy-Token")
+                .map(String::as_str),
+            Some("secret-token")
+        );
+        assert_eq!(
+            model.base.extra_headers.get("X-Tenant").map(String::as_str),
+            Some("team-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_provider_extra_headers_string_reaches_caps_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let providers_dir = temp.path().join("providers.d");
+        tokio::fs::create_dir_all(&providers_dir).await.unwrap();
+        tokio::fs::write(
+            providers_dir.join("custom.yaml"),
+            r#"
+enabled_models:
+  - my-model
+extra_headers: |
+  X-String: string-secret
+  X-Number: 7
+"#,
+        )
+        .await
+        .unwrap();
+
+        let provider =
+            get_provider_from_template_and_config_file(temp.path(), "custom", true, true, false)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            provider.extra_headers.get("X-String").map(String::as_str),
+            Some("string-secret")
+        );
+        assert!(provider.extra_headers.get("X-Number").is_none());
     }
 
     #[test]

@@ -9,7 +9,8 @@ use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
 use crate::providers::traits::{
     CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
-    parse_enabled_models, parse_custom_models, set_model_enabled_impl,
+    extra_headers_mapping_to_hash_map, parse_custom_models, parse_enabled_models,
+    parse_extra_headers_value, set_model_enabled_impl,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -149,27 +150,9 @@ available:
             self.supports_cache_control = supports_cache_control;
         }
         if let Some(headers_value) = yaml.get("extra_headers") {
-            if let Some(headers) = headers_value.as_mapping() {
-                let mut next_headers = HashMap::new();
-                for (key, value) in headers {
-                    let Some(key) = key.as_str() else {
-                        continue;
-                    };
-                    let Some(value) = value.as_str() else {
-                        continue;
-                    };
-                    if value == "***" {
-                        if let Some(existing) = self.extra_headers.get(key) {
-                            next_headers.insert(key.to_string(), existing.clone());
-                        }
-                    } else {
-                        next_headers.insert(key.to_string(), value.to_string());
-                    }
-                }
-                self.extra_headers = next_headers;
-            } else {
-                self.extra_headers.clear();
-            }
+            let headers = parse_extra_headers_value(headers_value)?;
+            self.extra_headers =
+                extra_headers_mapping_to_hash_map(Some(&self.extra_headers), &headers);
         }
         parse_enabled_models(&yaml, &mut self.enabled_models);
         parse_custom_models(&yaml, &mut self.custom_models);
@@ -374,6 +357,87 @@ extra_headers:
             .provider_settings_apply(serde_yaml::from_str("enabled: true").unwrap())
             .unwrap();
 
+        assert_eq!(
+            provider.extra_headers.get("X-Secret").map(String::as_str),
+            Some("old-secret")
+        );
+    }
+
+    #[test]
+    fn custom_provider_extra_headers_yaml_string_parses_and_applies() {
+        let mut provider = CustomProvider::default();
+        provider
+            .extra_headers
+            .insert("X-Secret".to_string(), "old-secret".to_string());
+        provider
+            .extra_headers
+            .insert("X-Absent".to_string(), "old-absent".to_string());
+
+        provider
+            .provider_settings_apply(
+                serde_yaml::from_str(
+                    r#"
+extra_headers: |
+  X-Secret: "***"
+  X-New: new-value
+  X-Remove-Number: 7
+"#,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            provider.extra_headers.get("X-Secret").map(String::as_str),
+            Some("old-secret")
+        );
+        assert_eq!(
+            provider.extra_headers.get("X-New").map(String::as_str),
+            Some("new-value")
+        );
+        assert!(provider.extra_headers.get("X-Remove-Number").is_none());
+        assert!(provider.extra_headers.get("X-Absent").is_none());
+    }
+
+    #[test]
+    fn custom_provider_extra_headers_json_string_parses_and_applies() {
+        let mut provider = CustomProvider::default();
+        provider
+            .extra_headers
+            .insert("X-Secret".to_string(), "old-secret".to_string());
+
+        provider
+            .provider_settings_apply(
+                serde_yaml::to_value(json!({
+                    "extra_headers": "{\"X-Secret\":\"***\",\"X-Json\":\"json-value\",\"X-Remove\":7}"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            provider.extra_headers.get("X-Secret").map(String::as_str),
+            Some("old-secret")
+        );
+        assert_eq!(
+            provider.extra_headers.get("X-Json").map(String::as_str),
+            Some("json-value")
+        );
+        assert!(provider.extra_headers.get("X-Remove").is_none());
+    }
+
+    #[test]
+    fn custom_provider_extra_headers_invalid_string_errors_and_preserves_existing() {
+        let mut provider = CustomProvider::default();
+        provider
+            .extra_headers
+            .insert("X-Secret".to_string(), "old-secret".to_string());
+
+        let err = provider
+            .provider_settings_apply(serde_yaml::from_str("extra_headers: '['").unwrap())
+            .unwrap_err();
+
+        assert!(err.contains("extra_headers"));
         assert_eq!(
             provider.extra_headers.get("X-Secret").map(String::as_str),
             Some("old-secret")

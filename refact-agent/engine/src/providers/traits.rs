@@ -263,11 +263,10 @@ pub struct ProviderRuntime {
     pub auth_token: String,
     #[serde(skip_serializing)]
     pub tokenizer_api_key: String,
-    /// Extra headers for HTTP requests. Currently populated by CustomProvider
-    /// but not yet connected to the LLM request flow (which uses the caps system).
-    /// Kept for future integration when provider system replaces caps for requests.
+    /// Extra headers for HTTP requests. These are propagated into model records
+    /// and adapter settings for request construction. Values may contain secrets
+    /// and must not be serialized in public API responses.
     #[serde(skip_serializing)]
-    #[allow(dead_code)]
     pub extra_headers: HashMap<String, String>,
     /// Whether this provider supports Anthropic-style prompt cache_control headers.
     /// Set to false for providers like vLLM that reject unknown fields.
@@ -300,6 +299,50 @@ impl ProviderRuntime {
             ..self.clone()
         }
     }
+}
+
+pub fn parse_extra_headers_value(value: &serde_yaml::Value) -> Result<serde_yaml::Mapping, String> {
+    match value {
+        serde_yaml::Value::Mapping(map) => Ok(map.clone()),
+        serde_yaml::Value::Null => Ok(serde_yaml::Mapping::new()),
+        serde_yaml::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(serde_yaml::Mapping::new());
+            }
+            let parsed: serde_yaml::Value = serde_yaml::from_str(trimmed)
+                .map_err(|e| format!("extra_headers must be a YAML/JSON object: {e}"))?;
+            match parsed {
+                serde_yaml::Value::Mapping(map) => Ok(map),
+                serde_yaml::Value::Null => Ok(serde_yaml::Mapping::new()),
+                _ => Err("extra_headers must be a YAML/JSON object".to_string()),
+            }
+        }
+        _ => Err("extra_headers must be a YAML/JSON object".to_string()),
+    }
+}
+
+pub fn extra_headers_mapping_to_hash_map(
+    existing: Option<&HashMap<String, String>>,
+    incoming: &serde_yaml::Mapping,
+) -> HashMap<String, String> {
+    let mut next_headers = HashMap::new();
+    for (key, value) in incoming {
+        let Some(key) = key.as_str() else {
+            continue;
+        };
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+        if value == "***" {
+            if let Some(existing_value) = existing.and_then(|headers| headers.get(key)) {
+                next_headers.insert(key.to_string(), existing_value.clone());
+            }
+        } else {
+            next_headers.insert(key.to_string(), value.to_string());
+        }
+    }
+    next_headers
 }
 
 #[async_trait]
