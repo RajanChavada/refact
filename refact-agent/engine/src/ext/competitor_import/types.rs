@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -277,6 +278,62 @@ impl ImportReportIssue {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportReportScopeKind {
+    #[default]
+    Global,
+    Project,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImportReportScope {
+    pub scope_kind: ImportReportScopeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl ImportReportScope {
+    fn from_scope(scope: &ImportScope) -> Self {
+        match scope {
+            ImportScope::Global => Self {
+                scope_kind: ImportReportScopeKind::Global,
+                scope_id: None,
+                label: Some("global settings".to_string()),
+            },
+            ImportScope::Project { root } => Self {
+                scope_kind: ImportReportScopeKind::Project,
+                scope_id: Some(report_scope_hash(root)),
+                label: Some("project workspace".to_string()),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportReportSource {
+    pub competitor: Competitor,
+    pub scope_kind: ImportReportScopeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_label: Option<String>,
+}
+
+impl ImportReportSource {
+    fn from_source(source: &ImportSourceRoot) -> Self {
+        Self {
+            competitor: source.competitor,
+            scope_kind: report_scope_kind(&source.scope),
+            scope_id: report_scope_id(&source.scope),
+            source_label: sanitize_source_label(&source.path),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ImportReport {
@@ -284,8 +341,14 @@ pub struct ImportReport {
     pub generated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    #[serde(default, skip_serializing)]
     pub discovered_scopes: Vec<ImportScope>,
+    #[serde(default, skip_serializing)]
     pub discovered_sources: Vec<ImportSourceRoot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reported_scopes: Vec<ImportReportScope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reported_sources: Vec<ImportReportSource>,
     pub discovered_candidates: usize,
     pub status_counts: BTreeMap<ImportStatus, usize>,
     pub competitor_counts: BTreeMap<Competitor, ImportReportCounts>,
@@ -313,19 +376,29 @@ impl ImportReport {
     }
 
     fn from_summary_with_scope(summary: &ImportSummary, scope: Option<&ImportScope>) -> Self {
+        let discovered_scopes = match scope {
+            Some(scope) => vec![scope.clone()],
+            None => summary.discovered_scopes.clone(),
+        };
+        let discovered_sources = summary
+            .discovered_sources
+            .iter()
+            .filter(|source| scope.map_or(true, |scope| &source.scope == scope))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut report = Self {
             generated_at: summary.generated_at.clone(),
             completed_at: summary.completed_at.clone(),
-            discovered_scopes: match scope {
-                Some(scope) => vec![scope.clone()],
-                None => summary.discovered_scopes.clone(),
-            },
-            discovered_sources: summary
-                .discovered_sources
+            reported_scopes: discovered_scopes
                 .iter()
-                .filter(|source| scope.map_or(true, |scope| &source.scope == scope))
-                .cloned()
+                .map(ImportReportScope::from_scope)
                 .collect(),
+            reported_sources: discovered_sources
+                .iter()
+                .map(ImportReportSource::from_source)
+                .collect(),
+            discovered_scopes,
+            discovered_sources,
             ..Self::default()
         };
 
@@ -579,6 +652,56 @@ fn sanitize_report_scope(scope: &ImportScope) -> ImportScope {
     }
 }
 
+fn report_scope_kind(scope: &ImportScope) -> ImportReportScopeKind {
+    match scope {
+        ImportScope::Global => ImportReportScopeKind::Global,
+        ImportScope::Project { .. } => ImportReportScopeKind::Project,
+    }
+}
+
+fn report_scope_id(scope: &ImportScope) -> Option<String> {
+    match scope {
+        ImportScope::Global => None,
+        ImportScope::Project { root } => Some(report_scope_hash(root)),
+    }
+}
+
+fn report_scope_hash(root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(root.to_string_lossy().as_bytes());
+    let hash = hex::encode(hasher.finalize());
+    hash[..16].to_string()
+}
+
+fn sanitize_source_label(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    if is_safe_source_label(&name) {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_safe_source_label(name: &str) -> bool {
+    matches!(
+        name,
+        ".claude"
+            | ".opencode"
+            | ".kilo"
+            | ".kilocode"
+            | ".continue"
+            | "opencode"
+            | "kilo"
+            | "kilocode"
+            | "continue"
+            | "opencode.json"
+            | "opencode.jsonc"
+            | "kilo.json"
+            | "kilo.jsonc"
+            | "config.json"
+    )
+}
+
 fn sanitize_report_path(path: &Path) -> String {
     sanitize_report_path_value(&path.to_string_lossy())
 }
@@ -750,6 +873,62 @@ mod tests {
         assert_eq!(report.kind_counts[&ImportKind::Command].created, 1);
         assert!(!json.contains("secret artifact content"));
         assert!(!json.contains("original_description"));
+    }
+
+    #[test]
+    fn report_serialization_sanitizes_discovered_scope_and_sources() {
+        let project_scope = ImportScope::Project {
+            root: PathBuf::from("/home/user/private-project"),
+        };
+        let mut summary = ImportSummary::from_scopes(vec![project_scope.clone()]);
+        summary.discovered_sources.push(ImportSourceRoot {
+            competitor: Competitor::ClaudeCode,
+            scope: project_scope.clone(),
+            path: PathBuf::from("/home/user/private-project/.claude"),
+        });
+        summary.discovered_sources.push(ImportSourceRoot {
+            competitor: Competitor::OpenCode,
+            scope: project_scope,
+            path: PathBuf::from("/home/user/private-project"),
+        });
+
+        let report = ImportReport::from_summary(&summary);
+        let json = serde_json::to_string(&report).unwrap();
+
+        assert_eq!(report.reported_scopes.len(), 1);
+        assert_eq!(
+            report.reported_scopes[0].scope_kind,
+            ImportReportScopeKind::Project
+        );
+        assert_eq!(report.reported_sources.len(), 2);
+        assert_eq!(
+            report.reported_sources[0].source_label.as_deref(),
+            Some(".claude")
+        );
+        assert!(report.reported_sources[1].source_label.is_none());
+        assert!(!json.contains("discovered_scopes"));
+        assert!(!json.contains("discovered_sources"));
+        assert!(!json.contains("/home/user"));
+        assert!(!json.contains("private-project"));
+        assert!(!json.contains("/home/user/private-project/.claude"));
+        assert!(json.contains("reported_scopes"));
+        assert!(json.contains(".claude"));
+    }
+
+    #[test]
+    fn report_deserializes_when_reported_fields_are_absent() {
+        let json = r#"{
+            "discovered_candidates":0,
+            "status_counts":{},
+            "competitor_counts":{},
+            "kind_counts":{},
+            "top_issues":[]
+        }"#;
+
+        let report: ImportReport = serde_json::from_str(json).unwrap();
+
+        assert!(report.reported_scopes.is_empty());
+        assert!(report.reported_sources.is_empty());
     }
 
     #[test]

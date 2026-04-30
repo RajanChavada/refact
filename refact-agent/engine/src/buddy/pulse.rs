@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use chrono::Utc;
@@ -9,7 +10,7 @@ use crate::buddy::types::{
     GitPulse, McpPulse, MemoryPulse, ProviderPulse, TaskPulse, TrajectoryPulse,
 };
 use crate::ext::competitor_import::manifest::{manifest_path_for_scope_root, ImportManifest};
-use crate::ext::competitor_import::types::{ImportReport, ImportStatus};
+use crate::ext::competitor_import::types::{ImportReport, ImportReportCounts, ImportStatus};
 use crate::global_context::GlobalContext;
 
 pub async fn build_pulse(
@@ -216,12 +217,29 @@ fn merge_import_report_into_pulse(pulse: &mut CompetitorImportPulse, report: &Im
     pulse.attention_items = pulse
         .attention_items
         .saturating_add(saturating_u32(report.attention_items()));
-    for source in &report.discovered_sources {
-        *pulse
-            .sources_seen
-            .entry(source.competitor.as_str().to_string())
-            .or_insert(0) += 1;
+    for source in actual_sources_seen(report) {
+        *pulse.sources_seen.entry(source).or_insert(0) += 1;
     }
+}
+
+fn actual_sources_seen(report: &ImportReport) -> BTreeSet<String> {
+    report
+        .competitor_counts
+        .iter()
+        .filter(|(_, counts)| report_counts_have_activity(counts))
+        .map(|(competitor, _)| competitor.as_str().to_string())
+        .collect()
+}
+
+fn report_counts_have_activity(counts: &ImportReportCounts) -> bool {
+    counts.discovered > 0
+        || counts.created > 0
+        || counts.updated > 0
+        || counts.unchanged > 0
+        || counts.conflicts > 0
+        || counts.user_modified > 0
+        || counts.unsupported > 0
+        || counts.errors > 0
 }
 
 fn saturating_u32(value: usize) -> u32 {
@@ -394,6 +412,25 @@ mod tests {
         assert!(pulse.has_attention_items);
         assert_eq!(pulse.sources_seen.get("claude_code"), Some(&1));
         assert_eq!(pulse.sources_seen.get("opencode"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn competitor_import_pulse_sources_seen_uses_actual_activity() {
+        let temp = tempfile::tempdir().unwrap();
+        let refact_config = temp.path().join("config").join("refact");
+        let workspace = temp.path().join("workspace");
+        let command_path = workspace.join(".claude").join("commands").join("only.md");
+        std::fs::create_dir_all(command_path.parent().unwrap()).unwrap();
+        std::fs::write(&command_path, "Only Claude is present.").unwrap();
+
+        crate::ext::competitor_import::run_project_import_with_paths(&[workspace.clone()]).await;
+        let pulse = build_competitor_import_pulse(&refact_config, &[workspace]).await;
+
+        assert_eq!(pulse.sources_seen.get("claude_code"), Some(&1));
+        assert_eq!(pulse.sources_seen.len(), 1);
+        assert!(!pulse.sources_seen.contains_key("opencode"));
+        assert!(!pulse.sources_seen.contains_key("kilo_code"));
+        assert!(!pulse.sources_seen.contains_key("continue_dev"));
     }
 
     #[tokio::test]

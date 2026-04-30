@@ -15,7 +15,10 @@ pub mod tools;
 pub mod types;
 pub mod writer;
 
-use types::{ImportCandidate, ImportIssue, ImportReport, ImportScope, ImportStatus, ImportSummary};
+use types::{
+    ImportCandidate, ImportIssue, ImportReport, ImportReportScopeKind, ImportScope, ImportStatus,
+    ImportSummary,
+};
 
 pub async fn run_global_import(gcx: Arc<ARwLock<GlobalContext>>) -> ImportSummary {
     let refact_config_dir = {
@@ -258,11 +261,35 @@ fn import_reports_for_runtime_events(summary: &ImportSummary) -> Vec<ImportRepor
     if summary.discovered_scopes.is_empty() {
         return vec![ImportReport::from_summary(summary)];
     }
-    summary
+    let mut reports = summary
         .discovered_scopes
         .iter()
         .map(|scope| ImportReport::from_summary_for_scope(summary, scope))
-        .collect()
+        .collect::<Vec<_>>();
+    if let Some(report) = unscoped_error_report(summary) {
+        reports.push(report);
+    }
+    reports
+}
+
+fn unscoped_error_report(summary: &ImportSummary) -> Option<ImportReport> {
+    let mut aggregate = ImportSummary {
+        generated_at: summary.generated_at.clone(),
+        completed_at: summary.completed_at.clone(),
+        ..ImportSummary::default()
+    };
+    for issue in summary
+        .issues
+        .iter()
+        .filter(|issue| issue.scope.is_none() && issue.status == ImportStatus::Error)
+    {
+        aggregate.add_issue(issue.clone());
+    }
+    if aggregate.issues.is_empty() {
+        None
+    } else {
+        Some(ImportReport::from_summary(&aggregate))
+    }
 }
 
 pub(crate) fn buddy_runtime_event_for_import_report(report: &ImportReport) -> BuddyRuntimeEvent {
@@ -349,21 +376,40 @@ pub(crate) fn buddy_runtime_event_for_import_report(report: &ImportReport) -> Bu
 }
 
 fn runtime_scope_label(report: &ImportReport) -> &'static str {
-    match report.discovered_scopes.first() {
-        Some(ImportScope::Global) => "global settings",
-        Some(ImportScope::Project { .. }) => "project workspace",
+    if let Some(scope) = report.discovered_scopes.first() {
+        return match scope {
+            ImportScope::Global => "global settings",
+            ImportScope::Project { .. } => "project workspace",
+        };
+    }
+    match report.reported_scopes.first().map(|scope| scope.scope_kind) {
+        Some(ImportReportScopeKind::Global) => "global settings",
+        Some(ImportReportScopeKind::Project) => "project workspace",
         None => "workspace",
     }
 }
 
 fn runtime_dedupe_key(report: &ImportReport) -> String {
-    match report.discovered_scopes.first() {
-        Some(ImportScope::Global) => "competitor_import:global".to_string(),
-        Some(ImportScope::Project { root }) => {
-            let hash = manifest::hash_string(&root.to_string_lossy());
-            format!("competitor_import:project:{}", &hash[..16])
+    if let Some(scope) = report.discovered_scopes.first() {
+        return match scope {
+            ImportScope::Global => "competitor_import:global".to_string(),
+            ImportScope::Project { root } => {
+                let hash = manifest::hash_string(&root.to_string_lossy());
+                format!("competitor_import:project:{}", &hash[..16])
+            }
+        };
+    }
+    match report.reported_scopes.first() {
+        Some(scope) if scope.scope_kind == ImportReportScopeKind::Global => {
+            "competitor_import:global".to_string()
         }
-        None => "competitor_import:workspace".to_string(),
+        Some(scope) if scope.scope_kind == ImportReportScopeKind::Project => {
+            match scope.scope_id.as_deref() {
+                Some(scope_id) => format!("competitor_import:project:{scope_id}"),
+                None => "competitor_import:project".to_string(),
+            }
+        }
+        _ => "competitor_import:workspace".to_string(),
     }
 }
 
@@ -568,7 +614,7 @@ mod tests {
         );
         let manifest = read_manifest(&refact_config).await;
         let report = manifest.last_report.unwrap();
-        assert_eq!(report.discovered_sources.len(), 6);
+        assert_eq!(report.reported_sources.len(), 6);
         assert_eq!(report.status_counts.get(&ImportStatus::Created), Some(&2));
     }
 
@@ -593,7 +639,7 @@ mod tests {
         );
         let manifest = read_manifest(&workspace.path().join(".refact")).await;
         let report = manifest.last_report.unwrap();
-        assert_eq!(report.discovered_sources.len(), 5);
+        assert_eq!(report.reported_sources.len(), 5);
         assert_eq!(report.status_counts.get(&ImportStatus::Created), Some(&1));
     }
 
@@ -1006,6 +1052,35 @@ mod tests {
             .dedupe_key
             .as_deref()
             .is_some_and(|key| key.starts_with("competitor_import:project:")));
+    }
+
+    #[test]
+    fn runtime_reports_include_aggregate_unscoped_errors_with_scopes() {
+        let scope = ImportScope::Project {
+            root: PathBuf::from("/home/user/private-project"),
+        };
+        let mut summary = ImportSummary::from_scopes(vec![scope]);
+        summary.add_issue(ImportIssue {
+            competitor: None,
+            kind: None,
+            scope: None,
+            path: None,
+            status: ImportStatus::Error,
+            message: "workspace folders unavailable".to_string(),
+        });
+        summary.mark_completed();
+
+        let reports = import_reports_for_runtime_events(&summary);
+        let events = reports
+            .iter()
+            .map(buddy_runtime_event_for_import_report)
+            .collect::<Vec<_>>();
+
+        assert_eq!(reports.len(), 2);
+        assert!(events.iter().any(|event| {
+            event.status == "error"
+                && event.dedupe_key.as_deref() == Some("competitor_import:workspace")
+        }));
     }
 
     #[tokio::test]
