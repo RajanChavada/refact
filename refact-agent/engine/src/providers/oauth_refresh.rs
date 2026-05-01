@@ -576,6 +576,16 @@ async fn save_refreshed_tokens(
 
 #[cfg(test)]
 mod tests {
+    lazy_static::lazy_static! {
+        static ref REFRESH_TRACKING_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    }
+
+    fn refresh_tracking_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        REFRESH_TRACKING_TEST_LOCK
+            .lock()
+            .expect("refresh tracking test lock poisoned")
+    }
+
     #[test]
     fn permanent_refresh_error_detects_invalid_grant() {
         assert!(super::is_permanent_refresh_error(
@@ -592,6 +602,7 @@ mod tests {
 
     #[test]
     fn invalid_refresh_token_tracking_is_per_instance() {
+        let _guard = refresh_tracking_test_guard();
         super::clear_refresh_tracking_for_test();
         super::mark_invalid_refresh_token("openai_codex", "same-refresh-token");
 
@@ -609,6 +620,7 @@ mod tests {
 
     #[test]
     fn oauth_failure_tracking_is_per_instance() {
+        let _guard = refresh_tracking_test_guard();
         super::clear_refresh_tracking_for_test();
 
         assert!(super::mark_oauth_failure("claude_code"));
