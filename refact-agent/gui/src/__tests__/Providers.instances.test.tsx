@@ -1,11 +1,16 @@
 import { describe, expect, test, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 
-import { render, screen } from "../utils/test-utils";
+import { render, screen, waitFor } from "../utils/test-utils";
 import { server } from "../utils/mockServer";
 import { setUpStore } from "../app/store";
 import { getProviderName } from "../features/Providers/getProviderName";
 import { ProviderCard } from "../features/Providers/ProviderCard";
+import { AddProviderInstanceModal } from "../features/Providers/ProvidersView/AddProviderInstanceModal";
+import {
+  nextInstanceId,
+  providerBaseOptions,
+} from "../features/Providers/ProvidersView/providerInstanceUtils";
 import {
   isProviderDetailResponse,
   isProviderListResponse,
@@ -24,6 +29,28 @@ const aliasProvider: ProviderListItem = {
   model_count: 2,
 };
 
+const openAiProvider: ProviderListItem = {
+  name: "openai",
+  base_provider: "openai",
+  display_name: "OpenAI",
+  enabled: true,
+  readonly: false,
+  has_credentials: true,
+  status: "active",
+  model_count: 5,
+};
+
+const hiddenOpenAiResponsesProvider: ProviderListItem = {
+  name: "openai_responses",
+  base_provider: "openai_responses",
+  display_name: "OpenAI (Responses API)",
+  enabled: false,
+  readonly: false,
+  has_credentials: false,
+  status: "not_configured",
+  model_count: 0,
+};
+
 const preloadedState = {
   config: {
     apiKey: "test",
@@ -34,6 +61,27 @@ const preloadedState = {
 };
 
 describe("Providers provider instances", () => {
+  test("nextInstanceId chooses the first unused suffix", () => {
+    expect(nextInstanceId("openai", ["openai", "openai_2"])).toBe(
+      "openai_3",
+    );
+  });
+
+  test("hidden provider bases are excluded from add instance choices", () => {
+    expect(
+      providerBaseOptions([
+        openAiProvider,
+        hiddenOpenAiResponsesProvider,
+        {
+          ...hiddenOpenAiResponsesProvider,
+          name: "xai_responses",
+          base_provider: "xai_responses",
+          display_name: "xAI (Responses API)",
+        },
+      ]),
+    ).toEqual([{ id: "openai", label: "OpenAI" }]);
+  });
+
   test("getProviderName prefers display name", () => {
     expect(getProviderName(aliasProvider)).toBe("Work OpenAI");
   });
@@ -141,5 +189,57 @@ describe("Providers provider instances", () => {
     } finally {
       store.dispatch(providersApi.util.resetApiState());
     }
+  });
+
+  test("AddProviderInstanceModal submits identity fields", async () => {
+    let requestBody: unknown;
+
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/providers/openai_2",
+        async ({ request }) => {
+          requestBody = await request.json();
+          return HttpResponse.json({ success: true });
+        },
+      ),
+    );
+
+    const onCreated = vi.fn();
+    const onOpenChange = vi.fn();
+    const { user, store } = render(
+      <AddProviderInstanceModal
+        isOpen
+        configuredProviders={[openAiProvider]}
+        initialBaseProvider="openai"
+        onOpenChange={onOpenChange}
+        onCreated={onCreated}
+      />,
+      { preloadedState },
+    );
+
+    expect(screen.getByDisplayValue("openai_2")).toBeInTheDocument();
+    expect(
+      screen.queryByText("OpenAI (Responses API)"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Create instance" }));
+
+    await waitFor(() => {
+      expect(requestBody).toEqual({
+        base_provider: "openai",
+        display_name: "OpenAI 2",
+        enabled: false,
+      });
+    });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onCreated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "openai_2",
+        base_provider: "openai",
+        display_name: "OpenAI 2",
+      }),
+    );
+
+    store.dispatch(providersApi.util.resetApiState());
   });
 });

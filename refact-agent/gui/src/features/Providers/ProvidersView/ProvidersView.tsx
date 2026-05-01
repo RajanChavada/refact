@@ -3,6 +3,7 @@ import { Button, Flex } from "@radix-ui/themes";
 import { ArrowLeftIcon } from "@radix-ui/react-icons";
 
 import { ConfiguredProvidersView } from "./ConfiguredProvidersView";
+import { AddProviderInstanceModal } from "./AddProviderInstanceModal";
 
 import type { ProviderListItem } from "../../../services/refact";
 import { ProviderPreview } from "../ProviderPreview";
@@ -38,12 +39,30 @@ export const ProvidersView: React.FC<ProvidersViewProps> = ({
 
   const [currentProvider, setCurrentProvider] =
     useState<ProviderListItem | null>(null);
+  const [instanceModalOpen, setInstanceModalOpen] = useState(false);
+  const [initialBaseProvider, setInitialBaseProvider] = useState<string | null>(
+    null,
+  );
   const handleSetCurrentProvider = useCallback(
     (provider: ProviderListItem | null) => {
       setCurrentProvider(provider);
     },
     [],
   );
+
+  const handleAddInstance = useCallback(() => {
+    setInitialBaseProvider(null);
+    setInstanceModalOpen(true);
+  }, []);
+
+  const handleDuplicateProvider = useCallback((provider: ProviderListItem) => {
+    setInitialBaseProvider(provider.base_provider);
+    setInstanceModalOpen(true);
+  }, []);
+
+  const handleInstanceCreated = useCallback((provider: ProviderListItem) => {
+    setCurrentProvider(provider);
+  }, []);
 
   const handleBackClick = useCallback(() => {
     if (currentProvider) {
@@ -71,6 +90,8 @@ export const ProvidersView: React.FC<ProvidersViewProps> = ({
         <ConfiguredProvidersView
           configuredProviders={configuredProviders}
           handleSetCurrentProvider={handleSetCurrentProvider}
+          onAddInstance={handleAddInstance}
+          onDuplicateProvider={handleDuplicateProvider}
         />
       )}
       {currentProvider && (
@@ -78,8 +99,16 @@ export const ProvidersView: React.FC<ProvidersViewProps> = ({
           currentProvider={currentProvider}
           configuredProviders={configuredProviders}
           handleSetCurrentProvider={handleSetCurrentProvider}
+          onDuplicateProvider={handleDuplicateProvider}
         />
       )}
+      <AddProviderInstanceModal
+        isOpen={instanceModalOpen}
+        configuredProviders={configuredProviders}
+        initialBaseProvider={initialBaseProvider}
+        onOpenChange={setInstanceModalOpen}
+        onCreated={handleInstanceCreated}
+      />
       {information && (
         <InformationCallout
           timeout={3000}

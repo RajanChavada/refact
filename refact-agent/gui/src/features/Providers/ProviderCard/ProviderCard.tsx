@@ -1,5 +1,14 @@
 import React from "react";
-import { Badge, Card, Flex, Heading, Text } from "@radix-ui/themes";
+import {
+  Badge,
+  Card,
+  Flex,
+  Heading,
+  IconButton,
+  Text,
+  Tooltip,
+} from "@radix-ui/themes";
+import { CopyIcon } from "@radix-ui/react-icons";
 
 import { getProviderIcon } from "../icons/iconsMap";
 
@@ -15,6 +24,7 @@ import styles from "./ProviderCard.module.css";
 export type ProviderCardProps = {
   provider: ProviderListItem;
   setCurrentProvider: (provider: ProviderListItem) => void;
+  onDuplicateProvider?: (provider: ProviderListItem) => void;
 };
 
 const StatusDot: React.FC<{ status: ProviderStatus }> = ({ status }) => {
@@ -39,11 +49,16 @@ const StatusDot: React.FC<{ status: ProviderStatus }> = ({ status }) => {
 export const ProviderCard: React.FC<ProviderCardProps> = ({
   provider,
   setCurrentProvider,
+  onDuplicateProvider,
 }) => {
   const providerName = getProviderName(provider);
   const showInstanceId =
     provider.name !== provider.display_name ||
     provider.base_provider !== provider.name;
+  const handleDuplicateClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onDuplicateProvider?.(provider);
+  };
 
   return (
     <Card
@@ -71,6 +86,20 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
           </Flex>
         </Flex>
         <Flex align="center" gap="2" flexShrink="0">
+          {onDuplicateProvider && (
+            <Tooltip content="Duplicate instance">
+              <IconButton
+                type="button"
+                size="1"
+                variant="ghost"
+                color="gray"
+                aria-label={`Duplicate ${providerName}`}
+                onClick={handleDuplicateClick}
+              >
+                <CopyIcon />
+              </IconButton>
+            </Tooltip>
+          )}
           {provider.model_count > 0 && (
             <Badge color="gray" size="1" variant="soft">
               {provider.model_count} model

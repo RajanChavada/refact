@@ -21,3 +21,8 @@ export const BEAUTIFUL_PROVIDER_NAMES: Record<string, string> = {
   github_copilot: "GitHub Copilot",
   custom: "Custom Provider",
 };
+
+export const HIDDEN_PROVIDER_BASES = [
+  "openai_responses",
+  "xai_responses",
+] as const;

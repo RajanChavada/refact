@@ -306,6 +306,12 @@ export type ConfiguredProvidersResponse = {
   error_log?: ErrorLogInstance[];
 };
 
+export type CreateProviderInstanceRequest = {
+  base_provider: string;
+  display_name: string;
+  enabled?: false;
+};
+
 function providerBaseName(provider: { name: string; base_provider?: string }) {
   const baseProvider = provider.base_provider?.trim();
   return baseProvider === "" || baseProvider === undefined
