@@ -73,7 +73,7 @@
 }
 
 .taskWorkspace.expanded .boardSection,
-.taskWorkspace.expanded .panelsSection {
+.taskWorkspace.expanded .panelsWrapper {
   display: none;
 }
 
@@ -86,11 +86,21 @@
   border-bottom: 1px solid var(--gray-5);
 }
 
+.panelsWrapper {
+  border-bottom: 1px solid var(--gray-5);
+}
+
+.panelsHeader {
+  flex-shrink: 0;
+  background: var(--gray-2);
+  user-select: none;
+  min-height: 28px;
+}
+
 .panelsSection {
   display: flex;
   gap: var(--space-3);
   padding: var(--space-3);
-  border-bottom: 1px solid var(--gray-5);
   min-height: 180px;
   max-height: 280px;
   overflow: hidden;
@@ -123,15 +133,11 @@
 }
 
 .chatSection {
-  flex: 0 0 auto;
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.taskWorkspace.expanded .chatSection {
-  flex: 1;
 }
 
 .chatHeader {
@@ -153,12 +159,14 @@
   transform: rotate(180deg);
 }
 
-.chatExpandButton {
+.chatExpandButton,
+.panelsExpandButton {
   min-width: 22px;
   height: 22px;
 }
 
-.chatHeaderLabel {
+.chatHeaderLabel,
+.panelsHeaderLabel {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

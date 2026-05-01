@@ -668,6 +668,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const [deleteBranch, setDeleteBranch] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [chatExpanded, setChatExpanded] = useState(false);
+  const [panelsExpanded, setPanelsExpanded] = useState(false);
   const prevTaskStatusRef = React.useRef<string | undefined>(undefined);
   const worktreeRecords = useMemo(
     () => worktreesData?.worktrees ?? [],
@@ -970,6 +971,10 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     setChatExpanded((prev) => !prev);
   }, []);
 
+  const handleTogglePanelsExpanded = useCallback(() => {
+    setPanelsExpanded((prev) => !prev);
+  }, []);
+
   const handleModelChange = useCallback(
     (model: string) => {
       void updateTaskMeta({ taskId, defaultAgentModel: model });
@@ -1189,7 +1194,12 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
           activeChat.cardId,
           board.cards.find((c) => c.id === activeChat.cardId)?.title ?? "",
         );
+  const agentChats = board.cards.filter((card) => card.agent_chat_id);
+  const doneAgentChats = agentChats.filter((card) => card.column === "done");
   const chatToggleLabel = chatExpanded ? "Collapse chat" : "Expand chat";
+  const panelsToggleLabel = panelsExpanded
+    ? "Collapse planners and agents"
+    : "Expand planners and agents";
 
   return (
     <Box
@@ -1207,23 +1217,64 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
             />
           </Box>
 
-          <Flex className={styles.panelsSection}>
-            <PlannerPanel
-              plannerChats={plannerChats}
-              activeChat={activeChat}
-              activePlannerId={activePlannerId}
-              onNewPlanner={handleNewPlanner}
-              onSelectPlanner={handleSelectPlanner}
-              onRemovePlanner={handleRemovePlanner}
-            />
-            <AgentsPanel
-              cards={board.cards}
-              activeChat={activeChat}
-              onSelectAgent={handleSelectAgent}
-              defaultAgentModel={task.default_agent_model}
-              onModelChange={handleModelChange}
-            />
-          </Flex>
+          <Box className={styles.panelsWrapper}>
+            <Flex
+              className={styles.panelsHeader}
+              align="center"
+              gap="2"
+              px="2"
+              py="1"
+            >
+              <Button
+                type="button"
+                size="1"
+                variant="ghost"
+                color="gray"
+                onClick={handleTogglePanelsExpanded}
+                aria-label={panelsToggleLabel}
+                title={panelsToggleLabel}
+                className={styles.panelsExpandButton}
+              >
+                <ChevronDownIcon
+                  className={`${styles.chevron} ${
+                    panelsExpanded ? styles.chevronExpanded : ""
+                  }`}
+                />
+              </Button>
+              <Text size="1" color="gray" className={styles.panelsHeaderLabel}>
+                Planners / Agents
+              </Text>
+              <Badge size="1" color="gray" variant="soft">
+                {plannerChats.length} planner
+                {plannerChats.length === 1 ? "" : "s"}
+              </Badge>
+              {agentChats.length > 0 && (
+                <Badge size="1" color="gray" variant="soft">
+                  {doneAgentChats.length}/{agentChats.length} agents
+                </Badge>
+              )}
+            </Flex>
+
+            {panelsExpanded && (
+              <Flex className={styles.panelsSection}>
+                <PlannerPanel
+                  plannerChats={plannerChats}
+                  activeChat={activeChat}
+                  activePlannerId={activePlannerId}
+                  onNewPlanner={handleNewPlanner}
+                  onSelectPlanner={handleSelectPlanner}
+                  onRemovePlanner={handleRemovePlanner}
+                />
+                <AgentsPanel
+                  cards={board.cards}
+                  activeChat={activeChat}
+                  onSelectAgent={handleSelectAgent}
+                  defaultAgentModel={task.default_agent_model}
+                  onModelChange={handleModelChange}
+                />
+              </Flex>
+            )}
+          </Box>
         </>
       )}
 
@@ -1255,23 +1306,21 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
             {chatLabel}
           </Text>
         </Flex>
-        {chatExpanded && (
-          <Box className={styles.chatContent}>
-            {activeChat ? (
-              <InternalLinkProvider onInternalLink={handleInternalLink}>
-                <Chat
-                  host={config.host}
-                  tabbed={false}
-                  backFromChat={handleBack}
-                />
-              </InternalLinkProvider>
-            ) : (
-              <Flex align="center" justify="center" style={{ height: "100%" }}>
-                <Text color="gray">Create a planner chat to get started</Text>
-              </Flex>
-            )}
-          </Box>
-        )}
+        <Box className={styles.chatContent}>
+          {activeChat ? (
+            <InternalLinkProvider onInternalLink={handleInternalLink}>
+              <Chat
+                host={config.host}
+                tabbed={false}
+                backFromChat={handleBack}
+              />
+            </InternalLinkProvider>
+          ) : (
+            <Flex align="center" justify="center" style={{ height: "100%" }}>
+              <Text color="gray">Create a planner chat to get started</Text>
+            </Flex>
+          )}
+        </Box>
       </Box>
 
       {selectedCard && (
