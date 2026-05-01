@@ -17,6 +17,32 @@ use super::types::{session_idle_timeout, session_cleanup_interval};
 use super::config::limits;
 use super::trajectories::TrajectoryEvent;
 
+fn has_displayable_assistant_content(message: &ChatMessage) -> bool {
+    let has_text_content = match &message.content {
+        ChatContent::SimpleText(s) => !s.trim().is_empty(),
+        ChatContent::Multimodal(v) => !v.is_empty(),
+        ChatContent::ContextFiles(v) => !v.is_empty(),
+    };
+    let has_structured_data = message
+        .tool_calls
+        .as_ref()
+        .map_or(false, |tc| !tc.is_empty())
+        || message
+            .reasoning_content
+            .as_ref()
+            .map_or(false, |r| !r.trim().is_empty())
+        || message
+            .thinking_blocks
+            .as_ref()
+            .map_or(false, |tb| !tb.is_empty())
+        || !message.citations.is_empty()
+        || !message.server_content_blocks.is_empty()
+        || message.usage.is_some()
+        || !message.extra.is_empty();
+
+    has_text_content || has_structured_data
+}
+
 pub type SessionsMap = Arc<ARwLock<HashMap<String, Arc<AMutex<ChatSession>>>>>;
 
 pub fn create_sessions_map() -> SessionsMap {
@@ -533,29 +559,14 @@ impl ChatSession {
 
     pub fn finish_stream(&mut self, finish_reason: Option<String>) {
         if let Some(mut draft) = self.draft_message.take() {
-            let has_text_content = match &draft.content {
-                ChatContent::SimpleText(s) => !s.trim().is_empty(),
-                ChatContent::Multimodal(v) => !v.is_empty(),
-                ChatContent::ContextFiles(v) => !v.is_empty(),
-            };
-            let has_structured_data = draft.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
-                || draft
-                    .reasoning_content
-                    .as_ref()
-                    .map_or(false, |r| !r.trim().is_empty())
-                || draft
-                    .thinking_blocks
-                    .as_ref()
-                    .map_or(false, |tb| !tb.is_empty())
-                || !draft.citations.is_empty()
-                || !draft.server_content_blocks.is_empty();
+            let should_keep_draft = has_displayable_assistant_content(&draft);
 
             self.emit(ChatEvent::StreamFinished {
                 message_id: draft.message_id.clone(),
                 finish_reason: finish_reason.clone(),
             });
 
-            if has_text_content || has_structured_data {
+            if should_keep_draft {
                 draft.finish_reason = finish_reason;
                 if let Some(usage) = self.draft_usage.take() {
                     draft.usage = Some(usage);
@@ -574,26 +585,7 @@ impl ChatSession {
 
     pub fn finish_stream_with_error(&mut self, error: String) {
         if let Some(mut draft) = self.draft_message.take() {
-            let has_text_content = match &draft.content {
-                ChatContent::SimpleText(s) => !s.is_empty(),
-                ChatContent::Multimodal(v) => !v.is_empty(),
-                ChatContent::ContextFiles(v) => !v.is_empty(),
-            };
-            let has_structured_data = draft.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
-                || draft
-                    .reasoning_content
-                    .as_ref()
-                    .map_or(false, |r| !r.is_empty())
-                || draft
-                    .thinking_blocks
-                    .as_ref()
-                    .map_or(false, |tb| !tb.is_empty())
-                || !draft.citations.is_empty()
-                || !draft.server_content_blocks.is_empty()
-                || draft.usage.is_some()
-                || !draft.extra.is_empty();
-
-            if has_text_content || has_structured_data {
+            if has_displayable_assistant_content(&draft) {
                 self.emit(ChatEvent::StreamFinished {
                     message_id: draft.message_id.clone(),
                     finish_reason: Some("error".to_string()),
@@ -609,6 +601,13 @@ impl ChatSession {
                 });
             }
         }
+        let error_message = ChatMessage {
+            role: "error".to_string(),
+            content: ChatContent::SimpleText(error.clone()),
+            message_id: Uuid::new_v4().to_string(),
+            ..Default::default()
+        };
+        self.add_message(error_message);
         self.set_runtime_state(SessionState::Error, Some(error.clone()));
         self.touch();
 
@@ -1382,8 +1381,9 @@ mod tests {
             text: "partial".into(),
         }]);
         session.finish_stream_with_error("timeout".into());
-        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages.len(), 2);
         assert_eq!(session.messages[0].finish_reason, Some("error".into()));
+        assert_eq!(session.messages[1].role, "error");
         assert_eq!(session.runtime.state, SessionState::Error);
         assert_eq!(session.runtime.error, Some("timeout".into()));
     }
@@ -1398,7 +1398,9 @@ mod tests {
             ],
         }]);
         session.finish_stream_with_error("error".into());
-        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.messages[0].role, "assistant");
+        assert_eq!(session.messages[1].role, "error");
     }
 
     #[test]
@@ -1407,7 +1409,9 @@ mod tests {
         let mut rx = session.subscribe();
         session.start_stream();
         session.finish_stream_with_error("error".into());
-        assert!(session.messages.is_empty());
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages[0].role, "error");
+        assert_eq!(session.messages[0].content.content_text_only(), "error");
         let mut found_removed = false;
         while let Ok(json) = rx.try_recv() {
             if let Ok(env) = serde_json::from_str::<EventEnvelope>(&json) {
@@ -1417,6 +1421,22 @@ mod tests {
             }
         }
         assert!(found_removed);
+    }
+
+    #[test]
+    fn test_finish_stream_with_error_trims_empty_draft() {
+        let mut session = make_session();
+        session.start_stream();
+        session.emit_stream_delta(vec![DeltaOp::AppendContent {
+            text: "   \n".into(),
+        }]);
+        session.finish_stream_with_error("network failed".into());
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages[0].role, "error");
+        assert_eq!(
+            session.messages[0].content.content_text_only(),
+            "network failed"
+        );
     }
 
     #[test]

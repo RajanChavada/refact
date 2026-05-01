@@ -6,6 +6,7 @@ import { MCPArgs, MCPEnvs } from "./integrations";
 export type ChatRole =
   | "user"
   | "assistant"
+  | "error"
   | "context_file"
   | "system"
   | "tool"
@@ -181,6 +182,11 @@ export interface AssistantMessage extends BaseMessage, CostInfo {
   extra?: Record<string, unknown>;
 }
 
+export interface ErrorMessage extends BaseMessage {
+  role: "error";
+  content: string;
+}
+
 export interface ToolCallMessage extends AssistantMessage {
   tool_calls: ToolCall[];
 }
@@ -260,6 +266,7 @@ export interface CDInstructionMessage extends BaseMessage {
 export type ChatMessage =
   | UserMessage
   | AssistantMessage
+  | ErrorMessage
   | ChatContextFileMessage
   | SystemMessage
   | ToolMessage
@@ -286,6 +293,10 @@ export function isAssistantMessage(
   message: ChatMessage,
 ): message is AssistantMessage {
   return message.role === "assistant";
+}
+
+export function isErrorMessage(message: ChatMessage): message is ErrorMessage {
+  return message.role === "error";
 }
 
 export function isToolMessage(message: ChatMessage): message is ToolMessage {

@@ -56,6 +56,13 @@ pub struct ChatPrepareOptions {
     pub cache_control: CacheControl,
 }
 
+fn remove_visualization_only_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    messages
+        .into_iter()
+        .filter(|message| message.role != "error")
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ToolChoice {
@@ -96,6 +103,7 @@ pub async fn prepare_chat_passthrough(
     options: &ChatPrepareOptions,
 ) -> Result<PreparedChat, String> {
     let mut has_rag_results = HasRagResults::new();
+    let messages = remove_visualization_only_messages(messages);
     let tool_names: HashSet<String> = tools.iter().map(|x| x.name.clone()).collect();
 
     // 1. Resolve model early to get reasoning params before history limiting

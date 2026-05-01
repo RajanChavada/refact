@@ -15,6 +15,7 @@ import {
   isChatContextFileMessage,
   isDiffMessage,
   isAssistantMessage,
+  isErrorMessage,
   isToolMessage,
   isSystemMessage,
   UserMessage,
@@ -64,6 +65,7 @@ import { useCollapsibleState } from "./useCollapsibleState";
 import { useCollapsibleStoreProvider } from "./useCollapsibleStoreProvider";
 import { CollapsibleStoreProvider } from "./useStoredOpen";
 import { SelectionToolbar } from "./SelectionToolbar";
+import { ErrorMessageCard } from "./ErrorMessage";
 
 export type ChatContentProps = {
   onRetry: (index: number, question: UserMessage["content"]) => void;
@@ -261,6 +263,9 @@ export const ChatContent: React.FC<ChatContentProps> = ({
       switch (item.type) {
         case "plain_text":
           return <PlainText>{item.content}</PlainText>;
+
+        case "error":
+          return <ErrorMessageCard errors={item.errors} />;
 
         case "assistant":
           return (
@@ -542,6 +547,13 @@ type DisplayItemPlainText = {
   content: string;
 };
 
+type DisplayItemError = {
+  type: "error";
+  key: string;
+  messageIndex: number;
+  errors: string[];
+};
+
 type DisplayItemSkillActivated = {
   type: "skill_activated";
   key: string;
@@ -567,6 +579,7 @@ type DisplayItem =
   | DisplayItemDiffGroup
   | DisplayItemSystem
   | DisplayItemPlainText
+  | DisplayItemError
   | DisplayItemSkillActivated
   | DisplayItemSkillReport;
 
@@ -690,6 +703,23 @@ function buildDisplayItemsFromIndex(
     const head = messages[i];
 
     if (isToolMessage(head)) continue;
+
+    if (isErrorMessage(head)) {
+      const errors = [head.content];
+      let j = i + 1;
+      while (j < messages.length && isErrorMessage(messages[j])) {
+        errors.push(messages[j].content);
+        j++;
+      }
+      items.push({
+        type: "error",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        errors,
+      });
+      i = j - 1;
+      continue;
+    }
 
     if (head.role === "plain_text") {
       if (
@@ -1009,6 +1039,23 @@ function buildDisplayItems(
     const head = messages[i];
 
     if (isToolMessage(head)) continue;
+
+    if (isErrorMessage(head)) {
+      const errors = [head.content];
+      let j = i + 1;
+      while (j < messages.length && isErrorMessage(messages[j])) {
+        errors.push(messages[j].content);
+        j++;
+      }
+      items.push({
+        type: "error",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        errors,
+      });
+      i = j - 1;
+      continue;
+    }
 
     if (head.role === "plain_text") {
       if (

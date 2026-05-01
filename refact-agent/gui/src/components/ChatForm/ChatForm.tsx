@@ -76,7 +76,7 @@ import {
   useChatActions,
   useFirstSendAutoFlip,
 } from "../../hooks";
-import { ErrorCallout, Callout } from "../Callout";
+import { Callout } from "../Callout";
 import { ComboBox } from "../ComboBox";
 import { UnifiedAttachmentsTray } from "./UnifiedAttachmentsTray";
 import { ChatSettingsDropdown } from "./ChatSettingsDropdown";
@@ -85,7 +85,7 @@ import { WorktreeControl } from "../../features/Worktrees";
 import { addCheckboxValuesToInput } from "./utils";
 import { useCommandCompletionAndPreviewFiles } from "./useCommandCompletionAndPreviewFiles";
 import { useAppSelector, useAppDispatch } from "../../hooks";
-import { clearError, getErrorMessage } from "../../features/Errors/errorsSlice";
+import { getErrorMessage } from "../../features/Errors/errorsSlice";
 import { useAttachedFiles, useCheckboxes } from "./useCheckBoxes";
 import { useInputValue } from "./useInputValue";
 import {
@@ -99,7 +99,6 @@ import { AttachImagesButton } from "../Dropzone";
 import { MicrophoneButton, MicrophoneButtonRef } from "./MicrophoneButton";
 import { useAttachedImages } from "../../hooks/useAttachedImages";
 import {
-  clearChatError,
   selectChatError,
   selectCurrentThreadId,
   selectIsStreaming,
@@ -187,13 +186,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const attachedFiles = useAttachedFiles();
   const attachedImages = useAppSelector(selectThreadImages);
   const microphoneRef = React.useRef<MicrophoneButtonRef>(null);
-
-  const onClearError = useCallback(() => {
-    dispatch(clearError());
-    if (chatId) {
-      dispatch(clearChatError({ id: chatId }));
-    }
-  }, [dispatch, chatId]);
 
   const allDisabled = caps.usableModelsForPlan.every((option) => {
     if (typeof option === "string") return false;
@@ -441,20 +433,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
 
   return (
     <Box style={{ flexShrink: 0, position: "relative" }}>
-      {globalError && (
-        <Flex direction="column" mt="2" mb="2" gap="2">
-          <ErrorCallout onClick={onClearError} timeout={null}>
-            {globalError}
-          </ErrorCallout>
-        </Flex>
-      )}
-      {!globalError && chatError && (
-        <Flex direction="column" mt="2" mb="2" gap="2">
-          <ErrorCallout onClick={onClearError} timeout={null}>
-            {chatError}
-          </ErrorCallout>
-        </Flex>
-      )}
       {!globalError && !chatError && information && (
         <InformationCallout
           mt="2"
