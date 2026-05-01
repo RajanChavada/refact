@@ -418,8 +418,11 @@ pub fn apply_setparams_patch(
             if let Ok(task_meta) =
                 serde_json::from_value::<super::types::TaskMeta>(task_meta_value.clone())
             {
-                thread.task_meta = Some(task_meta);
-                changed = true;
+                let new_task_meta = Some(task_meta);
+                if thread.task_meta != new_task_meta {
+                    thread.task_meta = new_task_meta;
+                    changed = true;
+                }
             }
         }
     }

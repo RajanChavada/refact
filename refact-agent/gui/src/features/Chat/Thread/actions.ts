@@ -70,10 +70,18 @@ function buildThreadParamsPatch(
     patch.parallel_tool_calls = thread.parallel_tool_calls;
   if ("auto_enrichment_enabled" in thread)
     patch.auto_enrichment_enabled = thread.auto_enrichment_enabled;
+  Object.assign(patch, buildThreadScopePatch(thread));
   return patch;
 }
 
-export { buildThreadParamsPatch };
+function buildThreadScopePatch(thread: ChatThread): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (thread.task_meta) patch.task_meta = thread.task_meta;
+  if (thread.worktree?.id) patch.worktree_id = thread.worktree.id;
+  return patch;
+}
+
+export { buildThreadParamsPatch, buildThreadScopePatch };
 
 function toMessageContent(
   content: import("../../../services/refact/types").UserMessage["content"],

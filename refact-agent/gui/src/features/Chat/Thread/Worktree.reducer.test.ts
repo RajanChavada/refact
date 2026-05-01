@@ -124,6 +124,25 @@ describe("Worktree chat thread reducer", () => {
     expect(state.threads[chatId]?.thread.worktree).toBeUndefined();
   });
 
+  test("snapshot without worktree preserves existing worktree metadata", () => {
+    const chatId = "chat-preserve-worktree-snapshot";
+    const worktree = makeWorktreeMeta("wt-preserve");
+    let state = chatReducer(
+      emptyChatState(),
+      applyChatEvent(makeSnapshot(chatId, worktree)),
+    );
+
+    state = chatReducer(
+      state,
+      applyChatEvent({
+        ...makeSnapshot(chatId, undefined, false),
+        seq: "2",
+      }),
+    );
+
+    expect(state.threads[chatId]?.thread.worktree).toEqual(worktree);
+  });
+
   test("multiple threads can reference the same worktree id", () => {
     const sharedWorktree = makeWorktreeMeta("wt-shared");
     let state = emptyChatState();
@@ -154,7 +173,7 @@ describe("Worktree chat thread reducer", () => {
     expect(state.threads["chat-initial"]?.thread.worktree).toEqual(worktree);
   });
 
-  test("thread params patch does not include worktree metadata", () => {
+  test("thread params patch preserves worktree by id only", () => {
     const thread: ChatThread = {
       id: "chat-patch",
       messages: [],
@@ -168,5 +187,6 @@ describe("Worktree chat thread reducer", () => {
     const patch = buildThreadParamsPatch(thread, true);
 
     expect(patch).not.toHaveProperty("worktree");
+    expect(patch).toHaveProperty("worktree_id", "wt-patch");
   });
 });

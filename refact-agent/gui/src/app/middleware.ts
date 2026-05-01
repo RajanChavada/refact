@@ -43,6 +43,7 @@ import {
   setTemperature,
   setMaxTokens,
   buildThreadParamsPatch,
+  buildThreadScopePatch,
 } from "../features/Chat/Thread";
 import { saveLastThreadParams } from "../utils/threadStorage";
 import { integrationsApi } from "../services/refact/integrations";
@@ -1035,8 +1036,9 @@ startListening({
     const port = state.config.lspPort;
     const apiKey = state.config.apiKey;
     const chatId = state.chat.current_thread_id;
+    const runtime = chatId ? state.chat.threads[chatId] : undefined;
 
-    if (!port || !chatId) return;
+    if (!port || !chatId || !runtime) return;
 
     try {
       const { sendChatCommand } = await import(
@@ -1044,7 +1046,10 @@ startListening({
       );
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "set_params",
-        patch: { mode: action.payload },
+        patch: {
+          mode: action.payload,
+          ...buildThreadScopePatch(runtime.thread),
+        },
       });
     } catch {
       // Silently ignore - backend may not support this command
@@ -1070,7 +1075,10 @@ startListening({
       );
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "set_params",
-        patch: { mode: action.payload.mode },
+        patch: {
+          mode: action.payload.mode,
+          ...buildThreadScopePatch(runtime.thread),
+        },
       });
     } catch {
       // Silently ignore - backend may not support this command

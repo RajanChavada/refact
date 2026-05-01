@@ -1085,11 +1085,13 @@ export const chatReducer = createReducer(initialState, (builder) => {
               ? (event.thread.auto_enrichment_enabled as boolean)
               : existing?.auto_enrichment_enabled ?? false,
           worktree:
-            event.thread.worktree == null
-              ? event.thread.worktree
-              : isWorktreeMeta(event.thread.worktree)
-                ? event.thread.worktree
-                : undefined,
+            "worktree" in event.thread
+              ? event.thread.worktree === null
+                ? null
+                : isWorktreeMeta(event.thread.worktree)
+                  ? event.thread.worktree
+                  : existing?.worktree
+              : existing?.worktree,
           parent_id: event.thread.parent_id ?? existing?.parent_id,
           link_type: event.thread.link_type ?? existing?.link_type,
           root_chat_id: event.thread.root_chat_id ?? existing?.root_chat_id,
