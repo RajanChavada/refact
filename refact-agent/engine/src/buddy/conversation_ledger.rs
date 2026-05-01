@@ -4,15 +4,105 @@ use tracing::warn;
 
 use super::types::BuddyConversationEntry;
 
-fn workflow_id_to_kind(id: &str) -> (&str, &str, Option<&str>) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuddyWorkflowMapping {
+    pub kind: &'static str,
+    pub icon: &'static str,
+    pub badge: Option<&'static str>,
+}
+
+pub fn workflow_id_to_mapping(id: &str) -> BuddyWorkflowMapping {
     match id {
-        "buddy_humor" => ("system", "🎭", Some("Humor")),
-        "commit_message" => ("workflow", "🔄", Some("Commit Msg")),
-        "follow_up" => ("workflow", "💡", Some("Follow-up")),
-        "compress_trajectory" => ("system", "🤖", Some("Compress")),
-        "memo_extraction" => ("system", "🧠", Some("Memo")),
-        "kg_enrich" | "kg_deprecate" => ("system", "📚", Some("Knowledge")),
-        _ => ("workflow", "🔄", None),
+        "buddy_humor" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🎭",
+            badge: Some("Humor"),
+        },
+        "buddy_error_detective" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🕵️",
+            badge: Some("Error Detective"),
+        },
+        "buddy_memory_gardener" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🌿",
+            badge: Some("Memory"),
+        },
+        "buddy_knowledge_conflict_resolver" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🧩",
+            badge: Some("Knowledge"),
+        },
+        "buddy_behavior_learner" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🧭",
+            badge: Some("Preferences"),
+        },
+        "buddy_user_habit_coach" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🏃",
+            badge: Some("Habits"),
+        },
+        "buddy_model_cost_optimizer" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "💸",
+            badge: Some("Model/Cost"),
+        },
+        "buddy_dependency_radar" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "📦",
+            badge: Some("Dependencies"),
+        },
+        "buddy_docs_gardener" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "📚",
+            badge: Some("Docs"),
+        },
+        "buddy_setup_coach" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🧰",
+            badge: Some("Setup"),
+        },
+        "buddy_security_whisperer" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🛡️",
+            badge: Some("Security"),
+        },
+        "buddy_architecture_drift_watcher" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🏗️",
+            badge: Some("Architecture"),
+        },
+        "commit_message" => BuddyWorkflowMapping {
+            kind: "workflow",
+            icon: "🔄",
+            badge: Some("Commit Msg"),
+        },
+        "follow_up" => BuddyWorkflowMapping {
+            kind: "workflow",
+            icon: "💡",
+            badge: Some("Follow-up"),
+        },
+        "compress_trajectory" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🤖",
+            badge: Some("Compress"),
+        },
+        "memo_extraction" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "🧠",
+            badge: Some("Memo"),
+        },
+        "kg_enrich" | "kg_deprecate" => BuddyWorkflowMapping {
+            kind: "system",
+            icon: "📚",
+            badge: Some("Knowledge"),
+        },
+        _ => BuddyWorkflowMapping {
+            kind: "workflow",
+            icon: "🔄",
+            badge: None,
+        },
     }
 }
 
@@ -87,7 +177,7 @@ pub async fn list_all_buddy_conversations(
                     val.get("buddy_meta")
                         .and_then(|meta| meta.get("workflow_id"))
                         .and_then(|workflow_id| workflow_id.as_str())
-                        .and_then(|workflow_id| workflow_id_to_kind(workflow_id).2)
+                        .and_then(|workflow_id| workflow_id_to_mapping(workflow_id).badge)
                         .map(|s| s.to_string())
                 });
             let icon = match kind.as_str() {
@@ -97,7 +187,7 @@ pub async fn list_all_buddy_conversations(
                     .get("buddy_meta")
                     .and_then(|meta| meta.get("workflow_id"))
                     .and_then(|workflow_id| workflow_id.as_str())
-                    .map(|workflow_id| workflow_id_to_kind(workflow_id).1.to_string())
+                    .map(|workflow_id| workflow_id_to_mapping(workflow_id).icon.to_string())
                     .unwrap_or_else(|| "🤖".to_string()),
                 _ => "💬".to_string(),
             };
@@ -138,7 +228,7 @@ pub async fn list_all_buddy_conversations(
                     continue;
                 }
             };
-            let (kind, icon, badge) = workflow_id_to_kind(&stem);
+            let mapping = workflow_id_to_mapping(&stem);
             let entry_count = val
                 .get("entries")
                 .and_then(|v| v.as_array())
@@ -154,18 +244,21 @@ pub async fn list_all_buddy_conversations(
                 .to_string();
             entries.push(BuddyConversationEntry {
                 id: stem.clone(),
-                kind: kind.to_string(),
+                kind: mapping.kind.to_string(),
                 title: format!(
                     "{}{}",
                     stem.replace('_', " "),
-                    badge.map(|b| format!(" ({})", b)).unwrap_or_default()
+                    mapping
+                        .badge
+                        .map(|b| format!(" ({})", b))
+                        .unwrap_or_default()
                 ),
                 created_at: last_ts.clone(),
                 updated_at: last_ts,
                 status: "completed".to_string(),
                 message_count: entry_count,
-                icon: icon.to_string(),
-                badge: badge.map(|s| s.to_string()),
+                icon: mapping.icon.to_string(),
+                badge: mapping.badge.map(|s| s.to_string()),
             });
         }
     }
@@ -176,4 +269,42 @@ pub async fn list_all_buddy_conversations(
 
     entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autonomous_workflow_ids_have_system_mappings() {
+        let expected = [
+            ("buddy_error_detective", "🕵️", "Error Detective"),
+            ("buddy_memory_gardener", "🌿", "Memory"),
+            ("buddy_knowledge_conflict_resolver", "🧩", "Knowledge"),
+            ("buddy_behavior_learner", "🧭", "Preferences"),
+            ("buddy_user_habit_coach", "🏃", "Habits"),
+            ("buddy_model_cost_optimizer", "💸", "Model/Cost"),
+            ("buddy_dependency_radar", "📦", "Dependencies"),
+            ("buddy_docs_gardener", "📚", "Docs"),
+            ("buddy_setup_coach", "🧰", "Setup"),
+            ("buddy_security_whisperer", "🛡️", "Security"),
+            ("buddy_architecture_drift_watcher", "🏗️", "Architecture"),
+        ];
+
+        for (workflow_id, icon, badge) in expected {
+            let mapping = workflow_id_to_mapping(workflow_id);
+            assert_eq!(mapping.kind, "system");
+            assert_eq!(mapping.icon, icon);
+            assert_eq!(mapping.badge, Some(badge));
+        }
+    }
+
+    #[test]
+    fn unknown_workflow_mapping_remains_workflow_fallback() {
+        let mapping = workflow_id_to_mapping("custom_workflow");
+
+        assert_eq!(mapping.kind, "workflow");
+        assert_eq!(mapping.icon, "🔄");
+        assert_eq!(mapping.badge, None);
+    }
 }

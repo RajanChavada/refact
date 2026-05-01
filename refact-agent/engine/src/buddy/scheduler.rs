@@ -4,12 +4,14 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::global_context::GlobalContext;
 use super::actor::BuddyService;
-use super::types::{
-    BuddyActivity, BuddyJobState, BuddyOnboarding, BuddyPetState, BuddyRuntimeEvent,
-    BuddySpeechItem, BuddySuggestion,
-};
 use super::diagnostics::DiagnosticContext;
+use super::settings::BuddySettings;
+use super::types::{
+    BuddyActivity, BuddyFact, BuddyJobState, BuddyOnboarding, BuddyPetState, BuddyPulse,
+    BuddyRuntimeEvent, BuddySpeechItem, BuddySuggestion,
+};
 
+#[allow(dead_code)]
 pub struct BuddyJobContext {
     pub identity_name: String,
     pub onboarding: BuddyOnboarding,
@@ -20,6 +22,9 @@ pub struct BuddyJobContext {
     pub suggestion_state: Vec<BuddySuggestion>,
     pub pet: BuddyPetState,
     pub active_quest: Option<super::types::BuddyQuest>,
+    pub settings: BuddySettings,
+    pub pulse: BuddyPulse,
+    pub facts: Vec<BuddyFact>,
 }
 
 pub struct BuddyJobResult {
@@ -107,21 +112,21 @@ impl BuddyScheduler {
     ) {
         let ctx_opt = {
             let buddy = buddy_arc.lock().await;
-            buddy
-                .as_ref()
-                .map(|svc| {
-                    Some((
-                        svc.state.clone(),
-                        svc.recent_diagnostics.clone(),
-                        svc.settings.proactive_enabled,
-                    ))
-                })
-                .flatten()
+            buddy.as_ref().map(|svc| {
+                (
+                    svc.state.clone(),
+                    svc.recent_diagnostics.clone(),
+                    svc.settings.clone(),
+                    svc.pulse.clone(),
+                    svc.fact_store.iter().cloned().collect::<Vec<_>>(),
+                )
+            })
         };
-        let (state, diags, proactive_enabled) = match ctx_opt {
+        let (state, diags, settings, pulse, facts) = match ctx_opt {
             Some(x) => x,
             None => return,
         };
+        let proactive_enabled = settings.proactive_enabled;
 
         let unread = state
             .suggestion_state
@@ -167,6 +172,9 @@ impl BuddyScheduler {
                 suggestion_state: state.suggestion_state.clone(),
                 pet: state.pet.clone(),
                 active_quest: state.active_quest.clone(),
+                settings: settings.clone(),
+                pulse: pulse.clone(),
+                facts: facts.clone(),
             };
             if !job.should_run(gcx.clone(), &ctx).await {
                 continue;

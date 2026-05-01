@@ -1232,6 +1232,9 @@ fn make_job_context(
         suggestion_state: vec![],
         pet: Default::default(),
         active_quest: None,
+        settings: BuddySettings::default(),
+        pulse: BuddyPulse::default(),
+        facts: vec![],
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod autonomous_chats;
 pub mod config_watcher;
 pub mod error_triage;
 pub mod greeting;
