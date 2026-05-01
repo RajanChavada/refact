@@ -1,5 +1,6 @@
 import React, { useCallback } from "react";
 import { Badge, Button, Card, Flex, Spinner, Text } from "@radix-ui/themes";
+import { CheckIcon } from "@radix-ui/react-icons";
 import {
   useInstallPluginMutation,
   useUninstallPluginMutation,
@@ -70,7 +71,9 @@ export const MarketplacePluginCard: React.FC<MarketplacePluginCardProps> = ({
             {isInstalled ? (
               <Flex gap="2" align="center">
                 <Text size="1" weight="medium">
-                  Installed ✓
+                  <Flex as="span" align="center" gap="1">
+                    <CheckIcon /> Installed
+                  </Flex>
                 </Text>
                 <Button
                   size="1"

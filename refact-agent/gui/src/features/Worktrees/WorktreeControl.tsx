@@ -49,15 +49,11 @@ const BranchIcon: React.FC = () => (
     fill="none"
     aria-hidden="true"
   >
+    <circle cx="4" cy="3.5" r="1.5" stroke="currentColor" strokeWidth="1.3" />
+    <circle cx="4" cy="12.5" r="1.5" stroke="currentColor" strokeWidth="1.3" />
+    <circle cx="12" cy="5.5" r="1.5" stroke="currentColor" strokeWidth="1.3" />
     <path
-      d="M5 3.5A1.5 1.5 0 1 1 2 3.5A1.5 1.5 0 0 1 5 3.5ZM5 12.5A1.5 1.5 0 1 1 2 12.5A1.5 1.5 0 0 1 5 12.5ZM14 4.5A1.5 1.5 0 1 1 11 4.5A1.5 1.5 0 0 1 14 4.5Z"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M3.5 5v6M5 12.5h2.5A4.5 4.5 0 0 0 12 8V6"
+      d="M4 5v6M5.5 12.5h2.25A4.25 4.25 0 0 0 12 8.25V7"
       stroke="currentColor"
       strokeWidth="1.3"
       strokeLinecap="round"

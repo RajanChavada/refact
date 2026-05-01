@@ -182,7 +182,7 @@ describe("MarketplacePluginCard", () => {
         },
       },
     );
-    expect(screen.getByText("Installed ✓")).toBeDefined();
+    expect(screen.getByText("Installed")).toBeDefined();
     expect(screen.getByText("Uninstall")).toBeDefined();
   });
 });

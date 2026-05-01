@@ -16,7 +16,7 @@ import {
   Switch,
   Callout,
 } from "@radix-ui/themes";
-import { ChatBubbleIcon, ChevronDownIcon } from "@radix-ui/react-icons";
+import { ChevronDownIcon, Cross1Icon } from "@radix-ui/react-icons";
 import { useAppSelector, useAppDispatch, useCapsForToolUse } from "../../hooks";
 import { useGetCapsQuery, CapCost } from "../../services/refact/caps";
 import {
@@ -39,6 +39,7 @@ import { push } from "../../features/Pages/pagesSlice";
 import { enrichAndGroupModels } from "../../utils/enrichModels";
 import { useThinking } from "../../hooks/useThinking";
 import { formatContextWindow } from "../../features/Providers/ProviderForm/ProviderModelsList/utils/groupModelsWithPricing";
+import { ReasoningIcon } from "../../features/Providers/ProviderForm/ProviderModelsList/components/CapabilityIcons";
 import styles from "./ChatSettingsDropdown.module.css";
 
 const MIN_OUTPUT_TOKENS = 1024;
@@ -287,7 +288,7 @@ export const ChatSettingsDropdown: React.FC<ChatSettingsDropdownProps> = ({
             ·
           </Text>
           <Text size="1">
-            <ChatBubbleIcon />
+            <ReasoningIcon />
           </Text>
         </>
       )}
@@ -458,7 +459,7 @@ export const ChatSettingsDropdown: React.FC<ChatSettingsDropdownProps> = ({
                     disabled={isInteractionDisabled}
                     aria-label="Reset max tokens"
                   >
-                    ✕
+                    <Cross1Icon />
                   </button>
                 )}
               </Flex>
@@ -473,7 +474,7 @@ export const ChatSettingsDropdown: React.FC<ChatSettingsDropdownProps> = ({
             <Flex align="center" justify="between" gap="3">
               <Flex align="center" gap="1">
                 <Text size="1">
-                  <ChatBubbleIcon />
+                  <ReasoningIcon />
                 </Text>
                 <Text size="1" weight="medium">
                   Reasoning

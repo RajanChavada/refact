@@ -1,7 +1,8 @@
 import React, { useMemo } from "react";
 import { Flex, Text, Slider, Switch } from "@radix-ui/themes";
-import { ChatBubbleIcon } from "@radix-ui/react-icons";
+import { Cross1Icon } from "@radix-ui/react-icons";
 import { useGetCapsQuery } from "../../services/refact/caps";
+import { ReasoningIcon } from "../../features/Providers/ProviderForm/ProviderModelsList/components/CapabilityIcons";
 import styles from "./ModelSamplingParams.module.css";
 
 export type SamplingValues = {
@@ -70,7 +71,7 @@ export const ModelSamplingParams: React.FC<ModelSamplingParamsProps> = ({
           <Flex align="center" justify="between" gap="3">
             <Flex align="center" gap="1">
               <Text size={size}>
-                <ChatBubbleIcon />
+                <ReasoningIcon />
               </Text>
               <Text size={size} weight="medium">
                 Reasoning
@@ -169,8 +170,9 @@ export const ModelSamplingParams: React.FC<ModelSamplingParamsProps> = ({
                 className={styles.resetButton}
                 onClick={() => onChange("max_new_tokens", undefined)}
                 disabled={disabled}
+                aria-label="Reset max tokens"
               >
-                ✕
+                <Cross1Icon />
               </button>
             )}
           </Flex>

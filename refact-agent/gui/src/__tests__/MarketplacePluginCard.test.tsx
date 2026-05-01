@@ -15,12 +15,12 @@ describe("MarketplacePluginCard", () => {
     expect(
       screen.getByRole("button", { name: /install/i }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Installed ✓/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Installed/)).not.toBeInTheDocument();
   });
 
   test("renders installed state with uninstall button when installed", () => {
     render(<MarketplacePluginCard plugin={mockPlugin} isInstalled={true} />);
-    expect(screen.getByText(/Installed ✓/)).toBeInTheDocument();
+    expect(screen.getByText(/Installed/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /uninstall/i }),
     ).toBeInTheDocument();
