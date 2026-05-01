@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   advanceBuddyShowcasePhase,
   BUDDY_SHOWCASE_PHASE_DURATIONS_MS,
@@ -6,10 +6,14 @@ import {
   createBuddyShowcaseRun,
   type BuddyShowcaseTargetCandidate,
 } from "../features/Buddy/buddyShowcase";
+import { drawShowcaseEvent } from "../features/Buddy/buddyShowcaseDraw";
+import { buildBuddyWorldState } from "../features/Buddy/buddyWorldModel";
+import { PALETTES } from "../features/Buddy/constants";
 import type {
   BuddyPetState,
   BuddyPulse,
   BuddyRuntimeEvent,
+  BuddyShowcaseRun,
 } from "../features/Buddy/types";
 
 const MEMORY_TARGET: BuddyShowcaseTargetCandidate = {
@@ -27,6 +31,59 @@ const OBSERVATORY_TARGET: BuddyShowcaseTargetCandidate = {
   label: "Model observatory",
   sprite: "observatory",
 };
+
+type MockCanvasContext = Pick<
+  CanvasRenderingContext2D,
+  | "arc"
+  | "beginPath"
+  | "bezierCurveTo"
+  | "clearRect"
+  | "closePath"
+  | "createLinearGradient"
+  | "ellipse"
+  | "fill"
+  | "fillRect"
+  | "fillText"
+  | "lineTo"
+  | "moveTo"
+  | "restore"
+  | "save"
+  | "setTransform"
+  | "stroke"
+> &
+  Partial<CanvasRenderingContext2D>;
+
+function makeCanvasContext(): CanvasRenderingContext2D {
+  const gradient = { addColorStop: vi.fn() } as unknown as CanvasGradient;
+  const ctx: MockCanvasContext = {
+    arc: vi.fn(),
+    beginPath: vi.fn(),
+    bezierCurveTo: vi.fn(),
+    clearRect: vi.fn(),
+    closePath: vi.fn(),
+    createLinearGradient: vi.fn(() => gradient),
+    ellipse: vi.fn(),
+    fill: vi.fn(),
+    fillRect: vi.fn(),
+    fillText: vi.fn(),
+    lineTo: vi.fn(),
+    moveTo: vi.fn(),
+    restore: vi.fn(),
+    save: vi.fn(),
+    setTransform: vi.fn(),
+    stroke: vi.fn(),
+    fillStyle: "#000000",
+    font: "10px monospace",
+    globalAlpha: 1,
+    imageSmoothingEnabled: false,
+    lineCap: "round" as CanvasLineCap,
+    lineWidth: 1,
+    strokeStyle: "#000000",
+    textAlign: "center" as CanvasTextAlign,
+    textBaseline: "middle" as CanvasTextBaseline,
+  };
+  return ctx as CanvasRenderingContext2D;
+}
 
 function makePet(sleeping = false): BuddyPetState {
   return {
@@ -102,7 +159,94 @@ function makePulse(overrides?: Partial<BuddyPulse>): BuddyPulse {
   return { ...pulse, ...overrides };
 }
 
+function makeWorld() {
+  return buildBuddyWorldState({
+    now: new Date("2024-01-01T23:00:00"),
+    pulse: makePulse(),
+    pet: makePet(),
+    nowPlaying: null,
+    activeQuest: null,
+  });
+}
+
+function makeShowcaseRun(
+  overrides?: Partial<BuddyShowcaseRun>,
+): BuddyShowcaseRun {
+  return {
+    id: "showcase-test",
+    kind: "memory_firefly_night",
+    phase: "showcase",
+    target: MEMORY_TARGET,
+    pose: "meditate",
+    speech: "Buddy gathers the memory fireflies into a soft night map.",
+    seed: 12345,
+    startedAtMs: 1_000,
+    phaseStartedAtMs: 1_000,
+    ...overrides,
+  };
+}
+
 describe("buddy showcase director", () => {
+  it("draws showcase overlay events for both supported kinds", () => {
+    const world = makeWorld();
+
+    expect(() =>
+      drawShowcaseEvent({
+        ctx: makeCanvasContext(),
+        run: makeShowcaseRun(),
+        world,
+        palette: PALETTES[0],
+        frame: 40,
+        width: 720,
+        height: 260,
+        compact: false,
+        reducedMotion: false,
+        nowMs: 3_600,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      drawShowcaseEvent({
+        ctx: makeCanvasContext(),
+        run: makeShowcaseRun({
+          kind: "stargazing_constellation",
+          target: OBSERVATORY_TARGET,
+          pose: "stargaze",
+          speech:
+            "Buddy reads the model stars and traces a careful constellation.",
+        }),
+        world,
+        palette: PALETTES[0],
+        frame: 40,
+        width: 720,
+        height: 260,
+        compact: false,
+        reducedMotion: false,
+        nowMs: 3_600,
+      }),
+    ).not.toThrow();
+  });
+
+  it("draws reduced-motion compact showcase overlays", () => {
+    expect(() =>
+      drawShowcaseEvent({
+        ctx: makeCanvasContext(),
+        run: makeShowcaseRun({
+          kind: "stargazing_constellation",
+          target: OBSERVATORY_TARGET,
+          pose: "stargaze",
+        }),
+        world: makeWorld(),
+        palette: PALETTES[0],
+        frame: 4,
+        width: 360,
+        height: 190,
+        compact: true,
+        reducedMotion: true,
+        nowMs: 2_200,
+      }),
+    ).not.toThrow();
+  });
+
   it("chooses and creates memory firefly night for memory runtime signals", () => {
     const args = {
       targets: [MEMORY_TARGET, OBSERVATORY_TARGET],

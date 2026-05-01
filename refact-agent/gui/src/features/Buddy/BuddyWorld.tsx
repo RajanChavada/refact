@@ -39,6 +39,7 @@ import {
   hasBuddyShowcaseRuntimeTrigger,
   type BuddyShowcaseTargetCandidate,
 } from "./buddyShowcase";
+import { drawShowcaseEvent } from "./buddyShowcaseDraw";
 import styles from "./BuddyWorld.module.css";
 
 interface BuddyWorldProps {
@@ -752,6 +753,11 @@ function randomIdleReaction(): string {
   ];
 }
 
+function prefersReducedMotion(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 function drawScene(
   ctx: CanvasRenderingContext2D,
   world: BuddyWorldState,
@@ -1045,12 +1051,25 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
         }
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
         drawScene(ctx, world, palette, frame, cssWidth, cssHeight);
+        if (showcaseRun) {
+          drawShowcaseEvent({
+            ctx,
+            run: showcaseRun,
+            world,
+            palette,
+            frame,
+            width: cssWidth,
+            height: cssHeight,
+            compact,
+            reducedMotion: prefersReducedMotion(),
+          });
+        }
       }
       raf = window.requestAnimationFrame(render);
     };
     render();
     return () => window.cancelAnimationFrame(raf);
-  }, [compact, palette, world]);
+  }, [compact, palette, showcaseRun, world]);
 
   const handleCelestialClick = () => {
     setActiveWaypointIndex(

@@ -455,6 +455,10 @@ describe("BuddyWorld_dynamic_environment", () => {
       "data-vitality",
       "tangled",
     );
+    expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+      "data-showcase",
+      "none",
+    );
     expect(screen.getByTestId("buddy-world-canvas")).toBeInTheDocument();
     expect(screen.getByTestId("buddy-world-character")).toBeInTheDocument();
 
