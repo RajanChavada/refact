@@ -439,7 +439,8 @@ pub async fn remap_context_file_for_execution_scope(
     if !raw_path.is_absolute() {
         return Ok(Some((context_file, vec![])));
     }
-    let normalized_path = canonical_path(context_file.file_name.clone());
+    let normalized_path =
+        dunce::simplified(&canonical_path(context_file.file_name.clone())).to_path_buf();
 
     if normalized_path.starts_with(execution_scope.effective_root()) {
         context_file.file_name = normalized_path.to_string_lossy().to_string();
@@ -454,7 +455,10 @@ pub async fn remap_context_file_for_execution_scope(
             if let Ok(relative) = normalized_path.strip_prefix(&source_root) {
                 let worktree_path = execution_scope.effective_root().join(relative);
                 if worktree_path.is_file() {
-                    let worktree_path = canonical_path(worktree_path.to_string_lossy().to_string());
+                    let worktree_path = dunce::simplified(&canonical_path(
+                        worktree_path.to_string_lossy().to_string(),
+                    ))
+                    .to_path_buf();
                     let notice = format!(
                         "⚠️ AST/VecDB result was mapped from source checkout to active worktree: {} -> {}",
                         normalized_path.display(),
@@ -557,15 +561,23 @@ mod worktree_scope_read_tools {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(source.join("src")).unwrap();
         fs::create_dir_all(&outside).unwrap();
-        fs::write(root.join("src/lib.rs"), "fn worktree_version() {}\n").unwrap();
         fs::write(
-            root.join("src/worktree_only.rs"),
+            root.join("src").join("lib.rs"),
+            "fn worktree_version() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src").join("worktree_only.rs"),
             "pub fn only_worktree() {}\n",
         )
         .unwrap();
-        fs::write(source.join("src/lib.rs"), "fn source_version() {}\n").unwrap();
         fs::write(
-            source.join("src/source_only.rs"),
+            source.join("src").join("lib.rs"),
+            "fn source_version() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("src").join("source_only.rs"),
             "pub fn only_source() {}\n",
         )
         .unwrap();
@@ -600,8 +612,8 @@ mod worktree_scope_read_tools {
     async fn make_gcx(fixture: &Fixture, blocked: Vec<String>) -> Arc<ARwLock<GlobalContext>> {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let workspace_files = vec![
-            fixture.source.join("src/lib.rs"),
-            fixture.source.join("src/source_only.rs"),
+            fixture.source.join("src").join("lib.rs"),
+            fixture.source.join("src").join("source_only.rs"),
         ];
         {
             let mut locked = gcx.write().await;
@@ -716,7 +728,8 @@ mod worktree_scope_read_tools {
             names,
             vec![fixture
                 .root
-                .join("src/lib.rs")
+                .join("src")
+                .join("lib.rs")
                 .to_string_lossy()
                 .to_string()]
         );
@@ -733,7 +746,8 @@ mod worktree_scope_read_tools {
         let tool_call_id = "cat-call".to_string();
         let path = fixture
             .root
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
 
@@ -762,12 +776,14 @@ mod worktree_scope_read_tools {
         let tool_call_id = "cat-call".to_string();
         let source_path = fixture
             .source
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
         let worktree_path = fixture
             .root
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
 
@@ -852,12 +868,14 @@ mod worktree_scope_read_tools {
         let mut cmd = AtCommandMember::new("cmd".to_string(), "@file".to_string(), 1, 6);
         let source_path = fixture
             .source
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
         let worktree_path = fixture
             .root
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
         let mut args = vec![AtCommandMember::new("arg".to_string(), source_path, 7, 10)];
@@ -878,12 +896,14 @@ mod worktree_scope_read_tools {
         let scope = ExecutionScope::from_worktree(&fixture.worktree);
         let source_path = fixture
             .source
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
         let worktree_path = fixture
             .root
-            .join("src/lib.rs")
+            .join("src")
+            .join("lib.rs")
             .to_string_lossy()
             .to_string();
         let context_file = ContextFile {

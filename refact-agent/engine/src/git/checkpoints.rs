@@ -658,8 +658,8 @@ mod tests {
         let worktree = temp.path().join("worktree");
         fs::create_dir_all(source.join("src")).unwrap();
         fs::create_dir_all(worktree.join("src")).unwrap();
-        write_file(&source.join("src/file.txt"), "source\n");
-        write_file(&worktree.join("src/file.txt"), "before\n");
+        write_file(&source.join("src").join("file.txt"), "source\n");
+        write_file(&worktree.join("src").join("file.txt"), "before\n");
         let source = dunce::simplified(&fs::canonicalize(source).unwrap()).to_path_buf();
         let worktree = dunce::simplified(&fs::canonicalize(worktree).unwrap()).to_path_buf();
         let gcx = crate::global_context::tests::make_test_gcx().await;
@@ -717,7 +717,7 @@ mod tests {
         )
         .await
         .unwrap();
-        write_file(&f.worktree.join("src/file.txt"), "after\n");
+        write_file(&f.worktree.join("src").join("file.txt"), "after\n");
         let (files_changed, _reverted_to, checkpoint_for_undo) =
             preview_changes_for_workspace_checkpoint_for_root(
                 f.gcx.clone(),
@@ -733,7 +733,10 @@ mod tests {
             .find(|change| change.relative_path == PathBuf::from("src/file.txt"))
             .unwrap();
         assert_eq!(changed_file.status, FileChangeStatus::MODIFIED);
-        assert_eq!(changed_file.absolute_path, f.worktree.join("src/file.txt"));
+        assert_eq!(
+            changed_file.absolute_path,
+            f.worktree.join("src").join("file.txt")
+        );
         assert!(files_changed
             .iter()
             .all(|change| change.absolute_path.starts_with(&f.worktree)));
@@ -750,7 +753,7 @@ mod tests {
         )
         .await
         .unwrap();
-        write_file(&f.worktree.join("src/file.txt"), "after\n");
+        write_file(&f.worktree.join("src").join("file.txt"), "after\n");
         restore_workspace_checkpoint_for_root(
             f.gcx.clone(),
             &f.worktree,
@@ -760,11 +763,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            fs::read_to_string(f.worktree.join("src/file.txt")).unwrap(),
+            fs::read_to_string(f.worktree.join("src").join("file.txt")).unwrap(),
             "before\n"
         );
         assert_eq!(
-            fs::read_to_string(f.source.join("src/file.txt")).unwrap(),
+            fs::read_to_string(f.source.join("src").join("file.txt")).unwrap(),
             "source\n"
         );
     }
@@ -814,18 +817,18 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_worktree_legacy_no_worktree_uses_active_workspace() {
         let f = fixture().await;
-        write_file(&f.source.join("src/legacy.txt"), "legacy before\n");
+        write_file(&f.source.join("src").join("legacy.txt"), "legacy before\n");
         let (checkpoint, _) =
             create_workspace_checkpoint(f.gcx.clone(), None, "checkpoint_worktree_legacy")
                 .await
                 .unwrap();
         assert_eq!(checkpoint.workspace_folder, f.source);
-        write_file(&f.source.join("src/legacy.txt"), "legacy after\n");
+        write_file(&f.source.join("src").join("legacy.txt"), "legacy after\n");
         restore_workspace_checkpoint(f.gcx.clone(), &checkpoint, "checkpoint_worktree_legacy")
             .await
             .unwrap();
         assert_eq!(
-            fs::read_to_string(f.source.join("src/legacy.txt")).unwrap(),
+            fs::read_to_string(f.source.join("src").join("legacy.txt")).unwrap(),
             "legacy before\n"
         );
     }
