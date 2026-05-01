@@ -253,7 +253,11 @@ fn resolve_creatable_final_path(path: &Path) -> Result<PathBuf, String> {
 fn normalize_existing_or_lexical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path)
         .map(|path| simplify_path(&path))
-        .unwrap_or_else(|_| normalize_lexical(path).unwrap_or_else(|_| path.to_path_buf()))
+        .unwrap_or_else(|_| {
+            normalize_lexical(path)
+                .map(|path| simplify_path(&path))
+                .unwrap_or_else(|_| simplify_path(path))
+        })
 }
 
 fn simplify_path(path: &Path) -> PathBuf {
@@ -314,9 +318,9 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         fs::write(root.join("src").join("main.rs"), "fn main() {}").unwrap();
         fs::write(outside.join("secret.txt"), "secret").unwrap();
-        let root = fs::canonicalize(root).unwrap();
-        let source = fs::canonicalize(source).unwrap();
-        let outside = fs::canonicalize(outside).unwrap();
+        let root = simplify_path(&fs::canonicalize(root).unwrap());
+        let source = simplify_path(&fs::canonicalize(source).unwrap());
+        let outside = simplify_path(&fs::canonicalize(outside).unwrap());
         let repo = source.clone();
         (temp, root, source, repo, outside)
     }

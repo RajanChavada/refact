@@ -284,8 +284,8 @@ mod tests {
         let source = temp.path().join("source");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&source).unwrap();
-        let root = fs::canonicalize(root).unwrap();
-        let source = fs::canonicalize(source).unwrap();
+        let root = dunce::simplified(&fs::canonicalize(root).unwrap()).to_path_buf();
+        let source = dunce::simplified(&fs::canonicalize(source).unwrap()).to_path_buf();
         (
             temp,
             WorktreeMeta {

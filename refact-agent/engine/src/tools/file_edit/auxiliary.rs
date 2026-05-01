@@ -1241,9 +1241,9 @@ mod tests {
             fs::create_dir_all(root.join("src")).unwrap();
             fs::create_dir_all(source.join("src")).unwrap();
             fs::create_dir_all(&outside).unwrap();
-            let root = fs::canonicalize(root).unwrap();
-            let source = fs::canonicalize(source).unwrap();
-            let outside = fs::canonicalize(outside).unwrap();
+            let root = dunce::simplified(&fs::canonicalize(root).unwrap()).to_path_buf();
+            let source = dunce::simplified(&fs::canonicalize(source).unwrap()).to_path_buf();
+            let outside = dunce::simplified(&fs::canonicalize(outside).unwrap()).to_path_buf();
             let worktree = WorktreeMeta {
                 id: "wt-tools".to_string(),
                 kind: "task_agent".to_string(),

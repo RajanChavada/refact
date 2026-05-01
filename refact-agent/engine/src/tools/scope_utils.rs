@@ -571,9 +571,9 @@ mod worktree_scope_read_tools {
         .unwrap();
         fs::write(outside.join("allowed.txt"), "outside allowed\n").unwrap();
         fs::write(outside.join("blocked.blocked"), "outside blocked\n").unwrap();
-        let root = fs::canonicalize(root).unwrap();
-        let source = fs::canonicalize(source).unwrap();
-        let outside = fs::canonicalize(outside).unwrap();
+        let root = dunce::simplified(&fs::canonicalize(root).unwrap()).to_path_buf();
+        let source = dunce::simplified(&fs::canonicalize(source).unwrap()).to_path_buf();
+        let outside = dunce::simplified(&fs::canonicalize(outside).unwrap()).to_path_buf();
         let worktree = WorktreeMeta {
             id: "wt-read-tools".to_string(),
             kind: "chat".to_string(),

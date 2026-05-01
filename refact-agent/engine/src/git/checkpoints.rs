@@ -782,7 +782,7 @@ mod tests {
         .unwrap();
         let other = f.source.parent().unwrap().join("other-worktree");
         fs::create_dir_all(&other).unwrap();
-        let other = fs::canonicalize(other).unwrap();
+        let other = dunce::simplified(&fs::canonicalize(other).unwrap()).to_path_buf();
         let error = restore_workspace_checkpoint_for_root(
             f.gcx.clone(),
             &other,
