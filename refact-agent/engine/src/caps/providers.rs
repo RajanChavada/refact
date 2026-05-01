@@ -9,15 +9,18 @@ use crate::caps::{
     EmbeddingModelRecord, HasBaseModelRecord, default_embedding_batch, default_rejection_threshold,
     strip_model_from_finetune, normalize_string,
 };
-use crate::custom_error::{MapErrToString, YamlError};
+use crate::custom_error::YamlError;
 
 use crate::llm::adapter::WireFormat;
+use crate::providers::identity::provider_identity_from_yaml;
 use crate::providers::traits::{extra_headers_mapping_to_hash_map, parse_extra_headers_value};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CapsProvider {
     #[serde(default, deserialize_with = "normalize_string")]
     pub name: String,
+    #[serde(default, deserialize_with = "normalize_string")]
+    pub base_provider: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_true")]
@@ -94,6 +97,7 @@ impl CapsProvider {
     }
 
     pub fn apply_override(&mut self, value: serde_yaml::Value) -> Result<(), String> {
+        set_field_if_exists::<String>(&mut self.base_provider, "base_provider", &value)?;
         set_field_if_exists::<bool>(&mut self.enabled, "enabled", &value)?;
         set_field_if_exists::<WireFormat>(&mut self.wire_format, "wire_format", &value)?;
         set_field_if_exists::<String>(&mut self.endpoint_style, "endpoint_style", &value)?;
@@ -356,6 +360,7 @@ pub fn get_provider_templates() -> &'static IndexMap<String, CapsProvider> {
         for (name, yaml) in PROVIDER_TEMPLATES {
             if let Ok(mut provider) = serde_yaml::from_str::<CapsProvider>(yaml) {
                 provider.name = name.to_string();
+                provider.base_provider = name.to_string();
                 map.insert(name.to_string(), provider);
             } else {
                 panic!("Failed to parse template for provider {}", name);
@@ -424,7 +429,7 @@ pub fn post_process_provider(
 pub async fn read_providers_d(
     prev_providers: Vec<CapsProvider>,
     config_dir: &Path,
-    experimental: bool,
+    _experimental: bool,
 ) -> (Vec<CapsProvider>, Vec<YamlError>) {
     let providers_dir = config_dir.join("providers.d");
     let mut providers = prev_providers;
@@ -443,12 +448,12 @@ pub async fn read_providers_d(
     let mut seen_provider_names = std::collections::HashSet::new();
 
     for yaml_path in yaml_paths {
-        let provider_name = match yaml_path.file_stem() {
+        let instance_id = match yaml_path.file_stem() {
             Some(name) => name.to_string_lossy().to_string(),
             None => continue,
         };
 
-        if provider_name == "refact" {
+        if instance_id == "refact" {
             tracing::warn!(
                 "Legacy Refact Cloud provider config '{}' is ignored; configure a BYOK provider instead",
                 yaml_path.display()
@@ -456,52 +461,69 @@ pub async fn read_providers_d(
             continue;
         }
 
-        if !seen_provider_names.insert(provider_name.clone()) {
+        let duplicate_key = instance_id.to_ascii_lowercase();
+        if !seen_provider_names.insert(duplicate_key) {
             error_log.push(YamlError {
                 path: yaml_path.to_string_lossy().to_string(),
                 error_line: 0,
                 error_msg: format!(
                     "Duplicate provider name '{}' (another file with the same stem was already processed)",
-                    provider_name
+                    instance_id
                 ),
             });
             continue;
         }
 
-        if provider_templates.contains_key(&provider_name) {
-            match get_provider_from_template_and_config_file(
-                config_dir,
-                &provider_name,
-                false,
-                false,
-                experimental,
-            )
-            .await
-            {
-                Ok(provider) => {
-                    providers.push(provider);
-                }
-                Err(e) => {
-                    error_log.push(YamlError {
-                        path: yaml_path.to_string_lossy().to_string(),
-                        error_line: 0,
-                        error_msg: e,
-                    });
-                }
+        let content = match tokio::fs::read_to_string(&yaml_path).await {
+            Ok(content) => content,
+            Err(e) => {
+                error_log.push(YamlError {
+                    path: yaml_path.to_string_lossy().to_string(),
+                    error_line: 0,
+                    error_msg: format!("Failed to read file: {}", e),
+                });
+                continue;
             }
-        } else {
-            let content = match tokio::fs::read_to_string(&yaml_path).await {
-                Ok(content) => content,
-                Err(e) => {
-                    error_log.push(YamlError {
-                        path: yaml_path.to_string_lossy().to_string(),
-                        error_line: 0,
-                        error_msg: format!("Failed to read file: {}", e),
-                    });
-                    continue;
-                }
-            };
+        };
 
+        let config_file_value = match serde_yaml::from_str::<serde_yaml::Value>(&content) {
+            Ok(value) => value,
+            Err(e) => {
+                error_log.push(YamlError {
+                    path: yaml_path.to_string_lossy().to_string(),
+                    error_line: e.location().map_or(0, |loc| loc.line()),
+                    error_msg: format!("Failed to parse YAML: {}", e),
+                });
+                continue;
+            }
+        };
+
+        let identity = match provider_identity_from_yaml(&instance_id, &config_file_value) {
+            Ok(identity) => identity,
+            Err(e) => {
+                error_log.push(YamlError {
+                    path: yaml_path.to_string_lossy().to_string(),
+                    error_line: 0,
+                    error_msg: e,
+                });
+                continue;
+            }
+        };
+
+        let provider = if let Some(template) = provider_templates.get(&identity.base_provider) {
+            let mut provider = template.clone();
+            if let Err(e) = provider.apply_override(config_file_value) {
+                error_log.push(YamlError {
+                    path: yaml_path.to_string_lossy().to_string(),
+                    error_line: 0,
+                    error_msg: e,
+                });
+                continue;
+            }
+            provider.name = identity.instance_id;
+            provider.base_provider = identity.base_provider;
+            provider
+        } else {
             let mut provider: CapsProvider = match serde_yaml::from_str(&content) {
                 Ok(provider) => provider,
                 Err(e) => {
@@ -513,9 +535,12 @@ pub async fn read_providers_d(
                     continue;
                 }
             };
-            provider.name = provider_name;
-            providers.push(provider);
-        }
+            provider.name = identity.instance_id;
+            provider.base_provider = identity.base_provider;
+            provider
+        };
+
+        providers.push(provider);
     }
 
     (providers, error_log)
@@ -953,6 +978,7 @@ pub fn resolve_provider_api_key(provider: &CapsProvider, cmdline_api_key: &str) 
     resolve_api_key(provider, &provider.api_key, &cmdline_api_key, "API key")
 }
 
+#[cfg(test)]
 pub async fn get_provider_from_template_and_config_file(
     config_dir: &Path,
     name: &str,
@@ -960,6 +986,7 @@ pub async fn get_provider_from_template_and_config_file(
     post_process: bool,
     experimental: bool,
 ) -> Result<CapsProvider, String> {
+    use crate::custom_error::MapErrToString;
     let mut provider = get_provider_templates()
         .get(name)
         .cloned()
@@ -982,6 +1009,7 @@ pub async fn get_provider_from_template_and_config_file(
     };
 
     provider.apply_override(config_file_value)?;
+    provider.base_provider = name.to_string();
 
     if post_process {
         post_process_provider(&mut provider, true, experimental);
@@ -1145,6 +1173,101 @@ mod tests {
         assert!(
             !provider.chat_models.is_empty(),
             "chat models should still be populated regardless of supports_completion"
+        );
+    }
+
+    async fn write_provider_config(temp: &tempfile::TempDir, file_name: &str, yaml: &str) {
+        let providers_dir = temp.path().join("providers.d");
+        tokio::fs::create_dir_all(&providers_dir).await.unwrap();
+        tokio::fs::write(providers_dir.join(file_name), yaml)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_instances_use_base_template_and_instance_model_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        write_provider_config(
+            &temp,
+            "openai.yaml",
+            "api_key: sk-main\nenabled: true\nenabled_models:\n  - gpt-4.1\n",
+        )
+        .await;
+        write_provider_config(
+            &temp,
+            "openai_2.yaml",
+            "base_provider: openai\napi_key: sk-two\nenabled: true\nenabled_models:\n  - gpt-4.1\n",
+        )
+        .await;
+
+        let (mut providers, errors) = read_providers_d(Vec::new(), temp.path(), false).await;
+        assert!(errors.is_empty(), "{}", errors.len());
+        providers.sort_by(|a, b| a.name.cmp(&b.name));
+        for provider in &mut providers {
+            post_process_provider(provider, false, false);
+        }
+
+        let mut caps = CodeAssistantCaps::default();
+        add_models_to_caps(&mut caps, providers);
+
+        let openai = caps.chat_models.get("openai/gpt-4.1").unwrap();
+        let openai_2 = caps.chat_models.get("openai_2/gpt-4.1").unwrap();
+        assert_eq!(openai.base.id, "openai/gpt-4.1");
+        assert_eq!(openai_2.base.id, "openai_2/gpt-4.1");
+        assert_eq!(
+            openai.base.endpoint,
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_2.base.endpoint,
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(openai.base.wire_format, WireFormat::OpenaiChatCompletions);
+        assert_eq!(openai_2.base.wire_format, WireFormat::OpenaiChatCompletions);
+        assert_eq!(openai.base.api_key, "sk-main");
+        assert_eq!(openai_2.base.api_key, "sk-two");
+    }
+
+    #[tokio::test]
+    async fn legacy_singleton_provider_config_without_identity_fields_remains_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        write_provider_config(
+            &temp,
+            "openai.yaml",
+            "api_key: sk-main\nenabled: true\nenabled_models:\n  - gpt-4.1\n",
+        )
+        .await;
+
+        let (mut providers, errors) = read_providers_d(Vec::new(), temp.path(), false).await;
+        assert!(errors.is_empty(), "{}", errors.len());
+        assert_eq!(providers.len(), 1);
+        let provider = providers.get_mut(0).unwrap();
+        assert_eq!(provider.name, "openai");
+        assert_eq!(provider.base_provider, "openai");
+        assert_eq!(provider.api_key, "sk-main");
+
+        post_process_provider(provider, false, false);
+        assert!(provider.chat_models.contains_key("gpt-4.1"));
+    }
+
+    #[tokio::test]
+    async fn alias_provider_without_base_provider_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        write_provider_config(
+            &temp,
+            "openai_2.yaml",
+            "api_key: sk-two\nenabled: true\nenabled_models:\n  - gpt-4.1\n",
+        )
+        .await;
+
+        let (providers, errors) = read_providers_d(Vec::new(), temp.path(), false).await;
+
+        assert!(providers.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].error_msg.contains("must set base_provider"),
+            "{}",
+            errors[0].error_msg
         );
     }
 

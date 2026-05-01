@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 use crate::global_context::GlobalContext;
 use crate::caps::providers::{
-    add_models_to_caps, read_providers_d, resolve_provider_api_key, post_process_provider,
+    add_models_to_caps, post_process_provider, read_providers_d, resolve_provider_api_key,
     CapsProvider,
 };
 use crate::providers::config::{ModelTypeDefaults, ProviderDefaults, is_legacy_refact_model};
@@ -296,6 +296,9 @@ pub struct CodeAssistantCaps {
 
     #[serde(skip)]
     pub user_defaults: ProviderDefaults,
+
+    #[serde(skip)]
+    pub provider_base_names: HashMap<String, Vec<String>>,
 }
 
 impl Default for CodeAssistantCaps {
@@ -311,6 +314,7 @@ impl Default for CodeAssistantCaps {
             metadata: CapsMetadata::default(),
             model_caps: Arc::new(std::collections::HashMap::new()),
             user_defaults: crate::providers::config::ProviderDefaults::default(),
+            provider_base_names: HashMap::new(),
         }
     }
 }
@@ -392,6 +396,14 @@ fn resolve_model_caps_for_provider_model(
     model_caps: &HashMap<String, ModelCapabilities>,
     model_id: &str,
 ) -> Option<crate::caps::model_caps::ResolvedCaps> {
+    resolve_model_caps_for_provider_model_with_bases(model_caps, model_id, &[])
+}
+
+fn resolve_model_caps_for_provider_model_with_bases(
+    model_caps: &HashMap<String, ModelCapabilities>,
+    model_id: &str,
+    base_provider_names: &[String],
+) -> Option<crate::caps::model_caps::ResolvedCaps> {
     if let Some(resolved) = resolve_model_caps(model_caps, model_id) {
         return Some(resolved);
     }
@@ -399,7 +411,15 @@ fn resolve_model_caps_for_provider_model(
     let Some((provider_name, bare_model_id)) = model_id.split_once('/') else {
         return None;
     };
-    for provider_alias in model_caps_provider_aliases(provider_name) {
+
+    let mut aliases = model_caps_provider_aliases(provider_name);
+    for base_provider_name in base_provider_names {
+        aliases.extend(model_caps_provider_aliases(base_provider_name));
+    }
+    aliases.sort();
+    aliases.dedup();
+
+    for provider_alias in aliases {
         let qualified = format!("{provider_alias}/{bare_model_id}");
         if let Some(resolved) = resolve_model_caps(model_caps, &qualified) {
             return Some(resolved);
@@ -428,6 +448,7 @@ fn model_caps_provider_aliases(provider_name: &str) -> Vec<String> {
 /// Build ChatModelRecord from an AvailableModel and provider runtime info
 fn build_chat_model_record(
     provider_name: &str,
+    base_provider_names: &[String],
     model: &AvailableModel,
     model_caps: &HashMap<String, ModelCapabilities>,
     runtime_wire_format: WireFormat,
@@ -455,7 +476,9 @@ fn build_chat_model_record(
     } else {
         None
     }
-    .or_else(|| resolve_model_caps_for_provider_model(model_caps, &model_id))
+    .or_else(|| {
+        resolve_model_caps_for_provider_model_with_bases(model_caps, &model_id, base_provider_names)
+    })
     .or_else(|| {
         if model_id.starts_with("openrouter/") {
             None
@@ -679,6 +702,13 @@ pub async fn populate_chat_models_from_providers(
             continue;
         }
 
+        let mut base_provider_names = vec![provider.base_provider_name().to_string()];
+        if runtime.name != provider.name() {
+            base_provider_names.push(provider.name().to_string());
+        }
+        base_provider_names.sort();
+        base_provider_names.dedup();
+
         let available_models = provider
             .fetch_available_models(&http_client, model_caps)
             .await;
@@ -690,6 +720,7 @@ pub async fn populate_chat_models_from_providers(
 
             let chat_record = build_chat_model_record(
                 &runtime.name,
+                &base_provider_names,
                 &model,
                 model_caps,
                 runtime.wire_format,
@@ -713,6 +744,14 @@ pub async fn populate_chat_models_from_providers(
                     }
                 }
             }
+
+            let map = caps
+                .provider_base_names
+                .entry(runtime.name.clone())
+                .or_default();
+            map.extend(base_provider_names.iter().cloned());
+            map.sort();
+            map.dedup();
 
             caps.chat_models.insert(model_id, Arc::new(chat_record));
         }
@@ -905,6 +944,12 @@ pub async fn load_caps(
     for provider in &mut providers {
         post_process_provider(provider, false, experimental);
         provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
+        if !provider.base_provider.is_empty() && provider.base_provider != provider.name {
+            caps.provider_base_names
+                .entry(provider.name.clone())
+                .or_default()
+                .push(provider.base_provider.clone());
+        }
     }
 
     let model_caps_map = get_model_caps(gcx.clone(), false).await.map_err(|e| {
@@ -1086,7 +1131,16 @@ pub fn resolve_chat_model(
 
     let base_record = resolve_model(&caps.chat_models, model_id)?;
 
-    let resolved = resolve_model_caps_for_provider_model(&caps.model_caps, model_id);
+    let base_provider_names = model_id
+        .split_once('/')
+        .and_then(|(provider_name, _)| caps.provider_base_names.get(provider_name))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let resolved = resolve_model_caps_for_provider_model_with_bases(
+        &caps.model_caps,
+        model_id,
+        base_provider_names,
+    );
 
     match resolved {
         Some(resolved_caps) => {
@@ -1115,7 +1169,16 @@ pub fn resolve_chat_model(
 fn apply_model_caps_to_all_chat_models(caps: &mut CodeAssistantCaps) {
     let model_ids: Vec<String> = caps.chat_models.keys().cloned().collect();
     for model_id in model_ids {
-        if let Some(resolved) = resolve_model_caps_for_provider_model(&caps.model_caps, &model_id) {
+        let base_provider_names = model_id
+            .split_once('/')
+            .and_then(|(provider_name, _)| caps.provider_base_names.get(provider_name))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if let Some(resolved) = resolve_model_caps_for_provider_model_with_bases(
+            &caps.model_caps,
+            &model_id,
+            base_provider_names,
+        ) {
             if let Some(record) = caps.chat_models.get(&model_id) {
                 let mut updated = (**record).clone();
                 apply_registry_caps_to_chat_model(&mut updated, &resolved.caps);
@@ -1315,6 +1378,66 @@ mod tests {
     }
 
     #[test]
+    fn test_instance_prefixed_model_cap_resolution_uses_base_provider() {
+        let mut model_caps = HashMap::new();
+        model_caps.insert(
+            "openai/gpt-4.1".to_string(),
+            ModelCapabilities {
+                n_ctx: 128_000,
+                supports_tools: true,
+                supports_strict_tools: true,
+                tokenizer: "openai-tokenizer".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let model = AvailableModel {
+            id: "gpt-4.1".to_string(),
+            display_name: None,
+            n_ctx: 0,
+            supports_tools: false,
+            supports_parallel_tools: false,
+            supports_strict_tools: false,
+            supports_multimodality: false,
+            reasoning_effort_options: None,
+            supports_thinking_budget: false,
+            supports_adaptive_thinking_budget: false,
+            supports_cache_control: true,
+            tokenizer: None,
+            enabled: true,
+            is_custom: false,
+            pricing: None,
+            available_providers: Vec::new(),
+            selected_provider: None,
+            max_output_tokens: None,
+            provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: None,
+        };
+
+        let record = build_chat_model_record(
+            "openai_2",
+            &["openai".to_string()],
+            &model,
+            &model_caps,
+            WireFormat::OpenaiChatCompletions,
+            "https://api.openai.com/v1/chat/completions",
+            "sk-test",
+            "",
+            "",
+            &HashMap::new(),
+            true,
+        );
+
+        assert_eq!(record.base.id, "openai_2/gpt-4.1");
+        assert_eq!(record.base.n_ctx, 128_000);
+        assert_eq!(record.base.tokenizer, "openai-tokenizer");
+        assert!(record.supports_tools);
+        assert!(record.supports_strict_tools);
+    }
+
+    #[test]
     fn test_vllm_caps_resolution_prefers_base_model_root() {
         let mut model_caps = HashMap::new();
         model_caps.insert(
@@ -1363,6 +1486,7 @@ mod tests {
 
         let record = build_chat_model_record(
             "vllm",
+            &[],
             &model,
             &model_caps,
             WireFormat::OpenaiChatCompletions,
@@ -1400,6 +1524,7 @@ mod tests {
 
         let record = build_chat_model_record(
             "qwen",
+            &[],
             &model,
             &HashMap::new(),
             WireFormat::OpenaiChatCompletions,
