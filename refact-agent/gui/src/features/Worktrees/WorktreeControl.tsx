@@ -106,7 +106,13 @@ function defaultBranchName(chatId: string): string {
   return `refact/chat/${seed}`;
 }
 
-export const WorktreeControl: React.FC = () => {
+type WorktreeControlProps = {
+  disabled?: boolean;
+};
+
+export const WorktreeControl: React.FC<WorktreeControlProps> = ({
+  disabled,
+}) => {
   const dispatch = useAppDispatch();
   const chatId = useAppSelector(selectChatId);
   const currentWorktree = useAppSelector(selectThreadWorktree);
@@ -352,6 +358,7 @@ export const WorktreeControl: React.FC = () => {
             }`}
             title={triggerLabel}
             aria-label={`Worktree scope: ${triggerLabel}`}
+            disabled={disabled}
           >
             <Flex align="center" gap="1" className={styles.triggerInner}>
               {!currentWorktree && sourceBranch && (

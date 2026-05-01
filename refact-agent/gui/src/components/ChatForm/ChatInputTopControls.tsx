@@ -32,13 +32,16 @@ export type ChatInputTopControlsProps = {
   checkboxes: Record<string, CheckboxType>;
   onCheckedChange: (name: string, checked: boolean | string) => void;
   attachedFiles: ReturnType<typeof useAttachedFiles>;
+  disabled?: boolean;
 };
 
 export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
   checkboxes,
   onCheckedChange,
   attachedFiles,
+  disabled,
 }) => {
+  const isDisabled = disabled ?? false;
   const dispatch = useAppDispatch();
   const host = useAppSelector(selectHost);
   const chatId = useAppSelector(selectCurrentThreadId);
@@ -79,6 +82,7 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
             <button
               type="button"
               onClick={() => setDialogOpen(true)}
+              disabled={isDisabled}
               aria-label="Configure project information"
               className={classNames(
                 styles.iconButton,
@@ -100,7 +104,7 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
             <button
               type="button"
               onClick={() => handleEditingChange(!autoApproveEditing)}
-              disabled={!chatId}
+              disabled={isDisabled || !chatId}
               aria-label="Auto-approve file editing tools"
               aria-pressed={autoApproveEditing}
               className={classNames(
@@ -123,7 +127,7 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
             <button
               type="button"
               onClick={() => handleDangerousChange(!autoApproveDangerous)}
-              disabled={!chatId}
+              disabled={isDisabled || !chatId}
               aria-label="Auto-approve dangerous commands"
               aria-pressed={autoApproveDangerous}
               className={classNames(
@@ -149,7 +153,7 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
                 size="1"
                 name={selectedLinesCheckbox.name}
                 checked={selectedLinesCheckbox.checked}
-                disabled={selectedLinesCheckbox.disabled}
+                disabled={isDisabled || selectedLinesCheckbox.disabled}
                 onCheckedChange={(value) =>
                   onCheckedChange(selectedLinesCheckbox.name, value)
                 }
@@ -165,7 +169,7 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
                     !selectedLinesCheckbox.checked,
                   )
                 }
-                disabled={selectedLinesCheckbox.disabled}
+                disabled={isDisabled || selectedLinesCheckbox.disabled}
                 aria-label={
                   selectedLinesCheckbox.locked ? "Locked" : "Unlocked"
                 }
@@ -176,7 +180,11 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
               {selectedLinesCheckbox.info && (
                 <HoverCard.Root>
                   <HoverCard.Trigger>
-                    <button type="button" className={styles.helpButton}>
+                    <button
+                      type="button"
+                      className={styles.helpButton}
+                      disabled={isDisabled}
+                    >
                       <QuestionMarkCircledIcon />
                     </button>
                   </HoverCard.Trigger>
@@ -199,7 +207,7 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
                 <button
                   type="button"
                   onClick={attachedFiles.addFile}
-                  disabled={attachedFiles.attached}
+                  disabled={isDisabled || attachedFiles.attached}
                   aria-label={`Attach ${attachedFiles.activeFile.name}`}
                   className={classNames(
                     styles.iconButton,

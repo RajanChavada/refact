@@ -103,7 +103,13 @@ function sliderPositionToValue(position: number, steps: number[]): number {
   return Math.round(steps[idx] + frac * (steps[idx + 1] - steps[idx]));
 }
 
-export const ChatSettingsDropdown: React.FC = () => {
+type ChatSettingsDropdownProps = {
+  disabled?: boolean;
+};
+
+export const ChatSettingsDropdown: React.FC<ChatSettingsDropdownProps> = ({
+  disabled,
+}) => {
   const dispatch = useAppDispatch();
   const chatId = useAppSelector(selectChatId);
   const isStreaming = useAppSelector(selectIsStreaming);
@@ -131,7 +137,7 @@ export const ChatSettingsDropdown: React.FC = () => {
     areCapsInitialized,
   } = useThinking();
 
-  const isInteractionDisabled = isStreaming || isWaiting;
+  const isInteractionDisabled = (disabled ?? false) || isStreaming || isWaiting;
 
   // Model data
   const currentModelName = caps.currentModel || "Select model";

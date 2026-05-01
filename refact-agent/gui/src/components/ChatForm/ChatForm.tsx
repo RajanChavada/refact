@@ -509,18 +509,17 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 onOpenFile={queryPathThenOpenFile}
               />
               <Flex align="center" gap="2" justify="between" wrap="wrap">
-                {!isBuddyChat && (
-                  <ChatInputTopControls
-                    checkboxes={checkboxes}
-                    onCheckedChange={onToggleCheckbox}
-                    attachedFiles={attachedFiles}
-                  />
-                )}
+                <ChatInputTopControls
+                  checkboxes={checkboxes}
+                  onCheckedChange={onToggleCheckbox}
+                  attachedFiles={attachedFiles}
+                  disabled={isBuddyChat}
+                />
                 <Flex align="center" gap="2">
                   <StreamingTokenCounter />
                   <ProviderUsageIndicator />
                   <UsageCounter />
-                  {!isBuddyChat && <TrajectoryButton />}
+                  <TrajectoryButton disabled={isBuddyChat} />
                 </Flex>
               </Flex>
             </Box>
@@ -564,15 +563,13 @@ export const ChatForm: React.FC<ChatFormProps> = ({
             />
           </Box>
           <Flex gap="2" wrap="wrap" py="2" px="3" align="center">
-            {!isBuddyChat && <ChatSettingsDropdown />}
-            {!isBuddyChat && (
-              <ModeSelect
-                selectedMode={threadMode ?? DEFAULT_MODE}
-                onModeChange={onSetMode}
-                disabled={isModeDisabled}
-              />
-            )}
-            {!isBuddyChat && <WorktreeControl />}
+            <ChatSettingsDropdown disabled={isBuddyChat} />
+            <ModeSelect
+              selectedMode={threadMode ?? DEFAULT_MODE}
+              onModeChange={onSetMode}
+              disabled={isBuddyChat || isModeDisabled}
+            />
+            <WorktreeControl disabled={isBuddyChat} />
 
             <Flex justify="end" flexGrow="1" wrap="wrap" gap="2" align="center">
               <BrowserToggleButton chatId={chatId} />
