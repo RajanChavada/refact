@@ -32,9 +32,11 @@ import {
 import {
   advanceBuddyShowcasePhase,
   BUDDY_SHOWCASE_IDLE_COOLDOWN_MS,
+  BUDDY_SHOWCASE_INITIAL_GRACE_MS,
   BUDDY_SHOWCASE_PHASE_DURATIONS_MS,
   BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS,
   createBuddyShowcaseRun,
+  hasBuddyShowcaseRuntimeTrigger,
   type BuddyShowcaseTargetCandidate,
 } from "./buddyShowcase";
 import styles from "./BuddyWorld.module.css";
@@ -842,7 +844,9 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
   const [showcaseRun, setShowcaseRun] = useState<BuddyShowcaseRun | null>(null);
   const [lastShowcaseKind, setLastShowcaseKind] =
     useState<BuddyShowcaseKind | null>(null);
-  const [nextShowcaseAtMs, setNextShowcaseAtMs] = useState(0);
+  const [nextShowcaseAtMs, setNextShowcaseAtMs] = useState(
+    () => Date.now() + BUDDY_SHOWCASE_INITIAL_GRACE_MS,
+  );
 
   useEffect(() => {
     if (now) {
@@ -899,12 +903,17 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       const run = createBuddyShowcaseRun({
         targets: showcaseTargets,
         nowPlaying,
-        activeSpeechVisible: Boolean(activeSpeech),
+        activeSpeechVisible: Boolean(activeSpeech) || Boolean(reaction),
         pet,
         nowMs,
         cooldownUntilMs: nextShowcaseAtMs,
         lastShowcaseKind,
         strongRuntimeTrigger,
+        world: {
+          phase: world.phase,
+          weather: world.weather,
+        },
+        pulse,
       });
       if (!run) return false;
       setShowcaseRun(run);
@@ -924,8 +933,12 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       nextShowcaseAtMs,
       nowPlaying,
       pet,
+      pulse,
+      reaction,
       showcaseRun,
       showcaseTargets,
+      world.phase,
+      world.weather,
     ],
   );
 
@@ -970,11 +983,17 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
   }, [activeSpeech, activeWaypoint, lastWaypoint, reaction, showcaseRun]);
 
   useEffect(() => {
-    if (activeSpeech !== null || showcaseRun !== null || nowPlaying === null) {
+    if (
+      activeSpeech !== null ||
+      reaction !== null ||
+      showcaseRun !== null ||
+      nowPlaying === null ||
+      !hasBuddyShowcaseRuntimeTrigger(nowPlaying)
+    ) {
       return;
     }
     startShowcase(true);
-  }, [activeSpeech, nowPlaying, showcaseRun, startShowcase]);
+  }, [activeSpeech, nowPlaying, reaction, showcaseRun, startShowcase]);
 
   useEffect(() => {
     if (!showcaseRun) return;
@@ -985,18 +1004,15 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       BUDDY_SHOWCASE_PHASE_DURATIONS_MS[showcaseRun.phase] - elapsedMs,
     );
     const timer = window.setTimeout(() => {
-      setShowcaseRun((currentRun) => {
-        if (!currentRun) return null;
-        const currentNowMs = Date.now();
-        const advanced = advanceBuddyShowcasePhase({
-          run: currentRun,
-          nowMs: currentNowMs,
-        });
-        if (!advanced) {
-          setNextShowcaseAtMs(currentNowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS);
-        }
-        return advanced;
+      const currentNowMs = Date.now();
+      const advanced = advanceBuddyShowcasePhase({
+        run: showcaseRun,
+        nowMs: currentNowMs,
       });
+      setShowcaseRun(advanced);
+      if (!advanced) {
+        setNextShowcaseAtMs(currentNowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS);
+      }
     }, remainingMs + 16);
     return () => window.clearTimeout(timer);
   }, [showcaseRun]);

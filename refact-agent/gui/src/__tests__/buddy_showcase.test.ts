@@ -6,7 +6,11 @@ import {
   createBuddyShowcaseRun,
   type BuddyShowcaseTargetCandidate,
 } from "../features/Buddy/buddyShowcase";
-import type { BuddyPetState, BuddyRuntimeEvent } from "../features/Buddy/types";
+import type {
+  BuddyPetState,
+  BuddyPulse,
+  BuddyRuntimeEvent,
+} from "../features/Buddy/types";
 
 const MEMORY_TARGET: BuddyShowcaseTargetCandidate = {
   id: "memory",
@@ -65,6 +69,39 @@ function makeRuntimeEvent(
   };
 }
 
+function makePulse(overrides?: Partial<BuddyPulse>): BuddyPulse {
+  const pulse: BuddyPulse = {
+    generated_at: "2024-01-01T00:00:00Z",
+    tasks: { total: 3, stuck: 0, abandoned: 0, by_status: {} },
+    trajectories: { total: 10, untitled: 0, oldest_age_days: 1 },
+    memory: { total: 5, orphan: 0, stale_conflicts: 0 },
+    providers: { defaults_ok: true, broken_refs: 0, quota_warnings: 0 },
+    mcp: { total: 4, failing: 0, auth_expiring: 0 },
+    customization: { modes: 3, skills: 2, commands: 1, subagents: 0, hooks: 0 },
+    diagnostics: { last_hour: 0, top_error_types: [] },
+    git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+    worktrees: {
+      total_registered: 3,
+      total_discovered: 1,
+      total: 4,
+      clean: 2,
+      dirty: 1,
+      unknown: 0,
+      stale: 1,
+      conflicted: 0,
+      shared: 1,
+      abandoned_clean: 2,
+      changed_files: 3,
+      additions: 10,
+      deletions: 2,
+      missing_registry_paths: 1,
+      unregistered_cache_dirs: 1,
+      merged_branches: 2,
+    },
+  };
+  return { ...pulse, ...overrides };
+}
+
 describe("buddy showcase director", () => {
   it("chooses and creates memory firefly night for memory runtime signals", () => {
     const args = {
@@ -74,6 +111,8 @@ describe("buddy showcase director", () => {
       pet: makePet(),
       nowMs: 10_000,
       lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
     };
 
     expect(chooseBuddyShowcase(args)?.kind).toBe("memory_firefly_night");
@@ -104,6 +143,8 @@ describe("buddy showcase director", () => {
       pet: makePet(),
       nowMs: 20_000,
       lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "evening" as const, weather: "busy" as const },
     };
     const providerArgs = {
       ...generatingArgs,
@@ -124,6 +165,63 @@ describe("buddy showcase director", () => {
     );
   });
 
+  it("returns null for unmapped strong runtime signals", () => {
+    const args = {
+      targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
+      nowPlaying: makeRuntimeEvent({
+        signal_type: "chat_started",
+        title: "Chat started",
+        status: "started",
+      }),
+      activeSpeechVisible: false,
+      pet: makePet(),
+      nowMs: 25_000,
+      lastShowcaseKind: null,
+      strongRuntimeTrigger: true,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "aurora" as const },
+    };
+
+    expect(chooseBuddyShowcase(args)).toBeNull();
+    expect(createBuddyShowcaseRun(args)).toBeNull();
+  });
+
+  it("provider pulse issues prefer and create stargazing constellation", () => {
+    const args = {
+      targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
+      nowPlaying: null,
+      activeSpeechVisible: false,
+      pet: makePet(),
+      nowMs: 28_000,
+      lastShowcaseKind: null,
+      pulse: makePulse({
+        providers: { defaults_ok: false, broken_refs: 1, quota_warnings: 1 },
+      }),
+      world: { phase: "night" as const, weather: "rain" as const },
+    };
+
+    expect(chooseBuddyShowcase(args)?.kind).toBe("stargazing_constellation");
+    expect(createBuddyShowcaseRun(args)?.target.id).toBe("providers");
+  });
+
+  it("memory pulse and night context prefer memory firefly night", () => {
+    const args = {
+      targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
+      nowPlaying: null,
+      activeSpeechVisible: false,
+      pet: makePet(),
+      nowMs: 29_000,
+      lastShowcaseKind: null,
+      pulse: makePulse({
+        memory: { total: 50, orphan: 3, stale_conflicts: 1 },
+      }),
+      world: { phase: "night" as const, weather: "rain" as const },
+    };
+
+    expect(chooseBuddyShowcase(args)?.kind).toBe("memory_firefly_night");
+    expect(createBuddyShowcaseRun(args)?.target.id).toBe("memory");
+  });
+
   it("active speech suppresses chooser and run creation", () => {
     const args = {
       targets: [MEMORY_TARGET],
@@ -132,6 +230,24 @@ describe("buddy showcase director", () => {
       pet: makePet(),
       nowMs: 30_000,
       lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
+    };
+
+    expect(chooseBuddyShowcase(args)).toBeNull();
+    expect(createBuddyShowcaseRun(args)).toBeNull();
+  });
+
+  it("local visible speech suppresses chooser and run creation", () => {
+    const args = {
+      targets: [MEMORY_TARGET],
+      nowPlaying: makeRuntimeEvent(),
+      activeSpeechVisible: true,
+      pet: makePet(),
+      nowMs: 32_000,
+      lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "evening" as const, weather: "clear" as const },
     };
 
     expect(chooseBuddyShowcase(args)).toBeNull();
@@ -146,6 +262,8 @@ describe("buddy showcase director", () => {
       pet: makePet(true),
       nowMs: 35_000,
       lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
     };
     const cooldownArgs = {
       ...sleepingArgs,
@@ -167,6 +285,8 @@ describe("buddy showcase director", () => {
       pet: makePet(),
       nowMs: 40_000,
       lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
     };
 
     expect(chooseBuddyShowcase(args)).toBeNull();
@@ -181,6 +301,8 @@ describe("buddy showcase director", () => {
       pet: makePet(),
       nowMs: 50_000,
       lastShowcaseKind: "memory_firefly_night" as const,
+      pulse: makePulse(),
+      world: { phase: "day" as const, weather: "clear" as const },
     };
     const strongArgs = {
       ...idleArgs,
@@ -202,6 +324,8 @@ describe("buddy showcase director", () => {
       pet: makePet(),
       nowMs: 60_000,
       lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
     });
     expect(run).not.toBeNull();
 

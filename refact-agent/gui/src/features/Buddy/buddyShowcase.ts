@@ -1,5 +1,6 @@
 import type {
   BuddyPetState,
+  BuddyPulse,
   BuddyRuntimeEvent,
   BuddyScenePose,
   BuddyShowcaseKind,
@@ -7,6 +8,7 @@ import type {
   BuddyShowcaseRun,
   BuddyShowcaseTarget,
 } from "./types";
+import type { BuddyWorldPhase, BuddyWorldWeather } from "./buddyWorldModel";
 
 export const BUDDY_SHOWCASE_PHASE_DURATIONS_MS: Record<
   BuddyShowcasePhase,
@@ -19,6 +21,7 @@ export const BUDDY_SHOWCASE_PHASE_DURATIONS_MS: Record<
   cooldown: 1200,
 };
 
+export const BUDDY_SHOWCASE_INITIAL_GRACE_MS = 30_000;
 export const BUDDY_SHOWCASE_IDLE_COOLDOWN_MS = 78_000;
 export const BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS = 18_000;
 
@@ -34,6 +37,10 @@ const PROVIDER_ERROR_TERMS = [
   "quota",
   "defaults",
 ] as const;
+const SHOWCASE_KIND_ORDER: Record<BuddyShowcaseKind, number> = {
+  memory_firefly_night: 0,
+  stargazing_constellation: 1,
+};
 
 export interface BuddyShowcaseDefinition {
   kind: BuddyShowcaseKind;
@@ -69,6 +76,11 @@ export interface BuddyShowcaseTargetCandidate extends BuddyShowcaseTarget {
   sprite?: string;
 }
 
+export interface BuddyShowcaseWorldContext {
+  phase: BuddyWorldPhase;
+  weather: BuddyWorldWeather;
+}
+
 export interface ChooseBuddyShowcaseArgs {
   targets: BuddyShowcaseTargetCandidate[];
   nowPlaying: BuddyRuntimeEvent | null;
@@ -78,6 +90,8 @@ export interface ChooseBuddyShowcaseArgs {
   cooldownUntilMs?: number;
   lastShowcaseKind?: BuddyShowcaseKind | null;
   strongRuntimeTrigger?: boolean;
+  world?: BuddyShowcaseWorldContext;
+  pulse?: BuddyPulse | null;
 }
 
 export interface CreateBuddyShowcaseRunArgs extends ChooseBuddyShowcaseArgs {
@@ -102,6 +116,24 @@ function hasProviderSignal(event: BuddyRuntimeEvent | null): boolean {
   return PROVIDER_ERROR_TERMS.some((term) => haystack.includes(term));
 }
 
+function hasProviderPulseIssue(pulse: BuddyPulse | null | undefined): boolean {
+  if (!pulse) return false;
+  return (
+    !pulse.providers.defaults_ok ||
+    pulse.providers.broken_refs > 0 ||
+    pulse.providers.quota_warnings > 0
+  );
+}
+
+function memoryPulseScore(pulse: BuddyPulse | null | undefined): number {
+  if (!pulse) return 0;
+  return (
+    (pulse.memory.total > 0 ? 14 : 0) +
+    pulse.memory.orphan * 6 +
+    pulse.memory.stale_conflicts * 8
+  );
+}
+
 function kindForRuntime(
   event: BuddyRuntimeEvent | null,
 ): BuddyShowcaseKind | null {
@@ -118,11 +150,10 @@ function kindForRuntime(
   return null;
 }
 
-function isStrongRuntimeTrigger(
+export function hasBuddyShowcaseRuntimeTrigger(
   event: BuddyRuntimeEvent | null,
-  explicit: boolean | undefined,
 ): boolean {
-  return Boolean(explicit) || kindForRuntime(event) !== null;
+  return kindForRuntime(event) !== null;
 }
 
 function findTarget(
@@ -142,14 +173,69 @@ function canChooseShowcase(args: ChooseBuddyShowcaseArgs): boolean {
   return args.nowMs >= (args.cooldownUntilMs ?? 0);
 }
 
-function findFirstAvailableDefinition(
-  targets: BuddyShowcaseTargetCandidate[],
+function worldScore(
+  world: BuddyShowcaseWorldContext | undefined,
+  kind: BuddyShowcaseKind,
+): number {
+  if (!world) return 0;
+
+  let score = 0;
+  if (world.phase === "night" || world.phase === "evening") {
+    score += 16;
+    if (kind === "stargazing_constellation") score += 4;
+    if (kind === "memory_firefly_night" && world.phase === "night") {
+      score += 3;
+    }
+  }
+
+  switch (world.weather) {
+    case "rain":
+      return score + (kind === "memory_firefly_night" ? 26 : 0);
+    case "storm":
+      return score + (kind === "stargazing_constellation" ? 26 : 0);
+    case "aurora":
+      return score + (kind === "stargazing_constellation" ? 18 : 0);
+    case "busy":
+      return score + (kind === "stargazing_constellation" ? 10 : 0);
+    case "dream":
+      return score + (kind === "memory_firefly_night" ? 8 : 0);
+    case "clear":
+    case "wind":
+      return score;
+  }
+}
+
+function scoreDefinition(
+  args: ChooseBuddyShowcaseArgs,
+  definition: BuddyShowcaseDefinition,
+): number {
+  let score = worldScore(args.world, definition.kind);
+  if (definition.kind === "memory_firefly_night") {
+    score += memoryPulseScore(args.pulse);
+  }
+  return score;
+}
+
+function chooseWeightedDefinition(
+  args: ChooseBuddyShowcaseArgs,
 ): BuddyShowcaseDefinition | null {
-  return (
-    Object.values(BUDDY_SHOWCASE_DEFINITIONS).find((definition) =>
-      findTarget(targets, definition),
-    ) ?? null
-  );
+  const candidates = Object.values(BUDDY_SHOWCASE_DEFINITIONS)
+    .filter((definition) => definition.kind !== args.lastShowcaseKind)
+    .filter((definition) => findTarget(args.targets, definition))
+    .map((definition) => ({
+      definition,
+      score: scoreDefinition(args, definition),
+    }))
+    .sort((a, b) => {
+      const scoreDiff = b.score - a.score;
+      if (scoreDiff !== 0) return scoreDiff;
+      return (
+        SHOWCASE_KIND_ORDER[a.definition.kind] -
+        SHOWCASE_KIND_ORDER[b.definition.kind]
+      );
+    });
+
+  return candidates[0]?.definition ?? null;
 }
 
 export function chooseBuddyShowcase(
@@ -163,18 +249,14 @@ export function chooseBuddyShowcase(
     return findTarget(args.targets, definition) ? definition : null;
   }
 
-  if (!isStrongRuntimeTrigger(args.nowPlaying, args.strongRuntimeTrigger)) {
-    const idleDefinitions = Object.values(BUDDY_SHOWCASE_DEFINITIONS).filter(
-      (definition) => definition.kind !== args.lastShowcaseKind,
-    );
-    return (
-      idleDefinitions.find((definition) =>
-        findTarget(args.targets, definition),
-      ) ?? null
-    );
+  if (args.strongRuntimeTrigger) return null;
+
+  if (hasProviderPulseIssue(args.pulse)) {
+    const definition = BUDDY_SHOWCASE_DEFINITIONS.stargazing_constellation;
+    if (findTarget(args.targets, definition)) return definition;
   }
 
-  return findFirstAvailableDefinition(args.targets);
+  return chooseWeightedDefinition(args);
 }
 
 function seedFromText(text: string): number {
