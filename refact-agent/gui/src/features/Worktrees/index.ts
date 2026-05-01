@@ -1,4 +1,5 @@
 export { WorktreeControl } from "./WorktreeControl";
+export { BranchIcon } from "./BranchIcon";
 export { WorktreeMenu } from "./WorktreeMenu";
 export {
   CreateWorktreeModal,

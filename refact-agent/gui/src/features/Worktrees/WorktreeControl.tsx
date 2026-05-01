@@ -30,6 +30,7 @@ import {
   CreateWorktreeModal,
   type CreateWorktreeValues,
 } from "./CreateWorktreeModal";
+import { BranchIcon } from "./BranchIcon";
 import { WorktreeMenu } from "./WorktreeMenu";
 import { WorktreeStatusBadge } from "./WorktreeStatusBadge";
 import { worktreeErrorText } from "./worktreeError";
@@ -40,27 +41,6 @@ const EMPTY_WORKTREE_RECORDS: WorktreeRecordView[] = [];
 type AttachWorktreeOptions = {
   optimistic?: boolean;
 };
-
-const BranchIcon: React.FC = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 16 16"
-    fill="none"
-    aria-hidden="true"
-  >
-    <circle cx="4" cy="3.5" r="1.5" stroke="currentColor" strokeWidth="1.3" />
-    <circle cx="4" cy="12.5" r="1.5" stroke="currentColor" strokeWidth="1.3" />
-    <circle cx="12" cy="5.5" r="1.5" stroke="currentColor" strokeWidth="1.3" />
-    <path
-      d="M4 5v6M5.5 12.5h2.25A4.25 4.25 0 0 0 12 8.25V7"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
 
 function compactPath(path: string): string {
   const normalized = path.replace(/[\\/]+$/, "");

@@ -13,12 +13,8 @@ import type {
   BoardCard,
   BoardColumn,
 } from "../../services/refact/tasks";
-import {
-  CodeIcon,
-  FileTextIcon,
-  Link2Icon,
-  PersonIcon,
-} from "@radix-ui/react-icons";
+import { FileTextIcon, Link2Icon, PersonIcon } from "@radix-ui/react-icons";
+import { BranchIcon } from "../Worktrees/BranchIcon";
 import styles from "./Tasks.module.css";
 
 const getPriorityColor = (priority: string): "red" | "orange" | "gray" => {
@@ -96,7 +92,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({ card, onClick }) => {
           {worktree && (
             <Tooltip content={`Worktree: ${worktree}`}>
               <Badge size="1" color="green" variant="soft">
-                <CodeIcon /> {worktree}
+                <BranchIcon /> {worktree}
               </Badge>
             </Tooltip>
           )}

@@ -16,7 +16,6 @@ import {
   PersonIcon,
   Cross2Icon,
   ChevronDownIcon,
-  CodeIcon,
   FileTextIcon,
 } from "@radix-ui/react-icons";
 import { AgentStatusDot } from "./AgentStatusDot";
@@ -71,6 +70,7 @@ import {
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useEventsBusForIDE } from "../../hooks/useEventBusForIDE";
 import {
+  BranchIcon,
   WorktreeDiffPanel,
   MergeWorktreeModal,
   WorktreeStatusBadge,
@@ -474,7 +474,7 @@ const CardDetail: React.FC<CardDetailProps> = ({
               <Flex direction="column" gap="2" mt="1">
                 <Flex gap="2" align="center" wrap="wrap">
                   <Badge size="1" color="green" variant="soft">
-                    <CodeIcon /> {worktreeLabel}
+                    <BranchIcon /> {worktreeLabel}
                   </Badge>
                   {worktree?.record ?? worktree?.meta ? (
                     <WorktreeStatusBadge
@@ -1214,7 +1214,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
             {task.status}
           </Badge>
           <Badge color="gray">
-            <CodeIcon /> {branchDisplay}
+            <BranchIcon /> {branchDisplay}
           </Badge>
         </Flex>
         <Text size="1" color="gray">
