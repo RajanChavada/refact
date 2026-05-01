@@ -3,10 +3,13 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use reqwest::header::HeaderMap;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AMutex;
+
+use crate::llm::adapters::claude_code_compat;
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
@@ -57,6 +60,20 @@ struct TokenResponse {
     access_token: String,
     refresh_token: String,
     expires_in: i64,
+}
+
+fn token_request_headers() -> Result<HeaderMap, String> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static(claude_code_compat::USER_AGENT),
+    );
+    claude_code_compat::apply_stainless_headers(&mut headers)?;
+    Ok(headers)
 }
 
 lazy_static::lazy_static! {
@@ -141,7 +158,7 @@ pub async fn exchange_code(
 
     let response = http_client
         .post(TOKEN_URL)
-        .header("Content-Type", "application/json")
+        .headers(token_request_headers()?)
         .json(&body)
         .send()
         .await
@@ -179,7 +196,7 @@ pub async fn refresh_access_token(
 
     let response = http_client
         .post(TOKEN_URL)
-        .header("Content-Type", "application/json")
+        .headers(token_request_headers()?)
         .json(&body)
         .send()
         .await
@@ -203,4 +220,31 @@ pub async fn refresh_access_token(
         refresh_token: token_resp.refresh_token,
         expires_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_request_headers_match_claude_cli_identity() {
+        let headers = token_request_headers().unwrap();
+
+        assert_eq!(
+            headers.get(reqwest::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            headers.get(reqwest::header::USER_AGENT).unwrap(),
+            claude_code_compat::USER_AGENT
+        );
+        assert_eq!(headers.get("x-app").unwrap(), "cli");
+        assert_eq!(headers.get("x-stainless-lang").unwrap(), "js");
+        assert_eq!(
+            headers
+                .get("anthropic-dangerous-direct-browser-access")
+                .unwrap(),
+            "true"
+        );
+    }
 }
