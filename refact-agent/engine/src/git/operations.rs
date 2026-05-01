@@ -157,7 +157,10 @@ pub fn get_diff_statuses(
 
         let absolute_path =
             if include_abs_paths && (is_changed_in_index(status) || is_changed_in_wt(status)) {
-                canonical_path(repo_workdir.join(&relative_path).to_string_lossy())
+                dunce::simplified(&canonical_path(
+                    repo_workdir.join(&relative_path).to_string_lossy(),
+                ))
+                .to_path_buf()
             } else {
                 PathBuf::new()
             };
