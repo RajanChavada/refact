@@ -745,6 +745,10 @@ describe("BuddyWorld_dynamic_environment", () => {
         "data-speech-source",
         "showcase",
       );
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-speech-priority",
+        "backend-showcase-local",
+      );
     } finally {
       vi.useRealTimers();
     }

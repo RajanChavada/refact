@@ -42,6 +42,7 @@ function clamp01(value: number): number {
 }
 
 function clampAlpha(value: number): number {
+  if (!Number.isFinite(value)) return 0;
   return clamp01(value);
 }
 

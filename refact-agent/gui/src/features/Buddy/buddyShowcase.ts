@@ -27,6 +27,7 @@ export const BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS = 18_000;
 
 const UINT_MAX = 4_294_967_295;
 const MEMORY_RUNTIME_SIGNALS = new Set(["memory_extract", "knowledge_update"]);
+const MEMORY_RUNTIME_STATUSES = new Set(["completed", "progress"]);
 const STARGAZING_RUNTIME_SIGNALS = new Set([
   "generating",
   "streaming",
@@ -100,7 +101,8 @@ export interface ChooseBuddyShowcaseArgs {
   activeSpeechVisible: boolean;
   pet: BuddyPetState | undefined;
   nowMs: number;
-  cooldownUntilMs?: number;
+  idleCooldownUntilMs?: number;
+  runtimeCooldownUntilMs?: number;
   idleGraceUntilMs?: number;
   lastShowcaseKind?: BuddyShowcaseKind | null;
   lastRuntimeShowcaseEventId?: string | null;
@@ -169,7 +171,9 @@ function kindForRuntime(
 ): BuddyShowcaseKind | null {
   if (!event) return null;
   if (MEMORY_RUNTIME_SIGNALS.has(event.signal_type)) {
-    return event.status === "failed" ? null : "memory_firefly_night";
+    return MEMORY_RUNTIME_STATUSES.has(event.status)
+      ? "memory_firefly_night"
+      : null;
   }
   if (STARGAZING_RUNTIME_SIGNALS.has(event.signal_type)) {
     return ACTIVE_RUNTIME_STATUSES.has(event.status)
@@ -202,7 +206,10 @@ function findTarget(
 function canChooseShowcase(args: ChooseBuddyShowcaseArgs): boolean {
   if (args.activeSpeechVisible) return false;
   if (args.pet?.condition.sleeping) return false;
-  if (args.nowMs < (args.cooldownUntilMs ?? 0)) return false;
+  const cooldownUntilMs = args.strongRuntimeTrigger
+    ? args.runtimeCooldownUntilMs
+    : args.idleCooldownUntilMs;
+  if (args.nowMs < (cooldownUntilMs ?? 0)) return false;
   if (!args.strongRuntimeTrigger && args.nowMs < (args.idleGraceUntilMs ?? 0)) {
     return false;
   }
@@ -262,8 +269,16 @@ function chooseWeightedDefinition(
   const orderSeed = seedFromText(
     `${bucket}:${args.world?.phase ?? "none"}:${args.world?.weather ?? "none"}`,
   );
-  const candidates = Object.values(BUDDY_SHOWCASE_DEFINITIONS)
-    .filter((definition) => findTarget(args.targets, definition))
+  const targetDefinitions = Object.values(BUDDY_SHOWCASE_DEFINITIONS).filter(
+    (definition) => findTarget(args.targets, definition),
+  );
+  const eligibleDefinitions =
+    args.lastShowcaseKind && targetDefinitions.length > 1
+      ? targetDefinitions.filter(
+          (definition) => definition.kind !== args.lastShowcaseKind,
+        )
+      : targetDefinitions;
+  const candidates = eligibleDefinitions
     .map((definition) => {
       const score = scoreDefinition(args, definition);
       return {

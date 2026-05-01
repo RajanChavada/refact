@@ -310,6 +310,11 @@ function expectAlphaWritesClamped(ctx: RecordedCanvasContext): void {
   expect(ctx.alphaWrites.every((alpha) => alpha >= 0 && alpha <= 1)).toBe(true);
 }
 
+function expectAlphaWritesFinite(ctx: RecordedCanvasContext): void {
+  expect(ctx.alphaWrites.length).toBeGreaterThan(0);
+  expect(ctx.alphaWrites.every((alpha) => Number.isFinite(alpha))).toBe(true);
+}
+
 describe("buddy showcase director", () => {
   it("draws showcase overlay events for both supported kinds", () => {
     const world = makeWorld();
@@ -425,6 +430,41 @@ describe("buddy showcase director", () => {
     expectAlphaWritesClamped(standardMemoryCtx);
     expectAlphaWritesClamped(standardStargazingCtx);
     expectAlphaWritesClamped(reducedCompactCtx);
+  });
+
+  it("does not write non-finite alpha for edge draw inputs", () => {
+    const invalidTimeCtx = makeCanvasContext();
+    const invalidSeedCtx = makeCanvasContext();
+
+    drawShowcaseEvent({
+      ctx: invalidTimeCtx,
+      run: makeShowcaseRun(),
+      world: makeWorld(),
+      palette: PALETTES[0],
+      frame: 240,
+      width: 720,
+      height: 260,
+      compact: false,
+      reducedMotion: false,
+      nowMs: Number.NaN,
+    });
+    drawShowcaseEvent({
+      ctx: invalidSeedCtx,
+      run: makeShowcaseRun({ seed: Number.POSITIVE_INFINITY }),
+      world: makeWorld(),
+      palette: PALETTES[0],
+      frame: 240,
+      width: 720,
+      height: 260,
+      compact: false,
+      reducedMotion: false,
+      nowMs: 3_400,
+    });
+
+    expectAlphaWritesFinite(invalidTimeCtx);
+    expectAlphaWritesFinite(invalidSeedCtx);
+    expectAlphaWritesClamped(invalidTimeCtx);
+    expectAlphaWritesClamped(invalidSeedCtx);
   });
 
   it("draws deterministic showcase output for the same seed and frame", () => {
@@ -560,6 +600,47 @@ describe("buddy showcase director", () => {
     expect(createBuddyShowcaseRun(args)).toBeNull();
   });
 
+  it("only treats meaningful memory statuses as runtime triggers", () => {
+    const baseArgs = {
+      targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
+      activeSpeechVisible: false,
+      pet: makePet(),
+      nowMs: 23_000,
+      lastShowcaseKind: null,
+      strongRuntimeTrigger: true,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
+    };
+
+    expect(
+      chooseBuddyShowcase({
+        ...baseArgs,
+        nowPlaying: makeRuntimeEvent({
+          signal_type: "memory_extract",
+          status: "info",
+        }),
+      }),
+    ).toBeNull();
+    expect(
+      chooseBuddyShowcase({
+        ...baseArgs,
+        nowPlaying: makeRuntimeEvent({
+          signal_type: "knowledge_update",
+          status: "started",
+        }),
+      }),
+    ).toBeNull();
+    expect(
+      chooseBuddyShowcase({
+        ...baseArgs,
+        nowPlaying: makeRuntimeEvent({
+          signal_type: "knowledge_update",
+          status: "progress",
+        }),
+      })?.kind,
+    ).toBe("memory_firefly_night");
+  });
+
   it("initial idle grace blocks idle starts but not explicit runtime triggers", () => {
     const idleArgs = {
       targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
@@ -582,6 +663,46 @@ describe("buddy showcase director", () => {
     expect(chooseBuddyShowcase(runtimeArgs)?.kind).toBe("memory_firefly_night");
   });
 
+  it("applies separate runtime and idle showcase cooldowns", () => {
+    const baseArgs = {
+      targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
+      activeSpeechVisible: false,
+      pet: makePet(),
+      nowMs: 50_000,
+      idleGraceUntilMs: BUDDY_SHOWCASE_INITIAL_GRACE_MS,
+      lastShowcaseKind: null,
+      pulse: makePulse(),
+      world: { phase: "night" as const, weather: "rain" as const },
+    };
+    const runtimeArgs = {
+      ...baseArgs,
+      nowPlaying: makeRuntimeEvent({
+        id: "runtime-new",
+        signal_type: "memory_extract",
+      }),
+      idleCooldownUntilMs: baseArgs.nowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS,
+      runtimeCooldownUntilMs: baseArgs.nowMs - 1,
+      lastRuntimeShowcaseEventId: "runtime-old",
+      strongRuntimeTrigger: true,
+    };
+
+    expect(chooseBuddyShowcase(runtimeArgs)?.kind).toBe("memory_firefly_night");
+    expect(
+      chooseBuddyShowcase({
+        ...runtimeArgs,
+        runtimeCooldownUntilMs:
+          baseArgs.nowMs + BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS,
+      }),
+    ).toBeNull();
+    expect(
+      chooseBuddyShowcase({
+        ...baseArgs,
+        nowPlaying: null,
+        idleCooldownUntilMs: baseArgs.nowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS,
+      }),
+    ).toBeNull();
+  });
+
   it("suppresses repeated showcases for the same runtime event id", () => {
     const args = {
       targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
@@ -592,7 +713,7 @@ describe("buddy showcase director", () => {
       activeSpeechVisible: false,
       pet: makePet(),
       nowMs: 44_000,
-      cooldownUntilMs: 44_000 - BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS,
+      runtimeCooldownUntilMs: 44_000 - BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS,
       lastRuntimeShowcaseEventId: "runtime-same",
       lastShowcaseKind: null,
       strongRuntimeTrigger: true,
@@ -666,7 +787,7 @@ describe("buddy showcase director", () => {
     expect(createBuddyShowcaseRun(args)?.target.id).toBe("providers");
   });
 
-  it("provider pulse issues respect repeat de-weighting", () => {
+  it("provider pulse issues respect idle repeat soft-ban", () => {
     const args = {
       targets: [MEMORY_TARGET, OBSERVATORY_TARGET],
       nowPlaying: null,
@@ -675,7 +796,8 @@ describe("buddy showcase director", () => {
       nowMs: 156_000,
       lastShowcaseKind: "stargazing_constellation" as const,
       pulse: makePulse({
-        providers: { defaults_ok: false, broken_refs: 1, quota_warnings: 1 },
+        providers: { defaults_ok: false, broken_refs: 99, quota_warnings: 99 },
+        memory: { total: 8, orphan: 1, stale_conflicts: 0 },
       }),
       world: { phase: "night" as const, weather: "rain" as const },
     };
@@ -794,7 +916,7 @@ describe("buddy showcase director", () => {
     const cooldownArgs = {
       ...sleepingArgs,
       pet: makePet(false),
-      cooldownUntilMs: 40_000,
+      runtimeCooldownUntilMs: 40_000,
     };
 
     expect(chooseBuddyShowcase(sleepingArgs)).toBeNull();

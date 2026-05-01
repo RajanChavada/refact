@@ -868,7 +868,8 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
   const [idleGraceUntilMs] = useState(
     () => Date.now() + BUDDY_SHOWCASE_INITIAL_GRACE_MS,
   );
-  const [nextShowcaseAtMs, setNextShowcaseAtMs] = useState(0);
+  const [nextIdleShowcaseAtMs, setNextIdleShowcaseAtMs] = useState(0);
+  const [nextRuntimeShowcaseAtMs, setNextRuntimeShowcaseAtMs] = useState(0);
   const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
 
   useEffect(() => {
@@ -962,7 +963,8 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
         activeSpeechVisible: Boolean(activeSpeech) || Boolean(reaction),
         pet,
         nowMs,
-        cooldownUntilMs: nextShowcaseAtMs,
+        idleCooldownUntilMs: nextIdleShowcaseAtMs,
+        runtimeCooldownUntilMs: nextRuntimeShowcaseAtMs,
         idleGraceUntilMs,
         lastShowcaseKind,
         lastRuntimeShowcaseEventId,
@@ -980,12 +982,11 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       if (strongRuntimeTrigger && nowPlaying?.id) {
         setLastRuntimeShowcaseEventId(nowPlaying.id);
       }
-      setNextShowcaseAtMs(
-        nowMs +
-          (strongRuntimeTrigger
-            ? BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS
-            : BUDDY_SHOWCASE_IDLE_COOLDOWN_MS),
-      );
+      if (strongRuntimeTrigger) {
+        setNextRuntimeShowcaseAtMs(nowMs + BUDDY_SHOWCASE_TRIGGER_COOLDOWN_MS);
+      } else {
+        setNextIdleShowcaseAtMs(nowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS);
+      }
       return true;
     },
     [
@@ -993,7 +994,8 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       idleGraceUntilMs,
       lastShowcaseKind,
       lastRuntimeShowcaseEventId,
-      nextShowcaseAtMs,
+      nextIdleShowcaseAtMs,
+      nextRuntimeShowcaseAtMs,
       nowPlaying,
       pet,
       pulse,
@@ -1074,7 +1076,7 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       });
       setShowcaseRun(advanced);
       if (!advanced) {
-        setNextShowcaseAtMs(currentNowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS);
+        setNextIdleShowcaseAtMs(currentNowMs + BUDDY_SHOWCASE_IDLE_COOLDOWN_MS);
       }
     }, remainingMs + 16);
     return () => window.clearTimeout(timer);
@@ -1207,6 +1209,7 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       data-vitality={world.vitality}
       data-showcase={showcaseRun?.kind ?? "none"}
       data-showcase-phase={showcaseRun?.phase ?? "idle"}
+      data-speech-priority="backend-showcase-local"
       data-speech-source={speechSource}
       data-testid="buddy-world"
       aria-label={`Buddy virtual scene: ${world.phaseLabel}. ${world.vitalityLabel}.`}
