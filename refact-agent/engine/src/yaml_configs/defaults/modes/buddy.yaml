@@ -1,4 +1,4 @@
-schema_version: 13
+schema_version: 14
 id: buddy
 title: Buddy
 description: Persistent project companion for setup, diagnostics, and knowledge management
@@ -71,6 +71,7 @@ tools:
   - create_knowledge
   - web
   - web_search
+  - apply_patch
   - create_textdoc
   - update_textdoc
   - update_textdoc_anchored

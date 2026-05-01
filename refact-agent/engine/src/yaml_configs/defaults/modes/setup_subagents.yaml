@@ -1,4 +1,4 @@
-schema_version: 14
+schema_version: 15
 id: setup_subagents
 title: Setup Subagents
 description: Guided setup for project-specific subagents
@@ -197,6 +197,7 @@ tools:
   - get_trajectory_context
   - knowledge
   - create_knowledge
+  - apply_patch
   - create_textdoc
   - update_textdoc
   - update_textdoc_anchored

@@ -1,4 +1,4 @@
-schema_version: 13
+schema_version: 14
 id: task_planner
 title: Task Planner
 description: Task board management mode
@@ -236,6 +236,7 @@ tools:
   - deep_research
   - strategic_planning
   - code_review
+  - apply_patch
   - update_textdoc
   - task_board_get
   - task_board_create_card

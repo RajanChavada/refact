@@ -1,4 +1,4 @@
-schema_version: 14
+schema_version: 15
 id: setup_mcp
 title: Setup MCP
 description: Discover and configure suitable MCP servers for the project
@@ -180,6 +180,7 @@ tools:
   - search_trajectories
   - get_trajectory_context
   - knowledge
+  - apply_patch
   - create_knowledge
   - create_textdoc
   - update_textdoc
