@@ -34,6 +34,7 @@ import {
 import { ModelPickerPopover } from "../../components/ChatForm/ModelPickerPopover";
 import { Markdown } from "../../components/Markdown";
 import { CollapsePanel } from "../../components/shared/CollapsePanel";
+import { ResizeDivider } from "../Dashboard/components/ResizeDivider/ResizeDivider";
 import styles from "./Tasks.module.css";
 import { Chat } from "../Chat";
 import { selectConfig } from "../Config/configSlice";
@@ -194,6 +195,31 @@ function formatAgentChatTitle(
   cardTitle: string,
 ): string {
   return cardId ? `Agent: ${cardId} ${cardTitle}` : `Agent: ${cardTitle}`;
+}
+
+const TASK_BOARD_HEIGHT_STORAGE_KEY = "tasks:v1:board_height_px";
+const DEFAULT_BOARD_HEIGHT_PX = 180;
+const MIN_BOARD_HEIGHT_PX = 80;
+const MAX_BOARD_HEIGHT_RATIO = 0.6;
+
+function clampBoardHeight(value: number, containerHeight?: number): number {
+  const maxHeight =
+    containerHeight && Number.isFinite(containerHeight) && containerHeight > 0
+      ? Math.max(MIN_BOARD_HEIGHT_PX, containerHeight * MAX_BOARD_HEIGHT_RATIO)
+      : 480;
+  return Math.max(MIN_BOARD_HEIGHT_PX, Math.min(maxHeight, value));
+}
+
+function loadBoardHeight(): number {
+  try {
+    const stored = localStorage.getItem(TASK_BOARD_HEIGHT_STORAGE_KEY);
+    const parsed = Number.parseFloat(stored ?? "");
+    return Number.isFinite(parsed)
+      ? clampBoardHeight(parsed)
+      : DEFAULT_BOARD_HEIGHT_PX;
+  } catch {
+    return DEFAULT_BOARD_HEIGHT_PX;
+  }
 }
 
 const PlannerItem: React.FC<PlannerItemProps> = ({
@@ -597,6 +623,7 @@ interface TaskWorkspaceProps {
 
 export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const dispatch = useAppDispatch();
+  const taskWorkspaceRef = React.useRef<HTMLDivElement>(null);
   const config = useAppSelector(selectConfig);
   const { data: task, isLoading: taskLoading } = useGetTaskQuery(taskId, {
     pollingInterval: 0,
@@ -646,6 +673,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const [notification, setNotification] = useState<string | null>(null);
   const [chatExpanded, setChatExpanded] = useState(false);
   const [panelsExpanded, setPanelsExpanded] = useState(false);
+  const [boardHeightPx, setBoardHeightPx] = useState(loadBoardHeight);
   const prevTaskStatusRef = React.useRef<string | undefined>(undefined);
   const worktreeRecords = useMemo(
     () => worktreesData?.worktrees ?? [],
@@ -952,6 +980,30 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     setPanelsExpanded((prev) => !prev);
   }, []);
 
+  const handleBoardResizeDrag = useCallback((clientY: number) => {
+    const container = taskWorkspaceRef.current;
+    const rect = container?.getBoundingClientRect();
+    const nextHeight = clampBoardHeight(
+      rect ? clientY - rect.top : clientY,
+      rect?.height,
+    );
+    setBoardHeightPx(nextHeight);
+    try {
+      localStorage.setItem(TASK_BOARD_HEIGHT_STORAGE_KEY, String(nextHeight));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const handleBoardResizeReset = useCallback(() => {
+    setBoardHeightPx(DEFAULT_BOARD_HEIGHT_PX);
+    try {
+      localStorage.removeItem(TASK_BOARD_HEIGHT_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const handleModelChange = useCallback(
     (model: string) => {
       void updateTaskMeta({ taskId, defaultAgentModel: model });
@@ -1177,93 +1229,98 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const panelsToggleLabel = panelsExpanded
     ? "Collapse planners and agents"
     : "Expand planners and agents";
+  const boardSectionStyle: React.CSSProperties = {
+    flex: `0 0 ${boardHeightPx}px`,
+  };
 
   return (
-    <Box
-      className={`${styles.taskWorkspace} ${
-        chatExpanded ? styles.expanded : ""
-      }`}
-    >
-      {!chatExpanded && (
-        <>
-          <Box className={styles.boardSection}>
-            <KanbanBoard
-              board={board}
-              onCardClick={handleCardClick}
-              onAgentClick={handleCardAgentClick}
-            />
-          </Box>
+    <Box ref={taskWorkspaceRef} className={styles.taskWorkspace}>
+      <CollapsePanel
+        collapsed={chatExpanded}
+        className={styles.workspaceChromeCollapse}
+      >
+        <Box className={styles.boardSection} style={boardSectionStyle}>
+          <KanbanBoard
+            board={board}
+            onCardClick={handleCardClick}
+            onAgentClick={handleCardAgentClick}
+          />
+        </Box>
 
-          <Box className={styles.panelsWrapper}>
-            <div className={styles.panelsHeader}>
+        <ResizeDivider
+          onDrag={handleBoardResizeDrag}
+          onReset={handleBoardResizeReset}
+        />
+
+        <Box className={styles.panelsWrapper}>
+          <div className={styles.panelsHeader}>
+            <button
+              type="button"
+              onClick={handleTogglePanelsExpanded}
+              aria-expanded={panelsExpanded}
+              aria-label={panelsToggleLabel}
+              title={panelsToggleLabel}
+              className={styles.sectionHeaderToggle}
+            >
+              <ChevronDownIcon
+                className={`${styles.chevron} ${
+                  panelsExpanded ? styles.chevronExpanded : ""
+                }`}
+              />
+              <Text
+                size="1"
+                weight="bold"
+                color="gray"
+                className={styles.sectionHeaderLabel}
+              >
+                Planners / Agents
+              </Text>
+            </button>
+            <Flex align="center" gap="2" className={styles.sectionHeaderMeta}>
+              <Badge size="1" color="gray" variant="soft">
+                {plannerChats.length} planner
+                {plannerChats.length === 1 ? "" : "s"}
+              </Badge>
+              {agentChats.length > 0 && (
+                <Badge size="1" color="gray" variant="soft">
+                  {doneAgentChats.length}/{agentChats.length} agents
+                </Badge>
+              )}
               <button
                 type="button"
-                onClick={handleTogglePanelsExpanded}
-                aria-expanded={panelsExpanded}
-                aria-label={panelsToggleLabel}
-                title={panelsToggleLabel}
-                className={styles.sectionHeaderToggle}
+                className={styles.sectionHeaderActionButton}
+                onClick={handleNewPlanner}
+                aria-label="New planner"
+                title="New planner"
               >
-                <ChevronDownIcon
-                  className={`${styles.chevron} ${
-                    panelsExpanded ? styles.chevronExpanded : ""
-                  }`}
-                />
-                <Text
-                  size="1"
-                  weight="bold"
-                  color="gray"
-                  className={styles.sectionHeaderLabel}
-                >
-                  Planners / Agents
-                </Text>
+                <PlusIcon />
               </button>
-              <Flex align="center" gap="2" className={styles.sectionHeaderMeta}>
-                <Badge size="1" color="gray" variant="soft">
-                  {plannerChats.length} planner
-                  {plannerChats.length === 1 ? "" : "s"}
-                </Badge>
-                {agentChats.length > 0 && (
-                  <Badge size="1" color="gray" variant="soft">
-                    {doneAgentChats.length}/{agentChats.length} agents
-                  </Badge>
-                )}
-                <button
-                  type="button"
-                  className={styles.sectionHeaderActionButton}
-                  onClick={handleNewPlanner}
-                  aria-label="New planner"
-                  title="New planner"
-                >
-                  <PlusIcon />
-                </button>
-              </Flex>
-            </div>
+            </Flex>
+          </div>
 
-            <CollapsePanel
-              collapsed={!panelsExpanded}
-              className={styles.panelsCollapse}
-            >
-              <Flex className={styles.panelsSection}>
-                <PlannerPanel
-                  plannerChats={plannerChats}
-                  activeChat={activeChat}
-                  activePlannerId={activePlannerId}
-                  onSelectPlanner={handleSelectPlanner}
-                  onRemovePlanner={handleRemovePlanner}
-                />
-                <AgentsPanel
-                  cards={board.cards}
-                  activeChat={activeChat}
-                  onSelectAgent={handleSelectAgent}
-                  defaultAgentModel={task.default_agent_model}
-                  onModelChange={handleModelChange}
-                />
-              </Flex>
-            </CollapsePanel>
-          </Box>
-        </>
-      )}
+          <CollapsePanel
+            collapsed={!panelsExpanded}
+            className={styles.panelsCollapse}
+          >
+            <Flex className={styles.panelsSection}>
+              <PlannerPanel
+                plannerChats={plannerChats}
+                activeChat={activeChat}
+                activePlannerId={activePlannerId}
+                onSelectPlanner={handleSelectPlanner}
+                onRemovePlanner={handleRemovePlanner}
+              />
+              <AgentsPanel
+                cards={board.cards}
+                activeChat={activeChat}
+                onSelectAgent={handleSelectAgent}
+                defaultAgentModel={task.default_agent_model}
+                onModelChange={handleModelChange}
+              />
+            </Flex>
+          </CollapsePanel>
+        </Box>
+      </CollapsePanel>
 
       <Box className={styles.chatSection}>
         <div className={styles.chatHeader}>

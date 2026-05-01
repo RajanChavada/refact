@@ -72,18 +72,15 @@
   overflow: hidden;
 }
 
-.taskWorkspace.expanded .boardSection,
-.taskWorkspace.expanded .panelsWrapper {
-  display: none;
-}
-
 .boardSection {
   composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
   flex: 0 0 auto;
-  max-height: 30%;
   min-height: 80px;
   overflow: auto;
-  border-bottom: 1px solid var(--gray-a4);
+}
+
+.workspaceChromeCollapse {
+  flex-shrink: 0;
 }
 
 .panelsWrapper {
