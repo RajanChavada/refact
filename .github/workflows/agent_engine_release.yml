@@ -27,7 +27,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             code-target: win32-x64
             ext: .exe
-            whl-tag: win_amd64
           - os: windows-latest
             target: i686-pc-windows-msvc
             code-target: win32-ia32
@@ -36,16 +35,13 @@ jobs:
             target: aarch64-pc-windows-msvc
             code-target: win32-arm64
             ext: .exe
-            whl-tag: win_arm64
           - os: ubuntu-20.04
             target: x86_64-unknown-linux-gnu
             code-target: linux-x64
-            whl-tag: manylinux2014_x86_64
             cross: true
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-gnu
             code-target: linux-arm64
-            whl-tag: manylinux2014_aarch64
             cross: true
           #          - os: ubuntu-22.04
           #            target: arm-unknown-linux-gnueabihf
@@ -53,11 +49,9 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             code-target: darwin-x64
-            whl-tag: macosx_13_0_x86_64
           - os: macos-14
             target: aarch64-apple-darwin
             code-target: darwin-arm64
-            whl-tag: macosx_13_0_arm64
 
     env:
       LLM_LS_TARGET: ${{ matrix.target }}
@@ -117,8 +111,6 @@ jobs:
         run: |
           cargo test --release || exit 1
           cargo build --release || exit 1
-          mkdir python_binding_and_cmdline/refact/bin
-          cp ./target/release/refact-lsp${{ matrix.ext }} python_binding_and_cmdline/refact/bin
           cp ./target/release/refact-lsp${{ matrix.ext }} ../..
 
       - name: Build and test artifact
@@ -126,8 +118,6 @@ jobs:
         run: |
           OPENSSL_STATIC=1 cargo test --release --target ${{ matrix.target }} || exit 1
           OPENSSL_STATIC=1 cargo build --release --target ${{ matrix.target }} || exit 1
-          mkdir python_binding_and_cmdline/refact/bin
-          cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} python_binding_and_cmdline/refact/bin
           cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} ../..
 
       - name: build linux-like artifacts
@@ -139,37 +129,7 @@ jobs:
         run: |
           CROSS_NO_WARNINGS=0 cross test --release --target ${{ matrix.target }} || exit 1
           CROSS_NO_WARNINGS=0 cross build --release --target ${{ matrix.target }} || exit 1
-          mkdir python_binding_and_cmdline/refact/bin
-          cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} python_binding_and_cmdline/refact/bin
           cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} ../..
-
-      - if: matrix.whl-tag
-        shell: bash
-        env:
-          WHL_TAG: ${{ matrix.whl-tag }}
-        run: |
-          version=$(grep '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          sed -i.bak -E "s/version=\"[^\"]+\"/version=\"$version\"/" python_binding_and_cmdline/setup.py
-          
-          pip install wheel build setuptools
-          python -m build --wheel --no-isolation python_binding_and_cmdline --outdir artefacts/
-          
-      - name: Upload whl to release
-        uses: svenstaro/upload-release-action@v2
-        if: matrix.whl-tag
-        with:
-          repo_token: ${{ github.token }}
-          asset_name: whl-${{ matrix.target }}
-          file: artefacts/*.whl
-          tag: ${{ github.ref }}
-          overwrite: true
-          file_glob: true
-      
-      - name: Upload whl pypi
-        if: matrix.whl-tag
-        run: |
-          pip install twine
-          twine upload -p ${{ secrets.PYPI_TOKEN }} --skip-existing artefacts/*.whl 
 
       - name: Package artifact in ZIP (WIN)
         uses: vimtor/action-zip@v1.2
