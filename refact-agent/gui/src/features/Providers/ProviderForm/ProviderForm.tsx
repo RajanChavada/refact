@@ -320,14 +320,14 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
 }) => {
   const baseProvider = currentProvider.base_provider;
   const { data: openRouterHealth } = useGetOpenRouterHealthQuery(
-    { providerName: currentProvider.name, useInstanceRoute: false },
+    { providerName: currentProvider.name, useInstanceRoute: true },
     {
       skip: baseProvider !== "openrouter",
     },
   );
   const { data: claudeUsage, isError: claudeUsageError } =
     useGetClaudeCodeUsageQuery(
-      { providerName: currentProvider.name, useInstanceRoute: false },
+      { providerName: currentProvider.name, useInstanceRoute: true },
       {
         skip: baseProvider !== "claude_code",
         pollingInterval: 60_000,
@@ -335,7 +335,7 @@ export const ProviderForm: React.FC<ProviderFormProps> = ({
     );
   const { data: codexUsage, isError: codexUsageError } =
     useGetOpenAICodexUsageQuery(
-      { providerName: currentProvider.name, useInstanceRoute: false },
+      { providerName: currentProvider.name, useInstanceRoute: true },
       {
         skip: baseProvider !== "openai_codex",
         pollingInterval: 60_000,

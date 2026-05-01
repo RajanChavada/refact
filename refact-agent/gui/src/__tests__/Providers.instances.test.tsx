@@ -62,9 +62,7 @@ const preloadedState = {
 
 describe("Providers provider instances", () => {
   test("nextInstanceId chooses the first unused suffix", () => {
-    expect(nextInstanceId("openai", ["openai", "openai_2"])).toBe(
-      "openai_3",
-    );
+    expect(nextInstanceId("openai", ["openai", "openai_2"])).toBe("openai_3");
   });
 
   test("hidden provider bases are excluded from add instance choices", () => {
@@ -186,6 +184,107 @@ describe("Providers provider instances", () => {
         display_name: "Work OpenAI",
         api_key: "new-key",
       });
+    } finally {
+      store.dispatch(providersApi.util.resetApiState());
+    }
+  });
+
+  test("provider scoped routes use instance endpoints for aliases", async () => {
+    const requests: string[] = [];
+
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/providers/openrouter_work/account-info",
+        ({ request }) => {
+          requests.push(new URL(request.url).pathname);
+          return HttpResponse.json({ data: {} });
+        },
+      ),
+      http.get(
+        "http://127.0.0.1:8001/v1/providers/openrouter_work/health",
+        ({ request }) => {
+          requests.push(new URL(request.url).pathname);
+          return HttpResponse.json({ ok: true });
+        },
+      ),
+      http.get(
+        "http://127.0.0.1:8001/v1/providers/claude_code_work/usage",
+        ({ request }) => {
+          requests.push(new URL(request.url).pathname);
+          return HttpResponse.json({ data: {} });
+        },
+      ),
+      http.get(
+        "http://127.0.0.1:8001/v1/providers/openai_codex_work/usage",
+        ({ request }) => {
+          requests.push(new URL(request.url).pathname);
+          return HttpResponse.json({ data: {} });
+        },
+      ),
+      http.get(
+        "http://127.0.0.1:8001/v1/providers/openrouter_work/models/openai%2Fgpt-4.1/endpoints",
+        ({ request }) => {
+          requests.push(new URL(request.url).pathname);
+          return HttpResponse.json({
+            provider_variants: [],
+            available_providers: [],
+          });
+        },
+      ),
+    );
+
+    const store = setUpStore(preloadedState);
+
+    try {
+      await store
+        .dispatch(
+          providersApi.endpoints.getOpenRouterAccountInfo.initiate({
+            providerName: "openrouter_work",
+            useInstanceRoute: true,
+          }),
+        )
+        .unwrap();
+      await store
+        .dispatch(
+          providersApi.endpoints.getOpenRouterHealth.initiate({
+            providerName: "openrouter_work",
+            useInstanceRoute: true,
+          }),
+        )
+        .unwrap();
+      await store
+        .dispatch(
+          providersApi.endpoints.getClaudeCodeUsage.initiate({
+            providerName: "claude_code_work",
+            useInstanceRoute: true,
+          }),
+        )
+        .unwrap();
+      await store
+        .dispatch(
+          providersApi.endpoints.getOpenAICodexUsage.initiate({
+            providerName: "openai_codex_work",
+            useInstanceRoute: true,
+          }),
+        )
+        .unwrap();
+      await store
+        .dispatch(
+          providersApi.endpoints.getOpenRouterModelEndpoints.initiate({
+            providerName: "openrouter_work",
+            modelId: "openai/gpt-4.1",
+            useInstanceRoute: true,
+          }),
+        )
+        .unwrap();
+
+      expect(requests).toEqual([
+        "/v1/providers/openrouter_work/account-info",
+        "/v1/providers/openrouter_work/health",
+        "/v1/providers/claude_code_work/usage",
+        "/v1/providers/openai_codex_work/usage",
+        "/v1/providers/openrouter_work/models/openai%2Fgpt-4.1/endpoints",
+      ]);
     } finally {
       store.dispatch(providersApi.util.resetApiState());
     }

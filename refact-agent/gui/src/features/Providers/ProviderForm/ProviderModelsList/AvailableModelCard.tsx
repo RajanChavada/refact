@@ -98,7 +98,7 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
     availableProviders.length === 0;
 
   const { data: endpointsData } = useGetOpenRouterModelEndpointsQuery(
-    { providerName, modelId: model.id, useInstanceRoute: false },
+    { providerName, modelId: model.id, useInstanceRoute: true },
     { skip: !shouldFetchEndpoints },
   );
 

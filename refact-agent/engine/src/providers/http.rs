@@ -1265,40 +1265,14 @@ pub async fn handle_v1_provider_model_provider_update(
     .await
 }
 
-/// GET /v1/providers/openrouter/models/:model_id/endpoints
+/// GET /v1/providers/:name/models/:model_id/endpoints
 pub async fn handle_v1_openrouter_model_endpoints(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(params): Path<ProviderModelPathParams>,
 ) -> Result<Response<Body>, ScratchError> {
-    if params.name != "openrouter" {
-        return Err(ScratchError::new(
-            StatusCode::NOT_FOUND,
-            "Provider does not support endpoints lookup".to_string(),
-        ));
-    }
-
-    let (provider, http_client) = {
-        let gcx_locked = gcx.read().await;
-        let registry = gcx_locked.providers.read().await;
-        let provider = registry
-            .get(&params.name)
-            .map(|p| p.clone_box())
-            .or_else(|| create_provider(&params.name))
-            .ok_or_else(|| {
-                ScratchError::new(
-                    StatusCode::NOT_FOUND,
-                    format!("Provider '{}' not found", params.name),
-                )
-            })?;
-        (provider, gcx_locked.http_client.clone())
-    };
-
-    let Some(openrouter) = provider.as_any().downcast_ref::<OpenRouterProvider>() else {
-        return Err(ScratchError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to resolve OpenRouter provider type".to_string(),
-        ));
-    };
+    let (provider, http_client) =
+        resolve_provider_for_base(&gcx, &params.name, "openrouter").await?;
+    let openrouter = downcast_provider::<OpenRouterProvider>(provider.as_ref(), "OpenRouter")?;
 
     let (provider_variants, available_providers) = openrouter
         .fetch_model_endpoints(&http_client, &params.model_id)
@@ -4040,6 +4014,33 @@ extra_headers:
         .await
         .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn openrouter_model_endpoints_accepts_provider_instances() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let config_dir = gcx.read().await.config_dir.clone();
+        let providers_dir = config_dir.join("providers.d");
+        tokio::fs::create_dir_all(&providers_dir).await.unwrap();
+        tokio::fs::write(
+            providers_dir.join("openrouter_2.yaml"),
+            "base_provider: openrouter\ndisplay_name: Work OpenRouter\n",
+        )
+        .await
+        .unwrap();
+
+        let err = handle_v1_openrouter_model_endpoints(
+            Extension(gcx),
+            Path(ProviderModelPathParams {
+                name: "openrouter_2".to_string(),
+                model_id: "openai/gpt-4.1".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+        assert_eq!(err.message, "OpenRouter API key is not configured");
     }
 
     async fn assert_remove_custom_model_clears_enabled_entry(

@@ -1,8 +1,5 @@
 import type { ProviderListItem } from "../../../services/refact";
-import {
-  BEAUTIFUL_PROVIDER_NAMES,
-  HIDDEN_PROVIDER_BASES,
-} from "../constants";
+import { BEAUTIFUL_PROVIDER_NAMES, HIDDEN_PROVIDER_BASES } from "../constants";
 
 export type ProviderBaseOption = {
   id: string;

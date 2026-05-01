@@ -110,7 +110,10 @@ export const AddProviderInstanceModal: React.FC<
 
   const handleBaseProviderChange = useCallback(
     (nextBaseProvider: string) => {
-      const generatedInstanceId = nextInstanceId(nextBaseProvider, providerNames);
+      const generatedInstanceId = nextInstanceId(
+        nextBaseProvider,
+        providerNames,
+      );
       const nextInstanceIdValue = idTouched ? instanceId : generatedInstanceId;
       setBaseProvider(nextBaseProvider);
       if (!idTouched) setInstanceId(generatedInstanceId);

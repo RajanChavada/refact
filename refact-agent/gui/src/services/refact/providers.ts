@@ -320,14 +320,16 @@ function providerBaseName(provider: { name: string; base_provider?: string }) {
 }
 
 function providerScopedPath(
-  basePath: string,
+  singletonPath: string,
   defaultProviderName: string,
   args: ProviderScopedQueryArg | undefined,
+  suffix: string,
 ) {
-  if (!args?.useInstanceRoute) return basePath;
+  if (!args?.useInstanceRoute) return singletonPath;
   const providerName = args.providerName?.trim();
-  if (!providerName || providerName === defaultProviderName) return basePath;
-  return `${basePath}?provider_name=${encodeURIComponent(providerName)}`;
+  if (!providerName || providerName === defaultProviderName)
+    return singletonPath;
+  return `${PROVIDERS_URL}/${encodeURIComponent(providerName)}${suffix}`;
 }
 
 export function providerIdentitySettings(
@@ -604,6 +606,7 @@ export const providersApi = createApi({
           "/v1/openrouter/account-info",
           "openrouter",
           args,
+          "/account-info",
         );
         const url = `http://127.0.0.1:${port}${path}`;
 
@@ -634,6 +637,7 @@ export const providersApi = createApi({
           "/v1/openrouter/health",
           "openrouter",
           args,
+          "/health",
         );
         const url = `http://127.0.0.1:${port}${path}`;
 
@@ -664,6 +668,7 @@ export const providersApi = createApi({
           "/v1/claude-code/usage",
           "claude_code",
           args,
+          "/usage",
         );
         const url = `http://127.0.0.1:${port}${path}`;
 
@@ -713,6 +718,7 @@ export const providersApi = createApi({
           "/v1/openai-codex/usage",
           "openai_codex",
           args,
+          "/usage",
         );
         const url = `http://127.0.0.1:${port}${path}`;
 

@@ -46,7 +46,7 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
     AvailableModel | undefined
   >();
   const { data: openRouterAccount } = useGetOpenRouterAccountInfoQuery(
-    { providerName: provider.name, useInstanceRoute: false },
+    { providerName: provider.name, useInstanceRoute: true },
     {
       skip: baseProvider !== "openrouter",
     },
