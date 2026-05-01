@@ -643,8 +643,14 @@ fn ensure_existing_components_are_not_symlinks(path: &Path) -> IoResult<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(component.as_os_str()),
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+                continue;
+            }
+            Component::RootDir => {
+                current.push(component.as_os_str());
+                continue;
+            }
             Component::CurDir => continue,
             Component::ParentDir => {
                 return Err(Error::new(
