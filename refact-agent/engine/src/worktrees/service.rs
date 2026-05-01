@@ -2201,6 +2201,7 @@ mod worktree_registry_tests {
                 &created.worktree.meta.id,
                 MergeWorktreeRequest {
                     strategy: WorktreeMergeStrategy::Squash,
+                    delete_after_merge: false,
                     target_branch: Some("main".to_string()),
                     commit_message: Some("squash merge".to_string()),
                     ..Default::default()
@@ -2250,6 +2251,7 @@ mod worktree_registry_tests {
                 &created.worktree.meta.id,
                 MergeWorktreeRequest {
                     strategy: WorktreeMergeStrategy::Merge,
+                    delete_after_merge: false,
                     target_branch: Some("main".to_string()),
                     commit_message: Some("regular merge".to_string()),
                     ..Default::default()
@@ -2295,6 +2297,7 @@ mod worktree_registry_tests {
                 &created.worktree.meta.id,
                 MergeWorktreeRequest {
                     strategy: WorktreeMergeStrategy::Squash,
+                    delete_after_merge: false,
                     target_branch: Some("main".to_string()),
                     commit_message: Some("identity merge".to_string()),
                     ..Default::default()
@@ -2347,6 +2350,7 @@ mod worktree_registry_tests {
                 &created.worktree.meta.id,
                 MergeWorktreeRequest {
                     strategy: WorktreeMergeStrategy::Squash,
+                    delete_after_merge: false,
                     target_branch: Some("main".to_string()),
                     commit_message: Some("hook failure".to_string()),
                     ..Default::default()
@@ -2364,7 +2368,7 @@ mod worktree_registry_tests {
     }
 
     #[tokio::test]
-    async fn worktree_merge_delete_after_merge_removes_registry_and_reports_references() {
+    async fn worktree_merge_defaults_to_delete_after_merge_and_reports_references() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("repo");
         let cache = temp.path().join("cache");
@@ -2407,7 +2411,6 @@ mod worktree_registry_tests {
                 &created.worktree.meta.id,
                 MergeWorktreeRequest {
                     strategy: WorktreeMergeStrategy::Squash,
-                    delete_after_merge: true,
                     target_branch: Some("main".to_string()),
                     commit_message: Some("delete after merge".to_string()),
                     ..Default::default()
@@ -2498,6 +2501,7 @@ mod worktree_registry_tests {
                 &created.worktree.meta.id,
                 MergeWorktreeRequest {
                     strategy: WorktreeMergeStrategy::Merge,
+                    delete_after_merge: false,
                     target_branch: Some("main".to_string()),
                     commit_message: Some("conflict merge".to_string()),
                     ..Default::default()

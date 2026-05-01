@@ -28,6 +28,10 @@ fn default_cleanup_min_age_hours() -> u64 {
     24
 }
 
+fn default_delete_after_merge() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorktreeMeta {
     pub id: String,
@@ -232,11 +236,11 @@ impl WorktreeMergeStrategy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MergeWorktreeRequest {
     #[serde(default)]
     pub strategy: WorktreeMergeStrategy,
-    #[serde(default)]
+    #[serde(default = "default_delete_after_merge")]
     pub delete_after_merge: bool,
     #[serde(default)]
     pub include_uncommitted: bool,
@@ -246,6 +250,19 @@ pub struct MergeWorktreeRequest {
     pub commit_message: Option<String>,
     #[serde(default)]
     pub generate_commit_message: bool,
+}
+
+impl Default for MergeWorktreeRequest {
+    fn default() -> Self {
+        Self {
+            strategy: WorktreeMergeStrategy::default(),
+            delete_after_merge: default_delete_after_merge(),
+            include_uncommitted: false,
+            target_branch: None,
+            commit_message: None,
+            generate_commit_message: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -553,5 +570,22 @@ mod tests {
         });
         let meta: WorktreeMeta = serde_json::from_value(json).unwrap();
         assert!(!meta.enforce);
+    }
+
+    #[test]
+    fn merge_worktree_request_defaults_delete_after_merge_true() {
+        let request: MergeWorktreeRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert!(request.delete_after_merge);
+    }
+
+    #[test]
+    fn merge_worktree_request_respects_explicit_keep_after_merge() {
+        let request: MergeWorktreeRequest = serde_json::from_value(serde_json::json!({
+            "delete_after_merge": false
+        }))
+        .unwrap();
+
+        assert!(!request.delete_after_merge);
     }
 }
