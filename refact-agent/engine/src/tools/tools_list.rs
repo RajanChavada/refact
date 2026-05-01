@@ -374,6 +374,10 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_task_memory::ToolTaskMemoriesGet::new()),
     ];
 
+    let worktree_tools: Vec<Box<dyn Tool + Send>> = vec![Box::new(
+        crate::tools::tool_worktree_merge::ToolWorktreeMerge::new(),
+    )];
+
     let mut tool_groups = vec![
         ToolGroup {
             name: "Codebase Search".to_string(),
@@ -428,6 +432,12 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
             description: "Task workspace and kanban board tools".to_string(),
             category: ToolGroupCategory::Builtin,
             tools: task_tools,
+        },
+        ToolGroup {
+            name: "Worktrees".to_string(),
+            description: "Worktree lifecycle tools".to_string(),
+            category: ToolGroupCategory::Builtin,
+            tools: worktree_tools,
         },
     ];
 

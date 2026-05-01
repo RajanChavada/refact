@@ -140,6 +140,7 @@ export type MergeWorktreeRequest = {
   delete_after_merge?: boolean;
   include_uncommitted?: boolean;
   commit_message?: string;
+  generate_commit_message?: boolean;
 };
 
 export type WorktreeRemovalResult = {

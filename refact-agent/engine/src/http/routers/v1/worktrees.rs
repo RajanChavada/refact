@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock as ARwLock;
 
+use crate::agentic::generate_commit_message::generate_commit_message_by_diff;
 use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
 use crate::worktrees::service::WorktreeService;
@@ -243,9 +244,34 @@ pub async fn handle_v1_worktrees_merge(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(id): Path<String>,
     Query(query): Query<WorktreeQuery>,
-    Json(request): Json<MergeWorktreeRequest>,
+    Json(mut request): Json<MergeWorktreeRequest>,
 ) -> ApiResult<MergeWorktreeResponse> {
-    let service = service_for_request(gcx, query.source_workspace_root).await?;
+    let service = service_for_request(gcx.clone(), query.source_workspace_root).await?;
+    if request.generate_commit_message
+        && request
+            .commit_message
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+    {
+        let diff = service
+            .diff_worktree(&id)
+            .await
+            .map_err(map_service_error)?;
+        let prompt = request
+            .target_branch
+            .clone()
+            .or_else(|| diff.base_branch.clone())
+            .map(|target| format!("Merge worktree into {}", target));
+        if let Ok(message) =
+            generate_commit_message_by_diff(gcx.clone(), &diff.patch, &prompt).await
+        {
+            if !message.trim().is_empty() {
+                request.commit_message = Some(message);
+            }
+        }
+    }
     service
         .merge_worktree(&id, request)
         .await

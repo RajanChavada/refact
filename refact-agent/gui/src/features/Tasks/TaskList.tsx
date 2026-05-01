@@ -12,6 +12,7 @@ import {
   Spinner,
 } from "@radix-ui/themes";
 import {
+  ArrowLeftIcon,
   PlusIcon,
   DotFilledIcon,
   CheckCircledIcon,
@@ -23,7 +24,7 @@ import { ChatLoading } from "../../components/ChatContent/ChatLoading";
 import { ScrollArea } from "../../components/ScrollArea";
 import { CloseButton } from "../../components/Buttons/Buttons";
 import { useAppDispatch } from "../../hooks";
-import { push } from "../Pages/pagesSlice";
+import { pop, push } from "../Pages/pagesSlice";
 import {
   useListTasksQuery,
   useCreateTaskMutation,
@@ -207,7 +208,11 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onClick, onDelete }) => {
   );
 };
 
-export const TaskList: React.FC = () => {
+interface TaskListProps {
+  backFromTasks?: () => void;
+}
+
+export const TaskList: React.FC<TaskListProps> = ({ backFromTasks }) => {
   const dispatch = useAppDispatch();
   const { data: tasks = [], isLoading } = useListTasksQuery(undefined, {
     pollingInterval: 0,
@@ -217,6 +222,14 @@ export const TaskList: React.FC = () => {
   const [newTaskName, setNewTaskName] = useState("");
   const [newTaskTargetFiles, setNewTaskTargetFiles] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+
+  const handleBack = useCallback(() => {
+    if (backFromTasks) {
+      backFromTasks();
+      return;
+    }
+    dispatch(pop());
+  }, [backFromTasks, dispatch]);
 
   const handleCreateTask = useCallback(() => {
     if (!newTaskName.trim()) return;
@@ -273,7 +286,18 @@ export const TaskList: React.FC = () => {
   return (
     <Flex direction="column" style={{ height: "100%" }} p="4" gap="4">
       <Flex justify="between" align="center">
-        <Heading size="4">Tasks</Heading>
+        <Flex align="center" gap="3">
+          <Button
+            variant="ghost"
+            size="1"
+            onClick={handleBack}
+            aria-label="Back to previous page"
+            title="Back"
+          >
+            <ArrowLeftIcon />
+          </Button>
+          <Heading size="4">Tasks</Heading>
+        </Flex>
         {!isCreating && (
           <Button size="2" onClick={() => setIsCreating(true)}>
             <PlusIcon /> New Task

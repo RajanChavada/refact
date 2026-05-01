@@ -201,6 +201,26 @@ export const WorktreeMenu: React.FC<WorktreeMenuProps> = ({
     onDetach,
   ]);
 
+  const handleMerged = useCallback(
+    (response: MergeWorktreeResponse) => {
+      const cleanup = response.cleanup;
+      if (
+        (cleanup?.worktree_deleted ?? false) ||
+        (cleanup?.registry_deleted ?? false)
+      ) {
+        if (chatId) {
+          dispatch(setThreadWorktree({ chatId, worktree: null }));
+        }
+        onDetach();
+        setMergeOpen(false);
+        setLocalFeedback("Worktree merged and removed.");
+      } else if (response.merged === true) {
+        setLocalFeedback("Worktree merged.");
+      }
+    },
+    [chatId, dispatch, onDetach],
+  );
+
   return (
     <>
       <Popover.Content
@@ -392,6 +412,7 @@ export const WorktreeMenu: React.FC<WorktreeMenuProps> = ({
         worktree={currentWorktree}
         record={currentRecord}
         onOpenChange={setMergeOpen}
+        onMerged={handleMerged}
         onAskRefact={handleAskRefact}
         onOpenWorktree={onOpenInNewWindow}
       />

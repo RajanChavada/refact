@@ -413,7 +413,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
               />
             )}
             {!pageSwitching && renderedPage.name === "tasks list" && (
-              <TaskList />
+              <TaskList backFromTasks={goBack} />
             )}
             {!pageSwitching && renderedPage.name === "task workspace" && (
               <TaskWorkspace

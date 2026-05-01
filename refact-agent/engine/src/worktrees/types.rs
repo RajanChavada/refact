@@ -244,6 +244,8 @@ pub struct MergeWorktreeRequest {
     pub target_branch: Option<String>,
     #[serde(default)]
     pub commit_message: Option<String>,
+    #[serde(default)]
+    pub generate_commit_message: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

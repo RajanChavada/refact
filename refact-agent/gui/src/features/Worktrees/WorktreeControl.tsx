@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Flex, Popover, Text } from "@radix-ui/themes";
 import {
   DEFAULT_MODE,
@@ -14,6 +14,7 @@ import {
   updateChatParams,
   useCreateWorktreeMutation,
   useDeleteWorktreeMutation,
+  useGetWorktreeDiffQuery,
   useListWorktreesQuery,
   useOpenWorktreeMutation,
   type WorktreeMeta,
@@ -122,6 +123,19 @@ export const WorktreeControl: React.FC = () => {
     () => records.find((record) => record.meta.id === currentWorktree?.id),
     [currentWorktree?.id, records],
   );
+  const { data: currentDiff } = useGetWorktreeDiffQuery(
+    {
+      id: currentWorktree?.id ?? "",
+      source_workspace_root: currentWorktree?.source_workspace_root,
+      max_patch_bytes: 1,
+    },
+    {
+      skip: !currentWorktree?.id,
+      pollingInterval: 5000,
+      refetchOnFocus: true,
+      refetchOnReconnect: true,
+    },
+  );
   const mainWorkspacePath = data?.source_workspace_root;
   const copyPath = currentWorktree?.root ?? mainWorkspacePath ?? null;
   const sourceBranch = data?.source_current_branch?.trim();
@@ -180,6 +194,11 @@ export const WorktreeControl: React.FC = () => {
     },
     [apiKey, chatId, currentWorktree, dispatch, lspPort],
   );
+
+  useEffect(() => {
+    if (!currentWorktree || !data || currentRecord) return;
+    void attachWorktree(null);
+  }, [attachWorktree, currentRecord, currentWorktree, data]);
 
   const handleSelect = useCallback(
     (record: WorktreeRecordView) => {
@@ -288,6 +307,8 @@ export const WorktreeControl: React.FC = () => {
                 <WorktreeStatusBadge
                   worktree={currentWorktree}
                   record={currentRecord}
+                  additions={currentDiff?.stats.additions}
+                  deletions={currentDiff?.stats.deletions}
                 />
               )}
             </Flex>

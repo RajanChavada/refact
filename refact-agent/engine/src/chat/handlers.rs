@@ -9,6 +9,8 @@ use tokio::sync::{broadcast, RwLock as ARwLock};
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
+use crate::call_validation::{ChatContent, ChatMessage};
+use crate::worktrees::types::WorktreeMeta;
 
 use super::types::*;
 use super::queue::resolve_worktree_setparams_update;
@@ -18,6 +20,24 @@ use super::queue::process_command_queue;
 use super::trajectory_ops::sanitize_messages_for_model_switch;
 use super::trajectories::validate_trajectory_id;
 use crate::yaml_configs::customization_registry::{get_mode_config, map_legacy_mode_to_id};
+
+fn worktree_activation_message(worktree: &WorktreeMeta) -> ChatMessage {
+    let branch = worktree.branch.as_deref().unwrap_or("unknown");
+    let base = worktree.base_branch.as_deref().unwrap_or("unknown");
+    ChatMessage {
+        role: "cd_instruction".to_string(),
+        content: ChatContent::SimpleText(format!(
+            "💿 WORKTREE_ENABLED\n\nActive worktree scope is now ON for this chat.\n\n- Worktree id: `{}`\n- Branch: `{}`\n- Base/target branch: `{}`\n- Worktree root: `{}`\n- Source workspace root: `{}`\n\nEffects for this thread:\n- File reads, edits, shell commands, searches, and @file resolution should operate inside the worktree root unless a tool explicitly says otherwise.\n- Treat the main workspace as the merge target and do not edit it directly for this chat.\n- Use relative paths as usual; absolute paths outside the worktree may be rejected or remapped.\n- To merge completed work, call `worktree_merge` or use the Worktrees UI merge action.\n- If you need to leave the isolated scope, ask the user to detach the worktree first.",
+            worktree.id,
+            branch,
+            base,
+            worktree.root.display(),
+            worktree.source_workspace_root.display()
+        )),
+        tool_call_id: "worktree_enabled".to_string(),
+        ..Default::default()
+    }
+}
 
 fn command_error_response(status: StatusCode, code: &str, error: String) -> Response<Body> {
     let body = serde_json::to_string(&serde_json::json!({
@@ -222,6 +242,10 @@ pub async fn handle_v1_chat_command(
         let old_mode = session.thread.mode.clone();
         let (mut changed, sanitized_patch) =
             super::queue::apply_setparams_patch(&mut session.thread, patch);
+        let activated_worktree = worktree_update
+            .as_ref()
+            .filter(|update| update.changed)
+            .and_then(|update| update.worktree.clone());
         if let Some(update) = worktree_update.clone() {
             session.thread.worktree = update.worktree;
             changed |= update.changed;
@@ -323,6 +347,9 @@ pub async fn handle_v1_chat_command(
         if changed {
             session.increment_version();
             session.touch();
+        }
+        if let Some(worktree) = activated_worktree {
+            session.add_message(worktree_activation_message(&worktree));
         }
         session.emit(ChatEvent::Ack {
             client_request_id: request.client_request_id,

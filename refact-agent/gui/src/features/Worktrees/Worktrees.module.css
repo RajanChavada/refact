@@ -4,7 +4,7 @@
   gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   border-radius: var(--radius-2);
   cursor: pointer;
   color: var(--gray-12);
@@ -27,7 +27,9 @@
 }
 
 .triggerActive {
-  background-color: var(--accent-a3);
+  background-color: var(--green-a2);
+  border-color: var(--green-a6);
+  color: var(--green-12);
 }
 
 .triggerText {
@@ -49,6 +51,21 @@
 
 .trigger:hover:not(:disabled) .branchIcon {
   color: var(--gray-12);
+}
+
+.diffStatsBadge {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-left: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.diffStatsAdd {
+  color: var(--green-11);
+}
+
+.diffStatsRemove {
+  color: var(--red-11);
 }
 
 .content {
@@ -298,6 +315,7 @@
 }
 
 .diffFileList {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -312,21 +330,64 @@
 }
 
 .patchScroller {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
   max-height: 360px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   border: 1px solid var(--gray-5);
   border-radius: var(--radius-3);
   background: var(--gray-2);
 }
 
+.patchScroller pre {
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .patchPreview {
   margin: 0;
-  padding: var(--space-3);
-  min-width: min-content;
-  white-space: pre;
+  padding: var(--space-2) 0;
+  white-space: pre-wrap;
   font-family: var(--code-font-family);
   font-size: var(--font-size-1);
   line-height: var(--line-height-1);
+}
+
+.patchLine {
+  display: block;
+  padding: 0 var(--space-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.patchLineMeta {
+  color: var(--violet-11);
+  background: var(--violet-a2);
+}
+
+.patchLineFile {
+  color: var(--blue-11);
+  background: var(--blue-a2);
+}
+
+.patchLineHunk {
+  color: var(--cyan-11);
+  background: var(--cyan-a2);
+}
+
+.patchLineAdd {
+  color: var(--green-11);
+  background: var(--green-a2);
+}
+
+.patchLineRemove {
+  color: var(--red-11);
+  background: var(--red-a2);
+}
+
+.patchLineContext {
+  color: var(--gray-11);
 }
 
 .conflictList {

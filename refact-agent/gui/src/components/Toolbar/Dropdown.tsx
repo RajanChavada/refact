@@ -3,7 +3,20 @@ import { selectHost, type Config } from "../../features/Config/configSlice";
 import { useAppSelector, useEventsBusForIDE } from "../../hooks";
 import { useOpenUrl } from "../../hooks/useOpenUrl";
 import { DropdownMenu, HoverCard, Text } from "@radix-ui/themes";
-import { GearIcon, HamburgerMenuIcon } from "@radix-ui/react-icons";
+import {
+  BarChartIcon,
+  CodeIcon,
+  ExclamationTriangleIcon,
+  FileTextIcon,
+  GearIcon,
+  HamburgerMenuIcon,
+  KeyboardIcon,
+  LightningBoltIcon,
+  MixerHorizontalIcon,
+  ReaderIcon,
+  RocketIcon,
+  StarIcon,
+} from "@radix-ui/react-icons";
 import styles from "./Toolbar.module.css";
 import { PuzzleIcon } from "../../images/PuzzleIcon";
 
@@ -70,28 +83,28 @@ export const Dropdown: React.FC<DropdownProps> = ({
           <PuzzleIcon /> Set up Agent Integrations
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("providers")}>
-          <GearIcon /> Configure Providers
+          <MixerHorizontalIcon /> Configure Providers
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("default models")}>
-          <GearIcon /> Default Models
+          <StarIcon /> Default Models
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("knowledge graph")}>
-          Manage Knowledge
+          <ReaderIcon /> Manage Knowledge
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("settings")}>
-          {refactProductType} Settings
+          <GearIcon /> {refactProductType} Settings
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("hot keys")}>
-          IDE Hotkeys
+          <KeyboardIcon /> IDE Hotkeys
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("customization")}>
-          Customize Modes & Agents
+          <RocketIcon /> Customize Modes & Agents
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("extensions")}>
-          <GearIcon /> Skills, Commands & Hooks
+          <LightningBoltIcon /> Skills, Commands & Hooks
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => void openPrivacyFile()}>
-          Edit privacy.yaml
+          <FileTextIcon /> Edit privacy.yaml
         </DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item
@@ -100,13 +113,13 @@ export const Dropdown: React.FC<DropdownProps> = ({
             openUrl(bugUrl);
           }}
         >
-          Report a bug
+          <ExclamationTriangleIcon /> Report a bug
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("fim")}>
-          Fill-in-the-middle Context
+          <CodeIcon /> Fill-in-the-middle Context
         </DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => handleNavigation("stats")}>
-          Usage Dashboard
+          <BarChartIcon /> Usage Dashboard
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Root>

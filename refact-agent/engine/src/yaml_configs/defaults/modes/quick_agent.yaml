@@ -1,4 +1,4 @@
-schema_version: 13
+schema_version: 14
 id: quick_agent
 title: Quick Agent
 description: Fast autonomous coding with minimal overhead
@@ -86,6 +86,7 @@ tools:
   - subagent
   - tasks_set
   - task_done
+  - worktree_merge
   - ask_questions
 
 tool_confirm:

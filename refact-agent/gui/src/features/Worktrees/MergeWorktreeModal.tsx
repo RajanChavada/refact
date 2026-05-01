@@ -153,6 +153,7 @@ export const MergeWorktreeModal: React.FC<MergeWorktreeModalProps> = ({
           trimmedTargetBranch.length > 0 ? trimmedTargetBranch : undefined,
         delete_after_merge: deleteAfterMerge,
         include_uncommitted: includeUncommitted,
+        generate_commit_message: true,
       }).unwrap();
       setResult(response);
       invalidateTask();

@@ -65,6 +65,35 @@ function fileDelta(
   return parts.join(" ");
 }
 
+function patchLineClass(line: string): string {
+  if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+    return styles.patchLineFile;
+  }
+  if (line.startsWith("@@")) return styles.patchLineHunk;
+  if (line.startsWith("+")) return styles.patchLineAdd;
+  if (line.startsWith("-")) return styles.patchLineRemove;
+  if (line.startsWith("diff --git") || line.startsWith("index ")) {
+    return styles.patchLineMeta;
+  }
+  return styles.patchLineContext;
+}
+
+function RichPatchPreview({ patch }: { patch: string }) {
+  const text = patch.length > 0 ? patch : "No patch preview available.";
+  return (
+    <pre className={styles.patchPreview}>
+      {text.split("\n").map((line, index) => (
+        <span
+          key={`${index}-${line.slice(0, 12)}`}
+          className={`${styles.patchLine} ${patchLineClass(line)}`}
+        >
+          {line || " "}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
 export const WorktreeDiffPanel: React.FC<WorktreeDiffPanelProps> = ({
   open,
   worktreeId,
@@ -191,11 +220,7 @@ export const WorktreeDiffPanel: React.FC<WorktreeDiffPanelProps> = ({
               </div>
 
               <div className={styles.patchScroller}>
-                <pre className={styles.patchPreview}>
-                  {data.patch.length > 0
-                    ? data.patch
-                    : "No patch preview available."}
-                </pre>
+                <RichPatchPreview patch={data.patch} />
               </div>
             </>
           )}
