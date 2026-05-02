@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { drawBuddyWorld } from "../features/Buddy/buddyWorldDraw";
-import { drawStarField } from "../features/Buddy/buddyWorldDrawAtmosphere";
+import {
+  drawObservatoryStructures,
+  drawStarField,
+  shouldDrawStarField,
+} from "../features/Buddy/buddyWorldDrawAtmosphere";
 import {
   buildBuddyWorldState,
   type BuddyWorldState,
@@ -33,6 +37,20 @@ type RecordedCanvasContext = CanvasRenderingContext2D & {
   drawOps: string[];
   fillRectStyles: string[];
 };
+
+interface CanvasDrawOp {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  alpha: number;
+}
+
+interface StarFieldSignature {
+  matchedCount: number;
+  duplicateCount: number;
+}
 
 function makeCanvasContext(): RecordedCanvasContext {
   const gradientStops: string[] = [];
@@ -278,6 +296,73 @@ function drawWorld(
   return ctx;
 }
 
+const starFieldArgs = {
+  palette: PALETTES[0],
+  frame: 120,
+  width: 720,
+  height: 260,
+  compact: false,
+  reducedMotion: false,
+};
+
+function parseFillRectOperation(operation: string): CanvasDrawOp | null {
+  const parts = operation.split(":");
+  if (parts[0] !== "fillRect") return null;
+  return {
+    x: Number(parts[1]),
+    y: Number(parts[2]),
+    width: Number(parts[3]),
+    height: Number(parts[4]),
+    color: parts[5] ?? "",
+    alpha: Number(parts[6]),
+  };
+}
+
+function fillRectOperationKey(operation: CanvasDrawOp): string {
+  return `fillRect:${operation.x.toFixed(3)}:${operation.y.toFixed(
+    3,
+  )}:${operation.width.toFixed(3)}:${operation.height.toFixed(3)}:${
+    operation.color
+  }:${operation.alpha}`;
+}
+
+function starFieldOperationSignature(
+  ctx: RecordedCanvasContext,
+  starOnlyCtx: RecordedCanvasContext,
+): StarFieldSignature {
+  const expected = starOnlyCtx.drawOps
+    .map(parseFillRectOperation)
+    .filter((operation): operation is CanvasDrawOp => operation !== null)
+    .filter(
+      (operation) =>
+        operation.color === "#FFFFFF" || operation.color === "#FDE68A",
+    );
+  const expectedCounts = new Map<string, number>();
+  const fullCounts = new Map<string, number>();
+
+  for (const operation of expected) {
+    const key = fillRectOperationKey(operation);
+    expectedCounts.set(key, (expectedCounts.get(key) ?? 0) + 1);
+  }
+
+  for (const operation of ctx.drawOps) {
+    const parsed = parseFillRectOperation(operation);
+    if (!parsed) continue;
+    const key = fillRectOperationKey(parsed);
+    fullCounts.set(key, (fullCounts.get(key) ?? 0) + 1);
+  }
+
+  let matchedCount = 0;
+  let duplicateCount = 0;
+  for (const [key, expectedCount] of expectedCounts.entries()) {
+    const actualCount = fullCounts.get(key) ?? 0;
+    matchedCount += Math.min(actualCount, expectedCount);
+    duplicateCount += Math.max(0, actualCount - expectedCount);
+  }
+
+  return { matchedCount, duplicateCount };
+}
+
 function expectAlphaWritesClamped(ctx: RecordedCanvasContext): void {
   expect(ctx.alphaWrites.length).toBeGreaterThan(0);
   expect(ctx.alphaWrites.every((alpha) => alpha >= 0 && alpha <= 1)).toBe(true);
@@ -465,34 +550,52 @@ describe("drawBuddyWorld", () => {
     expect(secondCtx.drawOps).toEqual(firstCtx.drawOps);
   });
 
-  it("draws night star and observatory passes once", () => {
-    const world = makeWorld({ now: new Date("2024-01-01T23:00:00") });
+  it("does not draw the star field without the stars layer", () => {
+    const world = makeWorld({ now: new Date("2024-01-01T14:00:00") });
     const ctx = drawWorld(world);
-    const fullStarOps = ctx.fillRectStyles.filter(
-      (style) => style === "#FFFFFF" || style === "#FDE68A",
-    );
     const starOnlyCtx = makeCanvasContext();
-    drawStarField({
-      ctx: starOnlyCtx,
-      world,
-      palette: PALETTES[0],
-      frame: 120,
-      width: 720,
-      height: 260,
-      compact: false,
-      reducedMotion: false,
-    });
-    const starOnlyOps = starOnlyCtx.fillRectStyles.filter(
-      (style) => style === "#FFFFFF" || style === "#FDE68A",
-    );
-    const structureOps = ctx.fillRectStyles.filter(
-      (style) => style === "#CBD5E1",
-    );
 
-    expect(fullStarOps).toHaveLength(starOnlyOps.length + 107);
-    expect(starOnlyOps).toHaveLength(54);
-    expect(structureOps).toHaveLength(5);
+    drawStarField({ ctx: starOnlyCtx, world, ...starFieldArgs });
+
+    const signature = starFieldOperationSignature(ctx, starOnlyCtx);
+
+    expect(world.atmosphere.layers).not.toContain("stars");
+    expect(shouldDrawStarField(world)).toBe(false);
+    expect(starOnlyCtx.fillRectStyles).toHaveLength(54);
+    expect(signature.matchedCount).toBe(0);
+    expect(signature.duplicateCount).toBe(0);
     expectHealthyDraw(ctx);
     expectHealthyDraw(starOnlyCtx);
+  });
+
+  it("draws one bounded star-field pass for the stars layer", () => {
+    const world = makeWorld({ now: new Date("2024-01-01T23:00:00") });
+    const ctx = drawWorld(world);
+    const starOnlyCtx = makeCanvasContext();
+    const structuresOnlyCtx = makeCanvasContext();
+
+    drawStarField({ ctx: starOnlyCtx, world, ...starFieldArgs });
+    drawObservatoryStructures({
+      ctx: structuresOnlyCtx,
+      world,
+      ...starFieldArgs,
+    });
+
+    const signature = starFieldOperationSignature(ctx, starOnlyCtx);
+    const structureSignature = starFieldOperationSignature(
+      structuresOnlyCtx,
+      starOnlyCtx,
+    );
+
+    expect(world.atmosphere.layers).toContain("stars");
+    expect(shouldDrawStarField(world)).toBe(true);
+    expect(starOnlyCtx.fillRectStyles).toHaveLength(54);
+    expect(signature.matchedCount).toBe(54);
+    expect(signature.duplicateCount).toBe(0);
+    expect(structureSignature.matchedCount).toBe(0);
+    expect(structureSignature.duplicateCount).toBe(0);
+    expectHealthyDraw(ctx);
+    expectHealthyDraw(starOnlyCtx);
+    expectHealthyDraw(structuresOnlyCtx);
   });
 });

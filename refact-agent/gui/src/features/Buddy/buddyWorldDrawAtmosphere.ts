@@ -186,6 +186,10 @@ function drawSkyStructures(args: DrawBuddyWorldBaseArgs): void {
   );
 }
 
+export function shouldDrawStarField(world: BuddyWorldState): boolean {
+  return hasWorldLayer(world, "stars");
+}
+
 export function drawStarField(args: DrawBuddyWorldBaseArgs): void {
   const width = safeDimension(args.width, 720);
   const height = safeDimension(args.height, 260);

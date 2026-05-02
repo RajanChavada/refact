@@ -7,6 +7,7 @@ import {
   drawSkyGradient,
   drawStarField,
   drawWeatherAtmosphere,
+  shouldDrawStarField,
 } from "./buddyWorldDrawAtmosphere";
 import {
   drawBuddyLandingPad,
@@ -50,7 +51,7 @@ export function drawBuddyWorld(args: DrawBuddyWorldArgs): void {
   args.ctx.imageSmoothingEnabled = false;
 
   drawSkyGradient(drawArgs);
-  drawStarField(drawArgs);
+  if (shouldDrawStarField(args.world)) drawStarField(drawArgs);
   drawObservatoryStructures(drawArgs);
   drawCelestial(drawArgs);
   drawAmbientLayers(drawArgs);

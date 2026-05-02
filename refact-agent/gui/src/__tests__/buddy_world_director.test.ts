@@ -139,6 +139,24 @@ function buildIntent(args?: {
   });
 }
 
+function makePreviousIntent(
+  kind: BuddyWorldIntentKind,
+  priority = 100,
+): BuddyWorldIntent {
+  return {
+    id: `previous-${kind}`,
+    kind,
+    targetX: 50,
+    targetY: 76,
+    depthScale: 1,
+    pose: "idle",
+    speech: null,
+    speechKind: "charm",
+    durationMs: 8_000,
+    priority,
+  };
+}
+
 function expectSafeIntent(intent: BuddyWorldIntent | null): void {
   expect(intent).not.toBeNull();
   if (!intent) return;
@@ -302,16 +320,60 @@ describe("buddy world director", () => {
     expect(buildIntent({ showcaseActive: true })).toBeNull();
   });
 
-  it("keeps persistent high-priority provider storms despite recent kinds", () => {
+  it("continues persistent provider storms when previous provider intent matches", () => {
     const intent = buildIntent({
       pulse: makePulse({
         providers: { defaults_ok: true, broken_refs: 1, quota_warnings: 0 },
       }),
+      previousIntent: makePreviousIntent("stabilize_crystal"),
       recentIntentKinds: ["stabilize_crystal", "inspect_provider"],
+    });
+
+    expect(intent?.kind).toBe("stabilize_crystal");
+    expect(intent?.objectId).toBe("providers");
+    expectSafeIntent(intent);
+  });
+
+  it("keeps persistent provider storms provider-related when recent kinds block candidates", () => {
+    const intent = buildIntent({
+      pulse: makePulse({
+        providers: { defaults_ok: true, broken_refs: 1, quota_warnings: 0 },
+      }),
+      previousIntent: makePreviousIntent("seek_toy"),
+      recentIntentKinds: [
+        "stabilize_crystal",
+        "inspect_provider",
+        "wander_curiously",
+        "watch_observatory",
+      ],
     });
 
     expect(["stabilize_crystal", "inspect_provider"]).toContain(intent?.kind);
     expect(intent?.objectId).toBe("providers");
+    expectSafeIntent(intent);
+  });
+
+  it("does not let a recent high-priority candidate bypass cooldown without matching previous intent", () => {
+    const intent = buildIntent({
+      pulse: makePulse({
+        providers: { defaults_ok: true, broken_refs: 1, quota_warnings: 0 },
+      }),
+      previousIntent: makePreviousIntent("inspect_memory"),
+      recentIntentKinds: ["stabilize_crystal"],
+    });
+
+    expect(intent?.kind).toBe("inspect_provider");
+    expect(intent?.objectId).toBe("providers");
+    expectSafeIntent(intent);
+  });
+
+  it("suppresses recently used medium care intents", () => {
+    const intent = buildIntent({
+      pet: makePet({ condition: { hungry: true } }),
+      recentIntentKinds: ["seek_food"],
+    });
+
+    expect(intent?.kind).toBe("wander_curiously");
     expectSafeIntent(intent);
   });
 

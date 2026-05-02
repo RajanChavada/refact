@@ -56,6 +56,7 @@ const TARGET_MIN_Y = 58;
 const TARGET_MAX_Y = 84;
 const MIN_DEPTH_SCALE = 0.7;
 const MAX_DEPTH_SCALE = 1.2;
+const HIGH_PRIORITY_CONTINUATION_THRESHOLD = 70;
 
 const SAFE_TARGETS = {
   center: { targetX: 50, targetY: 76, depthScale: 1 },
@@ -180,15 +181,31 @@ function makeIntent(args: {
 }
 
 function isProviderIntent(kind: BuddyWorldIntentKind): boolean {
-  return (
-    kind === "stabilize_crystal" ||
-    kind === "inspect_provider" ||
-    kind === "watch_observatory"
-  );
+  return kind === "stabilize_crystal" || kind === "inspect_provider";
+}
+
+function isProviderRecoveryIntent(kind: BuddyWorldIntentKind): boolean {
+  return isProviderIntent(kind) || kind === "watch_observatory";
 }
 
 function isMemoryIntent(kind: BuddyWorldIntentKind): boolean {
   return kind === "inspect_memory" || kind === "shelve_memory";
+}
+
+function isPersistentCriticalIntent(candidate: BuddyWorldIntent): boolean {
+  if (candidate.kind === "channel_runtime") return candidate.priority >= 80;
+  if (isMemoryIntent(candidate.kind)) return candidate.priority >= 80;
+  return isProviderIntent(candidate.kind) && candidate.priority >= 90;
+}
+
+function canContinueRecentIntent(
+  candidate: BuddyWorldIntent,
+  previousIntent: BuddyWorldIntent | null,
+): boolean {
+  return (
+    previousIntent?.kind === candidate.kind &&
+    candidate.priority >= HIGH_PRIORITY_CONTINUATION_THRESHOLD
+  );
 }
 
 function buildRecoveryIntent(args: {
@@ -204,7 +221,7 @@ function buildRecoveryIntent(args: {
   if (!previousIntent) return null;
 
   const providerRecovered =
-    isProviderIntent(previousIntent.kind) &&
+    isProviderRecoveryIntent(previousIntent.kind) &&
     !args.providerSerious &&
     args.providerObject?.state === "calm";
   const memoryRecovered =
@@ -235,14 +252,28 @@ function buildRecoveryIntent(args: {
 function pickIntent(
   candidates: BuddyWorldIntent[],
   recentIntentKinds: readonly BuddyWorldIntentKind[] | undefined,
+  previousIntent: BuddyWorldIntent | null,
 ): BuddyWorldIntent | null {
   const recentKinds = new Set(recentIntentKinds ?? []);
-  return (
-    candidates.find(
-      (candidate) =>
-        candidate.priority >= 50 || !recentKinds.has(candidate.kind),
-    ) ?? null
-  );
+  let blockedCriticalIntent: BuddyWorldIntent | null = null;
+
+  for (const candidate of candidates) {
+    if (
+      blockedCriticalIntent &&
+      candidate.priority < HIGH_PRIORITY_CONTINUATION_THRESHOLD
+    ) {
+      return blockedCriticalIntent;
+    }
+
+    if (!recentKinds.has(candidate.kind)) return candidate;
+    if (canContinueRecentIntent(candidate, previousIntent)) return candidate;
+
+    if (!blockedCriticalIntent && isPersistentCriticalIntent(candidate)) {
+      blockedCriticalIntent = candidate;
+    }
+  }
+
+  return blockedCriticalIntent;
 }
 
 export function chooseBuddyWorldIntent(
@@ -519,5 +550,6 @@ export function chooseBuddyWorldIntent(
       ...lowPriorityCandidates,
     ],
     args.recentIntentKinds,
+    args.previousIntent,
   );
 }
