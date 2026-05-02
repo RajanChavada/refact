@@ -167,8 +167,6 @@ const PROVIDER_MODEL_STRICT_TOPIC_PATTERNS = [
   /\bmodel_not_found\b/u,
   /\bbroken[-_\s]?model[-_\s]?references?\b/u,
   /\bbroken_model_reference\b/u,
-  /\bbroken[-_\s]?refs?\b/u,
-  /\bbroken_refs?\b/u,
   /\bllm\b/u,
   /\bcontext[-_\s]?windows?\b/u,
   /\bopenai\b/u,
@@ -196,6 +194,8 @@ const PROVIDER_MODEL_CONTEXTUAL_TOPIC_PATTERNS = [
   /\brate[-_\s]?limits?\b/u,
   /\bquotas?\b/u,
   /\bmodels?\b/u,
+  /\bbroken[-_\s]?refs?\b/u,
+  /\bbroken_refs?\b/u,
 ] as const;
 
 const AFFECTION_SIGNAL_WINDOW_MS = 600_000;
@@ -703,7 +703,7 @@ function buildObjects(
             ? `${providerIssues} provider signals are flickering.`
             : "Model stars are aligned.",
         page: { type: "default_models" },
-        tone: toneFromCount(providerIssues, 1, 3),
+        tone: providerCritical ? "danger" : toneFromCount(providerIssues, 1, 3),
         x: 72,
         y: 67,
         size: 18,
@@ -831,16 +831,6 @@ function weatherFromState(
   BuddyWorldState,
   "weather" | "weatherLabel" | "weatherDescription" | "weatherX" | "weatherY"
 > {
-  if (pet?.condition.sleeping) {
-    return {
-      weather: "dream",
-      weatherLabel: "Dream mist",
-      weatherDescription: "Buddy is asleep; the world lowers its volume.",
-      weatherX: 61,
-      weatherY: 30,
-    };
-  }
-
   if (isProviderModelRuntimeProblem(visibleRuntime)) {
     return {
       weather: "storm",
@@ -850,6 +840,26 @@ function weatherFromState(
         "Errors are crackling; Buddy can chase them down.",
       weatherX: 57,
       weatherY: 27,
+    };
+  }
+
+  if (pet?.condition?.sleeping && pulse && hasProviderModelPulseProblem(pulse)) {
+    return {
+      weather: "storm",
+      weatherLabel: "Bug storm",
+      weatherDescription: "Errors are crackling; Buddy can chase them down.",
+      weatherX: 57,
+      weatherY: 27,
+    };
+  }
+
+  if (pet?.condition?.sleeping) {
+    return {
+      weather: "dream",
+      weatherLabel: "Dream mist",
+      weatherDescription: "Buddy is asleep; the world lowers its volume.",
+      weatherX: 61,
+      weatherY: 30,
     };
   }
 
@@ -863,17 +873,17 @@ function weatherFromState(
     };
   }
 
-  if (pulse) {
-    if (hasProviderModelPulseProblem(pulse)) {
-      return {
-        weather: "storm",
-        weatherLabel: "Bug storm",
-        weatherDescription: "Errors are crackling; Buddy can chase them down.",
-        weatherX: 57,
-        weatherY: 27,
-      };
-    }
+  if (pulse && hasProviderModelPulseProblem(pulse)) {
+    return {
+      weather: "storm",
+      weatherLabel: "Bug storm",
+      weatherDescription: "Errors are crackling; Buddy can chase them down.",
+      weatherX: 57,
+      weatherY: 27,
+    };
+  }
 
+  if (pulse) {
     if (memoryIssueCount(pulse) >= 3) {
       return {
         weather: "rain",
@@ -958,7 +968,7 @@ function hasAffectionState(args: {
   semanticState: BuddySemanticState | undefined;
   nowMs: number;
 }): boolean {
-  const affection = args.pet?.needs.affection;
+  const affection = args.pet?.needs?.affection;
   if (
     typeof affection === "number" &&
     Number.isFinite(affection) &&
@@ -966,8 +976,8 @@ function hasAffectionState(args: {
   ) {
     return true;
   }
-  const lastSignalType = args.semanticState?.activity.lastSignalType;
-  const lastSignalTime = args.semanticState?.activity.lastSignalTime;
+  const lastSignalType = args.semanticState?.activity?.lastSignalType;
+  const lastSignalTime = args.semanticState?.activity?.lastSignalTime;
   if (
     lastSignalType == null ||
     !AFFECTION_SIGNALS.has(lastSignalType) ||
@@ -999,9 +1009,9 @@ function buildAtmosphere(args: {
   const serious =
     hasProviderModelPulseProblem(args.pulse) ||
     isProviderModelRuntimeProblem(args.visibleRuntime);
-  const sleeping = args.pet?.condition.sleeping === true;
-  const hungry = args.pet?.condition.hungry === true;
-  const bored = args.pet?.condition.bored === true;
+  const sleeping = args.pet?.condition?.sleeping === true;
+  const hungry = args.pet?.condition?.hungry === true;
+  const bored = args.pet?.condition?.bored === true;
   const affectionate = hasAffectionState({
     pet: args.pet,
     semanticState: args.semanticState,

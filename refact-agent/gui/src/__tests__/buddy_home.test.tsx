@@ -696,6 +696,87 @@ describe("BuddyWorld_dynamic_environment", () => {
     );
   });
 
+  it("updates scene time when care activity arrives without explicit now", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2024, 0, 1, 14, 0, 0));
+    try {
+      const quietPulse = {
+        ...makePulse(),
+        diagnostics: { last_hour: 0, top_error_types: [] },
+        git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+        mcp: { total: 4, failing: 0, auth_expiring: 0 },
+        memory: { total: 10, orphan: 0, stale_conflicts: 0 },
+      };
+      const pet = makeSnapshot().state.pet;
+      const calmPet = {
+        ...pet,
+        needs: { ...pet.needs, affection: 35 },
+      };
+      const { rerender } = render(
+        <BuddyWorld
+          palette={PALETTES[0]}
+          stage={STAGES[2]}
+          state={makeSemanticState()}
+          pulse={quietPulse}
+          pet={calmPet}
+          nowPlaying={null}
+          activeQuest={null}
+          activeSpeech={null}
+          setupNeeded={false}
+          onCanvasEvent={vi.fn()}
+          onCare={vi.fn()}
+          onOpenPage={vi.fn()}
+          onRunMode={vi.fn()}
+          onDismissSetup={vi.fn()}
+          onSpeechControl={vi.fn()}
+        />,
+        { preloadedState: CONFIG_STATE },
+      );
+
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-atmosphere-mood",
+        "curious",
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const lastSignalTime = new Date(2024, 0, 1, 14, 0, 30).getTime();
+      rerender(
+        <BuddyWorld
+          palette={PALETTES[0]}
+          stage={STAGES[2]}
+          state={makeSemanticState({
+            activity: {
+              mood: "happy",
+              animationType: "perk",
+              lastSignalTime,
+              lastSignalType: "care_pet",
+            },
+          })}
+          pulse={quietPulse}
+          pet={calmPet}
+          nowPlaying={null}
+          activeQuest={null}
+          activeSpeech={null}
+          setupNeeded={false}
+          onCanvasEvent={vi.fn()}
+          onCare={vi.fn()}
+          onOpenPage={vi.fn()}
+          onRunMode={vi.fn()}
+          onDismissSetup={vi.fn()}
+          onSpeechControl={vi.fn()}
+        />,
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-atmosphere-mood",
+        "affectionate",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps active showcase through ordinary headline changes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-01T00:00:40Z"));

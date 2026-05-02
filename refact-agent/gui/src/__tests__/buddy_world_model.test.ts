@@ -228,6 +228,22 @@ describe("buddy world semantic model", () => {
     expect(world.atmosphere.layers).toContain("dream_mist");
   });
 
+  it("keeps serious provider storms visible while Buddy sleeps", () => {
+    const world = buildWorld({
+      pet: makePet({ condition: { sleeping: true } }),
+      pulse: makePulse({
+        providers: { defaults_ok: true, broken_refs: 1, quota_warnings: 0 },
+      }),
+    });
+
+    expect(world.weather).toBe("storm");
+    expect(world.atmosphere.primaryWeather).toBe("storm");
+    expect(world.atmosphere.serious).toBe(true);
+    expect(world.atmosphere.layers).toEqual(
+      expect.arrayContaining(["provider_storm", "dream_mist"]),
+    );
+  });
+
   it("adds subtle care layers for hunger, boredom, and affection", () => {
     const hungry = buildWorld({
       pet: makePet({ condition: { hungry: true } }),
@@ -441,6 +457,57 @@ describe("buddy world semantic model", () => {
     });
   });
 
+  it("keeps failed git broken refs events out of provider storms", () => {
+    const world = buildWorld({
+      pulse: makePulse({
+        git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+      }),
+      nowPlaying: makeRuntimeEvent({
+        signal_type: "tool_failed",
+        status: "failed",
+        priority: "high",
+        title: "Git refs failed",
+        description: "The local repository has broken refs.",
+        source: "git",
+      }),
+    });
+    const providers = getProviderObject(world);
+
+    expect(world.weather).not.toBe("storm");
+    expect(world.atmosphere.serious).toBe(false);
+    expect(world.atmosphere.layers).not.toContain("provider_storm");
+    expect(providers).not.toMatchObject({
+      state: "critical",
+      animation: "storm",
+    });
+  });
+
+  it("keeps explicit broken model references stormy", () => {
+    const world = buildWorld({
+      pulse: makePulse({
+        git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+      }),
+      nowPlaying: makeRuntimeEvent({
+        signal_type: "tool_failed",
+        status: "failed",
+        priority: "high",
+        title: "Broken model reference",
+        description: "The configured chat model reference is missing.",
+        source: "git",
+      }),
+    });
+    const providers = getProviderObject(world);
+
+    expect(world.weather).toBe("storm");
+    expect(world.atmosphere.serious).toBe(true);
+    expect(world.atmosphere.layers).toContain("provider_storm");
+    expect(providers).toMatchObject({
+      state: "critical",
+      animation: "storm",
+      tone: "danger",
+    });
+  });
+
   it("keeps failed provider runtime events critical and stormy", () => {
     const world = buildWorld({
       pulse: makePulse({
@@ -464,6 +531,20 @@ describe("buddy world semantic model", () => {
     expect(providers).toMatchObject({
       state: "critical",
       animation: "storm",
+      tone: "danger",
+    });
+  });
+
+  it("marks critical provider objects with danger tone", () => {
+    const world = buildWorld({
+      pulse: makePulse({
+        providers: { defaults_ok: true, broken_refs: 1, quota_warnings: 0 },
+      }),
+    });
+
+    expect(getProviderObject(world)).toMatchObject({
+      state: "critical",
+      tone: "danger",
     });
   });
 
@@ -694,6 +775,42 @@ describe("buddy world semantic model", () => {
       state: "calm",
       animation: "sparkle",
     });
+    expectWorldNumbersSafe(world);
+  });
+
+  it("keeps partial malformed pet and semantic state safe and cozy", () => {
+    const partialPet = {} as unknown as BuddyPetState;
+    const partialSemanticState = {
+      activity: { lastSignalType: "care_pet" },
+    } as unknown as BuddySemanticState;
+
+    expect(() =>
+      buildWorld({
+        pulse: makePulse({
+          diagnostics: { last_hour: 0, top_error_types: [] },
+          git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+          memory: { total: 10, orphan: 0, stale_conflicts: 0 },
+          mcp: { total: 4, failing: 0, auth_expiring: 0 },
+        }),
+        pet: partialPet,
+        semanticState: partialSemanticState,
+      }),
+    ).not.toThrow();
+
+    const world = buildWorld({
+      pulse: makePulse({
+        diagnostics: { last_hour: 0, top_error_types: [] },
+        git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+        memory: { total: 10, orphan: 0, stale_conflicts: 0 },
+        mcp: { total: 4, failing: 0, auth_expiring: 0 },
+      }),
+      pet: partialPet,
+      semanticState: partialSemanticState,
+    });
+
+    expect(world.weather).toBe("clear");
+    expect(world.atmosphere.serious).toBe(false);
+    expect(world.atmosphere.paletteHint).toBe("day");
     expectWorldNumbersSafe(world);
   });
 });

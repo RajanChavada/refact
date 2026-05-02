@@ -918,6 +918,19 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
   }, [now]);
 
   useEffect(() => {
+    if (now) return;
+    const lastSignalTime = state.activity?.lastSignalTime;
+    if (
+      typeof lastSignalTime !== "number" ||
+      !Number.isFinite(lastSignalTime) ||
+      lastSignalTime <= 0
+    ) {
+      return;
+    }
+    setCurrentTime(new Date());
+  }, [now, state.activity?.lastSignalTime]);
+
+  useEffect(() => {
     if (!reaction) return;
     const timer = window.setTimeout(() => setReaction(null), 5000);
     return () => window.clearTimeout(timer);
