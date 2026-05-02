@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock as ARwLock;
 use chrono::Local;
 
+use crate::buddy::memory_lifecycle::parse_memory_lifecycle_status;
 use crate::custom_error::ScratchError;
+use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::global_context::GlobalContext;
 use crate::knowledge_graph::{KnowledgeFrontmatter, build_knowledge_graph};
-use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::memories::{normalize_memory_tags, rewrite_memory_document};
 
 pub const AUTO_LINK_MAX_LINKS: usize = 5;
@@ -52,17 +53,6 @@ fn sanitize_and_dedupe_strings(items: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn normalize_lifecycle_status(status: &str) -> Option<String> {
-    let normalized = status.trim().to_lowercase().replace(['-', ' '], "_");
-    match normalized.as_str() {
-        "active" | "proposed" | "pinned" | "archived" | "deprecated" => Some(normalized),
-        "review" | "review_needed" | "needs_review" => Some("proposed".to_string()),
-        "stale" | "obsolete" => Some("deprecated".to_string()),
-        "inactive" | "archive" => Some("archived".to_string()),
-        _ => None,
-    }
-}
-
 fn apply_lifecycle_status(frontmatter: &mut KnowledgeFrontmatter, status: &str) {
     frontmatter.status = Some(status.to_string());
     if matches!(status, "archived" | "deprecated") {
@@ -71,6 +61,7 @@ fn apply_lifecycle_status(frontmatter: &mut KnowledgeFrontmatter, status: &str) 
         }
     } else {
         frontmatter.deprecated_at = None;
+        frontmatter.superseded_by = None;
     }
 }
 
@@ -248,19 +239,17 @@ pub async fn handle_v1_knowledge_update_memory(
     }
     if let Some(status) = post.status {
         let status = sanitize_string(&status);
-        if !status.is_empty() {
-            let Some(status) = normalize_lifecycle_status(&status) else {
-                return Err(ScratchError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "Invalid status '{}'. Must be one of: {}",
-                        status,
-                        VALID_STATUSES.join(", ")
-                    ),
-                ));
-            };
-            apply_lifecycle_status(&mut frontmatter, &status);
-        }
+        let Some(status) = parse_memory_lifecycle_status(&status) else {
+            return Err(ScratchError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Invalid status '{}'. Must be one of: {}",
+                    status,
+                    VALID_STATUSES.join(", ")
+                ),
+            ));
+        };
+        apply_lifecycle_status(&mut frontmatter, &status);
     }
     frontmatter.updated = Some(Local::now().format("%Y-%m-%d").to_string());
 
@@ -327,7 +316,10 @@ mod tests {
     }
 
     async fn write_memory(path: &Path, id: &str, body: &str) {
-        let frontmatter = active_frontmatter(id);
+        write_memory_frontmatter(path, active_frontmatter(id), body).await;
+    }
+
+    async fn write_memory_frontmatter(path: &Path, frontmatter: KnowledgeFrontmatter, body: &str) {
         tokio::fs::write(path, format!("{}\n\n{}", frontmatter.to_yaml(), body))
             .await
             .unwrap();
@@ -356,6 +348,83 @@ mod tests {
             ),
         )
         .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_status_accepts_aliases_with_canonical_frontmatter() {
+        let cases = [
+            ("needs-review", "proposed"),
+            ("stale", "deprecated"),
+            ("obsolete", "deprecated"),
+            ("inactive", "archived"),
+            ("archive", "archived"),
+        ];
+
+        for (alias, expected) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+            tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+            let path = knowledge_dir.join(format!("{}.md", alias.replace('-', "_")));
+            let body = format!("Body for {alias}");
+            write_memory(&path, alias, &body).await;
+            let gcx = test_gcx_with_workspace(dir.path()).await;
+
+            let response = update_status(gcx, &path, alias).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let (frontmatter, updated_body) = read_frontmatter_body(&path).await;
+            assert_eq!(frontmatter.status.as_deref(), Some(expected));
+            assert_eq!(updated_body, body);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_status_rejects_invalid_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+        let path = knowledge_dir.join("invalid-status.md");
+        write_memory(&path, "invalid-status", "Invalid status body").await;
+        let gcx = test_gcx_with_workspace(dir.path()).await;
+
+        let err = update_status(gcx.clone(), &path, "unknown-status")
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid status"));
+        let empty_err = update_status(gcx, &path, "").await.unwrap_err();
+        assert_eq!(empty_err.status_code, StatusCode::BAD_REQUEST);
+        let (frontmatter, body) = read_frontmatter_body(&path).await;
+        assert_eq!(frontmatter.status.as_deref(), Some("active"));
+        assert_eq!(body, "Invalid status body");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reactivating_memory_clears_archive_metadata() {
+        let cases = ["active", "proposed", "pinned"];
+
+        for status in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+            tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+            let path = knowledge_dir.join(format!("reactivate-{status}.md"));
+            let mut frontmatter = active_frontmatter(status);
+            frontmatter.status = Some("deprecated".to_string());
+            frontmatter.deprecated_at = Some("2026-05-01".to_string());
+            frontmatter.superseded_by = Some("new-memory".to_string());
+            write_memory_frontmatter(&path, frontmatter, "Reactivated body").await;
+            let gcx = test_gcx_with_workspace(dir.path()).await;
+
+            let response = update_status(gcx, &path, status).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+            let (frontmatter, body) = read_frontmatter_body(&path).await;
+            assert_eq!(frontmatter.status.as_deref(), Some(status));
+            assert_eq!(frontmatter.deprecated_at, None);
+            assert_eq!(frontmatter.superseded_by, None);
+            assert_eq!(body, "Reactivated body");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -461,7 +530,7 @@ mod tests {
         let gcx = test_gcx_with_workspace(dir.path()).await;
 
         let response = handle_v1_knowledge_delete_memory(
-            Extension(gcx),
+            Extension(gcx.clone()),
             Bytes::from(
                 json!({
                     "file_path": path.to_string_lossy(),
@@ -479,6 +548,14 @@ mod tests {
         assert_eq!(frontmatter.status.as_deref(), Some("archived"));
         assert!(!frontmatter.is_active());
         assert_eq!(updated_body, body);
+        let kg = build_knowledge_graph(gcx.clone()).await;
+        assert!(kg.active_docs().all(|doc| doc.path != path));
+        let similar = kg.find_similar_docs(&["http-test".to_string()], &[], &[]);
+        assert!(similar.iter().all(|(id, _)| id != "archive-delete"));
+        let found = crate::memories::load_memories_by_tags(gcx, &["http-test"], 10)
+            .await
+            .unwrap();
+        assert!(found.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

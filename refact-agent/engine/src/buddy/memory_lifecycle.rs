@@ -1698,19 +1698,21 @@ pub fn normalize_tags(tags: &[String]) -> Vec<String> {
     normalized
 }
 
-pub fn normalize_memory_status(status: Option<&str>) -> String {
-    let normalized = status
-        .unwrap_or("active")
-        .trim()
-        .to_lowercase()
-        .replace('-', "_");
+pub fn parse_memory_lifecycle_status(status: &str) -> Option<String> {
+    let normalized = status.trim().to_lowercase().replace(['-', ' '], "_");
     match normalized.as_str() {
-        "proposed" | "active" | "pinned" | "archived" | "deprecated" => normalized,
-        "review" | "review_needed" | "needs_review" => "proposed".to_string(),
-        "stale" => "deprecated".to_string(),
-        "" => "active".to_string(),
-        _ => "active".to_string(),
+        "proposed" | "active" | "pinned" | "archived" | "deprecated" => Some(normalized),
+        "review" | "review_needed" | "needs_review" => Some("proposed".to_string()),
+        "stale" | "obsolete" => Some("deprecated".to_string()),
+        "inactive" | "archive" => Some("archived".to_string()),
+        _ => None,
     }
+}
+
+pub fn normalize_memory_status(status: Option<&str>) -> String {
+    status
+        .and_then(parse_memory_lifecycle_status)
+        .unwrap_or_else(|| "active".to_string())
 }
 
 pub fn status_is_pinned_or_user_authored(frontmatter: &KnowledgeFrontmatter) -> bool {
@@ -2728,6 +2730,7 @@ async fn apply_review_status(
             if frontmatter.status.as_deref() == Some(status.as_str())
                 && frontmatter.review_after.as_deref() == Some(review_after.as_str())
                 && (status == "deprecated") == frontmatter.deprecated_at.is_some()
+                && (status == "deprecated" || frontmatter.superseded_by.is_none())
             {
                 return Ok(false);
             }
@@ -2737,6 +2740,7 @@ async fn apply_review_status(
                 frontmatter.deprecated_at = Some(today_string());
             } else {
                 frontmatter.deprecated_at = None;
+                frontmatter.superseded_by = None;
             }
             frontmatter.updated = Some(today_string());
             Ok(true)
@@ -3817,6 +3821,44 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_status_parser_covers_canonical_statuses_and_aliases() {
+        let cases = [
+            ("proposed", Some("proposed")),
+            ("active", Some("active")),
+            ("pinned", Some("pinned")),
+            ("archived", Some("archived")),
+            ("deprecated", Some("deprecated")),
+            ("review", Some("proposed")),
+            ("review-needed", Some("proposed")),
+            ("needs review", Some("proposed")),
+            ("needs_review", Some("proposed")),
+            ("stale", Some("deprecated")),
+            ("obsolete", Some("deprecated")),
+            ("inactive", Some("archived")),
+            ("archive", Some("archived")),
+            ("", None),
+            ("unknown", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_memory_lifecycle_status(input),
+                expected.map(str::to_string)
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_status_normalizer_delegates_and_defaults_unknown_to_active() {
+        assert_eq!(normalize_memory_status(Some("needs-review")), "proposed");
+        assert_eq!(normalize_memory_status(Some("obsolete")), "deprecated");
+        assert_eq!(normalize_memory_status(Some("inactive")), "archived");
+        assert_eq!(normalize_memory_status(Some("")), "active");
+        assert_eq!(normalize_memory_status(Some("unknown")), "active");
+        assert_eq!(normalize_memory_status(None), "active");
+    }
+
+    #[test]
     fn tag_normalization_trims_lowercases_sorts_and_dedupes() {
         assert_eq!(
             normalize_tags(&strings(&[" Buddy ", "memory", "", "MEMORY", "alpha"])),
@@ -4278,6 +4320,43 @@ mod tests {
             .await
             .unwrap();
         assert!(found.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_status_reactivation_clears_archive_metadata() {
+        for status in ["active", "proposed", "pinned"] {
+            let dir = tempfile::tempdir().unwrap();
+            let gcx = test_gcx_with_workspace(dir.path()).await;
+            let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+            tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+            let path = knowledge_dir.join(format!("reactivate-{status}.md"));
+            let mut frontmatter = active_frontmatter(status, &["old"]);
+            frontmatter.status = Some("deprecated".to_string());
+            frontmatter.deprecated_at = Some("2026-05-01".to_string());
+            frontmatter.superseded_by = Some("canonical".to_string());
+            write_memory_file(&path, frontmatter, "Reactivation body").await;
+
+            let mut op = MemoryLifecycleOp::pending(
+                format!("op-reactivate-{status}"),
+                MemorySource::MemoryGarden,
+                MemoryOpType::MarkReviewNeeded,
+                vec![path.to_string_lossy().to_string()],
+                "reactivate",
+                0.91,
+                "2026-05-02T00:00:00Z",
+            );
+            op.status = MemoryOpStatus::Approved;
+            op.payload.review_after = Some("2026-05-03".to_string());
+
+            apply_review_status(gcx, &op, status).await.unwrap();
+
+            let (frontmatter, body) =
+                frontmatter_and_body(&tokio::fs::read_to_string(&path).await.unwrap());
+            assert_eq!(frontmatter.status.as_deref(), Some(status));
+            assert_eq!(frontmatter.deprecated_at, None);
+            assert_eq!(frontmatter.superseded_by, None);
+            assert_eq!(body, "Reactivation body");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
