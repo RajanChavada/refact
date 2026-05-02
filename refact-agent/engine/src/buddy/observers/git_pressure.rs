@@ -181,6 +181,22 @@ mod tests {
             vec!["a.rs".to_string(), "b.rs".to_string()]
         );
     }
+
+    #[test]
+    fn uncommitted_status_scan_does_not_recurse_into_untracked_dirs() {
+        let (dir, repo) = init_repo();
+        commit_paths(&repo, &[], "init");
+        drop(repo);
+        let nested = dir.path().join("untracked").join("deep");
+        fs::create_dir_all(&nested).unwrap();
+        for idx in 0..30 {
+            fs::write(nested.join(format!("file_{idx}.rs")), "fn main() {}\n").unwrap();
+        }
+
+        let count = count_uncommitted(dir.path()).unwrap();
+
+        assert_eq!(count, 1);
+    }
 }
 
 fn path_hash(p: &std::path::Path) -> String {
@@ -196,7 +212,7 @@ pub fn count_uncommitted(project_root: &std::path::Path) -> Option<usize> {
     let repo = Repository::discover(project_root).ok()?;
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
-        .recurse_untracked_dirs(true)
+        .recurse_untracked_dirs(false)
         .include_ignored(false)
         .show(StatusShow::IndexAndWorkdir);
     let statuses = repo.statuses(Some(&mut opts)).ok()?;

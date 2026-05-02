@@ -3474,10 +3474,35 @@ fn git_pressure_discover_works_from_subdir() {
     let nested = dir.path().join("a").join("b");
     std::fs::create_dir_all(&nested).unwrap();
     for i in 0..30 {
-        std::fs::write(nested.join(format!("file_{}.rs", i)), b"fn foo() {}").unwrap();
+        std::fs::write(dir.path().join(format!("file_{}.rs", i)), b"fn foo() {}").unwrap();
     }
     let count = count_uncommitted(&nested).unwrap_or(0);
     assert!(count > 25, "discover from subdir saw {} files", count);
+}
+
+#[test]
+fn git_pressure_untracked_dir_scan_is_not_recursive() {
+    use super::observers::git_pressure::count_uncommitted;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    {
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+    drop(repo);
+    let nested = dir.path().join("untracked").join("deep");
+    std::fs::create_dir_all(&nested).unwrap();
+    for i in 0..30 {
+        std::fs::write(nested.join(format!("file_{}.rs", i)), b"fn foo() {}").unwrap();
+    }
+
+    let count = count_uncommitted(dir.path()).unwrap_or(0);
+
+    assert_eq!(count, 1);
 }
 
 #[test]

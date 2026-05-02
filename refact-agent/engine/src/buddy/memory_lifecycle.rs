@@ -13,7 +13,8 @@ use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
 use crate::git::operations::{
-    GitCommitClassification, GitCommitSummary, GitFileChangeStatus, GitHistoryReport,
+    GitCoChangePair, GitCommitClassification, GitCommitSummary, GitFileChangeStatus,
+    GitHistoryReport, GitHotspot,
 };
 use crate::knowledge_graph::kg_structs::{KnowledgeDoc, KnowledgeFrontmatter};
 use crate::memories::{
@@ -2024,10 +2025,7 @@ fn git_commit_memory_create_op(
         commit.message
     );
     let mut op = MemoryLifecycleOp::pending(
-        deterministic_op_id(
-            &format!("git_{kind}"),
-            &[commit.short_oid.clone(), content.clone()],
-        ),
+        deterministic_op_id(&format!("git_{kind}"), &[commit.oid.clone()]),
         MemorySource::Git,
         MemoryOpType::CreateMemory,
         Vec::new(),
@@ -2060,16 +2058,8 @@ fn git_commit_memory_create_op(
         tags: vec!["git".to_string(), kind.to_string()],
         kind: Some(kind.to_string()),
         source_id: Some(commit.oid.clone()),
-        title: op
-            .payload
-            .canonical
-            .as_ref()
-            .and_then(|payload| payload.title.clone()),
-        content: op
-            .payload
-            .canonical
-            .as_ref()
-            .map(|payload| payload.content.clone()),
+        title: None,
+        content: None,
         evidence: None,
     });
     Some(op.normalized())
@@ -2081,72 +2071,60 @@ fn git_hotspot_create_ops(report: &GitHistoryReport, now: DateTime<Utc>) -> Vec<
         .iter()
         .take(MAX_GIT_CREATE_OPS_PER_KIND)
         .filter(|hotspot| hotspot.edit_count >= 3 || hotspot.score >= 100)
-        .map(|hotspot| {
-            let title = format!("Git hotspot: {}", hotspot.path);
-            let content = format!(
-                "{}\n\nRepeated edits: {}\nApproximate churn: +{} -{}\nLatest commit: {}",
-                title,
-                hotspot.edit_count,
-                hotspot.additions,
-                hotspot.deletions,
-                hotspot.latest_commit
-            );
-            let evidence = format!(
-                "hotspot score={} edits={} path={} latest_commit={}",
-                hotspot.score, hotspot.edit_count, hotspot.path, hotspot.latest_commit
-            );
-            let mut op = MemoryLifecycleOp::pending(
-                deterministic_op_id(
-                    "git_hotspot",
-                    &[hotspot.path.clone(), hotspot.score.to_string()],
-                ),
-                MemorySource::Git,
-                MemoryOpType::CreateMemory,
-                Vec::new(),
-                evidence,
-                0.74,
-                now.to_rfc3339(),
-            );
-            op.requires_approval = true;
-            op.payload.canonical = Some(MemoryCreatePayload {
-                title: Some(title),
-                content,
-                tags: vec!["git".to_string(), "hotspot".to_string(), "code".to_string()],
-                kind: "code".to_string(),
-                status: Some("proposed".to_string()),
-                filenames: vec![hotspot.path.clone()],
-                related_files: Vec::new(),
-                links: Vec::new(),
-                source_commit: Some(hotspot.latest_commit.clone()),
-                review_after: Some(default_review_after_date(
-                    now.date_naive(),
-                    "code",
-                    MemorySource::Git,
-                    MemoryCandidateStatus::Proposed,
-                )),
-            });
-            op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
-                source: op.source,
-                op_type: op.op_type,
-                target_paths: vec![hotspot.path.clone()],
-                tags: vec!["git".to_string(), "hotspot".to_string(), "code".to_string()],
-                kind: Some("code".to_string()),
-                source_id: Some(format!("hotspot:{}", hotspot.path)),
-                title: op
-                    .payload
-                    .canonical
-                    .as_ref()
-                    .and_then(|payload| payload.title.clone()),
-                content: op
-                    .payload
-                    .canonical
-                    .as_ref()
-                    .map(|payload| payload.content.clone()),
-                evidence: None,
-            });
-            op.normalized()
-        })
+        .map(|hotspot| git_hotspot_create_op(hotspot, now))
         .collect()
+}
+
+fn git_hotspot_create_op(hotspot: &GitHotspot, now: DateTime<Utc>) -> MemoryLifecycleOp {
+    let source_id = git_hotspot_source_id(&hotspot.path);
+    let title = format!("Git hotspot: {}", hotspot.path);
+    let content = format!(
+        "{}\n\nRepeated edits: {}\nApproximate churn: +{} -{}\nLatest commit: {}",
+        title, hotspot.edit_count, hotspot.additions, hotspot.deletions, hotspot.latest_commit
+    );
+    let evidence = format!(
+        "hotspot score={} edits={} path={} latest_commit={}",
+        hotspot.score, hotspot.edit_count, hotspot.path, hotspot.latest_commit
+    );
+    let mut op = MemoryLifecycleOp::pending(
+        deterministic_op_id("git_hotspot", &[source_id.clone()]),
+        MemorySource::Git,
+        MemoryOpType::CreateMemory,
+        Vec::new(),
+        evidence,
+        0.74,
+        now.to_rfc3339(),
+    );
+    op.requires_approval = true;
+    op.payload.canonical = Some(MemoryCreatePayload {
+        title: Some(title),
+        content,
+        tags: vec!["git".to_string(), "hotspot".to_string(), "code".to_string()],
+        kind: "code".to_string(),
+        status: Some("proposed".to_string()),
+        filenames: vec![hotspot.path.clone()],
+        related_files: Vec::new(),
+        links: Vec::new(),
+        source_commit: Some(hotspot.latest_commit.clone()),
+        review_after: Some(default_review_after_date(
+            now.date_naive(),
+            "code",
+            MemorySource::Git,
+            MemoryCandidateStatus::Proposed,
+        )),
+    });
+    op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
+        source: op.source,
+        op_type: op.op_type,
+        target_paths: vec![hotspot.path.clone()],
+        tags: vec!["git".to_string(), "hotspot".to_string(), "code".to_string()],
+        kind: Some("code".to_string()),
+        source_id: Some(source_id),
+        title: None,
+        content: None,
+        evidence: None,
+    });
+    op.normalized()
 }
 
 fn git_cochange_create_ops(
@@ -2157,85 +2135,90 @@ fn git_cochange_create_ops(
         .cochanges
         .iter()
         .take(MAX_GIT_CREATE_OPS_PER_KIND)
-        .map(|pair| {
-            let title = format!("Git co-change pattern: {} + {}", pair.path_a, pair.path_b);
-            let content = format!(
-                "{}\n\nThese paths changed together {} times in recent history.\nCommits: {}",
-                title,
-                pair.count,
-                pair.commits.join(", ")
-            );
-            let evidence = format!(
-                "co-change count={} paths={},{} commits={}",
-                pair.count,
-                pair.path_a,
-                pair.path_b,
-                pair.commits.join(",")
-            );
-            let mut op = MemoryLifecycleOp::pending(
-                deterministic_op_id(
-                    "git_cochange",
-                    &[
-                        pair.path_a.clone(),
-                        pair.path_b.clone(),
-                        pair.count.to_string(),
-                    ],
-                ),
-                MemorySource::Git,
-                MemoryOpType::CreateMemory,
-                Vec::new(),
-                evidence,
-                0.78,
-                now.to_rfc3339(),
-            );
-            op.requires_approval = true;
-            op.payload.canonical = Some(MemoryCreatePayload {
-                title: Some(title),
-                content,
-                tags: vec![
-                    "git".to_string(),
-                    "cochange".to_string(),
-                    "pattern".to_string(),
-                ],
-                kind: "pattern".to_string(),
-                status: Some("proposed".to_string()),
-                filenames: vec![pair.path_a.clone(), pair.path_b.clone()],
-                related_files: Vec::new(),
-                links: Vec::new(),
-                source_commit: pair.commits.first().cloned(),
-                review_after: Some(default_review_after_date(
-                    now.date_naive(),
-                    "pattern",
-                    MemorySource::Git,
-                    MemoryCandidateStatus::Proposed,
-                )),
-            });
-            op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
-                source: op.source,
-                op_type: op.op_type,
-                target_paths: vec![pair.path_a.clone(), pair.path_b.clone()],
-                tags: vec![
-                    "git".to_string(),
-                    "cochange".to_string(),
-                    "pattern".to_string(),
-                ],
-                kind: Some("pattern".to_string()),
-                source_id: Some(format!("cochange:{}:{}", pair.path_a, pair.path_b)),
-                title: op
-                    .payload
-                    .canonical
-                    .as_ref()
-                    .and_then(|payload| payload.title.clone()),
-                content: op
-                    .payload
-                    .canonical
-                    .as_ref()
-                    .map(|payload| payload.content.clone()),
-                evidence: None,
-            });
-            op.normalized()
-        })
+        .map(|pair| git_cochange_create_op(pair, now))
         .collect()
+}
+
+fn git_cochange_create_op(pair: &GitCoChangePair, now: DateTime<Utc>) -> MemoryLifecycleOp {
+    let source_id = git_cochange_source_id(&pair.path_a, &pair.path_b);
+    let title = format!("Git co-change pattern: {} + {}", pair.path_a, pair.path_b);
+    let content = format!(
+        "{}\n\nThese paths changed together {} times in recent history.\nCommits: {}",
+        title,
+        pair.count,
+        pair.commits.join(", ")
+    );
+    let evidence = format!(
+        "co-change count={} paths={},{} commits={}",
+        pair.count,
+        pair.path_a,
+        pair.path_b,
+        pair.commits.join(",")
+    );
+    let mut op = MemoryLifecycleOp::pending(
+        deterministic_op_id("git_cochange", &[source_id.clone()]),
+        MemorySource::Git,
+        MemoryOpType::CreateMemory,
+        Vec::new(),
+        evidence,
+        0.78,
+        now.to_rfc3339(),
+    );
+    op.requires_approval = true;
+    op.payload.canonical = Some(MemoryCreatePayload {
+        title: Some(title),
+        content,
+        tags: vec![
+            "git".to_string(),
+            "cochange".to_string(),
+            "pattern".to_string(),
+        ],
+        kind: "pattern".to_string(),
+        status: Some("proposed".to_string()),
+        filenames: vec![pair.path_a.clone(), pair.path_b.clone()],
+        related_files: Vec::new(),
+        links: Vec::new(),
+        source_commit: pair.commits.first().cloned(),
+        review_after: Some(default_review_after_date(
+            now.date_naive(),
+            "pattern",
+            MemorySource::Git,
+            MemoryCandidateStatus::Proposed,
+        )),
+    });
+    op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
+        source: op.source,
+        op_type: op.op_type,
+        target_paths: vec![pair.path_a.clone(), pair.path_b.clone()],
+        tags: vec![
+            "git".to_string(),
+            "cochange".to_string(),
+            "pattern".to_string(),
+        ],
+        kind: Some("pattern".to_string()),
+        source_id: Some(source_id),
+        title: None,
+        content: None,
+        evidence: None,
+    });
+    op.normalized()
+}
+
+fn git_hotspot_source_id(path: &str) -> String {
+    let path = normalize_path(path).unwrap_or_else(|| path.trim().replace('\\', "/"));
+    format!("hotspot:{path}")
+}
+
+fn git_cochange_source_id(path_a: &str, path_b: &str) -> String {
+    let mut paths = normalize_paths(&[path_a.to_string(), path_b.to_string()]);
+    if paths.len() != 2 {
+        paths = vec![
+            path_a.trim().replace('\\', "/"),
+            path_b.trim().replace('\\', "/"),
+        ];
+        paths.sort();
+    }
+    format!("cochange:{}:{}", paths[0], paths[1])
 }
 
 fn rewrite_paths_with_renames(paths: &[String], renames: &BTreeMap<String, String>) -> Vec<String> {
@@ -3221,6 +3204,33 @@ mod tests {
         }
     }
 
+    fn git_hotspot(
+        path: &str,
+        edit_count: usize,
+        additions: usize,
+        deletions: usize,
+        score: u64,
+        latest_commit: &str,
+    ) -> GitHotspot {
+        GitHotspot {
+            path: path.to_string(),
+            edit_count,
+            additions,
+            deletions,
+            score,
+            latest_commit: latest_commit.to_string(),
+        }
+    }
+
+    fn git_cochange(path_a: &str, path_b: &str, count: usize, commits: &[&str]) -> GitCoChangePair {
+        GitCoChangePair {
+            path_a: path_a.to_string(),
+            path_b: path_b.to_string(),
+            count,
+            commits: strings(commits),
+        }
+    }
+
     #[test]
     fn usefulness_score_monotonicity_prefers_pinned_active_and_proposed_over_stale_duplicate() {
         let now = fixed_now();
@@ -3542,6 +3552,59 @@ mod tests {
         assert_eq!(payload.source_commit.as_deref(), Some(commit.oid.as_str()));
         assert_eq!(payload.status.as_deref(), Some("proposed"));
         assert!(payload.content.contains(&commit.short_oid));
+    }
+
+    #[test]
+    fn git_hotspot_identity_ignores_changed_metrics_and_evidence() {
+        let first = git_hotspot_create_op(
+            &git_hotspot("src/hot.rs", 3, 10, 5, 100, "aaaaaaaaaaaa"),
+            fixed_now(),
+        );
+        let second = git_hotspot_create_op(
+            &git_hotspot("src//hot.rs", 9, 120, 40, 400, "bbbbbbbbbbbb"),
+            fixed_now(),
+        );
+
+        assert_eq!(first.op_id, second.op_id);
+        assert_eq!(first.idempotency_key, second.idempotency_key);
+        assert_ne!(first.evidence, second.evidence);
+    }
+
+    #[test]
+    fn git_cochange_identity_ignores_changed_count_commit_list_and_evidence() {
+        let first = git_cochange_create_op(
+            &git_cochange("src/a.rs", "src/b.rs", 3, &["aaaaaaaaaaaa", "bbbbbbbbbbbb"]),
+            fixed_now(),
+        );
+        let second = git_cochange_create_op(
+            &git_cochange("src//b.rs", "src/a.rs", 9, &["cccccccccccc"]),
+            fixed_now(),
+        );
+
+        assert_eq!(first.op_id, second.op_id);
+        assert_eq!(first.idempotency_key, second.idempotency_key);
+        assert_ne!(first.evidence, second.evidence);
+    }
+
+    #[test]
+    fn git_commit_candidate_idempotency_stays_distinct_by_sha() {
+        let first = git_commit(
+            "abcdef1234567890abcdef1234567890abcdef12",
+            "fix parser bug because newline crash",
+            vec![GitCommitClassification::Bugfix],
+            vec![git_change("src/parser.rs")],
+        );
+        let second = git_commit(
+            "1234567890abcdef1234567890abcdef12345678",
+            "fix parser bug because newline crash",
+            vec![GitCommitClassification::Bugfix],
+            vec![git_change("src/parser.rs")],
+        );
+        let first_op = git_commit_memory_create_op(&first, "lesson", fixed_now()).unwrap();
+        let second_op = git_commit_memory_create_op(&second, "lesson", fixed_now()).unwrap();
+
+        assert_ne!(first_op.op_id, second_op.op_id);
+        assert_ne!(first_op.idempotency_key, second_op.idempotency_key);
     }
 
     #[test]
