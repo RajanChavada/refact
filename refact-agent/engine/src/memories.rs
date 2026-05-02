@@ -763,7 +763,9 @@ pub async fn load_memories_by_tags(
 }
 
 const PREFERENCE_MIN_CONFIDENCE: f32 = 0.85;
+#[cfg(test)]
 const PREFERENCE_STATEMENT_MAX_CHARS: usize = 240;
+#[cfg(test)]
 const PREFERENCE_EVIDENCE_MAX_CHARS: usize = 600;
 
 pub fn normalize_preference_text_for_dedupe(text: &str) -> String {
@@ -842,6 +844,7 @@ pub fn preference_statement_is_safe(statement: &str, confidence: f32) -> bool {
     preference_cues.iter().any(|cue| lower.contains(cue))
 }
 
+#[cfg(test)]
 fn redact_and_cap_preference_text(text: &str, max_chars: usize) -> String {
     let redacted = crate::buddy::actor::redact_sensitive(text);
     let collapsed = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -850,6 +853,7 @@ fn redact_and_cap_preference_text(text: &str, max_chars: usize) -> String {
         .to_string()
 }
 
+#[cfg(test)]
 fn preference_matches_existing(existing: &MemoRecord, normalized_statement: &str) -> bool {
     let mut candidates = vec![existing.content.as_str()];
     if let Some(title) = existing.title.as_deref() {
@@ -866,6 +870,7 @@ fn preference_matches_existing(existing: &MemoRecord, normalized_statement: &str
     })
 }
 
+#[cfg(test)]
 fn preference_file_already_exists(knowledge_dirs: &[PathBuf], normalized_statement: &str) -> bool {
     knowledge_dirs.iter().any(|knowledge_dir| {
         if !knowledge_dir.exists() {
@@ -917,6 +922,7 @@ fn preference_file_already_exists(knowledge_dirs: &[PathBuf], normalized_stateme
     })
 }
 
+#[cfg(test)]
 pub async fn memories_add_preference_if_new(
     gcx: Arc<ARwLock<GlobalContext>>,
     statement: &str,

@@ -524,11 +524,7 @@ mod tests {
         op
     }
 
-    fn explicit_key_test_op(
-        op_id: &str,
-        key: &str,
-        status: MemoryOpStatus,
-    ) -> MemoryLifecycleOp {
+    fn explicit_key_test_op(op_id: &str, key: &str, status: MemoryOpStatus) -> MemoryLifecycleOp {
         let mut op = test_op(op_id, key, status);
         op.idempotency_key = key.to_string();
         op
