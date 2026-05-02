@@ -2174,7 +2174,7 @@ fn collect_local_git_evidence(
     project_root: &Path,
     scan_security: bool,
 ) -> Option<LocalGitEvidence> {
-    track_local_git_evidence_scan();
+    track_local_git_evidence_scan(project_root);
     let repo = git2::Repository::discover(project_root).ok()?;
     let repo_root = repo.workdir()?.to_path_buf();
     let mut opts = git2::StatusOptions::new();
@@ -2234,25 +2234,47 @@ fn collect_local_git_evidence(
 }
 
 #[cfg(test)]
-static LOCAL_GIT_EVIDENCE_SCAN_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+#[derive(Default)]
+struct LocalGitEvidenceScanTracker {
+    root: Option<PathBuf>,
+    count: usize,
+}
 
 #[cfg(test)]
-fn track_local_git_evidence_scan() {
-    LOCAL_GIT_EVIDENCE_SCAN_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+static LOCAL_GIT_EVIDENCE_SCAN_TRACKER: OnceLock<std::sync::Mutex<LocalGitEvidenceScanTracker>> =
+    OnceLock::new();
+
+#[cfg(test)]
+fn local_git_evidence_scan_tracker() -> &'static std::sync::Mutex<LocalGitEvidenceScanTracker> {
+    LOCAL_GIT_EVIDENCE_SCAN_TRACKER.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+fn track_local_git_evidence_scan(project_root: &Path) {
+    let mut tracker = local_git_evidence_scan_tracker().lock().unwrap();
+    if tracker
+        .root
+        .as_deref()
+        .map(|root| root == project_root)
+        .unwrap_or(true)
+    {
+        tracker.count += 1;
+    }
 }
 
 #[cfg(not(test))]
-fn track_local_git_evidence_scan() {}
+fn track_local_git_evidence_scan(_project_root: &Path) {}
 
 #[cfg(test)]
-fn reset_local_git_evidence_scan_count() {
-    LOCAL_GIT_EVIDENCE_SCAN_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+fn reset_local_git_evidence_scan_count(root: Option<&Path>) {
+    let mut tracker = local_git_evidence_scan_tracker().lock().unwrap();
+    tracker.root = root.map(Path::to_path_buf);
+    tracker.count = 0;
 }
 
 #[cfg(test)]
 fn local_git_evidence_scan_count() -> usize {
-    LOCAL_GIT_EVIDENCE_SCAN_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+    local_git_evidence_scan_tracker().lock().unwrap().count
 }
 
 fn git_status_label(status: git2::Status) -> &'static str {
@@ -4484,7 +4506,7 @@ mod tests {
         let mut ctx = context_with_last_result(None);
         ctx.pulse.git.uncommitted_files = 1;
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        reset_local_git_evidence_scan_count();
+        reset_local_git_evidence_scan_count(Some(&ctx.project_root));
 
         assert!(job.should_run(gcx, &ctx).await);
 
@@ -4503,7 +4525,7 @@ mod tests {
         let gcx = crate::global_context::tests::make_test_gcx().await;
 
         assert!(job.should_run(gcx.clone(), &ctx).await);
-        reset_local_git_evidence_scan_count();
+        reset_local_git_evidence_scan_count(Some(root));
         let result = job.execute(gcx, ctx).await;
 
         assert_eq!(local_git_evidence_scan_count(), 1);
