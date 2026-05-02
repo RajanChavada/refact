@@ -44,20 +44,33 @@ vi.mock("../features/Buddy/BuddyCharacter", async () => {
     BuddyCharacter: ({
       scenePose = "idle",
       sceneXPercent,
+      sceneYPercent,
+      sceneDepthScale,
       speechText,
     }: {
       scenePose?: string;
       sceneXPercent?: number;
+      sceneYPercent?: number;
+      sceneDepthScale?: number;
       speechText?: string | null;
     }) =>
       ReactModule.createElement(
         "div",
         {
+          "data-depth-scale": sceneDepthScale,
           "data-pose": scenePose,
           "data-testid": "buddy-world-character",
           style:
-            typeof sceneXPercent === "number"
-              ? { left: `${sceneXPercent}%` }
+            typeof sceneXPercent === "number" ||
+            typeof sceneYPercent === "number"
+              ? {
+                  ...(typeof sceneXPercent === "number"
+                    ? { left: `${sceneXPercent}%` }
+                    : undefined),
+                  ...(typeof sceneYPercent === "number"
+                    ? { bottom: `${100 - sceneYPercent}%` }
+                    : undefined),
+                }
               : undefined,
         },
         speechText,
@@ -1087,7 +1100,7 @@ describe("BuddyWorld_dynamic_environment", () => {
       );
       expect(screen.getByTestId("buddy-world")).toHaveAttribute(
         "data-speech-priority",
-        "backend-showcase-local",
+        "backend-showcase-director-local",
       );
       expect(screen.getByTestId("buddy-world")).toHaveAttribute(
         "data-speech-text",
@@ -1105,11 +1118,187 @@ describe("BuddyWorld_dynamic_environment", () => {
       );
       expect(screen.getByTestId("buddy-world")).toHaveAttribute(
         "data-speech-priority",
-        "backend-showcase-local",
+        "backend-showcase-director-local",
       );
       expect(screen.getByTestId("buddy-world")).toHaveAttribute(
         "data-speech-text",
         "Buddy gathers the memory fireflies into a soft night map.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runtime world can set channel runtime director intent", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T14:00:00Z"));
+    const runtimeEvent: BuddyRuntimeEvent = {
+      id: "rt-director-1",
+      signal_type: "indexing",
+      title: "Indexing project files",
+      source: "indexer",
+      status: "progress",
+      priority: "normal",
+      created_at: "2024-01-01T14:00:00Z",
+    };
+    try {
+      render(
+        <BuddyWorld
+          palette={PALETTES[0]}
+          stage={STAGES[2]}
+          state={makeSemanticState()}
+          pulse={{
+            ...makePulse(),
+            providers: { defaults_ok: true, broken_refs: 0, quota_warnings: 0 },
+            diagnostics: { last_hour: 0, top_error_types: [] },
+            git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+            mcp: { total: 4, failing: 0, auth_expiring: 0 },
+            memory: { total: 10, orphan: 0, stale_conflicts: 0 },
+          }}
+          pet={makeSnapshot().state.pet}
+          nowPlaying={runtimeEvent}
+          activeQuest={null}
+          activeSpeech={null}
+          setupNeeded={false}
+          now={new Date("2024-01-01T14:00:00")}
+          onCanvasEvent={vi.fn()}
+          onCare={vi.fn()}
+          onOpenPage={vi.fn()}
+          onRunMode={vi.fn()}
+          onDismissSetup={vi.fn()}
+          onSpeechControl={vi.fn()}
+        />,
+        { preloadedState: CONFIG_STATE },
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-buddy-intent",
+        "channel_runtime",
+      );
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-speech-source",
+        "director",
+      );
+      expect(screen.getByTestId("buddy-world-character")).toHaveAttribute(
+        "data-pose",
+        "meditate",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("active speech still wins over director speech", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T14:00:00Z"));
+    try {
+      render(
+        <BuddyWorld
+          palette={PALETTES[0]}
+          stage={STAGES[2]}
+          state={makeSemanticState()}
+          pulse={{
+            ...makePulse(),
+            diagnostics: { last_hour: 0, top_error_types: [] },
+            git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+            mcp: { total: 4, failing: 0, auth_expiring: 0 },
+            memory: { total: 10, orphan: 0, stale_conflicts: 0 },
+          }}
+          pet={makeSnapshot().state.pet}
+          nowPlaying={{
+            id: "rt-director-active-speech",
+            signal_type: "indexing",
+            title: "Indexing project files",
+            source: "indexer",
+            status: "progress",
+            priority: "normal",
+            created_at: "2024-01-01T14:00:00Z",
+          }}
+          activeQuest={null}
+          activeSpeech={{ text: "Backend says hello.", controls: [] }}
+          setupNeeded={false}
+          now={new Date("2024-01-01T14:00:00")}
+          onCanvasEvent={vi.fn()}
+          onCare={vi.fn()}
+          onOpenPage={vi.fn()}
+          onRunMode={vi.fn()}
+          onDismissSetup={vi.fn()}
+          onSpeechControl={vi.fn()}
+        />,
+        { preloadedState: CONFIG_STATE },
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-buddy-intent",
+        "none",
+      );
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-speech-source",
+        "active",
+      );
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-speech-text",
+        "Backend says hello.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("showcase still wins over director", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T00:00:40Z"));
+    try {
+      render(
+        <BuddyWorld
+          palette={PALETTES[0]}
+          stage={STAGES[2]}
+          state={makeSemanticState()}
+          pulse={{
+            ...makePulse(),
+            diagnostics: { last_hour: 0, top_error_types: [] },
+            git: { uncommitted_files: 0, diff_lines_4h: 0, branches: 3 },
+            mcp: { total: 4, failing: 0, auth_expiring: 0 },
+            memory: { total: 10, orphan: 0, stale_conflicts: 0 },
+          }}
+          pet={makeSnapshot().state.pet}
+          nowPlaying={{
+            id: "runtime-showcase-director",
+            signal_type: "memory_extract",
+            title: "Memory extracted",
+            source: "test",
+            status: "completed",
+            priority: "normal",
+            created_at: "2024-01-01T00:00:00Z",
+          }}
+          activeQuest={null}
+          activeSpeech={null}
+          setupNeeded={false}
+          now={new Date("2024-01-01T14:00:00")}
+          onCanvasEvent={vi.fn()}
+          onCare={vi.fn()}
+          onOpenPage={vi.fn()}
+          onRunMode={vi.fn()}
+          onDismissSetup={vi.fn()}
+          onSpeechControl={vi.fn()}
+        />,
+        { preloadedState: CONFIG_STATE },
+      );
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-showcase",
+        "memory_firefly_night",
+      );
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-buddy-intent",
+        "none",
+      );
+      expect(screen.getByTestId("buddy-world")).toHaveAttribute(
+        "data-speech-source",
+        "showcase",
       );
     } finally {
       vi.useRealTimers();
