@@ -8,7 +8,7 @@ use crate::files_correction::get_project_dirs;
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::global_context::GlobalContext;
 use crate::knowledge_graph::kg_structs::KnowledgeFrontmatter;
-use crate::files_in_workspace::get_file_text_from_memory_or_disk;
+use crate::memories::delete_document_from_disk;
 
 #[derive(Debug, Clone)]
 pub struct KnowledgeCard {
@@ -312,9 +312,6 @@ pub async fn build_knowledge_index(gcx: Arc<ARwLock<GlobalContext>>) -> Knowledg
     let mut index = KnowledgeIndex::empty();
 
     let project_dirs = get_project_dirs(gcx.clone()).await;
-    if project_dirs.is_empty() {
-        return index;
-    }
 
     // Local + global knowledge dirs.
     let mut knowledge_dirs: Vec<PathBuf> = project_dirs
@@ -339,28 +336,92 @@ pub async fn build_knowledge_index(gcx: Arc<ARwLock<GlobalContext>>) -> Knowledg
             if !path.is_file() {
                 continue;
             }
-            if path_has_component(path, "archive") {
-                continue;
-            }
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext != "md" && ext != "mdx" {
                 continue;
             }
+            if path_has_component(path, "archive") {
+                let path_buf = path.to_path_buf();
+                if let Err(e) = delete_document_from_disk(gcx.clone(), &path_buf).await {
+                    tracing::warn!(
+                        "knowledge_index: failed to delete archived memory {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+                continue;
+            }
 
-            let text =
-                match get_file_text_from_memory_or_disk(gcx.clone(), &path.to_path_buf()).await {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
+            let path_buf = path.to_path_buf();
+            let text = match tokio::fs::read_to_string(&path_buf).await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
             let (fm, content_start) = KnowledgeFrontmatter::parse(&text);
             if fm.is_archived() || fm.is_deprecated() {
+                if let Err(e) = delete_document_from_disk(gcx.clone(), &path_buf).await {
+                    tracing::warn!(
+                        "knowledge_index: failed to delete inactive memory {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
                 continue;
             }
 
             let content_slice = text.get(content_start..).unwrap_or("");
-            index.add_from_frontmatter(path.to_path_buf(), &fm, Some(content_slice));
+            index.add_from_frontmatter(path_buf, &fm, Some(content_slice));
         }
     }
 
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn build_index_deletes_archived_and_deprecated_memories() {
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+
+        let archived_path = knowledge_dir.join("archived.md");
+        let deprecated_path = knowledge_dir.join("deprecated.md");
+        let active_path = knowledge_dir.join("active.md");
+
+        tokio::fs::write(
+            &archived_path,
+            "---\nstatus: archived\ntags: [old]\n---\n\nArchived memory",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &deprecated_path,
+            "---\nstatus: deprecated\ntags: [old]\n---\n\nDeprecated memory",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &active_path,
+            "---\nstatus: active\ntags: [new]\n---\n\nActive memory",
+        )
+        .await
+        .unwrap();
+
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+
+        let index = build_knowledge_index(gcx).await;
+
+        assert!(!archived_path.exists());
+        assert!(!deprecated_path.exists());
+        assert!(active_path.exists());
+        assert_eq!(index.related_for_tags(&vec!["new".to_string()], 5).len(), 1);
+    }
 }

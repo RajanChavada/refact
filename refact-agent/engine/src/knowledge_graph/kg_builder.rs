@@ -8,9 +8,8 @@ use walkdir::WalkDir;
 
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::files_correction::get_project_dirs;
-use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::GlobalContext;
-use crate::memories::get_global_knowledge_dir;
+use crate::memories::{delete_document_from_disk, get_global_knowledge_dir};
 
 use super::kg_structs::{KnowledgeDoc, KnowledgeFrontmatter, KnowledgeGraph};
 
@@ -73,16 +72,34 @@ pub async fn build_knowledge_graph(gcx: Arc<ARwLock<GlobalContext>>) -> Knowledg
             }
 
             if path_has_component(path, "archive") {
+                let path_buf = path.to_path_buf();
+                if let Err(e) = delete_document_from_disk(gcx.clone(), &path_buf).await {
+                    tracing::warn!(
+                        "knowledge_graph: failed to delete archived memory {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
                 continue;
             }
 
             let path_buf = path.to_path_buf();
-            let text = match get_file_text_from_memory_or_disk(gcx.clone(), &path_buf).await {
+            let text = match tokio::fs::read_to_string(&path_buf).await {
                 Ok(t) => t,
                 Err(_) => continue,
             };
 
             let (frontmatter, content_start) = KnowledgeFrontmatter::parse(&text);
+            if frontmatter.is_archived() || frontmatter.is_deprecated() {
+                if let Err(e) = delete_document_from_disk(gcx.clone(), &path_buf).await {
+                    tracing::warn!(
+                        "knowledge_graph: failed to delete inactive memory {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+                continue;
+            }
             let content = text[content_start..].to_string();
             let entities = extract_entities(&content);
 

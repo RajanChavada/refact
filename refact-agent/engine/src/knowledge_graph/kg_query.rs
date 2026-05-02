@@ -2,6 +2,28 @@ use std::collections::{HashMap, HashSet};
 
 use super::kg_structs::{KnowledgeDoc, KnowledgeGraph};
 
+fn tag_similarity_weight(tag: &str) -> f64 {
+    let tag = tag.trim().to_lowercase();
+    if tag.starts_with("entity:") || tag.starts_with("symbol:") {
+        2.5
+    } else if tag.starts_with("component:") || tag.starts_with("workflow:") {
+        2.0
+    } else if tag.starts_with("domain:")
+        || tag.starts_with("tool:")
+        || tag.starts_with("verification:")
+    {
+        1.5
+    } else if tag.starts_with("language:")
+        || tag.starts_with("framework:")
+        || tag.starts_with("state:")
+        || tag.starts_with("protocol:")
+    {
+        1.0
+    } else {
+        0.5
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RelatedDoc {
     pub id: String,
@@ -19,7 +41,7 @@ impl KnowledgeGraph {
         for tag in &doc.frontmatter.tags {
             for related_id in self.docs_with_tag(tag) {
                 if related_id != doc_id {
-                    *scores.entry(related_id).or_insert(0.0) += 1.0;
+                    *scores.entry(related_id).or_insert(0.0) += tag_similarity_weight(tag);
                 }
             }
         }
@@ -97,7 +119,7 @@ impl KnowledgeGraph {
 
         for tag in tags {
             for id in self.docs_with_tag(tag) {
-                *scores.entry(id).or_insert(0.0) += 1.0;
+                *scores.entry(id).or_insert(0.0) += tag_similarity_weight(tag);
             }
         }
 

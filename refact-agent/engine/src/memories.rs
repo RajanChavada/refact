@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use sha2::{Digest, Sha256};
 
 fn path_contains_component(path: &Path, component: &str) -> bool {
@@ -154,7 +154,7 @@ pub fn create_frontmatter(
     KnowledgeFrontmatter {
         id: Some(Uuid::new_v4().to_string()),
         title: title.map(|t| t.to_string()),
-        tags: tags.to_vec(),
+        tags: normalize_memory_tags(tags, 16),
         created: Some(created.clone()),
         updated: Some(created),
         filenames: filenames.to_vec(),
@@ -196,6 +196,161 @@ fn compute_content_hash_hex(content: &str) -> String {
     hex::encode(h.finalize())
 }
 
+fn normalize_memory_tag(tag: &str) -> Option<String> {
+    let raw = tag.trim().to_lowercase();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let alias = match raw.as_str() {
+        "rs" | "rust" => "language:rust",
+        "py" | "python" => "language:python",
+        "ts" | "typescript" => "language:typescript",
+        "js" | "javascript" => "language:javascript",
+        "tsx" => "language:typescript-react",
+        "jsx" => "language:javascript-react",
+        "c++" | "cpp" => "language:cpp",
+        "c#" | "csharp" => "language:csharp",
+        "behavior_learner" | "behavior-learner" => "workflow:behavior-learner",
+        "knowledge_graph" | "knowledge-graph" => "domain:knowledge-graph",
+        "playwright" | "playwright mcp" | "playwright-mcp" => "tool:playwright-mcp",
+        "chrome" | "chrome tool" | "chrome-tool" => "tool:chrome",
+        _ => raw.as_str(),
+    };
+
+    let preserve_underscores = alias.starts_with("entity:") || alias.starts_with("symbol:");
+    let mut normalized = String::new();
+    let mut last_was_dash = false;
+
+    for ch in alias.chars() {
+        match ch {
+            'a'..='z' | '0'..='9' | ':' | '/' | '.' => {
+                normalized.push(ch);
+                last_was_dash = false;
+            }
+            '_' if preserve_underscores => {
+                normalized.push(ch);
+                last_was_dash = false;
+            }
+            '-' | '_' | ' ' | '\t' => {
+                if !last_was_dash && !normalized.is_empty() {
+                    normalized.push('-');
+                    last_was_dash = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let normalized = normalized
+        .trim_matches('-')
+        .chars()
+        .take(96)
+        .collect::<String>();
+    if normalized.len() >= 2 {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+pub fn normalize_memory_tags(tags: &[String], max_tags: usize) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for tag in tags {
+        let Some(normalized) = normalize_memory_tag(tag) else {
+            continue;
+        };
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+        if out.len() >= max_tags {
+            break;
+        }
+    }
+
+    out
+}
+
+fn push_memory_tag(tags: &mut Vec<String>, tag: &str) {
+    let Some(normalized) = normalize_memory_tag(tag) else {
+        return;
+    };
+    if !tags.contains(&normalized) {
+        tags.push(normalized);
+    }
+}
+
+fn content_has_any(content_lower: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| content_lower.contains(term))
+}
+
+fn push_if_content_matches(tags: &mut Vec<String>, content_lower: &str, tag: &str, terms: &[&str]) {
+    if content_has_any(content_lower, terms) {
+        push_memory_tag(tags, tag);
+    }
+}
+
+fn push_file_path_tags(tags: &mut Vec<String>, file: &str) {
+    let lower = file.to_lowercase();
+
+    match Path::new(file).extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => push_memory_tag(tags, "language:rust"),
+        Some("py") => push_memory_tag(tags, "language:python"),
+        Some("ts") => push_memory_tag(tags, "language:typescript"),
+        Some("tsx") => push_memory_tag(tags, "language:typescript-react"),
+        Some("js") => push_memory_tag(tags, "language:javascript"),
+        Some("jsx") => push_memory_tag(tags, "language:javascript-react"),
+        Some("kt") => push_memory_tag(tags, "language:kotlin"),
+        Some("go") => push_memory_tag(tags, "language:go"),
+        Some("java") => push_memory_tag(tags, "language:java"),
+        Some("md") | Some("mdx") => push_memory_tag(tags, "format:markdown"),
+        _ => {}
+    }
+
+    let mappings = [
+        ("component:buddy", &["/buddy/", "src/buddy/"][..]),
+        (
+            "component:knowledge-graph",
+            &["/knowledge_graph/", "src/knowledge_graph/"][..],
+        ),
+        ("component:knowledge-index", &["knowledge_index.rs"][..]),
+        (
+            "component:memory-system",
+            &["memories.rs", "/knowledge/"][..],
+        ),
+        ("component:chat-engine", &["/chat/", "src/chat/"][..]),
+        ("component:subchat", &["subchat.rs", "/subchat/"][..]),
+        ("component:tools", &["/tools/", "src/tools/"][..]),
+        (
+            "component:gui-chat",
+            &["gui/src/features/chat/", "gui/src/components/chat"][..],
+        ),
+        (
+            "component:gui-state",
+            &["gui/src/app/", "gui/src/features/"][..],
+        ),
+        (
+            "component:integrations",
+            &["/integrations/", "src/integrations/"][..],
+        ),
+        (
+            "component:providers",
+            &["/providers/", "src/providers/"][..],
+        ),
+        ("component:vecdb", &["/vecdb/", "src/vecdb/"][..]),
+        ("component:ast", &["/ast/", "src/ast/"][..]),
+        ("component:http-api", &["/http/", "src/http/"][..]),
+    ];
+
+    for (tag, terms) in mappings {
+        if terms.iter().any(|term| lower.contains(term)) {
+            push_memory_tag(tags, tag);
+        }
+    }
+}
+
 fn extract_fallback_tags(
     content: &str,
     detected_files: &[String],
@@ -204,98 +359,221 @@ fn extract_fallback_tags(
     let content_lower = content.to_lowercase();
     let mut tags = Vec::new();
 
-    let languages = [
-        "rust",
-        "python",
-        "typescript",
-        "javascript",
-        "java",
-        "kotlin",
-        "cpp",
-        "c++",
-        "go",
-        "swift",
-        "ruby",
-        "php",
-        "csharp",
-        "c#",
-    ];
-    for lang in &languages {
-        if content_lower.contains(lang) {
-            tags.push(lang.to_string());
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:buddy",
+        &["buddy", "memory garden", "behavior learner"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:knowledge-graph",
+        &[
+            "knowledge graph",
+            "kg builder",
+            "kg linking",
+            "kg mechanism",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:memory-system",
+        &["memory", "memories", "knowledge entry", "knowledge content"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:browser-automation",
+        &[
+            "browser automation",
+            "playwright",
+            "chrome tool",
+            "accessibility snapshot",
+        ],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:background-chat",
+        &[
+            "background chat",
+            "autonomous chat",
+            "self-initiated",
+            "proactive chat",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:behavior-learner",
+        &[
+            "behavior learner",
+            "auto-write preferences",
+            "auto write preferences",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:memory-enrichment",
+        &[
+            "memory enrichment",
+            "kg enrich",
+            "enrich knowledge",
+            "tag generation",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:patch-verification",
+        &[
+            "patch",
+            "apply_patch",
+            "verify the actual file",
+            "edits silently fail",
+        ],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:buddy-scheduler",
+        &["scheduler", "buddy job", "buddy jobs", "job/subchat"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:subchat",
+        &["subchat", "run_subchat", "run_subchat_once"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:trajectory-persistence",
+        &["trajectory", "save_trajectory_as", "source_trajectory_id"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:notifications",
+        &["notification", "notifications", "action button", "expire"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:buddy-animation",
+        &[
+            "animation",
+            "roaming",
+            "waypoint",
+            "motion",
+            "fireflies",
+            "aurora",
+            "garden growth",
+        ],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "tool:playwright-mcp",
+        &[
+            "playwright mcp",
+            "playwright",
+            "accessibility tree",
+            "browser snapshot",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "tool:chrome",
+        &["chrome tool", "chrome", "tab management"],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:cargo-check",
+        &["cargo check"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:rust-tests",
+        &["cargo test", "rust unit test"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:git-sanity",
+        &["git status", "git diff", "git sanity"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:eslint",
+        &["eslint", "max-warnings 0"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:prettier",
+        &["prettier", "format:check"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:vitest",
+        &["vitest"],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "language:rust",
+        &["cargo", "rust"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "language:typescript",
+        &["typescript", "tsc", "eslint", "react"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "framework:react",
+        &["react", "redux"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "state:redux",
+        &["redux", "rtk query"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "protocol:sse",
+        &["sse", "stream_delta"],
+    );
+
+    for file in detected_files.iter().take(8) {
+        push_file_path_tags(&mut tags, file);
+    }
+
+    for entity in detected_entities.iter().take(8) {
+        if entity.len() >= 3 && entity.len() <= 80 {
+            push_memory_tag(&mut tags, &format!("entity:{}", entity));
         }
     }
 
-    let domains = [
-        "frontend",
-        "backend",
-        "database",
-        "testing",
-        "performance",
-        "security",
-        "api",
-        "ui",
-        "ux",
-        "devops",
-        "deployment",
-        "refactoring",
-        "debugging",
-        "optimization",
-        "architecture",
-        "react",
-        "vue",
-        "angular",
-        "node",
-        "express",
-        "django",
-        "postgres",
-        "mysql",
-        "redis",
-        "docker",
-        "kubernetes",
-    ];
-    for domain in &domains {
-        if content_lower.contains(domain) {
-            tags.push(domain.to_string());
-        }
-    }
-
-    let actions = [
-        "fix",
-        "bug",
-        "error",
-        "implement",
-        "add",
-        "remove",
-        "refactor",
-        "optimize",
-        "improve",
-        "update",
-        "migrate",
-    ];
-    for action in &actions {
-        if content_lower.contains(action) {
-            tags.push(action.to_string());
-        }
-    }
-
-    for file in detected_files.iter().take(5) {
-        if let Some(ext) = std::path::Path::new(file).extension() {
-            if let Some(ext_str) = ext.to_str() {
-                tags.push(ext_str.to_lowercase());
-            }
-        }
-    }
-
-    for entity in detected_entities.iter().take(3) {
-        if entity.len() >= 4 && entity.len() <= 30 {
-            tags.push(entity.to_lowercase());
-        }
-    }
-
-    tags.sort();
-    tags.dedup();
-    tags.truncate(10);
+    tags.truncate(16);
     tags
 }
 
@@ -1256,8 +1534,8 @@ pub async fn memories_add_enriched(
             Ok(e) => {
                 let mut tags = params.base_tags.clone();
                 tags.extend(e.tags);
-                tags.sort();
-                tags.dedup();
+                tags.extend(extract_fallback_tags(content, &detected_paths, &entities));
+                let tags = normalize_memory_tags(&tags, 16);
 
                 let mut files = params.base_filenames.clone();
                 files.extend(e.filenames);
@@ -1276,10 +1554,7 @@ pub async fn memories_add_enriched(
                     if tags.is_empty() {
                         let mut fallback = vec![params.base_kind.clone()];
                         fallback.extend(extract_fallback_tags(content, &detected_paths, &entities));
-                        fallback.sort();
-                        fallback.dedup();
-                        fallback.truncate(15);
-                        fallback
+                        normalize_memory_tags(&fallback, 16)
                     } else {
                         tags
                     },
@@ -1303,9 +1578,7 @@ pub async fn memories_add_enriched(
                     tags.push(params.base_kind.clone());
                 }
 
-                tags.sort();
-                tags.dedup();
-                tags.truncate(15);
+                let tags = normalize_memory_tags(&tags, 16);
 
                 (
                     params.base_title.or_else(|| {
@@ -1480,6 +1753,52 @@ mod tests {
         let second = normalize_preference_text_for_dedupe("i prefer concise answers with bullets");
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn memory_tags_are_namespaced_and_normalized() {
+        let tags = normalize_memory_tags(
+            &vec![
+                "Rust".to_string(),
+                "behavior_learner".to_string(),
+                " Playwright MCP ".to_string(),
+                "component:Buddy Scheduler".to_string(),
+                "Rust".to_string(),
+            ],
+            16,
+        );
+
+        assert_eq!(
+            tags,
+            vec![
+                "language:rust".to_string(),
+                "workflow:behavior-learner".to_string(),
+                "tool:playwright-mcp".to_string(),
+                "component:buddy-scheduler".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_tags_extract_precise_kg_linking_signals() {
+        let tags = extract_fallback_tags(
+            "Buddy autonomous background chat should reuse subchat and save_trajectory_as. Run cargo check and git status.",
+            &vec![
+                "refact-agent/engine/src/buddy/jobs.rs".to_string(),
+                "refact-agent/engine/src/subchat.rs".to_string(),
+            ],
+            &vec!["save_trajectory_as".to_string()],
+        );
+
+        assert!(tags.contains(&"domain:buddy".to_string()));
+        assert!(tags.contains(&"workflow:background-chat".to_string()));
+        assert!(tags.contains(&"component:subchat".to_string()));
+        assert!(tags.contains(&"component:trajectory-persistence".to_string()));
+        assert!(tags.contains(&"component:buddy".to_string()));
+        assert!(tags.contains(&"language:rust".to_string()));
+        assert!(tags.contains(&"verification:cargo-check".to_string()));
+        assert!(tags.contains(&"verification:git-sanity".to_string()));
+        assert!(tags.contains(&"entity:save_trajectory_as".to_string()));
     }
 
     #[tokio::test]

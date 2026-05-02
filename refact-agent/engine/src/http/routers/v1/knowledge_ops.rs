@@ -16,6 +16,7 @@ use crate::global_context::GlobalContext;
 use crate::knowledge_graph::{KnowledgeFrontmatter, build_knowledge_graph};
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
+use crate::memories::normalize_memory_tags;
 
 pub const AUTO_LINK_MAX_LINKS: usize = 5;
 pub const AUTO_LINK_MIN_SCORE: f64 = 3.0;
@@ -212,7 +213,8 @@ pub async fn handle_v1_knowledge_update_memory(
         frontmatter.title = Some(sanitize_string(&title));
     }
     if let Some(tags) = post.tags {
-        frontmatter.tags = sanitize_and_dedupe_strings(tags);
+        let tags = sanitize_and_dedupe_strings(tags);
+        frontmatter.tags = normalize_memory_tags(&tags, 16);
     }
     if let Some(kind) = post.kind {
         let kind = sanitize_string(&kind);
