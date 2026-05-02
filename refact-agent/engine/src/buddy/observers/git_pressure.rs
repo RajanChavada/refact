@@ -208,8 +208,12 @@ fn path_hash(p: &std::path::Path) -> String {
 }
 
 pub fn count_uncommitted(project_root: &std::path::Path) -> Option<usize> {
-    use git2::{Repository, StatusOptions, StatusShow};
-    let repo = Repository::discover(project_root).ok()?;
+    let repo = git2::Repository::discover(project_root).ok()?;
+    count_uncommitted_in_repo(&repo)
+}
+
+pub(crate) fn count_uncommitted_in_repo(repo: &git2::Repository) -> Option<usize> {
+    use git2::{StatusOptions, StatusShow};
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(false)

@@ -332,9 +332,10 @@ fn build_git_pulse(project_root: &std::path::Path) -> GitPulse {
         Ok(r) => r,
         Err(_) => return pulse,
     };
-    if let Ok(statuses) = repo.statuses(None) {
-        pulse.uncommitted_files = statuses.len() as u32;
-    }
+    pulse.uncommitted_files =
+        crate::buddy::observers::git_pressure::count_uncommitted_in_repo(&repo)
+            .map(saturating_u32)
+            .unwrap_or(0);
     if let Ok(branches) = repo.branches(None) {
         pulse.branches = branches.count() as u32;
     }
@@ -401,6 +402,31 @@ mod tests {
     async fn write_summary_report(scope_root: &Path, mut summary: ImportSummary) {
         summary.mark_completed();
         write_last_report(scope_root, &summary).await.unwrap();
+    }
+
+    fn init_repo_with_files(root: &Path, files: &[(&str, &str)]) -> git2::Repository {
+        let repo = git2::Repository::init(root).unwrap();
+        for (path, content) in files {
+            let file_path = root.join(path);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&file_path, content).unwrap();
+        }
+        let mut index = repo.index().unwrap();
+        for (path, _) in files {
+            index.add_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        drop(index);
+        {
+            let tree = repo.find_tree(tree_id).unwrap();
+            let signature = git2::Signature::now("Buddy", "buddy@example.com").unwrap();
+            repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+                .unwrap();
+        }
+        repo
     }
 
     #[tokio::test]
@@ -572,25 +598,47 @@ mod tests {
     #[test]
     fn git_pulse_discovers_repo_from_subdirectory() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = git2::Repository::init(temp.path()).unwrap();
-        let readme = temp.path().join("README.md");
-        std::fs::write(&readme, "initial\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("README.md")).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let signature = git2::Signature::now("Buddy", "buddy@example.com").unwrap();
-        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
-            .unwrap();
-        drop(tree);
-        std::fs::write(&readme, "changed\n").unwrap();
+        let _repo = init_repo_with_files(temp.path(), &[("README.md", "initial\n")]);
+        std::fs::write(temp.path().join("README.md"), "changed\n").unwrap();
         let subdir = temp.path().join("workspace").join("nested");
         std::fs::create_dir_all(&subdir).unwrap();
 
         let pulse = build_git_pulse(&subdir);
 
         assert!(pulse.branches > 0);
-        assert!(pulse.uncommitted_files > 0);
+        assert_eq!(pulse.uncommitted_files, 1);
+    }
+
+    #[test]
+    fn git_pulse_untracked_directory_scan_is_not_recursive() {
+        let temp = tempfile::tempdir().unwrap();
+        let _repo = init_repo_with_files(temp.path(), &[("README.md", "initial\n")]);
+        let nested = temp.path().join("untracked").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        for idx in 0..30 {
+            std::fs::write(nested.join(format!("file_{idx}.rs")), "fn main() {}\n").unwrap();
+        }
+
+        let pulse = build_git_pulse(temp.path());
+
+        assert_eq!(pulse.uncommitted_files, 1);
+    }
+
+    #[test]
+    fn git_pulse_counts_tracked_modified_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let _repo = init_repo_with_files(
+            temp.path(),
+            &[("src/lib.rs", "pub fn value() -> u8 { 1 }\n")],
+        );
+        std::fs::write(
+            temp.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 2 }\n",
+        )
+        .unwrap();
+
+        let pulse = build_git_pulse(temp.path());
+
+        assert_eq!(pulse.uncommitted_files, 1);
     }
 }
