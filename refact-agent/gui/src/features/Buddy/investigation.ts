@@ -10,6 +10,9 @@ const MAX_TRIGGER_LEN = 500;
 const MAX_SUMMARY_LEN = 180;
 const MAX_TURN_LEN = 220;
 const MAX_CONTEXT_BLOCK_LEN = 3000;
+const DEFAULT_REPO_OWNER = "smallcloudai";
+const DEFAULT_REPO_NAME = "refact";
+const GITHUB_SLUG_FRAGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
 const NETWORK_PATTERNS = [
   /\bnetwork\b/i,
@@ -74,6 +77,15 @@ function clipBlockText(text: string, maxLen: number): string {
 function formatLiteralBlock(text: string): string {
   const lines = text.length > 0 ? text.split("\n") : ["(empty)"];
   return lines.map((line) => `│ ${line}`).join("\n");
+}
+
+function sanitizeGithubSlugFragment(
+  value: string | undefined,
+  fallback: string,
+): string {
+  const candidate = value ?? "";
+  if (!GITHUB_SLUG_FRAGMENT_PATTERN.test(candidate)) return fallback;
+  return candidate;
 }
 
 function multimodalText(item: unknown): string {
@@ -243,8 +255,11 @@ export function buildBuddyInvestigationPrompt(
       "Internal setup/config context was unavailable.",
     MAX_CONTEXT_BLOCK_LEN,
   );
-  const repoOwner = input.repoOwner ?? "smallcloudai";
-  const repoName = input.repoName ?? "refact";
+  const repoOwner = sanitizeGithubSlugFragment(
+    input.repoOwner,
+    DEFAULT_REPO_OWNER,
+  );
+  const repoName = sanitizeGithubSlugFragment(input.repoName, DEFAULT_REPO_NAME);
 
   return [
     "Start a Buddy investigation for a possible Refact product issue.",

@@ -276,6 +276,7 @@ describe("buddy UI polish", () => {
       [{ type: "tasks_list" }, "tasks list"],
       [{ type: "task_workspace", task_id: "task-a" }, "task workspace"],
       [{ type: "knowledge_graph" }, "knowledge graph"],
+      [{ type: "worktrees" }, "tasks list"],
     ];
 
     for (const [page, expectedName] of cases) {
@@ -294,6 +295,13 @@ describe("buddy UI polish", () => {
     );
     const dispatchedActions = innerDispatch.mock.calls.map((call) => call[0]);
     expect(dispatchedActions.some(isSetupModeCreateAction)).toBe(true);
+  });
+
+  it("shared_navigation_helper_keeps_worktrees_inside_tasks", () => {
+    const dispatch = vi.fn();
+    navigateFromBuddyPage({ type: "worktrees" }, dispatch as never);
+    const action = dispatch.mock.calls[0][0] as ReturnType<typeof push>;
+    expect(action.payload).toEqual({ name: "tasks list" });
   });
 
   it("BuddyWorld_keeps_scene_level_motion_without_roam_boosts", async () => {
