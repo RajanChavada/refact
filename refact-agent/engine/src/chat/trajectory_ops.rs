@@ -170,8 +170,7 @@ fn is_memory_path(path: &str) -> bool {
         .collect();
 
     parts.windows(2).any(|parts| {
-        parts[0] == ".refact"
-            && matches!(parts[1], "knowledge" | "trajectories" | "tasks")
+        parts[0] == ".refact" && matches!(parts[1], "knowledge" | "trajectories" | "tasks")
     })
 }
 
@@ -946,13 +945,8 @@ mod tests {
             ..Default::default()
         };
         let start_idx = messages.iter().rposition(|m| m.role == "user").unwrap();
-        let (conversation, excluded) = handoff_conversation_and_excluded(
-            &messages,
-            &opts,
-            1,
-            start_idx,
-            &HashSet::new(),
-        );
+        let (conversation, excluded) =
+            handoff_conversation_and_excluded(&messages, &opts, 1, start_idx, &HashSet::new());
 
         let conversation_text: Vec<_> = conversation
             .iter()
@@ -981,13 +975,8 @@ mod tests {
             ..Default::default()
         };
         let start_idx = messages.iter().rposition(|m| m.role == "user").unwrap();
-        let (conversation, excluded) = handoff_conversation_and_excluded(
-            &messages,
-            &opts,
-            1,
-            start_idx,
-            &HashSet::new(),
-        );
+        let (conversation, excluded) =
+            handoff_conversation_and_excluded(&messages, &opts, 1, start_idx, &HashSet::new());
 
         let conversation_text: Vec<_> = conversation
             .iter()
@@ -1062,10 +1051,7 @@ mod tests {
 
         assert_eq!(stats.context_messages_modified, 2);
         assert_eq!(
-            messages
-                .iter()
-                .filter(|m| m.role == "context_file")
-                .count(),
+            messages.iter().filter(|m| m.role == "context_file").count(),
             1
         );
         let context_msg = messages.iter().find(|m| m.role == "context_file").unwrap();

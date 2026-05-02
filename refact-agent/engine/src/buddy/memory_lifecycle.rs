@@ -534,8 +534,7 @@ impl MemoryCandidate {
         self.related_files = normalize_paths(&self.related_files);
         self.kind = normalize_kind(&self.kind);
         self.source_id = normalize_optional_string(self.source_id.as_deref());
-        self.source_message_range =
-            normalize_optional_string(self.source_message_range.as_deref());
+        self.source_message_range = normalize_optional_string(self.source_message_range.as_deref());
         if self.content_hash.trim().is_empty() {
             self.content_hash = compute_content_hash(&self.content);
         }

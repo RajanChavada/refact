@@ -265,10 +265,8 @@ impl BuddyScheduler {
                         .clone();
                     js.last_run = Some(chrono::Utc::now().to_rfc3339());
                     js.run_count += 1;
-                    js.last_result = next_last_result(
-                        js.last_result.as_deref(),
-                        result.last_result.as_deref(),
-                    );
+                    js.last_result =
+                        next_last_result(js.last_result.as_deref(), result.last_result.as_deref());
                     svc.state.job_cooldowns.insert(job.id().to_string(), js);
                     svc.dirty = true;
                     if let Some(suggestion) = result.suggestion {
