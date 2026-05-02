@@ -61,6 +61,10 @@ fn next_last_result(existing: Option<&str>, result: Option<&str>) -> Option<Stri
     result.or(existing).map(ToString::to_string)
 }
 
+fn should_record_job_result(result: &BuddyJobResult, records_empty_result: bool) -> bool {
+    records_empty_result || result.has_visible_output()
+}
+
 pub(crate) fn result_after_suggestion_policy(
     result: BuddyJobResult,
     settings: &BuddySettings,
@@ -85,6 +89,9 @@ pub trait BuddyJob: Send + Sync {
     }
     fn runs_when_suggestions_blocked(&self) -> bool {
         false
+    }
+    fn records_empty_result(&self) -> bool {
+        true
     }
     async fn should_run(
         &self,
@@ -247,31 +254,35 @@ impl BuddyScheduler {
                 result
             };
             let has_visible_output = result.has_visible_output();
-            let mut buddy = buddy_arc.lock().await;
-            if let Some(svc) = buddy.as_mut() {
-                let mut js = svc
-                    .state
-                    .job_cooldowns
-                    .entry(job.id().to_string())
-                    .or_default()
-                    .clone();
-                js.last_run = Some(chrono::Utc::now().to_rfc3339());
-                js.run_count += 1;
-                js.last_result =
-                    next_last_result(js.last_result.as_deref(), result.last_result.as_deref());
-                svc.state.job_cooldowns.insert(job.id().to_string(), js);
-                svc.dirty = true;
-                if let Some(suggestion) = result.suggestion {
-                    svc.maybe_add_suggestion(suggestion);
-                }
-                if let Some(activity) = result.activity {
-                    svc.add_activity(activity);
-                }
-                if let Some(speech) = result.speech {
-                    svc.update_speech(speech);
-                }
-                if let Some(event) = result.runtime_event {
-                    svc.enqueue_runtime_event(event);
+            if should_record_job_result(&result, job.records_empty_result()) {
+                let mut buddy = buddy_arc.lock().await;
+                if let Some(svc) = buddy.as_mut() {
+                    let mut js = svc
+                        .state
+                        .job_cooldowns
+                        .entry(job.id().to_string())
+                        .or_default()
+                        .clone();
+                    js.last_run = Some(chrono::Utc::now().to_rfc3339());
+                    js.run_count += 1;
+                    js.last_result = next_last_result(
+                        js.last_result.as_deref(),
+                        result.last_result.as_deref(),
+                    );
+                    svc.state.job_cooldowns.insert(job.id().to_string(), js);
+                    svc.dirty = true;
+                    if let Some(suggestion) = result.suggestion {
+                        svc.maybe_add_suggestion(suggestion);
+                    }
+                    if let Some(activity) = result.activity {
+                        svc.add_activity(activity);
+                    }
+                    if let Some(speech) = result.speech {
+                        svc.update_speech(speech);
+                    }
+                    if let Some(event) = result.runtime_event {
+                        svc.enqueue_runtime_event(event);
+                    }
                 }
             }
             if has_visible_output {
@@ -286,6 +297,43 @@ mod tests {
     use super::*;
     use crate::buddy::autonomous_workflows::AUTONOMOUS_BUDDY_WORKFLOWS;
 
+    struct NoOutputUnrecordedJob;
+
+    #[async_trait::async_trait]
+    impl BuddyJob for NoOutputUnrecordedJob {
+        fn id(&self) -> &str {
+            "no_output_unrecorded"
+        }
+
+        fn cooldown_seconds(&self) -> u64 {
+            0
+        }
+
+        fn priority(&self) -> u32 {
+            0
+        }
+
+        fn records_empty_result(&self) -> bool {
+            false
+        }
+
+        async fn should_run(
+            &self,
+            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _ctx: &BuddyJobContext,
+        ) -> bool {
+            true
+        }
+
+        async fn execute(
+            &self,
+            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _ctx: BuddyJobContext,
+        ) -> BuddyJobResult {
+            BuddyJobResult::default()
+        }
+    }
+
     #[test]
     fn next_last_result_preserves_existing_when_job_returns_none() {
         assert_eq!(
@@ -297,6 +345,52 @@ mod tests {
             Some("new-json")
         );
         assert_eq!(next_last_result(None, None), None);
+    }
+
+    #[tokio::test]
+    async fn unrecorded_no_output_result_does_not_advance_job_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let job_id = "no_output_unrecorded".to_string();
+        let mut state = crate::buddy::state::default_buddy_state();
+        state.job_cooldowns.insert(
+            job_id.clone(),
+            BuddyJobState {
+                last_run: None,
+                last_result: Some("existing-json".to_string()),
+                run_count: 7,
+                snoozed_until: None,
+                dismissed: false,
+            },
+        );
+        let (tx, _) = tokio::sync::broadcast::channel(16);
+        let service = BuddyService::new(
+            dir.path().to_path_buf(),
+            state,
+            BuddySettings::default(),
+            Vec::new(),
+            crate::buddy::runtime_queue::RuntimeQueue::new(),
+            tx,
+            None,
+        );
+        let scheduler = BuddyScheduler {
+            jobs: vec![Box::new(NoOutputUnrecordedJob)],
+        };
+        let buddy_arc = Arc::new(AMutex::new(Some(service)));
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+
+        scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
+
+        let buddy = buddy_arc.lock().await;
+        let job_state = buddy
+            .as_ref()
+            .unwrap()
+            .state
+            .job_cooldowns
+            .get(&job_id)
+            .unwrap();
+        assert!(job_state.last_run.is_none());
+        assert_eq!(job_state.run_count, 7);
+        assert_eq!(job_state.last_result.as_deref(), Some("existing-json"));
     }
 
     fn active_suggestion(idx: usize) -> BuddySuggestion {

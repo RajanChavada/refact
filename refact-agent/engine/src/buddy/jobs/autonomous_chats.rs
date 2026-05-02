@@ -176,6 +176,13 @@ pub fn same_signal(ctx: &BuddyJobContext, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn preserve_last_result(ctx: &BuddyJobContext) -> BuddyJobResult {
+    BuddyJobResult {
+        last_result: ctx.job_state.last_result.clone(),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AutonomousEvidence {
     prompt: String,
@@ -444,7 +451,7 @@ async fn execute_autonomous_spec(
     spec: AutonomousBuddyChatSpec,
 ) -> BuddyJobResult {
     if same_signal(ctx, &spec.signal_hash) {
-        return BuddyJobResult::default();
+        return preserve_last_result(ctx);
     }
     let chat_id = match run_autonomous_buddy_chat(gcx, spec.clone()).await {
         Ok(chat_id) => chat_id,
@@ -1483,11 +1490,12 @@ impl BuddyJob for BuddyBehaviorLearnerJob {
         22
     }
 
-    async fn should_run(&self, gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
-        let Some((evidence, _)) = behavior_learner_evidence(gcx).await else {
-            return false;
-        };
-        !same_signal(ctx, &build_spec(self.id(), evidence).signal_hash)
+    fn records_empty_result(&self) -> bool {
+        false
+    }
+
+    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+        ctx.pulse.trajectories.total >= 4
     }
 
     async fn execute(
@@ -1500,7 +1508,7 @@ impl BuddyJob for BuddyBehaviorLearnerJob {
         };
         let spec = build_spec(self.id(), evidence);
         if same_signal(&ctx, &spec.signal_hash) {
-            return BuddyJobResult::default();
+            return preserve_last_result(&ctx);
         }
         let mut result = execute_autonomous_spec(gcx.clone(), &ctx, spec).await;
         if result.last_result.is_some() {
@@ -1567,11 +1575,12 @@ impl BuddyJob for BuddyModelCostOptimizerJob {
         24
     }
 
-    async fn should_run(&self, gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
-        let Some(evidence) = model_cost_evidence(gcx).await else {
-            return false;
-        };
-        !same_signal(ctx, &build_spec(self.id(), evidence).signal_hash)
+    fn records_empty_result(&self) -> bool {
+        false
+    }
+
+    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+        ctx.total_workflow_runs >= 5 || ctx.pulse.providers.quota_warnings > 0
     }
 
     async fn execute(
@@ -1939,9 +1948,17 @@ async fn execute_autonomous_job(
     evidence: String,
 ) -> BuddyJobResult {
     let spec = build_autonomous_job_spec(definition, evidence);
+    execute_built_autonomous_job(gcx, ctx, definition, spec).await
+}
 
+async fn execute_built_autonomous_job(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    ctx: &BuddyJobContext,
+    definition: AutonomousJobDefinition,
+    spec: AutonomousBuddyChatSpec,
+) -> BuddyJobResult {
     if same_signal(ctx, &spec.signal_hash) {
-        return BuddyJobResult::default();
+        return preserve_last_result(ctx);
     }
 
     let signal_hash = spec.signal_hash.clone();
@@ -2108,6 +2125,7 @@ fn collect_local_git_evidence(
     project_root: &Path,
     scan_security: bool,
 ) -> Option<LocalGitEvidence> {
+    track_local_git_evidence_scan();
     let repo = git2::Repository::discover(project_root).ok()?;
     let repo_root = repo.workdir()?.to_path_buf();
     let mut opts = git2::StatusOptions::new();
@@ -2164,6 +2182,28 @@ fn collect_local_git_evidence(
         deletions,
         security_findings,
     })
+}
+
+#[cfg(test)]
+static LOCAL_GIT_EVIDENCE_SCAN_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn track_local_git_evidence_scan() {
+    LOCAL_GIT_EVIDENCE_SCAN_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(not(test))]
+fn track_local_git_evidence_scan() {}
+
+#[cfg(test)]
+fn reset_local_git_evidence_scan_count() {
+    LOCAL_GIT_EVIDENCE_SCAN_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn local_git_evidence_scan_count() -> usize {
+    LOCAL_GIT_EVIDENCE_SCAN_COUNT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn git_status_label(status: git2::Status) -> &'static str {
@@ -2853,25 +2893,14 @@ impl BuddyJob for SecurityWhispererJob {
         security_whisperer_definition().scheduler_priority
     }
 
+    fn records_empty_result(&self) -> bool {
+        false
+    }
+
     async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
-        let root = ctx.project_root.clone();
-        let mut findings = tokio::task::spawn_blocking(move || {
-            collect_local_git_evidence(&root, true)
-                .map(|evidence| evidence.security_findings)
-                .unwrap_or_default()
-        })
-        .await
-        .unwrap_or_default();
-        findings.extend(diagnostic_security_findings(&ctx.recent_diagnostics));
-        findings.truncate(MAX_SECURITY_FINDINGS);
-        if findings.is_empty() {
-            return false;
-        }
-        let spec = build_autonomous_job_spec(
-            security_whisperer_definition(),
-            render_security_evidence(&findings),
-        );
-        !same_signal(ctx, &spec.signal_hash)
+        ctx.pulse.git.uncommitted_files > 0
+            || ctx.pulse.git.diff_lines_4h > 0
+            || !diagnostic_security_findings(&ctx.recent_diagnostics).is_empty()
     }
 
     async fn execute(
@@ -2950,22 +2979,12 @@ impl BuddyJob for DependencyRadarJob {
         dependency_radar_definition().scheduler_priority
     }
 
+    fn records_empty_result(&self) -> bool {
+        false
+    }
+
     async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
-        let root = ctx.project_root.clone();
-        let evidence = tokio::task::spawn_blocking(move || {
-            let git = collect_local_git_evidence(&root, false);
-            dependency_manifest_evidence(git.as_ref(), &root)
-        })
-        .await
-        .unwrap_or_default();
-        if !dependency_manifest_trigger(&evidence) {
-            return false;
-        }
-        let spec = build_autonomous_job_spec(
-            dependency_radar_definition(),
-            render_dependency_evidence(&evidence),
-        );
-        !same_signal(ctx, &spec.signal_hash)
+        ctx.pulse.git.uncommitted_files > 0 || ctx.pulse.git.diff_lines_4h > 0
     }
 
     async fn execute(
@@ -3007,20 +3026,12 @@ impl BuddyJob for DocsGardenerJob {
         docs_gardener_definition().scheduler_priority
     }
 
+    fn records_empty_result(&self) -> bool {
+        false
+    }
+
     async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
-        let root = ctx.project_root.clone();
-        let evidence = tokio::task::spawn_blocking(move || {
-            let git = collect_local_git_evidence(&root, false);
-            docs_evidence(git.as_ref(), &root)
-        })
-        .await
-        .unwrap_or_default();
-        if !docs_trigger(&evidence) {
-            return false;
-        }
-        let spec =
-            build_autonomous_job_spec(docs_gardener_definition(), render_docs_evidence(&evidence));
-        !same_signal(ctx, &spec.signal_hash)
+        ctx.pulse.git.uncommitted_files > 0 || ctx.pulse.git.diff_lines_4h > 0
     }
 
     async fn execute(
@@ -3062,24 +3073,12 @@ impl BuddyJob for ArchitectureDriftWatcherJob {
         architecture_drift_definition().scheduler_priority
     }
 
+    fn records_empty_result(&self) -> bool {
+        false
+    }
+
     async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
-        let root = ctx.project_root.clone();
-        let evidence = tokio::task::spawn_blocking(move || {
-            collect_local_git_evidence(&root, false).map(|git| architecture_evidence(&git))
-        })
-        .await
-        .unwrap_or(None);
-        let Some(evidence) = evidence else {
-            return false;
-        };
-        if !architecture_trigger(&evidence) {
-            return false;
-        }
-        let spec = build_autonomous_job_spec(
-            architecture_drift_definition(),
-            render_architecture_evidence(&evidence),
-        );
-        !same_signal(ctx, &spec.signal_hash)
+        ctx.pulse.git.uncommitted_files > 0 || ctx.pulse.git.diff_lines_4h > 0
     }
 
     async fn execute(
@@ -3107,6 +3106,27 @@ impl BuddyJob for ArchitectureDriftWatcherJob {
         )
         .await
     }
+}
+
+#[cfg(test)]
+async fn execute_dependency_radar_with_evidence(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    ctx: &BuddyJobContext,
+    evidence: DependencyManifestEvidence,
+) -> BuddyJobResult {
+    if !dependency_manifest_trigger(&evidence) {
+        return BuddyJobResult::default();
+    }
+    execute_built_autonomous_job(
+        gcx,
+        ctx,
+        dependency_radar_definition(),
+        build_autonomous_job_spec(
+            dependency_radar_definition(),
+            render_dependency_evidence(&evidence),
+        ),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -4407,6 +4427,68 @@ mod tests {
 
         assert!(dependency_manifest_trigger(&evidence));
         assert!(same_signal(&ctx, &spec.signal_hash));
+    }
+
+    #[tokio::test]
+    async fn dependency_radar_should_run_does_not_scan_git() {
+        let job = DependencyRadarJob;
+        let mut ctx = context_with_last_result(None);
+        ctx.pulse.git.uncommitted_files = 1;
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        reset_local_git_evidence_scan_count();
+
+        assert!(job.should_run(gcx, &ctx).await);
+
+        assert_eq!(local_git_evidence_scan_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn dependency_radar_execute_scans_git_once_without_should_run_duplication() {
+        let (dir, _repo) = init_temp_git_repo();
+        let root = dir.path();
+        std::fs::write(root.join("notes.txt"), "local note\n").unwrap();
+        let mut ctx = context_with_last_result(None);
+        ctx.project_root = root.to_path_buf();
+        ctx.pulse.git.uncommitted_files = 1;
+        let job = DependencyRadarJob;
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+
+        assert!(job.should_run(gcx.clone(), &ctx).await);
+        reset_local_git_evidence_scan_count();
+        let result = job.execute(gcx, ctx).await;
+
+        assert_eq!(local_git_evidence_scan_count(), 1);
+        assert!(result.activity.is_none());
+        assert!(result.runtime_event.is_none());
+        assert!(result.last_result.is_none());
+    }
+
+    #[tokio::test]
+    async fn same_signal_execution_returns_no_visible_output_and_preserves_last_result() {
+        let evidence = DependencyManifestEvidence {
+            manifest_counts: BTreeMap::from([("javascript".to_string(), 12)]),
+            total_manifest_count: 12,
+            ..Default::default()
+        };
+        let spec = build_autonomous_job_spec(
+            dependency_radar_definition(),
+            render_dependency_evidence(&evidence),
+        );
+        let stored = serialize_last_autonomous_result(&AutonomousLastResult {
+            signal_hash: spec.signal_hash.clone(),
+            chat_id: "chat-a".to_string(),
+            completed_at: "2026-01-01T00:00:00Z".to_string(),
+        });
+        let ctx = context_with_last_result(Some(stored.clone()));
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+
+        let result = execute_dependency_radar_with_evidence(gcx, &ctx, evidence).await;
+
+        assert!(result.activity.is_none());
+        assert!(result.runtime_event.is_none());
+        assert!(result.speech.is_none());
+        assert!(result.suggestion.is_none());
+        assert_eq!(result.last_result.as_deref(), Some(stored.as_str()));
     }
 
     #[tokio::test]
