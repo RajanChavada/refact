@@ -6,12 +6,15 @@ import {
   fillEllipse,
   fillPixelRect,
   finiteOr,
+  hasWorldLayer,
   pctX,
   pctY,
   safeDimension,
   safeFrame,
+  strokeLine,
   strokeEllipse,
   wave,
+  worldIntensity,
   worldPhase,
   type DrawBuddyWorldBaseArgs,
 } from "./buddyWorldDrawHelpers";
@@ -54,6 +57,23 @@ export function drawDistantHills(args: DrawBuddyWorldBaseArgs): void {
   ctx.lineTo(0, height);
   ctx.closePath();
   ctx.fill();
+  const horizonColor =
+    phase === "morning"
+      ? "#FDE68A"
+      : phase === "evening"
+        ? "#FB7185"
+        : phase === "night"
+          ? "#818CF8"
+          : "#BBF7D0";
+  fillEllipse(
+    ctx,
+    width * 0.5,
+    farY + 18,
+    width * (phase === "day" ? 0.28 : 0.34),
+    18,
+    horizonColor,
+    alphaForMotion(phase === "night" ? 0.08 : 0.14, args.reducedMotion),
+  );
   ctx.restore();
 }
 
@@ -63,6 +83,19 @@ export function drawMidgroundGarden(args: DrawBuddyWorldBaseArgs): void {
   const frame = safeFrame(args.frame);
   const gardenY = height * 0.69;
   const count = countForMotion(18, args.compact, args.reducedMotion);
+  const phase = worldPhase(args.world);
+  const flowerColor =
+    phase === "evening" ? "#FDBA74" : phase === "night" ? "#A7F3D0" : "#FDE68A";
+
+  fillEllipse(
+    args.ctx,
+    width * 0.32,
+    gardenY + 18,
+    width * 0.18,
+    args.compact ? 12 : 18,
+    phase === "night" ? "#2DD4BF" : "#86EFAC",
+    alphaForMotion(phase === "day" ? 0.2 : 0.12, args.reducedMotion),
+  );
 
   for (let index = 0; index < count; index += 1) {
     const x = (index / count) * width + ((index * 17) % 23);
@@ -71,7 +104,15 @@ export function drawMidgroundGarden(args: DrawBuddyWorldBaseArgs): void {
     fillPixelRect(args.ctx, x + sway, gardenY + 7, 3, stem, "#166534", 0.54);
     fillPixelRect(args.ctx, x - 5 + sway, gardenY + 8, 11, 3, "#4ADE80", 0.34);
     if (index % 4 === 0) {
-      fillPixelRect(args.ctx, x + 1 + sway, gardenY + 3, 4, 4, "#FDE68A", 0.46);
+      fillPixelRect(
+        args.ctx,
+        x + 1 + sway,
+        gardenY + 3,
+        4,
+        4,
+        flowerColor,
+        0.46,
+      );
     }
   }
 }
@@ -79,7 +120,11 @@ export function drawMidgroundGarden(args: DrawBuddyWorldBaseArgs): void {
 export function drawWorkshopZones(args: DrawBuddyWorldBaseArgs): void {
   const width = safeDimension(args.width, 720);
   const height = safeDimension(args.height, 260);
-  const alpha = alphaForMotion(0.16, args.reducedMotion);
+  const frame = safeFrame(args.frame);
+  const active = hasWorldLayer(args.world, "workshop_runes");
+  const memoryActive = hasWorldLayer(args.world, "memory_orbs");
+  const alpha = alphaForMotion(active ? 0.24 : 0.16, args.reducedMotion);
+  const intensity = worldIntensity(args.world);
 
   fillEllipse(
     args.ctx,
@@ -109,10 +154,49 @@ export function drawWorkshopZones(args: DrawBuddyWorldBaseArgs): void {
     alpha * 0.78,
   );
 
+  fillPixelRect(args.ctx, width * 0.28, height * 0.58, 48, 32, "#422006", 0.74);
+  fillPixelRect(
+    args.ctx,
+    width * 0.285,
+    height * 0.6,
+    40,
+    4,
+    "#FDE68A",
+    memoryActive ? 0.46 : 0.24,
+  );
+  fillPixelRect(
+    args.ctx,
+    width * 0.285,
+    height * 0.65,
+    40,
+    4,
+    "#FDE68A",
+    memoryActive ? 0.4 : 0.18,
+  );
+  fillPixelRect(
+    args.ctx,
+    width * 0.615,
+    height * 0.59,
+    58,
+    43,
+    "#1E293B",
+    0.72,
+  );
+  fillPixelRect(
+    args.ctx,
+    width * 0.625,
+    height * 0.54,
+    38,
+    12,
+    active ? "#60A5FA" : "#475569",
+    active ? 0.8 : 0.62,
+  );
+
   for (let index = 0; index < 5; index += 1) {
     const x = width * 0.56 + index * width * 0.026;
     const y =
-      height * 0.69 + wave(args.frame, 32, index, 2, args.reducedMotion);
+      height * 0.69 +
+      wave(frame, 32, index, active ? 4 : 2, args.reducedMotion);
     fillPixelRect(
       args.ctx,
       x,
@@ -120,7 +204,43 @@ export function drawWorkshopZones(args: DrawBuddyWorldBaseArgs): void {
       4,
       15 - index,
       index % 2 === 0 ? "#60A5FA" : "#A78BFA",
-      0.2,
+      active ? 0.34 : 0.2,
+    );
+  }
+
+  if (active) {
+    const portalX = width * 0.67;
+    const portalY = height * 0.67;
+    strokeEllipse(
+      args.ctx,
+      portalX,
+      portalY,
+      args.compact ? 24 : 34,
+      args.compact ? 13 : 18,
+      "#67E8F9",
+      3,
+      alpha * 0.9,
+    );
+    strokeEllipse(
+      args.ctx,
+      portalX,
+      portalY,
+      args.compact ? 15 : 22,
+      args.compact ? 8 : 12,
+      "#FDE68A",
+      2,
+      alpha * 0.72,
+    );
+    strokeLine(
+      args.ctx,
+      { x: portalX - 58, y: portalY + 14 },
+      {
+        x: portalX + 42,
+        y: portalY - 18 + wave(frame, 54, 0, 7, args.reducedMotion),
+      },
+      "#A78BFA",
+      args.compact ? 3 : 5,
+      alphaForMotion(0.16 + intensity * 0.12, args.reducedMotion),
     );
   }
 }

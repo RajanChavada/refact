@@ -52,6 +52,12 @@ interface StarFieldSignature {
   duplicateCount: number;
 }
 
+interface DrawBranchCase {
+  label: string;
+  world: BuddyWorldState;
+  expectedStyles: string[];
+}
+
 function makeCanvasContext(): RecordedCanvasContext {
   const gradientStops: string[] = [];
   const gradient = {
@@ -296,6 +302,30 @@ function drawWorld(
   return ctx;
 }
 
+function drawWorldWithOptions(
+  world: BuddyWorldState,
+  options?: Partial<{
+    compact: boolean;
+    reducedMotion: boolean;
+    frame: number;
+    width: number;
+    height: number;
+  }>,
+): RecordedCanvasContext {
+  const ctx = makeCanvasContext();
+  drawBuddyWorld({
+    ctx,
+    world,
+    palette: PALETTES[0],
+    frame: options?.frame ?? 120,
+    width: options?.width ?? 720,
+    height: options?.height ?? 260,
+    compact: options?.compact ?? false,
+    reducedMotion: options?.reducedMotion ?? false,
+  });
+  return ctx;
+}
+
 const starFieldArgs = {
   palette: PALETTES[0],
   frame: 120,
@@ -386,6 +416,22 @@ function expectHealthyDraw(ctx: RecordedCanvasContext): void {
   expectDrawOpsFinite(ctx);
 }
 
+function expectFillStyles(ctx: RecordedCanvasContext, styles: string[]): void {
+  for (const style of styles) {
+    expect(ctx.fillRectStyles).toContain(style);
+  }
+}
+
+function fillRectStyleCount(ctx: RecordedCanvasContext, style: string): number {
+  return ctx.fillRectStyles.filter((item) => item === style).length;
+}
+
+function strokeStyleCount(ctx: RecordedCanvasContext, style: string): number {
+  return ctx.drawOps.filter((operation) =>
+    operation.startsWith(`stroke:${style}:`),
+  ).length;
+}
+
 interface PaletteCase {
   label: string;
   now: Date;
@@ -421,6 +467,191 @@ describe("drawBuddyWorld", () => {
       expectHealthyDraw(ctx);
     },
   );
+
+  it.each<DrawBranchCase>([
+    {
+      label: "morning",
+      world: makeWorld({ now: new Date("2024-01-01T08:00:00") }),
+      expectedStyles: ["#FDE68A", "#86EFAC"],
+    },
+    {
+      label: "day",
+      world: makeWorld({ now: new Date("2024-01-01T14:00:00") }),
+      expectedStyles: ["#FBBF24", "#BBF7D0"],
+    },
+    {
+      label: "evening",
+      world: makeWorld({ now: new Date("2024-01-01T18:00:00") }),
+      expectedStyles: ["#FB923C", "#FDBA74", "#F9A8D4"],
+    },
+    {
+      label: "night",
+      world: makeWorld({ now: new Date("2024-01-01T23:00:00") }),
+      expectedStyles: ["#E0E7FF", "#FFFFFF", "#A7F3D0"],
+    },
+  ])(
+    "executes distinct $label visual branches",
+    ({ world, expectedStyles }) => {
+      const ctx = drawWorld(world);
+
+      expectFillStyles(ctx, expectedStyles);
+      expectHealthyDraw(ctx);
+    },
+  );
+
+  it.each<DrawBranchCase>([
+    {
+      label: "dream mist",
+      world: makeWorld({
+        pet: makePet({ condition: { ...makePet().condition, sleeping: true } }),
+      }),
+      expectedStyles: ["#C4B5FD"],
+    },
+    {
+      label: "empty food nook",
+      world: makeWorld({
+        pet: makePet({ condition: { ...makePet().condition, hungry: true } }),
+      }),
+      expectedStyles: ["#92400E", "#FDE68A"],
+    },
+    {
+      label: "toy glow",
+      world: makeWorld({
+        pet: makePet({ condition: { ...makePet().condition, bored: true } }),
+      }),
+      expectedStyles: ["#F9A8D4", "#A78BFA"],
+    },
+    {
+      label: "cozy home glow",
+      world: makeWorld({
+        pet: makePet({ needs: { ...makePet().needs, affection: 90 } }),
+      }),
+      expectedStyles: ["#F9A8D4", "#FCA5A5"],
+    },
+  ])(
+    "draws care layer $label without invalid values",
+    ({ world, expectedStyles }) => {
+      const ctx = drawWorld(world);
+
+      expectFillStyles(ctx, expectedStyles);
+      expectHealthyDraw(ctx);
+    },
+  );
+
+  it("draws active runtime workshop runes and work energy", () => {
+    const world = buildBuddyWorldState({
+      now: new Date("2024-01-01T14:00:00"),
+      pulse: makePulse({ diagnostics: { last_hour: 0, top_error_types: [] } }),
+      pet: makePet(),
+      nowPlaying: {
+        id: "runtime-active-draw",
+        signal_type: "tool_used",
+        title: "Running tests",
+        source: "test",
+        status: "progress",
+        priority: "normal",
+        created_at: "2024-01-01T14:00:00Z",
+        persistent: true,
+      },
+      activeQuest: null,
+    });
+    const ctx = drawWorld(world);
+
+    expect(world.atmosphere.layers).toContain("workshop_runes");
+    expectFillStyles(ctx, ["#67E8F9", "#60A5FA"]);
+    expect(strokeStyleCount(ctx, "#38BDF8")).toBeGreaterThan(0);
+    expect(strokeStyleCount(ctx, "#A78BFA")).toBeGreaterThan(0);
+    expectHealthyDraw(ctx);
+  });
+
+  it("keeps provider warning distinct from provider storm", () => {
+    const warningWorld = makeWorld({
+      pulse: makePulse({
+        providers: { defaults_ok: false, broken_refs: 0, quota_warnings: 2 },
+        diagnostics: { last_hour: 0, top_error_types: [] },
+      }),
+    });
+    const criticalWorld = makeWorld({
+      pulse: makePulse({
+        providers: { defaults_ok: true, broken_refs: 2, quota_warnings: 0 },
+      }),
+    });
+    const warningCtx = drawWorld(warningWorld);
+    const criticalCtx = drawWorld(criticalWorld);
+
+    expect(warningWorld.atmosphere.layers).toContain("provider_flicker");
+    expect(warningWorld.atmosphere.layers).not.toContain("provider_storm");
+    expect(criticalWorld.atmosphere.layers).toContain("provider_storm");
+    expect(fillRectStyleCount(warningCtx, "#020617")).toBeLessThan(
+      fillRectStyleCount(criticalCtx, "#020617"),
+    );
+    expect(fillRectStyleCount(warningCtx, "#FACC15")).toBeLessThan(
+      fillRectStyleCount(criticalCtx, "#FACC15"),
+    );
+    expectFillStyles(warningCtx, ["#F59E0B"]);
+    expectFillStyles(criticalCtx, ["#F87171", "#FACC15"]);
+    expectHealthyDraw(warningCtx);
+    expectHealthyDraw(criticalCtx);
+  });
+
+  it("draws memory attention orbs and active memory streams", () => {
+    const attentionWorld = makeWorld({
+      pulse: makePulse({
+        memory: { total: 12, orphan: 4, stale_conflicts: 0 },
+      }),
+    });
+    const activeWorld = buildBuddyWorldState({
+      now: new Date("2024-01-01T14:00:00"),
+      pulse: makePulse({
+        memory: { total: 12, orphan: 0, stale_conflicts: 0 },
+      }),
+      pet: makePet(),
+      nowPlaying: {
+        id: "memory-runtime-draw",
+        signal_type: "memory_extract",
+        title: "Extracting memories",
+        source: "memory",
+        status: "progress",
+        priority: "normal",
+        created_at: "2024-01-01T14:00:00Z",
+        persistent: true,
+      },
+      activeQuest: null,
+    });
+    const attentionCtx = drawWorld(attentionWorld);
+    const activeCtx = drawWorld(activeWorld);
+
+    expect(attentionWorld.atmosphere.layers).toContain("memory_orbs");
+    expect(activeWorld.atmosphere.layers).toContain("memory_orbs");
+    expectFillStyles(attentionCtx, ["#FBBF24", "#FDE68A"]);
+    expectFillStyles(activeCtx, ["#FBBF24", "#FDE68A"]);
+    expect(strokeStyleCount(activeCtx, "#FDE68A")).toBeGreaterThan(
+      strokeStyleCount(attentionCtx, "#FDE68A"),
+    );
+    expectHealthyDraw(attentionCtx);
+    expectHealthyDraw(activeCtx);
+  });
+
+  it("uses lower bounded effect counts for compact reduced-motion paths", () => {
+    const world = makeWorld({ now: new Date("2024-01-01T23:00:00") });
+    const standardCtx = drawWorldWithOptions(world, {
+      compact: false,
+      reducedMotion: false,
+    });
+    const reducedCtx = drawWorldWithOptions(world, {
+      compact: true,
+      reducedMotion: true,
+      width: 360,
+      height: 190,
+    });
+
+    expect(fillRectStyleCount(reducedCtx, "#FFFFFF")).toBeLessThan(
+      fillRectStyleCount(standardCtx, "#FFFFFF"),
+    );
+    expect(reducedCtx.drawOps.length).toBeLessThan(standardCtx.drawOps.length);
+    expectHealthyDraw(standardCtx);
+    expectHealthyDraw(reducedCtx);
+  });
 
   it("draws all supported atmosphere layers without throwing", () => {
     const baseWorld = makeWorld();

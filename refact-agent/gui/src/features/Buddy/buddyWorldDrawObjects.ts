@@ -12,6 +12,7 @@ import {
   pctY,
   safeDimension,
   safeFrame,
+  strokeLine,
   strokeEllipse,
   toneColor,
   wave,
@@ -214,25 +215,55 @@ function drawMemoryFireflies(
   y: number,
   tone: string,
 ): void {
-  const count = args.reducedMotion ? 4 : args.compact ? 5 : 6;
+  const count = args.reducedMotion ? 4 : args.compact ? 5 : 7;
+  const attention = item.state === "attention" || item.state === "critical";
+  const active = item.state === "active" || item.animation === "stream";
+  const glowColor =
+    item.state === "critical" ? "#EF4444" : attention ? "#F59E0B" : "#FDE68A";
+
+  fillCircle(
+    args.ctx,
+    x,
+    y + 15,
+    item.state === "critical" ? 28 : 22,
+    glowColor,
+    attention ? 0.12 : 0.08,
+  );
   for (let index = 0; index < count; index += 1) {
     const fx =
-      x + wave(args.frame, 18, index, 8 + index * 2, args.reducedMotion);
+      x +
+      wave(
+        args.frame,
+        active ? 12 : 18,
+        index,
+        8 + index * 2,
+        args.reducedMotion,
+      );
     const fy =
       y +
       Math.cos(safeFrame(args.frame) / 15 + index) *
-        (args.reducedMotion ? 0 : 12);
+        (args.reducedMotion ? 0 : active ? 18 : 12);
     drawSpark(
       args.ctx,
       fx,
       fy,
       1.8,
-      index % 2 === 0 ? "#FDE68A" : tone,
+      index % 2 === 0 ? glowColor : tone,
       0.62 + finiteOr(item.intensity, 0) * 0.2,
     );
+    if (active && index % 2 === 0) {
+      strokeLine(
+        args.ctx,
+        { x: fx, y: fy },
+        { x: x + 72, y: y + 42 - index * 3 },
+        "#FDE68A",
+        1.4,
+        0.16 + finiteOr(item.intensity, 0) * 0.12,
+      );
+    }
   }
   fillPixelRect(args.ctx, x - 14, y + 15, 28, 11, "#854D0E");
-  fillPixelRect(args.ctx, x - 9, y + 10, 18, 6, "#F59E0B");
+  fillPixelRect(args.ctx, x - 9, y + 10, 18, 6, glowColor);
   fillPixelRect(args.ctx, x - 18, y + 24, 36, 4, "#422006", 0.46);
 }
 
@@ -245,6 +276,7 @@ function drawObservatory(
 ): void {
   const activeAlpha =
     item.state === "critical" ? 0.46 : item.state === "active" ? 0.28 : 0.14;
+  const warning = item.state === "attention";
   fillCircle(args.ctx, x + 11, y - 23, 25, tone, activeAlpha);
   fillPixelRect(args.ctx, x - 24, y + 13, 48, 18, "#334155");
   fillPixelRect(args.ctx, x - 18, y + 4, 36, 15, "#64748B");
@@ -252,9 +284,40 @@ function drawObservatory(
   fillPixelRect(args.ctx, x - 4, y - 19, 8, 18, tone);
   fillPixelRect(args.ctx, x + 4, y - 14, 26, 6, "#CBD5E1");
   fillPixelRect(args.ctx, x + 27, y - 15, 5, 8, "#FDE68A");
+  if (item.state === "active") {
+    strokeLine(
+      args.ctx,
+      { x: x + 31, y: y - 16 },
+      { x: x - 48, y: y - 50 + wave(args.frame, 58, 0, 8, args.reducedMotion) },
+      "#DBEAFE",
+      3,
+      0.26 + finiteOr(item.intensity, 0) * 0.18,
+    );
+  }
+  if (warning) {
+    strokeEllipse(
+      args.ctx,
+      x + 7,
+      y - 11,
+      34,
+      18,
+      "#F59E0B",
+      2,
+      0.24 + finiteOr(item.intensity, 0) * 0.16,
+    );
+  }
   if (item.state === "critical") {
+    fillCircle(args.ctx, x + 12, y - 24, 38, "#EF4444", 0.16);
     fillPixelRect(args.ctx, x + 33, y - 18, 8, 3, "#FACC15", 0.86);
     fillPixelRect(args.ctx, x + 38, y - 15, 3, 8, "#FACC15", 0.86);
+    strokeLine(
+      args.ctx,
+      { x: x + 34, y: y - 17 },
+      { x: x + 58, y: y - 44 },
+      "#FACC15",
+      2,
+      0.76,
+    );
   }
 }
 
