@@ -1,4 +1,4 @@
-import React from "react";
+import React, { type CSSProperties } from "react";
 import { BuddyCanvas } from "./BuddyCanvas";
 import type {
   BuddyControl,
@@ -20,11 +20,35 @@ interface BuddyCharacterProps {
   bubblePosition?: BubblePosition;
   randomizeBubblePosition?: boolean;
   sceneXPercent?: number;
+  sceneYPercent?: number;
+  sceneDepthScale?: number;
   scenePose?: BuddyScenePose;
   speechText?: string | null;
   speechControls?: BuddyControl[];
   onCanvasEvent: (event: BuddyEvent) => void;
   onSpeechControl?: (control: BuddyControl) => void;
+}
+
+type BuddyCharacterStyle = CSSProperties & {
+  "--buddy-scene-scale"?: number;
+};
+
+function buildBuddyCharacterStyle(args: {
+  sceneXPercent: number | undefined;
+  sceneYPercent: number | undefined;
+  sceneDepthScale: number | undefined;
+}): BuddyCharacterStyle | undefined {
+  const style: BuddyCharacterStyle = {};
+  if (typeof args.sceneXPercent === "number") {
+    style.left = `${args.sceneXPercent}%`;
+  }
+  if (typeof args.sceneYPercent === "number") {
+    style.bottom = `${100 - args.sceneYPercent}%`;
+  }
+  if (typeof args.sceneDepthScale === "number") {
+    style["--buddy-scene-scale"] = args.sceneDepthScale;
+  }
+  return Object.keys(style).length > 0 ? style : undefined;
 }
 
 export const BuddyCharacter: React.FC<BuddyCharacterProps> = ({
@@ -36,6 +60,8 @@ export const BuddyCharacter: React.FC<BuddyCharacterProps> = ({
   bubblePosition = "top",
   randomizeBubblePosition = false,
   sceneXPercent,
+  sceneYPercent,
+  sceneDepthScale,
   scenePose = "idle",
   speechText,
   speechControls,
@@ -45,11 +71,11 @@ export const BuddyCharacter: React.FC<BuddyCharacterProps> = ({
   <div
     className={styles.character}
     data-pose={scenePose}
-    style={
-      typeof sceneXPercent === "number"
-        ? { left: `${sceneXPercent}%` }
-        : undefined
-    }
+    style={buildBuddyCharacterStyle({
+      sceneXPercent,
+      sceneYPercent,
+      sceneDepthScale,
+    })}
     data-testid="buddy-world-character"
   >
     <BuddyCanvas
