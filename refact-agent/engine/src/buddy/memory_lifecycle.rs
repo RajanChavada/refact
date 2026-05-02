@@ -387,10 +387,9 @@ impl MemoryOpsState {
 
         for record in records {
             total_records = total_records.saturating_add(1);
-            let op = record.into_op().normalized();
-            let existing_index = nonempty_key(&op.idempotency_key)
-                .and_then(|key| idempotency_index.get(key).copied())
-                .or_else(|| nonempty_key(&op.op_id).and_then(|key| op_id_index.get(key).copied()));
+            let incoming = record.into_op();
+            let existing_index = matching_op_index(&incoming, &op_id_index, &idempotency_index);
+            let op = incoming.normalized();
 
             match existing_index {
                 Some(index) => {
@@ -435,21 +434,16 @@ impl MemoryOpsState {
     }
 
     pub fn matching_op(&self, op: &MemoryLifecycleOp) -> Option<&MemoryLifecycleOp> {
-        if let Some(key) = nonempty_key(&op.idempotency_key) {
-            for existing in &self.ops {
-                if nonempty_key(&existing.idempotency_key) == Some(key) {
-                    return Some(existing);
-                }
-            }
+        if let Some(key) = incoming_idempotency_key(op) {
+            return self
+                .ops
+                .iter()
+                .find(|existing| nonempty_key(&existing.idempotency_key) == Some(key));
         }
-        if let Some(key) = nonempty_key(&op.op_id) {
-            for existing in &self.ops {
-                if nonempty_key(&existing.op_id) == Some(key) {
-                    return Some(existing);
-                }
-            }
-        }
-        None
+        let key = nonempty_key(&op.op_id)?;
+        self.ops
+            .iter()
+            .find(|existing| nonempty_key(&existing.op_id) == Some(key))
     }
 
     fn recount(&mut self) {
@@ -503,6 +497,21 @@ fn nonempty_key(value: &str) -> Option<&str> {
     } else {
         Some(value)
     }
+}
+
+fn incoming_idempotency_key(op: &MemoryLifecycleOp) -> Option<&str> {
+    nonempty_key(&op.idempotency_key)
+}
+
+fn matching_op_index(
+    incoming: &MemoryLifecycleOp,
+    op_id_index: &HashMap<String, usize>,
+    idempotency_index: &HashMap<String, usize>,
+) -> Option<usize> {
+    if let Some(key) = incoming_idempotency_key(incoming) {
+        return idempotency_index.get(key).copied();
+    }
+    nonempty_key(&incoming.op_id).and_then(|key| op_id_index.get(key).copied())
 }
 
 pub(crate) fn memory_op_duplicate_should_replace(
@@ -2488,11 +2497,12 @@ pub async fn apply_memory_lifecycle_op(
     op: &MemoryLifecycleOp,
 ) -> Result<MemoryApplyOutcome, String> {
     let op = op.clone().normalized();
-    if matches!(
-        op.status,
-        MemoryOpStatus::Applied | MemoryOpStatus::Skipped | MemoryOpStatus::Rejected
-    ) {
-        return Ok(MemoryApplyOutcome::skipped("operation already finalized"));
+    if memory_op_status_is_finalized(op.status) {
+        return Ok(MemoryApplyOutcome {
+            status: op.status,
+            applied_paths: Vec::new(),
+            message: op.error.clone(),
+        });
     }
     if destructive_memory_op(op.op_type) && op.status != MemoryOpStatus::Approved {
         return Err("archive, delete, and merge operations require approval".to_string());
@@ -2526,6 +2536,9 @@ pub async fn apply_memory_lifecycle_op_status(
     op: &MemoryLifecycleOp,
 ) -> MemoryLifecycleOp {
     let mut updated = op.clone().normalized();
+    if memory_op_status_is_finalized(updated.status) {
+        return updated;
+    }
     match apply_memory_lifecycle_op(gcx, &updated).await {
         Ok(outcome) => {
             updated.status = outcome.status;
@@ -3157,6 +3170,30 @@ mod tests {
             "2026-05-02T00:00:00Z",
         );
         op.status = status;
+        op
+    }
+
+    fn legacy_test_op(op_id: &str, evidence: &str, status: MemoryOpStatus) -> MemoryLifecycleOp {
+        let mut op = MemoryLifecycleOp::default();
+        op.op_id = op_id.to_string();
+        op.source = MemorySource::MemoryGarden;
+        op.op_type = MemoryOpType::CreateMemory;
+        op.target_paths = strings(&[".refact/knowledge/item.md"]);
+        op.evidence = evidence.to_string();
+        op.confidence = 0.91;
+        op.requires_approval = false;
+        op.status = status;
+        op.created_at = "2026-05-02T00:00:00Z".to_string();
+        op
+    }
+
+    fn explicit_key_test_op(
+        op_id: &str,
+        key: &str,
+        status: MemoryOpStatus,
+    ) -> MemoryLifecycleOp {
+        let mut op = test_op(op_id, key, status);
+        op.idempotency_key = key.to_string();
         op
     }
 
@@ -3974,6 +4011,65 @@ mod tests {
     }
 
     #[test]
+    fn memory_ops_state_same_idempotency_key_with_different_op_id_is_duplicate() {
+        let first = explicit_key_test_op("op-1", "semantic-key", MemoryOpStatus::Pending);
+        let second = explicit_key_test_op("op-2", "semantic-key", MemoryOpStatus::Applied);
+
+        let state = MemoryOpsState::from_records(vec![
+            MemoryOpsRecord::Op { op: first },
+            MemoryOpsRecord::Op { op: second.clone() },
+        ]);
+
+        assert_eq!(state.ops, vec![second.normalized()]);
+        assert_eq!(state.applied_count, 1);
+    }
+
+    #[test]
+    fn memory_ops_state_missing_incoming_idempotency_key_uses_op_id_fallback() {
+        let first = legacy_test_op("op-legacy", "first", MemoryOpStatus::Pending);
+        let second = legacy_test_op("op-legacy", "second", MemoryOpStatus::Applied);
+        let expected = second.clone().normalized();
+
+        let state = MemoryOpsState::from_records(vec![
+            MemoryOpsRecord::Op { op: first },
+            MemoryOpsRecord::Op { op: second },
+        ]);
+
+        assert_eq!(state.ops, vec![expected]);
+        assert_eq!(state.applied_count, 1);
+    }
+
+    #[test]
+    fn memory_ops_state_different_idempotency_keys_with_same_op_id_are_not_duplicates() {
+        let first = explicit_key_test_op("op-collide", "semantic-key-a", MemoryOpStatus::Applied);
+        let second = explicit_key_test_op("op-collide", "semantic-key-b", MemoryOpStatus::Pending);
+
+        let state = MemoryOpsState::from_records(vec![
+            MemoryOpsRecord::Op { op: first.clone() },
+            MemoryOpsRecord::Op { op: second.clone() },
+        ]);
+
+        assert_eq!(state.ops, vec![first.normalized(), second.normalized()]);
+        assert_eq!(state.applied_count, 1);
+        assert_eq!(state.pending_count, 1);
+    }
+
+    #[test]
+    fn memory_ops_state_existing_finalized_old_key_does_not_suppress_new_key() {
+        for status in [MemoryOpStatus::Applied, MemoryOpStatus::Rejected] {
+            let first = explicit_key_test_op("op-collide", "old-key", status);
+            let second = explicit_key_test_op("op-collide", "new-key", MemoryOpStatus::Pending);
+
+            let state = MemoryOpsState::from_records(vec![
+                MemoryOpsRecord::Op { op: first.clone() },
+                MemoryOpsRecord::Op { op: second.clone() },
+            ]);
+
+            assert_eq!(state.ops, vec![first.normalized(), second.normalized()]);
+        }
+    }
+
+    #[test]
     fn memory_ops_state_duplicate_pending_does_not_reopen_finalized_or_approved() {
         let statuses = [
             MemoryOpStatus::Applied,
@@ -4549,6 +4645,51 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn apply_status_preserves_finalized_ops_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = test_gcx_with_workspace(dir.path()).await;
+        for status in [
+            MemoryOpStatus::Applied,
+            MemoryOpStatus::Rejected,
+            MemoryOpStatus::Skipped,
+            MemoryOpStatus::Failed,
+        ] {
+            let mut op = test_op(&format!("op-{}", status.as_str()), status.as_str(), status);
+            op.error = Some(format!("{} original", status.as_str()));
+            op.applied_at = Some("2026-05-02T00:01:00Z".to_string());
+
+            let updated = apply_memory_lifecycle_op_status(gcx.clone(), &op).await;
+
+            assert_eq!(updated, op.normalized());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_apply_op_is_direct_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = test_gcx_with_workspace(dir.path()).await;
+        let mut op = MemoryLifecycleOp::pending(
+            "op-failed",
+            MemorySource::BehaviorLearner,
+            MemoryOpType::CreateMemory,
+            Vec::new(),
+            "evidence",
+            0.91,
+            "2026-05-02T00:00:00Z",
+        );
+        op.status = MemoryOpStatus::Failed;
+        op.error = Some("original failure".to_string());
+        op.payload.content = Some("Should not be written".to_string());
+
+        let outcome = apply_memory_lifecycle_op(gcx, &op).await.unwrap();
+
+        assert_eq!(outcome.status, MemoryOpStatus::Failed);
+        assert_eq!(outcome.message.as_deref(), Some("original failure"));
+        assert!(outcome.applied_paths.is_empty());
+        assert!(dir.path().join(KNOWLEDGE_FOLDER_NAME).read_dir().is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn pending_approval_required_op_status_remains_pending() {
         let dir = tempfile::tempdir().unwrap();
         let gcx = test_gcx_with_workspace(dir.path()).await;
@@ -4630,7 +4771,7 @@ mod tests {
 
         let outcome = apply_memory_lifecycle_op(gcx, &op).await.unwrap();
 
-        assert_eq!(outcome.status, MemoryOpStatus::Skipped);
+        assert_eq!(outcome.status, MemoryOpStatus::Applied);
         assert!(dir.path().join(KNOWLEDGE_FOLDER_NAME).read_dir().is_err());
     }
 }

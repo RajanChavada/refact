@@ -221,12 +221,16 @@ pub async fn enqueue_memory_op(
     project_root: &Path,
     op: MemoryLifecycleOp,
 ) -> Result<MemoryOpsState, String> {
-    let op = op.normalized();
+    let incoming_has_key = !op.idempotency_key.trim().is_empty();
     let current = load_memory_ops(project_root).await;
     if let Some(existing) = current.matching_op(&op) {
         if !memory_op_duplicate_should_replace(existing.status, op.status) {
             return Ok(current);
         }
+    }
+    let mut op = op.normalized();
+    if !incoming_has_key {
+        op.idempotency_key.clear();
     }
 
     let path = memory_ops_path(project_root);
@@ -506,6 +510,30 @@ mod tests {
         op
     }
 
+    fn legacy_test_op(op_id: &str, evidence: &str, status: MemoryOpStatus) -> MemoryLifecycleOp {
+        let mut op = MemoryLifecycleOp::default();
+        op.op_id = op_id.to_string();
+        op.source = MemorySource::MemoryGarden;
+        op.op_type = MemoryOpType::CreateMemory;
+        op.target_paths = vec![".refact/knowledge/item.md".to_string()];
+        op.evidence = evidence.to_string();
+        op.confidence = 0.91;
+        op.requires_approval = false;
+        op.status = status;
+        op.created_at = "2026-05-02T00:00:00Z".to_string();
+        op
+    }
+
+    fn explicit_key_test_op(
+        op_id: &str,
+        key: &str,
+        status: MemoryOpStatus,
+    ) -> MemoryLifecycleOp {
+        let mut op = test_op(op_id, key, status);
+        op.idempotency_key = key.to_string();
+        op
+    }
+
     #[tokio::test]
     async fn memory_ops_enqueue_then_replay_preserves_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -562,6 +590,65 @@ mod tests {
         assert_eq!(state.ops.len(), 1);
         assert_eq!(state.ops[0], second.normalized());
         assert_eq!(state.applied_count, 1);
+    }
+
+    #[tokio::test]
+    async fn memory_ops_enqueue_same_idempotency_key_with_different_op_id_is_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let first = explicit_key_test_op("op-1", "semantic-key", MemoryOpStatus::Pending);
+        let second = explicit_key_test_op("op-2", "semantic-key", MemoryOpStatus::Applied);
+
+        enqueue_memory_op(root, first).await.unwrap();
+        let state = enqueue_memory_op(root, second.clone()).await.unwrap();
+
+        assert_eq!(state.ops, vec![second.normalized()]);
+        assert_eq!(state.applied_count, 1);
+    }
+
+    #[tokio::test]
+    async fn memory_ops_enqueue_missing_key_uses_legacy_op_id_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let first = legacy_test_op("op-legacy", "first", MemoryOpStatus::Pending);
+        let second = legacy_test_op("op-legacy", "second", MemoryOpStatus::Applied);
+        let expected = second.clone().normalized();
+
+        enqueue_memory_op(root, first).await.unwrap();
+        let state = enqueue_memory_op(root, second).await.unwrap();
+
+        assert_eq!(state.ops, vec![expected]);
+        assert_eq!(state.applied_count, 1);
+    }
+
+    #[tokio::test]
+    async fn memory_ops_enqueue_different_keys_with_same_op_id_are_not_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let first = explicit_key_test_op("op-collide", "old-key", MemoryOpStatus::Applied);
+        let second = explicit_key_test_op("op-collide", "new-key", MemoryOpStatus::Pending);
+
+        enqueue_memory_op(root, first.clone()).await.unwrap();
+        let state = enqueue_memory_op(root, second.clone()).await.unwrap();
+
+        assert_eq!(state.ops, vec![first.normalized(), second.normalized()]);
+        assert_eq!(state.applied_count, 1);
+        assert_eq!(state.pending_count, 1);
+    }
+
+    #[tokio::test]
+    async fn memory_ops_enqueue_existing_rejected_old_key_does_not_suppress_new_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let first = explicit_key_test_op("op-collide", "old-key", MemoryOpStatus::Rejected);
+        let second = explicit_key_test_op("op-collide", "new-key", MemoryOpStatus::Pending);
+
+        enqueue_memory_op(root, first.clone()).await.unwrap();
+        let state = enqueue_memory_op(root, second.clone()).await.unwrap();
+
+        assert_eq!(state.ops, vec![first.normalized(), second.normalized()]);
+        assert_eq!(state.rejected_count, 1);
+        assert_eq!(state.pending_count, 1);
     }
 
     #[tokio::test]
