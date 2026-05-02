@@ -186,6 +186,9 @@ pub struct MemoryLifecyclePayload {
     pub related_files: Option<Vec<String>>,
     pub links: Option<Vec<String>>,
     pub review_after: Option<String>,
+    pub source_id: Option<String>,
+    pub source_message_range: Option<String>,
+    pub source_content_hash: Option<String>,
     pub superseded_by: Option<String>,
     pub superseded_paths: Vec<String>,
     pub canonical: Option<MemoryCreatePayload>,
@@ -224,6 +227,9 @@ impl MemoryLifecyclePayload {
         self.related_files = self.related_files.map(|paths| normalize_paths(&paths));
         self.links = self.links.map(|links| normalize_strings(&links));
         self.review_after = normalize_review_after(self.review_after.as_deref());
+        self.source_id = normalize_optional_string(self.source_id.as_deref());
+        self.source_message_range = normalize_optional_string(self.source_message_range.as_deref());
+        self.source_content_hash = normalize_optional_string(self.source_content_hash.as_deref());
         self.superseded_by = normalize_optional_string(self.superseded_by.as_deref());
         self.superseded_paths = normalize_paths(&self.superseded_paths);
         self.canonical = self.canonical.map(|canonical| canonical.normalized());
@@ -487,6 +493,7 @@ pub struct MemoryCandidate {
     pub filenames: Vec<String>,
     pub related_files: Vec<String>,
     pub source_id: Option<String>,
+    pub source_message_range: Option<String>,
     pub confidence: f32,
     pub status: MemoryCandidateStatus,
     pub content_hash: String,
@@ -505,6 +512,7 @@ impl Default for MemoryCandidate {
             filenames: Vec::new(),
             related_files: Vec::new(),
             source_id: None,
+            source_message_range: None,
             confidence: 0.0,
             status: MemoryCandidateStatus::Proposed,
             content_hash: String::new(),
@@ -515,11 +523,19 @@ impl Default for MemoryCandidate {
 
 impl MemoryCandidate {
     pub fn normalized(mut self) -> Self {
+        self.title = normalize_optional_text(Some(&self.title)).unwrap_or_default();
+        self.content = redact_and_cap_payload_text(&self.content, PAYLOAD_CONTENT_MAX_CHARS);
         self.tags = normalize_tags(&self.tags);
+        if !self.tags.iter().any(|tag| tag == "memory") {
+            self.tags.push("memory".to_string());
+            self.tags = normalize_tags(&self.tags);
+        }
         self.filenames = normalize_paths(&self.filenames);
         self.related_files = normalize_paths(&self.related_files);
         self.kind = normalize_kind(&self.kind);
         self.source_id = normalize_optional_string(self.source_id.as_deref());
+        self.source_message_range =
+            normalize_optional_string(self.source_message_range.as_deref());
         if self.content_hash.trim().is_empty() {
             self.content_hash = compute_content_hash(&self.content);
         }
@@ -539,9 +555,58 @@ impl MemoryCandidate {
             kind: Some(self.kind.clone()),
             source_id: self.source_id.clone(),
             title: Some(self.title.clone()),
-            content: Some(self.content.clone()),
+            content: Some(self.content_hash.clone()),
             evidence: None,
         }
+    }
+
+    pub fn into_create_memory_op(
+        self,
+        op_id: impl Into<String>,
+        evidence: impl Into<String>,
+        created_at: impl Into<String>,
+    ) -> MemoryLifecycleOp {
+        let candidate = self.normalized();
+        let created_at = created_at.into();
+        let created_date = DateTime::parse_from_rfc3339(&created_at)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc).date_naive())
+            .unwrap_or_else(|| Utc::now().date_naive());
+        let review_after = default_review_after_date(
+            created_date,
+            &candidate.kind,
+            candidate.source,
+            candidate.status,
+        );
+        let mut op = MemoryLifecycleOp::pending(
+            op_id,
+            candidate.source,
+            MemoryOpType::CreateMemory,
+            candidate.filenames.clone(),
+            evidence,
+            candidate.confidence,
+            created_at,
+        );
+        op.payload = MemoryLifecyclePayload {
+            title: Some(candidate.title.clone()),
+            content: Some(candidate.content.clone()),
+            tags: Some(candidate.tags.clone()),
+            kind: Some(candidate.kind.clone()),
+            filenames: Some(candidate.filenames.clone()),
+            related_files: Some(candidate.related_files.clone()),
+            review_after: Some(review_after),
+            source_id: candidate.source_id.clone(),
+            source_message_range: candidate.source_message_range.clone(),
+            source_content_hash: Some(candidate.content_hash.clone()),
+            ..Default::default()
+        };
+        op.idempotency_key =
+            compute_idempotency_key(&candidate.idempotency_input(MemoryOpType::CreateMemory));
+        op.requires_approval = default_requires_approval(op.op_type, op.confidence)
+            || (candidate.source.is_autonomous()
+                && candidate.status == MemoryCandidateStatus::Proposed);
+        op.status = MemoryOpStatus::Pending;
+        op.normalized()
     }
 }
 
@@ -2497,7 +2562,19 @@ async fn apply_create_memory(
         frontmatter.source_commit = Some(source_commit);
     }
     frontmatter.source_tool = Some(format!("buddy_memory_lifecycle:{}", op.source.as_str()));
-    frontmatter.content_hash = Some(compute_content_hash(&content));
+    frontmatter.source_confidence = Some(op.confidence);
+    frontmatter.source_trajectory_id = op
+        .payload
+        .source_id
+        .clone()
+        .filter(|_| op.source == MemorySource::Trajectory);
+    frontmatter.source_message_range = op.payload.source_message_range.clone();
+    frontmatter.content_hash = Some(
+        op.payload
+            .source_content_hash
+            .clone()
+            .unwrap_or_else(|| compute_content_hash(&content)),
+    );
 
     let path = memories_add(gcx, &frontmatter, &content).await?;
     Ok(MemoryApplyOutcome::applied(vec![path]))
@@ -3718,6 +3795,45 @@ mod tests {
         assert_eq!(frontmatter.filenames, strings(&["src/lib.rs"]));
         assert_eq!(frontmatter.related_files, strings(&["src/main.rs"]));
         assert_eq!(body, "# Useful Memory\n\nBody");
+    }
+
+    #[test]
+    fn memory_candidate_create_op_normalizes_proposed_metadata() {
+        let candidate = MemoryCandidate {
+            candidate_id: " candidate-1 ".to_string(),
+            source: MemorySource::Trajectory,
+            title: " Useful Lesson ".to_string(),
+            content: "Body password=secret".to_string(),
+            tags: strings(&["Trajectory", "LESSON", "trajectory"]),
+            kind: "Decision".to_string(),
+            filenames: strings(&["src//lib.rs"]),
+            related_files: strings(&["src/main.rs"]),
+            source_id: Some(" trajectory-1:0-2 ".to_string()),
+            source_message_range: Some(" 0-2 ".to_string()),
+            confidence: 0.72,
+            status: MemoryCandidateStatus::Proposed,
+            ..Default::default()
+        };
+
+        let op = candidate.into_create_memory_op(
+            "op-candidate",
+            "evidence password=secret",
+            "2026-05-02T00:00:00Z",
+        );
+
+        assert_eq!(op.source, MemorySource::Trajectory);
+        assert_eq!(op.op_type, MemoryOpType::CreateMemory);
+        assert_eq!(op.status, MemoryOpStatus::Pending);
+        assert!(op.requires_approval);
+        assert_eq!(op.payload.title.as_deref(), Some("Useful Lesson"));
+        assert_eq!(op.payload.kind.as_deref(), Some("decision"));
+        assert_eq!(op.payload.review_after.as_deref(), Some("2026-06-01"));
+        assert_eq!(op.payload.source_id.as_deref(), Some("trajectory-1:0-2"));
+        assert_eq!(op.payload.source_message_range.as_deref(), Some("0-2"));
+        assert_eq!(op.payload.filenames.unwrap(), strings(&["src/lib.rs"]));
+        assert_eq!(op.payload.related_files.unwrap(), strings(&["src/main.rs"]));
+        assert!(op.payload.tags.unwrap().contains(&"memory".to_string()));
+        assert!(!op.payload.content.unwrap().contains("secret"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

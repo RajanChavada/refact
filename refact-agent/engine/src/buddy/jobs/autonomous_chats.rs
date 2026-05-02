@@ -20,6 +20,7 @@ use crate::buddy::autonomous_workflows::{
     SETUP_COACH_WORKFLOW_ID, USER_HABIT_COACH_WORKFLOW_ID,
 };
 use crate::buddy::diagnostics::{DiagnosticContext, DiagnosticSeverity};
+use crate::buddy::memory_lifecycle::{MemoryCandidate, MemoryCandidateStatus, MemorySource};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use crate::buddy::types::{BuddyActivity, BuddyFact, BuddyFactKind, BuddyRuntimeEvent, BuddyThreadMeta};
 use crate::call_validation::ChatMessage;
@@ -526,6 +527,14 @@ fn preference_like(text: &str) -> bool {
     explicit_preference_confidence(text).is_some()
 }
 
+fn behavior_candidate_status(confidence: f32) -> MemoryCandidateStatus {
+    if confidence >= 0.95 {
+        MemoryCandidateStatus::Approved
+    } else {
+        MemoryCandidateStatus::Proposed
+    }
+}
+
 fn behavior_preference_candidates(snippets: &[TrajectoryUserSnippet]) -> Vec<PreferenceCandidate> {
     let mut seen = HashSet::new();
     let mut candidates = Vec::new();
@@ -557,29 +566,69 @@ fn behavior_preference_candidates(snippets: &[TrajectoryUserSnippet]) -> Vec<Pre
     candidates
 }
 
-async fn write_behavior_preferences(
+async fn enqueue_behavior_preferences(
     gcx: Arc<ARwLock<GlobalContext>>,
     candidates: &[PreferenceCandidate],
 ) -> usize {
-    let mut written = 0;
+    let Some(project_root) = crate::files_correction::get_project_dirs(gcx)
+        .await
+        .into_iter()
+        .next()
+    else {
+        return 0;
+    };
+    let mut queued = 0;
     for candidate in candidates {
-        if written >= MAX_BEHAVIOR_PREFERENCE_WRITES {
+        if queued >= MAX_BEHAVIOR_PREFERENCE_WRITES {
             break;
         }
-        match crate::memories::memories_add_preference_if_new(
-            gcx.clone(),
-            &candidate.statement,
-            &candidate.evidence,
-            candidate.confidence,
-        )
-        .await
-        {
-            Ok(Some(_)) => written += 1,
-            Ok(None) => {}
-            Err(err) => tracing::warn!("buddy behavior learner preference write failed: {}", err),
+        let content = if candidate.evidence.trim().is_empty() {
+            format!(
+                "# {}\n\nConfidence: {:.2}",
+                candidate.statement, candidate.confidence
+            )
+        } else {
+            format!(
+                "# {}\n\nEvidence: {}\n\nConfidence: {:.2}",
+                candidate.statement, candidate.evidence, candidate.confidence
+            )
+        };
+        let memory_candidate = MemoryCandidate {
+            candidate_id: format!(
+                "memcand_behavior_{}",
+                signal_hash([candidate.statement.as_str(), candidate.evidence.as_str()])
+            ),
+            source: MemorySource::BehaviorLearner,
+            title: candidate.statement.clone(),
+            content,
+            tags: vec![
+                "preference".to_string(),
+                "buddy".to_string(),
+                "behavior_learner".to_string(),
+            ],
+            kind: "preference".to_string(),
+            source_id: Some(format!(
+                "behavior_learner:{}",
+                crate::memories::normalize_preference_text_for_dedupe(&candidate.statement)
+            )),
+            confidence: candidate.confidence,
+            status: behavior_candidate_status(candidate.confidence),
+            ..Default::default()
+        };
+        let op = memory_candidate.into_create_memory_op(
+            format!(
+                "memop_behavior_{}",
+                signal_hash([candidate.statement.as_str()])
+            ),
+            candidate.evidence.clone(),
+            Utc::now().to_rfc3339(),
+        );
+        match crate::buddy::storage::enqueue_memory_op(&project_root, op).await {
+            Ok(_) => queued += 1,
+            Err(err) => tracing::warn!("buddy behavior learner preference enqueue failed: {}", err),
         }
     }
-    written
+    queued
 }
 
 fn extract_text_from_trajectory_content(content: &serde_json::Value) -> Option<String> {
@@ -1512,14 +1561,14 @@ impl BuddyJob for BuddyBehaviorLearnerJob {
         }
         let mut result = execute_autonomous_spec(gcx.clone(), &ctx, spec).await;
         if result.last_result.is_some() {
-            let written = write_behavior_preferences(gcx, &candidates).await;
-            if written > 0 {
+            let queued = enqueue_behavior_preferences(gcx, &candidates).await;
+            if queued > 0 {
                 if let Some(activity) = result.activity.as_mut() {
                     activity.description = format!(
-                        "{} Auto-saved {} high-confidence preference{}.",
+                        "{} Queued {} high-confidence preference candidate{} for review.",
                         activity.description,
-                        written,
-                        if written == 1 { "" } else { "s" }
+                        queued,
+                        if queued == 1 { "" } else { "s" }
                     );
                 }
             }
