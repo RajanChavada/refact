@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { drawBuddyWorld } from "../features/Buddy/buddyWorldDraw";
 import {
+  drawAmbientLayers,
   drawObservatoryStructures,
   drawStarField,
   shouldDrawStarField,
@@ -34,6 +35,7 @@ type MockCanvasContext = Pick<
 
 type RecordedCanvasContext = CanvasRenderingContext2D & {
   alphaWrites: number[];
+  compositeWrites: string[];
   drawOps: string[];
   fillRectStyles: string[];
 };
@@ -52,6 +54,11 @@ interface StarFieldSignature {
   duplicateCount: number;
 }
 
+interface FullCanvasOverlay {
+  color: string;
+  alpha: number;
+}
+
 interface DrawBranchCase {
   label: string;
   world: BuddyWorldState;
@@ -66,18 +73,22 @@ function makeCanvasContext(): RecordedCanvasContext {
     }),
   } as unknown as CanvasGradient;
   const alphaWrites: number[] = [];
+  const compositeWrites: string[] = [];
   const drawOps: string[] = [];
   const fillRectStyles: string[] = [];
   let globalAlphaValue = 1;
+  let globalCompositeOperationValue: GlobalCompositeOperation = "source-over";
   let fillStyleValue: CanvasRenderingContext2D["fillStyle"] = "#000000";
   let strokeStyleValue: CanvasRenderingContext2D["strokeStyle"] = "#000000";
   const formatNumber = (value: number) => value.toFixed(3);
   const ctx: MockCanvasContext & {
     alphaWrites: number[];
+    compositeWrites: string[];
     drawOps: string[];
     fillRectStyles: string[];
   } = {
     alphaWrites,
+    compositeWrites,
     drawOps,
     fillRectStyles,
     arc: vi.fn(
@@ -195,6 +206,13 @@ function makeCanvasContext(): RecordedCanvasContext {
     set globalAlpha(value: number) {
       alphaWrites.push(value);
       globalAlphaValue = value;
+    },
+    get globalCompositeOperation() {
+      return globalCompositeOperationValue;
+    },
+    set globalCompositeOperation(value: GlobalCompositeOperation) {
+      compositeWrites.push(value);
+      globalCompositeOperationValue = value;
     },
     imageSmoothingEnabled: false,
     lineCap: "round" as CanvasLineCap,
@@ -338,13 +356,14 @@ const starFieldArgs = {
 function parseFillRectOperation(operation: string): CanvasDrawOp | null {
   const parts = operation.split(":");
   if (parts[0] !== "fillRect") return null;
+  const alpha = Number(parts.at(-1));
   return {
     x: Number(parts[1]),
     y: Number(parts[2]),
     width: Number(parts[3]),
     height: Number(parts[4]),
-    color: parts[5] ?? "",
-    alpha: Number(parts[6]),
+    color: parts.slice(5, -1).join(":"),
+    alpha,
   };
 }
 
@@ -432,6 +451,33 @@ function strokeStyleCount(ctx: RecordedCanvasContext, style: string): number {
   ).length;
 }
 
+function fullCanvasOverlays(ctx: RecordedCanvasContext): FullCanvasOverlay[] {
+  return ctx.drawOps
+    .map(parseFillRectOperation)
+    .filter((operation): operation is CanvasDrawOp => operation !== null)
+    .filter(
+      (operation) =>
+        operation.x === 0 &&
+        operation.y === 0 &&
+        operation.width === 720 &&
+        operation.height === 260,
+    )
+    .filter((operation) => !operation.color.includes("stop:"))
+    .map((operation) => ({
+      color: operation.color,
+      alpha: operation.alpha,
+    }));
+}
+
+function skyGradientOperations(ctx: RecordedCanvasContext): string[] {
+  return ctx.drawOps.filter(
+    (operation) =>
+      operation.startsWith("clearRect:") ||
+      operation.startsWith("createLinearGradient:") ||
+      operation.includes("stop:"),
+  );
+}
+
 interface PaletteCase {
   label: string;
   now: Date;
@@ -440,6 +486,32 @@ interface PaletteCase {
 }
 
 describe("drawBuddyWorld", () => {
+  it("resets the canvas and draws one deterministic sky gradient per frame", () => {
+    const world = makeWorld({ now: new Date("2024-01-01T23:00:00") });
+    const firstCtx = drawWorldWithOptions(world, { frame: 120 });
+    const secondCtx = drawWorldWithOptions(world, { frame: 120 });
+    const nextFrameCtx = drawWorldWithOptions(world, { frame: 121 });
+
+    expect(firstCtx.drawOps[0]).toBe("clearRect:0.000:0.000:720.000:260.000");
+    expect(firstCtx.compositeWrites).toContain("source-over");
+    expect(firstCtx.alphaWrites[0]).toBe(1);
+    expect(firstCtx.alphaWrites[1]).toBe(1);
+    expect(
+      firstCtx.drawOps.filter((operation) =>
+        operation.startsWith("createLinearGradient:"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      firstCtx.fillRectStyles.filter((style) => style.includes("stop:")),
+    ).toHaveLength(1);
+    expect(skyGradientOperations(secondCtx)).toEqual(
+      skyGradientOperations(firstCtx),
+    );
+    expect(skyGradientOperations(nextFrameCtx)).toEqual(
+      skyGradientOperations(firstCtx),
+    );
+  });
+
   it.each<PaletteCase>([
     { label: "morning", now: new Date("2024-01-01T08:00:00") },
     { label: "day", now: new Date("2024-01-01T14:00:00") },
@@ -837,7 +909,72 @@ describe("drawBuddyWorld", () => {
     expect(world.weather).toBe("aurora");
     expect(world.atmosphere.layers).toContain("aurora");
     expect(strokeStyleCount(ctx, "#2DD4BF")).toBe(2);
-    expect(strokeStyleCount(ctx, "#A855F7")).toBe(2);
+    expect(strokeStyleCount(ctx, "#A855F7")).toBe(1);
+    expectHealthyDraw(ctx);
+  });
+
+  it("does not emit day sun motes for a night world without the sun_motes layer", () => {
+    const world = makeWorld({ now: new Date("2024-01-01T23:00:00") });
+    const ctx = drawWorld(world);
+    const sunMoteWorld: BuddyWorldState = {
+      ...world,
+      atmosphere: {
+        ...world.atmosphere,
+        layers: ["sun_motes"],
+      },
+    };
+    const sunMotesOnlyCtx = makeCanvasContext();
+
+    drawAmbientLayers({
+      ctx: sunMotesOnlyCtx,
+      world: sunMoteWorld,
+      ...starFieldArgs,
+    });
+
+    expect(world.phase).toBe("night");
+    expect(world.atmosphere.layers).not.toContain("sun_motes");
+    expect(world.celestialLabel).toBe("Moon");
+    expect(fillRectStyleCount(ctx, "#E0E7FF")).toBeGreaterThan(0);
+    expect(fillRectStyleCount(ctx, "#F59E0B")).toBe(0);
+    expect(fillRectStyleCount(sunMotesOnlyCtx, "#FDE68A")).toBe(0);
+    expectHealthyDraw(ctx);
+  });
+
+  it("keeps calm night, aurora, and provider warning worlds free of extra high-alpha full-canvas overlays", () => {
+    const calmNight = makeWorld({ now: new Date("2024-01-01T23:00:00") });
+    const providerWarning = makeWorld({
+      now: new Date("2024-01-01T23:00:00"),
+      pulse: makePulse({
+        providers: { defaults_ok: false, broken_refs: 0, quota_warnings: 2 },
+        diagnostics: { last_hour: 0, top_error_types: [] },
+      }),
+    });
+
+    for (const world of [calmNight, providerWarning]) {
+      const overlays = fullCanvasOverlays(drawWorld(world));
+
+      expect(world.atmosphere.serious).toBe(false);
+      expect(overlays).toHaveLength(0);
+    }
+  });
+
+  it("draws one clamped full-canvas storm overlay for provider critical worlds", () => {
+    const world = makeWorld({
+      pulse: makePulse({
+        providers: { defaults_ok: true, broken_refs: 2, quota_warnings: 0 },
+      }),
+    });
+    const ctx = drawWorld(world);
+    const overlays = fullCanvasOverlays(ctx);
+
+    expect(world.atmosphere.layers).toContain("provider_storm");
+    expect(overlays).toHaveLength(1);
+    expect(overlays[0]?.color).toBe("#020617");
+    expect(overlays[0]?.alpha).toBeCloseTo(0.1936);
+    expect(
+      overlays.every((overlay) => overlay.alpha >= 0 && overlay.alpha <= 1),
+    ).toBe(true);
+    expect(fillRectStyleCount(ctx, "#FACC15")).toBeGreaterThanOrEqual(2);
     expectHealthyDraw(ctx);
   });
 });

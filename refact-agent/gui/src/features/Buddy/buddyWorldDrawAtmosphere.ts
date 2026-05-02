@@ -103,11 +103,18 @@ function drawSkyStructures(args: DrawBuddyWorldBaseArgs): void {
   const crystalTone = serious ? "#F87171" : warning ? "#F59E0B" : "#93C5FD";
   const beaconTone = serious || warning ? "#FDE68A" : "#E0E7FF";
   const beamAlpha = alphaForMotion(
-    serious ? 0.28 : active ? 0.22 : warning ? 0.18 : 0.14,
+    serious ? 0.24 : active ? 0.17 : warning ? 0.12 : 0.1,
     args.reducedMotion,
   );
 
-  fillCircle(args.ctx, crystalX, crystalY - 18, 34, crystalTone, 0.06);
+  fillCircle(
+    args.ctx,
+    crystalX,
+    crystalY - 18,
+    serious ? 32 : 24,
+    crystalTone,
+    serious ? 0.07 : 0.035,
+  );
   fillPixelRect(
     args.ctx,
     crystalX - 6,
@@ -151,8 +158,8 @@ function drawSkyStructures(args: DrawBuddyWorldBaseArgs): void {
       crystalY - 19,
       28 + wave(frame, warning ? 28 : 18, 0, 3, args.reducedMotion),
       warning ? "#FCD34D" : "#F87171",
-      warning ? 2 : 3,
-      alphaForMotion(warning ? 0.22 : 0.34, args.reducedMotion),
+      warning ? 1.5 : 3,
+      alphaForMotion(warning ? 0.12 : 0.32, args.reducedMotion),
     );
   }
 
@@ -270,11 +277,11 @@ export function drawObservatoryStructures(args: DrawBuddyWorldBaseArgs): void {
       args.ctx,
       width * 0.75,
       height * 0.18,
-      96,
+      68,
       "#818CF8",
-      0.055 + intensity * 0.025,
+      0.035 + intensity * 0.018,
     );
-    fillCircle(args.ctx, width * 0.2, height * 0.2, 72, "#0EA5E9", 0.035);
+    fillCircle(args.ctx, width * 0.2, height * 0.2, 48, "#0EA5E9", 0.024);
   }
 
   drawSkyStructures(args);
@@ -330,6 +337,8 @@ export function drawCelestial(args: DrawBuddyWorldBaseArgs): void {
 }
 
 function drawSunMotes(args: DrawBuddyWorldBaseArgs): void {
+  if (worldPhase(args.world) === "night") return;
+
   const width = safeDimension(args.width, 720);
   const height = safeDimension(args.height, 260);
   const frame = safeFrame(args.frame);
@@ -462,13 +471,13 @@ function drawCozyHomeGlow(args: DrawBuddyWorldBaseArgs): void {
   }
 }
 
-function drawAurora(args: DrawBuddyWorldBaseArgs, alpha = 0.45): void {
+function drawAurora(args: DrawBuddyWorldBaseArgs, alpha = 0.3): void {
   const { ctx } = args;
   const width = safeDimension(args.width, 720);
   const height = safeDimension(args.height, 260);
   const y = pctY(height, args.world.weatherY ?? 24);
   const frame = safeFrame(args.frame);
-  const bands = countForMotion(4, args.compact, args.reducedMotion);
+  const bands = countForMotion(3, args.compact, args.reducedMotion);
 
   for (let index = 0; index < bands; index += 1) {
     const color = index % 2 === 0 ? "#2DD4BF" : "#A855F7";
@@ -492,7 +501,7 @@ export function drawAmbientLayers(args: DrawBuddyWorldBaseArgs): void {
   if (hasWorldLayer(args.world, "sun_motes")) drawSunMotes(args);
   if (hasWorldLayer(args.world, "moths")) drawMoths(args);
   if (hasWorldLayer(args.world, "fireflies")) drawFireflies(args);
-  if (hasWorldLayer(args.world, "aurora")) drawAurora(args, 0.42);
+  if (hasWorldLayer(args.world, "aurora")) drawAurora(args, 0.28);
   if (hasWorldLayer(args.world, "cozy_home_glow")) drawCozyHomeGlow(args);
 }
 
@@ -536,17 +545,17 @@ function drawBusyCurrents(args: DrawBuddyWorldBaseArgs): void {
   const x = pctX(args.width, args.world.weatherX);
   const y = pctY(args.height, args.world.weatherY);
   const frame = safeFrame(args.frame);
-  const rings = countForMotion(3, args.compact, args.reducedMotion);
+  const rings = countForMotion(2, args.compact, args.reducedMotion);
 
   for (let index = 0; index < rings; index += 1) {
     strokeCircle(
       args.ctx,
       x,
       y,
-      8 + index * 8 + wave(frame, 22, index, 1.2, args.reducedMotion),
+      7 + index * 7 + wave(frame, 22, index, 1, args.reducedMotion),
       "#60A5FA",
       1,
-      0.18,
+      0.1,
     );
   }
 
@@ -562,7 +571,7 @@ function drawBusyCurrents(args: DrawBuddyWorldBaseArgs): void {
       { x, y },
       index % 2 === 0 ? "#38BDF8" : "#A78BFA",
       args.compact ? 2 : 3,
-      alphaForMotion(0.16, args.reducedMotion),
+      alphaForMotion(0.1, args.reducedMotion),
     );
   }
 }
@@ -595,7 +604,7 @@ function drawProviderStorm(args: DrawBuddyWorldBaseArgs): void {
   const rainCount = countForMotion(18, args.compact, args.reducedMotion);
   const boltAlpha = alphaForMotion(0.68 + intensity * 0.22, args.reducedMotion);
 
-  fillRect(args.ctx, 0, 0, width, height, "#020617", 0.16 + intensity * 0.1);
+  fillRect(args.ctx, 0, 0, width, height, "#020617", 0.12 + intensity * 0.08);
   drawCloud(
     args.ctx,
     x - 42,
@@ -646,23 +655,25 @@ function drawDreamMist(args: DrawBuddyWorldBaseArgs): void {
     );
   }
 
-  fillRect(
-    args.ctx,
-    0,
-    0,
-    width,
-    height,
-    "#C4B5FD",
-    alphaForMotion(0.05, args.reducedMotion),
-  );
+  if (worldPaletteHint(args.world) === "dream") {
+    fillRect(
+      args.ctx,
+      0,
+      0,
+      width,
+      height,
+      "#C4B5FD",
+      alphaForMotion(0.035, args.reducedMotion),
+    );
+  }
 }
 
 function drawProviderFlicker(args: DrawBuddyWorldBaseArgs): void {
   const anchor = objectAnchor(args, "providers", { x: 72, y: 67 });
   const frame = safeFrame(args.frame);
-  const count = countForMotion(8, args.compact, args.reducedMotion);
+  const count = countForMotion(6, args.compact, args.reducedMotion);
   const alpha = alphaForMotion(
-    0.18 + worldIntensity(args.world) * 0.28,
+    0.12 + worldIntensity(args.world) * 0.14,
     args.reducedMotion,
   );
 
@@ -684,10 +695,10 @@ function drawProviderFlicker(args: DrawBuddyWorldBaseArgs): void {
     args.ctx,
     anchor.x,
     anchor.y - 22,
-    37 + wave(frame, 34, 0, 4, args.reducedMotion),
+    28 + wave(frame, 34, 0, 2, args.reducedMotion),
     "#F59E0B",
-    2,
-    alpha * 0.64,
+    1.5,
+    alpha * 0.42,
   );
 }
 
@@ -710,18 +721,18 @@ function drawWorkshopRunes(args: DrawBuddyWorldBaseArgs): void {
     args.ctx,
     center.x + 18,
     center.y - 14,
-    args.compact ? 42 : 58,
+    args.compact ? 32 : 44,
     "#2563EB",
-    alpha * 0.12,
+    alpha * 0.08,
   );
   fillEllipse(
     args.ctx,
     center.x + 22,
     center.y + 6,
-    args.compact ? 56 : 78,
-    12,
+    args.compact ? 42 : 58,
+    10,
     "#38BDF8",
-    alpha * 0.16,
+    alpha * 0.1,
   );
 
   for (let index = 0; index < count; index += 1) {
@@ -748,7 +759,7 @@ function drawWorkshopRunes(args: DrawBuddyWorldBaseArgs): void {
     );
   }
 
-  const sparkCount = countForMotion(12, args.compact, args.reducedMotion);
+  const sparkCount = countForMotion(8, args.compact, args.reducedMotion);
   for (let index = 0; index < sparkCount; index += 1) {
     const x = center.x - 28 + seededUnit(139, index) * 116;
     const y = center.y - 38 + seededUnit(149, index) * 54;
@@ -767,7 +778,7 @@ function drawMemoryOrbs(args: DrawBuddyWorldBaseArgs): void {
   const anchor = objectAnchor(args, "memory", { x: 33, y: 52 });
   const workshop = objectAnchor(args, "providers", { x: 64, y: 73 });
   const frame = safeFrame(args.frame);
-  const count = countForMotion(12, args.compact, args.reducedMotion);
+  const count = countForMotion(9, args.compact, args.reducedMotion);
   const memoryObject = worldObjects(args.world).find(
     (object) => object.id === "memory",
   );
@@ -805,9 +816,9 @@ function drawMemoryOrbs(args: DrawBuddyWorldBaseArgs): void {
       args.ctx,
       x,
       y,
-      5 + seededUnit(127, index) * 5,
+      4 + seededUnit(127, index) * 4,
       color,
-      alpha * (critical ? 0.16 : 0.12),
+      alpha * (critical ? 0.12 : 0.08),
     );
     drawSpark(args.ctx, x, y, 1.6 + seededUnit(131, index) * 1.8, color, alpha);
   }

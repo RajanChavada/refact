@@ -239,8 +239,8 @@ export function drawWorkshopZones(args: DrawBuddyWorldBaseArgs): void {
         y: portalY - 18 + wave(frame, 54, 0, 7, args.reducedMotion),
       },
       "#A78BFA",
-      args.compact ? 3 : 5,
-      alphaForMotion(0.16 + intensity * 0.12, args.reducedMotion),
+      args.compact ? 2 : 3,
+      alphaForMotion(0.1 + intensity * 0.08, args.reducedMotion),
     );
   }
 }
@@ -354,8 +354,8 @@ export function drawBuddyLandingPad(args: DrawBuddyWorldBaseArgs): void {
     args.compact ? 27 : 33,
     6,
     "#BBF7D0",
-    2,
-    0.22,
+    1,
+    0.12,
   );
 }
 

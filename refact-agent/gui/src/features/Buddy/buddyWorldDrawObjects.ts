@@ -37,9 +37,9 @@ function objectAlpha(
   item: BuddyWorldObject,
 ): number {
   const base =
-    item.state === "critical" ? 0.22 : item.state === "active" ? 0.18 : 0.12;
+    item.state === "critical" ? 0.18 : item.state === "active" ? 0.12 : 0.08;
   return alphaForMotion(
-    base + finiteOr(item.intensity, 0) * 0.14,
+    base + finiteOr(item.intensity, 0) * 0.08,
     args.reducedMotion,
   );
 }
@@ -275,7 +275,7 @@ function drawObservatory(
   tone: string,
 ): void {
   const activeAlpha =
-    item.state === "critical" ? 0.46 : item.state === "active" ? 0.28 : 0.14;
+    item.state === "critical" ? 0.32 : item.state === "active" ? 0.2 : 0.1;
   const warning = item.state === "attention";
   fillCircle(args.ctx, x + 11, y - 23, 25, tone, activeAlpha);
   fillPixelRect(args.ctx, x - 24, y + 13, 48, 18, "#334155");
@@ -303,11 +303,11 @@ function drawObservatory(
       18,
       "#F59E0B",
       2,
-      0.24 + finiteOr(item.intensity, 0) * 0.16,
+      0.14 + finiteOr(item.intensity, 0) * 0.08,
     );
   }
   if (item.state === "critical") {
-    fillCircle(args.ctx, x + 12, y - 24, 38, "#EF4444", 0.16);
+    fillCircle(args.ctx, x + 12, y - 24, 32, "#EF4444", 0.13);
     fillPixelRect(args.ctx, x + 33, y - 18, 8, 3, "#FACC15", 0.86);
     fillPixelRect(args.ctx, x + 38, y - 15, 3, 8, "#FACC15", 0.86);
     strokeLine(
@@ -342,7 +342,7 @@ function drawSatellite(
       9,
       "#DBEAFE",
       1,
-      0.2 + finiteOr(item.intensity, 0) * 0.14,
+      0.12 + finiteOr(item.intensity, 0) * 0.08,
     );
   }
 }
@@ -395,11 +395,22 @@ export function drawWorldObject(
     args.ctx,
     x,
     y + 12 * scale,
-    size + 9,
+    item.state === "critical" ? size + 8 : size + 4,
     tone,
     objectAlpha(args, item),
   );
-  strokeEllipse(args.ctx, x, y + size + 10, size + 9, 5, tone, 2, 0.42);
+  if (item.state === "critical" || item.state === "active") {
+    strokeEllipse(
+      args.ctx,
+      x,
+      y + size + 10,
+      size + 6,
+      5,
+      tone,
+      item.state === "critical" ? 2 : 1,
+      item.state === "critical" ? 0.34 : 0.16,
+    );
+  }
 
   switch (item.sprite) {
     case "task_grove":

@@ -47,8 +47,13 @@ export function drawBuddyWorld(args: DrawBuddyWorldArgs): void {
     height,
   };
 
-  args.ctx.clearRect(0, 0, width, height);
-  args.ctx.imageSmoothingEnabled = false;
+  const { ctx } = args;
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, width, height);
+  ctx.beginPath();
+  ctx.globalAlpha = 1;
+  ctx.imageSmoothingEnabled = false;
 
   drawSkyGradient(drawArgs);
   if (shouldDrawStarField(args.world)) drawStarField(drawArgs);
