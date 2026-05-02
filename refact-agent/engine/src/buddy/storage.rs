@@ -483,7 +483,7 @@ pub async fn bootstrap_buddy_storage(project_root: &Path) -> Result<(), String> 
 mod tests {
     use super::*;
     use crate::buddy::memory_lifecycle::{
-        MemoryLifecycleOp, MemoryOpStatus, MemoryOpType, MemorySource,
+        MemoryLifecycleOp, MemoryOpStatus, MemoryOpType, MemorySource, MEMORY_OP_EVIDENCE_MAX_CHARS,
     };
 
     fn test_op(op_id: &str, evidence: &str, status: MemoryOpStatus) -> MemoryLifecycleOp {
@@ -600,5 +600,64 @@ mod tests {
                 .unwrap(),
             ""
         );
+    }
+
+    #[tokio::test]
+    async fn memory_ops_enqueue_replay_and_compact_sanitize_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let raw = format!(
+            "password=secret token ghp_AbCdEfGhIj1234567890 {}",
+            "x".repeat(MEMORY_OP_EVIDENCE_MAX_CHARS * 2)
+        );
+
+        let mut op = test_op("op-secret", &raw, MemoryOpStatus::Pending);
+        op.evidence = raw;
+        enqueue_memory_op(root, op).await.unwrap();
+
+        let content = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+        assert!(!content.contains("password=secret"));
+        assert!(!content.contains("ghp_AbCdEfGhIj1234567890"));
+        assert!(content.len() < MEMORY_OP_EVIDENCE_MAX_CHARS * 3);
+
+        let replayed = load_memory_ops(root).await;
+        assert_eq!(replayed.ops.len(), 1);
+        assert!(!replayed.ops[0].evidence.contains("password=secret"));
+        assert!(!replayed.ops[0]
+            .evidence
+            .contains("ghp_AbCdEfGhIj1234567890"));
+        assert!(replayed.ops[0].evidence.len() <= MEMORY_OP_EVIDENCE_MAX_CHARS);
+
+        compact_memory_ops(root).await.unwrap();
+        let compacted = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+        assert!(!compacted.contains("password=secret"));
+        assert!(!compacted.contains("ghp_AbCdEfGhIj1234567890"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_approval_required_queue_apply_keeps_op_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let op = test_op("op-archive", "archive", MemoryOpStatus::Pending);
+        let mut op = MemoryLifecycleOp {
+            op_type: MemoryOpType::Archive,
+            requires_approval: true,
+            ..op
+        };
+        op.status = MemoryOpStatus::Pending;
+
+        enqueue_memory_op(root, op.clone()).await.unwrap();
+        let state = apply_queued_memory_ops(root, gcx).await.unwrap();
+
+        assert_eq!(state.ops.len(), 1);
+        assert_eq!(state.ops[0].status, MemoryOpStatus::Pending);
+        assert_eq!(state.ops[0].error, None);
+        assert_eq!(state.pending_count, 1);
+        assert_eq!(state.failed_count, 0);
     }
 }

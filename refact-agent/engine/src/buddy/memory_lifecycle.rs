@@ -23,6 +23,7 @@ use crate::memories::{
 
 const HIGH_CONFIDENCE_APPROVAL_THRESHOLD: f32 = 0.85;
 const PAYLOAD_CONTENT_MAX_CHARS: usize = 12000;
+pub(crate) const MEMORY_OP_EVIDENCE_MAX_CHARS: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -286,7 +287,7 @@ impl MemoryLifecycleOp {
         created_at: impl Into<String>,
     ) -> Self {
         let target_paths = normalize_paths(&target_paths);
-        let evidence = evidence.into();
+        let evidence = normalize_evidence_text(&evidence.into());
         let idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
             source,
             op_type,
@@ -321,6 +322,7 @@ impl MemoryLifecycleOp {
         self.idempotency_key = self.idempotency_key.trim().to_string();
         self.target_paths = normalize_paths(&self.target_paths);
         self.payload = self.payload.normalized();
+        self.evidence = normalize_evidence_text(&self.evidence);
         self.applied_at = normalize_optional_string(self.applied_at.as_deref());
         self.error = normalize_optional_string(self.error.as_deref());
         if self.idempotency_key.trim().is_empty() {
@@ -420,7 +422,9 @@ impl MemoryOpsState {
         self.ops
             .iter()
             .cloned()
-            .map(|op| MemoryOpsRecord::Op { op })
+            .map(|op| MemoryOpsRecord::Op {
+                op: op.normalized(),
+            })
             .collect()
     }
 
@@ -650,7 +654,7 @@ impl MemoryOpIdempotencyInput {
             source_id: normalize_optional_string(self.source_id.as_deref()),
             title: normalize_optional_text(self.title.as_deref()),
             content: normalize_optional_hash_text(self.content.as_deref()),
-            evidence: normalize_optional_text(self.evidence.as_deref()),
+            evidence: normalize_optional_evidence(self.evidence.as_deref()),
         }
     }
 }
@@ -1032,7 +1036,11 @@ pub fn record_memory_usage_metadata(
         frontmatter.dismissed_count = frontmatter.dismissed_count.saturating_add(1);
         changed = true;
     } else {
+        let previous_use_count = frontmatter.use_count;
         frontmatter.use_count = frontmatter.use_count.saturating_add(1);
+        if frontmatter.use_count != previous_use_count {
+            changed = true;
+        }
         if frontmatter.last_used_at.as_deref() != Some(timestamp.as_str()) {
             frontmatter.last_used_at = Some(timestamp.clone());
             changed = true;
@@ -1683,6 +1691,12 @@ pub async fn load_memory_doc_snapshots_from_knowledge_dirs(
     while let Some(dir) = stack.pop() {
         if visited_entries >= MAX_MEMORY_LIFECYCLE_SCAN_ENTRIES {
             break;
+        }
+        let Ok(metadata) = tokio::fs::symlink_metadata(&dir).await else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
         }
         let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
             continue;
@@ -2437,19 +2451,19 @@ pub async fn apply_memory_lifecycle_op(
     ) {
         return Ok(MemoryApplyOutcome::skipped("operation already finalized"));
     }
-    if op.requires_approval && op.status != MemoryOpStatus::Approved {
-        return Err("operation requires approval".to_string());
-    }
     if destructive_memory_op(op.op_type) && op.status != MemoryOpStatus::Approved {
         return Err("archive, delete, and merge operations require approval".to_string());
+    }
+    if op.requires_approval && op.status != MemoryOpStatus::Approved {
+        return Err("operation requires approval".to_string());
     }
 
     match op.op_type {
         MemoryOpType::CreateMemory => apply_create_memory(gcx, &op).await,
         MemoryOpType::Retag => apply_retag(gcx, &op).await,
         MemoryOpType::RepairLinks => apply_repair_links(gcx, &op).await,
-        MemoryOpType::MarkReviewNeeded => apply_review_status(gcx, &op, "review_needed").await,
-        MemoryOpType::MarkStale => apply_review_status(gcx, &op, "stale").await,
+        MemoryOpType::MarkReviewNeeded => apply_review_status(gcx, &op, "proposed").await,
+        MemoryOpType::MarkStale => apply_review_status(gcx, &op, "deprecated").await,
         MemoryOpType::Archive | MemoryOpType::ArchiveCandidate => {
             apply_archive(gcx, &op, None).await
         }
@@ -2478,11 +2492,19 @@ pub async fn apply_memory_lifecycle_op_status(
             }
         }
         Err(err) => {
-            updated.status = MemoryOpStatus::Failed;
-            updated.error = Some(err);
+            if updated.status == MemoryOpStatus::Pending && apply_error_is_missing_approval(&err) {
+                updated.error = None;
+            } else {
+                updated.status = MemoryOpStatus::Failed;
+                updated.error = Some(err);
+            }
         }
     }
     updated
+}
+
+fn apply_error_is_missing_approval(err: &str) -> bool {
+    err.contains("requires approval") || err.contains("require approval")
 }
 
 fn destructive_memory_op(op_type: MemoryOpType) -> bool {
@@ -2671,18 +2693,25 @@ async fn apply_review_status(
     status: &str,
 ) -> Result<MemoryApplyOutcome, String> {
     let roots = knowledge_roots(gcx.clone()).await;
+    let status = normalize_memory_status(Some(status));
     let review_after = op.payload.review_after.clone().unwrap_or_else(today_string);
     let mut paths = Vec::new();
     for target in &op.target_paths {
         let path = validate_existing_memory_path(target, &roots).await?;
         let changed = update_memory_document_frontmatter(gcx.clone(), &path, |frontmatter| {
-            if frontmatter.status.as_deref() == Some(status)
+            if frontmatter.status.as_deref() == Some(status.as_str())
                 && frontmatter.review_after.as_deref() == Some(review_after.as_str())
+                && (status == "deprecated") == frontmatter.deprecated_at.is_some()
             {
                 return Ok(false);
             }
             frontmatter.status = Some(status.to_string());
             frontmatter.review_after = Some(review_after.clone());
+            if status == "deprecated" {
+                frontmatter.deprecated_at = Some(today_string());
+            } else {
+                frontmatter.deprecated_at = None;
+            }
             frontmatter.updated = Some(today_string());
             Ok(true)
         })
@@ -2948,10 +2977,21 @@ fn today_string() -> String {
 }
 
 fn redact_and_cap_payload_text(text: &str, max_chars: usize) -> String {
-    let redacted = crate::buddy::actor::redact_sensitive(text);
+    let scan_cap = max_chars.saturating_add(4096);
+    let scanned = crate::llm::safe_truncate(text, scan_cap);
+    let redacted = crate::buddy::actor::redact_sensitive(scanned);
     crate::llm::safe_truncate(&redacted, max_chars)
         .trim()
         .to_string()
+}
+
+fn normalize_evidence_text(text: &str) -> String {
+    redact_and_cap_payload_text(text, MEMORY_OP_EVIDENCE_MAX_CHARS)
+}
+
+fn normalize_optional_evidence(value: Option<&str>) -> Option<String> {
+    let evidence = normalize_evidence_text(value?);
+    normalize_optional_text(Some(&evidence))
 }
 
 pub fn default_review_after_days(
@@ -3073,6 +3113,12 @@ mod tests {
         );
         op.status = status;
         op
+    }
+
+    fn assert_no_raw_secret(text: &str) {
+        assert!(!text.contains("password=secret"));
+        assert!(!text.contains("secret"));
+        assert!(!text.contains("ghp_AbCdEfGhIj1234567890"));
     }
 
     async fn test_gcx_with_workspace(dir: &Path) -> Arc<ARwLock<GlobalContext>> {
@@ -3376,6 +3422,31 @@ mod tests {
         ));
         assert_eq!(frontmatter.dismissed_count, 1);
         assert_eq!(frontmatter.use_count, 1);
+    }
+
+    #[test]
+    fn usage_metadata_update_reports_same_timestamp_use_count_change() {
+        let now = fixed_now();
+        let mut frontmatter = active_frontmatter("memory", &["buddy"]);
+
+        assert!(record_memory_usage_metadata(
+            &mut frontmatter,
+            now,
+            false,
+            false
+        ));
+        assert!(record_memory_usage_metadata(
+            &mut frontmatter,
+            now,
+            false,
+            false
+        ));
+
+        assert_eq!(frontmatter.use_count, 2);
+        assert_eq!(
+            frontmatter.last_used_at.as_deref(),
+            Some(now.to_rfc3339().as_str())
+        );
     }
 
     #[test]
@@ -3756,6 +3827,33 @@ mod tests {
         assert_eq!(compacted.applied_count, 1);
     }
 
+    #[test]
+    fn lifecycle_op_normalizes_evidence_redacts_and_caps() {
+        let raw = format!(
+            "token ghp_AbCdEfGhIj1234567890 password=secret {}",
+            "x".repeat(MEMORY_OP_EVIDENCE_MAX_CHARS * 2)
+        );
+        let op = MemoryLifecycleOp::pending(
+            "op-evidence",
+            MemorySource::MemoryGarden,
+            MemoryOpType::CreateMemory,
+            Vec::new(),
+            raw.clone(),
+            0.91,
+            "2026-05-02T00:00:00Z",
+        );
+
+        assert_no_raw_secret(&op.evidence);
+        assert!(op.evidence.len() <= MEMORY_OP_EVIDENCE_MAX_CHARS);
+
+        let mut stale = op.clone();
+        stale.evidence = raw;
+        let normalized = stale.normalized();
+
+        assert_no_raw_secret(&normalized.evidence);
+        assert!(normalized.evidence.len() <= MEMORY_OP_EVIDENCE_MAX_CHARS);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn create_memory_op_writes_frontmatter_body_with_normalized_metadata() {
         let dir = tempfile::tempdir().unwrap();
@@ -3833,6 +3931,54 @@ mod tests {
         assert_eq!(op.payload.related_files.unwrap(), strings(&["src/main.rs"]));
         assert!(op.payload.tags.unwrap().contains(&"memory".to_string()));
         assert!(!op.payload.content.unwrap().contains("secret"));
+        assert_no_raw_secret(&op.evidence);
+        assert!(op.evidence.len() <= MEMORY_OP_EVIDENCE_MAX_CHARS);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn symlinked_knowledge_root_scan_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_root = dir.path().join("real_knowledge");
+        tokio::fs::create_dir_all(&real_root).await.unwrap();
+        write_memory_file(
+            &real_root.join("memory.md"),
+            active_frontmatter("memory", &["buddy"]),
+            "Body",
+        )
+        .await;
+        let symlink_root = dir.path().join("symlink_knowledge");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_root, &symlink_root).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_root, &symlink_root).unwrap();
+
+        let docs = load_memory_doc_snapshots_from_knowledge_dirs(&[symlink_root]).await;
+
+        assert!(docs.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn popped_symlink_directory_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let scan_root = dir.path().join("scan_root");
+        let real_root = dir.path().join("real_root");
+        tokio::fs::create_dir_all(&scan_root).await.unwrap();
+        tokio::fs::create_dir_all(&real_root).await.unwrap();
+        write_memory_file(
+            &real_root.join("memory.md"),
+            active_frontmatter("memory", &["buddy"]),
+            "Body",
+        )
+        .await;
+        let symlink_dir = scan_root.join("linked_dir");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_root, &symlink_dir).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&real_root, &symlink_dir).unwrap();
+
+        let docs = load_memory_doc_snapshots_from_knowledge_dirs(&[scan_root]).await;
+
+        assert!(docs.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3951,6 +4097,76 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn review_and_stale_ops_persist_canonical_statuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = test_gcx_with_workspace(dir.path()).await;
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+        let review_path = knowledge_dir.join("review.md");
+        let stale_path = knowledge_dir.join("stale.md");
+        write_memory_file(
+            &review_path,
+            active_frontmatter("review", &["old"]),
+            "Review body",
+        )
+        .await;
+        write_memory_file(
+            &stale_path,
+            active_frontmatter("stale", &["old"]),
+            "Stale body",
+        )
+        .await;
+
+        let mut review = MemoryLifecycleOp::pending(
+            "op-review",
+            MemorySource::MemoryGarden,
+            MemoryOpType::MarkReviewNeeded,
+            vec![review_path.to_string_lossy().to_string()],
+            "review",
+            0.91,
+            "2026-05-02T00:00:00Z",
+        );
+        review.status = MemoryOpStatus::Approved;
+        review.payload.review_after = Some("2026-05-03".to_string());
+        apply_memory_lifecycle_op(gcx.clone(), &review)
+            .await
+            .unwrap();
+
+        let mut stale = MemoryLifecycleOp::pending(
+            "op-stale",
+            MemorySource::MemoryGarden,
+            MemoryOpType::MarkStale,
+            vec![stale_path.to_string_lossy().to_string()],
+            "stale",
+            0.91,
+            "2026-05-02T00:00:00Z",
+        );
+        stale.status = MemoryOpStatus::Approved;
+        stale.payload.review_after = Some("2026-05-04".to_string());
+        apply_memory_lifecycle_op(gcx, &stale).await.unwrap();
+
+        let (review_frontmatter, review_body) =
+            frontmatter_and_body(&tokio::fs::read_to_string(&review_path).await.unwrap());
+        assert_eq!(review_frontmatter.status.as_deref(), Some("proposed"));
+        assert_eq!(
+            review_frontmatter.review_after.as_deref(),
+            Some("2026-05-03")
+        );
+        assert_eq!(review_frontmatter.deprecated_at, None);
+        assert_eq!(review_body, "Review body");
+
+        let (stale_frontmatter, stale_body) =
+            frontmatter_and_body(&tokio::fs::read_to_string(&stale_path).await.unwrap());
+        assert_eq!(stale_frontmatter.status.as_deref(), Some("deprecated"));
+        assert_eq!(
+            stale_frontmatter.review_after.as_deref(),
+            Some("2026-05-04")
+        );
+        assert!(stale_frontmatter.deprecated_at.is_some());
+        assert_eq!(stale_body, "Stale body");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn invalid_path_traversal_and_symlink_escape_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let gcx = test_gcx_with_workspace(dir.path()).await;
@@ -4049,6 +4265,44 @@ mod tests {
         let (canonical_frontmatter, canonical_body) = frontmatter_and_body(&canonical_text);
         assert_eq!(canonical_frontmatter.title.as_deref(), Some("Canonical"));
         assert_eq!(canonical_body, "Canonical body");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_approval_required_op_status_remains_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = test_gcx_with_workspace(dir.path()).await;
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+        let old_path = knowledge_dir.join("old.md");
+        write_memory_file(&old_path, active_frontmatter("old", &["old"]), "Old body").await;
+
+        let mut op = MemoryLifecycleOp::pending(
+            "op-pending-merge",
+            MemorySource::MemoryGarden,
+            MemoryOpType::MergeArchive,
+            vec![old_path.to_string_lossy().to_string()],
+            "merge",
+            0.91,
+            "2026-05-02T00:00:00Z",
+        );
+        op.payload.canonical = Some(MemoryCreatePayload {
+            title: Some("Canonical".to_string()),
+            content: "Canonical body".to_string(),
+            tags: strings(&["canonical"]),
+            kind: "domain".to_string(),
+            ..Default::default()
+        });
+
+        let updated = apply_memory_lifecycle_op_status(gcx, &op).await;
+
+        assert_eq!(updated.status, MemoryOpStatus::Pending);
+        assert_eq!(updated.error, None);
+        assert_eq!(updated.applied_at, None);
+        let text = tokio::fs::read_to_string(&old_path).await.unwrap();
+        assert_eq!(
+            frontmatter_and_body(&text).0.status.as_deref(),
+            Some("active")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
