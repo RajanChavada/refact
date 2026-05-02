@@ -12,6 +12,9 @@ use tokio::sync::RwLock as ARwLock;
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
+use crate::git::operations::{
+    GitCommitClassification, GitCommitSummary, GitFileChangeStatus, GitHistoryReport,
+};
 use crate::knowledge_graph::kg_structs::{KnowledgeDoc, KnowledgeFrontmatter};
 use crate::memories::{
     create_frontmatter, get_global_knowledge_dir, memories_add, normalize_memory_tags,
@@ -164,9 +167,11 @@ pub struct MemoryCreatePayload {
     pub content: String,
     pub tags: Vec<String>,
     pub kind: String,
+    pub status: Option<String>,
     pub filenames: Vec<String>,
     pub related_files: Vec<String>,
     pub links: Vec<String>,
+    pub source_commit: Option<String>,
     pub review_after: Option<String>,
 }
 
@@ -192,9 +197,14 @@ impl MemoryCreatePayload {
         self.content = redact_and_cap_payload_text(&self.content, PAYLOAD_CONTENT_MAX_CHARS);
         self.tags = normalize_tags(&self.tags);
         self.kind = normalize_kind(&self.kind);
+        self.status = self
+            .status
+            .as_deref()
+            .map(|status| normalize_memory_status(Some(status)));
         self.filenames = normalize_paths(&self.filenames);
         self.related_files = normalize_paths(&self.related_files);
         self.links = normalize_strings(&self.links);
+        self.source_commit = normalize_optional_string(self.source_commit.as_deref());
         self.review_after = normalize_review_after(self.review_after.as_deref());
         self
     }
@@ -679,6 +689,9 @@ const MAX_MEMORY_LIFECYCLE_DOCS: usize = 500;
 const MAX_MEMORY_LIFECYCLE_OPS: usize = 100;
 const MAX_MEMORY_LIFECYCLE_SCAN_ENTRIES: usize = 5_000;
 const MAX_MEMORY_LIFECYCLE_FILE_BYTES: u64 = 256 * 1024;
+const MAX_GIT_MEMORY_OPS: usize = 80;
+const MAX_GIT_MEMORY_PATHS: usize = 12;
+const MAX_GIT_CREATE_OPS_PER_KIND: usize = 8;
 
 impl MemoryDocSnapshot {
     pub fn from_knowledge_doc(doc: &KnowledgeDoc) -> Self {
@@ -1346,9 +1359,11 @@ fn build_merge_candidate(
         content: canonical.content.clone(),
         tags: union_field(&all_docs, |doc| &doc.tags),
         kind: canonical.kind.clone(),
+        status: None,
         filenames: union_field(&all_docs, |doc| &doc.filenames),
         related_files: union_field(&all_docs, |doc| &doc.related_files),
         links: union_field(&all_docs, |doc| &doc.links),
+        source_commit: canonical.source_commit.clone(),
         review_after: canonical.review_after.clone(),
     });
     op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
@@ -1547,12 +1562,12 @@ fn memory_op_sort_rank(op_type: MemoryOpType) -> u8 {
         MemoryOpType::Retag => 3,
         MemoryOpType::RepairLinks => 4,
         MemoryOpType::CreateMemory => 5,
-        MemoryOpType::UpdateMemory => 6,
-        MemoryOpType::Refresh => 7,
-        MemoryOpType::Archive => 8,
-        MemoryOpType::DeleteCandidate => 9,
-        MemoryOpType::PromoteDigest => 10,
-        MemoryOpType::MarkStale => 11,
+        MemoryOpType::MarkStale => 6,
+        MemoryOpType::UpdateMemory => 7,
+        MemoryOpType::Refresh => 8,
+        MemoryOpType::Archive => 9,
+        MemoryOpType::DeleteCandidate => 10,
+        MemoryOpType::PromoteDigest => 11,
     }
 }
 
@@ -1590,6 +1605,13 @@ pub async fn detect_memory_lifecycle_ops_from_knowledge_dirs(
     dirs: &[PathBuf],
     now: DateTime<Utc>,
 ) -> Vec<MemoryLifecycleOp> {
+    let docs = load_memory_doc_snapshots_from_knowledge_dirs(dirs).await;
+    detect_memory_lifecycle_ops(&docs, now)
+}
+
+pub async fn load_memory_doc_snapshots_from_knowledge_dirs(
+    dirs: &[PathBuf],
+) -> Vec<MemoryDocSnapshot> {
     let mut docs = Vec::new();
     let mut stack: Vec<PathBuf> = dirs.iter().cloned().collect();
     stack.sort();
@@ -1642,7 +1664,538 @@ pub async fn detect_memory_lifecycle_ops_from_knowledge_dirs(
         pending_dirs.sort();
         stack.extend(pending_dirs.into_iter().rev());
     }
-    detect_memory_lifecycle_ops(&docs, now)
+    docs
+}
+
+pub fn detect_git_memory_ops(
+    report: &GitHistoryReport,
+    docs: &[MemoryDocSnapshot],
+    now: DateTime<Utc>,
+) -> Vec<MemoryLifecycleOp> {
+    let docs = docs
+        .iter()
+        .cloned()
+        .map(MemoryDocSnapshot::normalized)
+        .collect::<Vec<_>>();
+    let mut ops = Vec::new();
+    ops.extend(git_rename_repair_ops(report, &docs, now));
+    ops.extend(git_stale_and_revert_ops(report, &docs, now));
+    ops.extend(git_commit_create_ops(report, now));
+    ops.extend(git_hotspot_create_ops(report, now));
+    ops.extend(git_cochange_create_ops(report, now));
+    sort_memory_ops(&mut ops);
+    ops.dedup_by(|a, b| a.idempotency_key == b.idempotency_key);
+    ops.truncate(MAX_GIT_MEMORY_OPS);
+    ops
+}
+
+fn git_rename_repair_ops(
+    report: &GitHistoryReport,
+    docs: &[MemoryDocSnapshot],
+    now: DateTime<Utc>,
+) -> Vec<MemoryLifecycleOp> {
+    let mut rename_map = BTreeMap::<String, String>::new();
+    let mut rename_commit = BTreeMap::<String, String>::new();
+    for commit in &report.commits {
+        for change in &commit.changes {
+            if change.status != GitFileChangeStatus::Renamed {
+                continue;
+            }
+            let Some(old_path) = &change.old_path else {
+                continue;
+            };
+            rename_map.insert(old_path.clone(), change.path.clone());
+            rename_commit.insert(old_path.clone(), commit.short_oid.clone());
+        }
+    }
+
+    let mut ops = Vec::new();
+    for doc in docs {
+        if doc.status == "archived" || doc.status == "deprecated" {
+            continue;
+        }
+        let renamed_files = doc
+            .filenames
+            .iter()
+            .filter_map(|path| {
+                rename_map
+                    .get(path)
+                    .map(|new_path| (path.clone(), new_path.clone()))
+            })
+            .collect::<Vec<_>>();
+        let renamed_related = doc
+            .related_files
+            .iter()
+            .filter_map(|path| {
+                rename_map
+                    .get(path)
+                    .map(|new_path| (path.clone(), new_path.clone()))
+            })
+            .collect::<Vec<_>>();
+        if renamed_files.is_empty() && renamed_related.is_empty() {
+            continue;
+        }
+        let new_filenames = rewrite_paths_with_renames(&doc.filenames, &rename_map);
+        let new_related = rewrite_paths_with_renames(&doc.related_files, &rename_map);
+        let mut evidence_pairs = renamed_files.clone();
+        evidence_pairs.extend(renamed_related.clone());
+        evidence_pairs.sort();
+        evidence_pairs.truncate(MAX_GIT_MEMORY_PATHS);
+        let commits = evidence_pairs
+            .iter()
+            .filter_map(|(old, _)| rename_commit.get(old).cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let evidence = format!(
+            "git rename memory repair: commits={} paths={}",
+            commits.join(","),
+            evidence_pairs
+                .iter()
+                .map(|(old, new)| format!("{old}->{new}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut op = MemoryLifecycleOp::pending(
+            deterministic_op_id("git_repair_links", &[doc.stable_key(), evidence.clone()]),
+            MemorySource::Git,
+            MemoryOpType::RepairLinks,
+            vec![doc.path.clone()],
+            evidence,
+            0.92,
+            now.to_rfc3339(),
+        );
+        op.requires_approval = false;
+        op.payload.filenames = Some(new_filenames);
+        op.payload.related_files = Some(new_related);
+        op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
+            source: op.source,
+            op_type: op.op_type,
+            target_paths: op.target_paths.clone(),
+            tags: Vec::new(),
+            kind: None,
+            source_id: Some(doc.stable_key()),
+            title: Some("git rename repair".to_string()),
+            content: None,
+            evidence: Some(op.evidence.clone()),
+        });
+        ops.push(op.normalized());
+    }
+    ops
+}
+
+fn git_stale_and_revert_ops(
+    report: &GitHistoryReport,
+    docs: &[MemoryDocSnapshot],
+    now: DateTime<Utc>,
+) -> Vec<MemoryLifecycleOp> {
+    let mut changed_paths_by_commit = BTreeMap::<String, Vec<String>>::new();
+    let mut reverted_commits = BTreeSet::new();
+    for commit in &report.commits {
+        let paths = commit_change_paths(commit);
+        changed_paths_by_commit.insert(commit.short_oid.clone(), paths.clone());
+        if commit
+            .classifications
+            .contains(&GitCommitClassification::Revert)
+        {
+            for reverted in parse_reverted_commit_refs(&commit.message) {
+                reverted_commits.insert(reverted);
+            }
+        }
+    }
+
+    let mut ops = Vec::new();
+    for doc in docs {
+        if doc.status == "archived" || doc.status == "deprecated" || doc.protected() {
+            continue;
+        }
+        if let Some(source_commit) = &doc.source_commit {
+            if reverted_commits
+                .iter()
+                .any(|reverted| commit_ref_matches(source_commit, reverted))
+            {
+                let evidence = format!(
+                    "git revert detector: memory {} sourced from reverted commit {}",
+                    doc.stable_key(),
+                    source_commit
+                );
+                let mut op = MemoryLifecycleOp::pending(
+                    deterministic_op_id(
+                        "git_revert_stale",
+                        &[doc.stable_key(), source_commit.clone()],
+                    ),
+                    MemorySource::Git,
+                    MemoryOpType::MarkStale,
+                    vec![doc.path.clone()],
+                    evidence,
+                    0.88,
+                    now.to_rfc3339(),
+                );
+                op.requires_approval = true;
+                op.payload.review_after = Some(now.date_naive().format("%Y-%m-%d").to_string());
+                ops.push(op.normalized());
+                continue;
+            }
+        }
+        let files = doc.all_files();
+        if files.is_empty() {
+            continue;
+        }
+        let mut overlapping_commits = Vec::new();
+        for commit in &report.commits {
+            let paths = changed_paths_by_commit
+                .get(&commit.short_oid)
+                .cloned()
+                .unwrap_or_default();
+            if paths.iter().any(|path| files.contains(path)) {
+                overlapping_commits.push(commit.short_oid.clone());
+            }
+            if overlapping_commits.len() >= 3 {
+                break;
+            }
+        }
+        if overlapping_commits.len() < 2 {
+            continue;
+        }
+        let evidence = format!(
+            "stale memory after code change: commits={} memory={} paths={}",
+            overlapping_commits.join(","),
+            doc.stable_key(),
+            files
+                .into_iter()
+                .take(MAX_GIT_MEMORY_PATHS)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut op = MemoryLifecycleOp::pending(
+            deterministic_op_id("git_review", &[doc.stable_key(), evidence.clone()]),
+            MemorySource::Git,
+            MemoryOpType::MarkReviewNeeded,
+            vec![doc.path.clone()],
+            evidence,
+            0.73,
+            now.to_rfc3339(),
+        );
+        op.requires_approval = true;
+        op.payload.review_after = Some(now.date_naive().format("%Y-%m-%d").to_string());
+        ops.push(op.normalized());
+    }
+    ops
+}
+
+fn git_commit_create_ops(report: &GitHistoryReport, now: DateTime<Utc>) -> Vec<MemoryLifecycleOp> {
+    let mut lesson_count = 0usize;
+    let mut decision_count = 0usize;
+    let mut ops = Vec::new();
+    for commit in &report.commits {
+        let is_lesson = commit.classifications.iter().any(|class| {
+            matches!(
+                class,
+                GitCommitClassification::Bugfix | GitCommitClassification::Revert
+            )
+        });
+        if is_lesson && lesson_count < MAX_GIT_CREATE_OPS_PER_KIND {
+            if let Some(op) = git_commit_memory_create_op(commit, "lesson", now) {
+                ops.push(op);
+                lesson_count += 1;
+            }
+        }
+        let is_decision = commit.classifications.iter().any(|class| {
+            matches!(
+                class,
+                GitCommitClassification::Decision
+                    | GitCommitClassification::Rationale
+                    | GitCommitClassification::Migration
+            )
+        });
+        if is_decision && decision_count < MAX_GIT_CREATE_OPS_PER_KIND {
+            if let Some(op) = git_commit_memory_create_op(commit, "decision", now) {
+                ops.push(op);
+                decision_count += 1;
+            }
+        }
+    }
+    ops
+}
+
+fn git_commit_memory_create_op(
+    commit: &GitCommitSummary,
+    kind: &str,
+    now: DateTime<Utc>,
+) -> Option<MemoryLifecycleOp> {
+    if commit.message.trim().is_empty() {
+        return None;
+    }
+    let paths = commit_change_paths(commit)
+        .into_iter()
+        .take(MAX_GIT_MEMORY_PATHS)
+        .collect::<Vec<_>>();
+    let title = format!("Git {} from {}", kind, commit.short_oid);
+    let content = format!(
+        "{}\n\nSource commit: {}\nPaths: {}\nSummary: {}",
+        title,
+        commit.short_oid,
+        paths.join(", "),
+        commit.message
+    );
+    let evidence = format!(
+        "commit {} classified as {} paths={} message={}",
+        commit.short_oid,
+        kind,
+        paths.join(","),
+        commit.message
+    );
+    let mut op = MemoryLifecycleOp::pending(
+        deterministic_op_id(
+            &format!("git_{kind}"),
+            &[commit.short_oid.clone(), content.clone()],
+        ),
+        MemorySource::Git,
+        MemoryOpType::CreateMemory,
+        Vec::new(),
+        evidence,
+        if kind == "lesson" { 0.86 } else { 0.82 },
+        now.to_rfc3339(),
+    );
+    op.requires_approval = true;
+    op.payload.canonical = Some(MemoryCreatePayload {
+        title: Some(title),
+        content,
+        tags: vec!["git".to_string(), kind.to_string()],
+        kind: kind.to_string(),
+        status: Some("proposed".to_string()),
+        filenames: paths,
+        related_files: Vec::new(),
+        links: Vec::new(),
+        source_commit: Some(commit.oid.clone()),
+        review_after: Some(default_review_after_date(
+            now.date_naive(),
+            kind,
+            MemorySource::Git,
+            MemoryCandidateStatus::Proposed,
+        )),
+    });
+    op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
+        source: op.source,
+        op_type: op.op_type,
+        target_paths: Vec::new(),
+        tags: vec!["git".to_string(), kind.to_string()],
+        kind: Some(kind.to_string()),
+        source_id: Some(commit.oid.clone()),
+        title: op
+            .payload
+            .canonical
+            .as_ref()
+            .and_then(|payload| payload.title.clone()),
+        content: op
+            .payload
+            .canonical
+            .as_ref()
+            .map(|payload| payload.content.clone()),
+        evidence: None,
+    });
+    Some(op.normalized())
+}
+
+fn git_hotspot_create_ops(report: &GitHistoryReport, now: DateTime<Utc>) -> Vec<MemoryLifecycleOp> {
+    report
+        .hotspots
+        .iter()
+        .take(MAX_GIT_CREATE_OPS_PER_KIND)
+        .filter(|hotspot| hotspot.edit_count >= 3 || hotspot.score >= 100)
+        .map(|hotspot| {
+            let title = format!("Git hotspot: {}", hotspot.path);
+            let content = format!(
+                "{}\n\nRepeated edits: {}\nApproximate churn: +{} -{}\nLatest commit: {}",
+                title,
+                hotspot.edit_count,
+                hotspot.additions,
+                hotspot.deletions,
+                hotspot.latest_commit
+            );
+            let evidence = format!(
+                "hotspot score={} edits={} path={} latest_commit={}",
+                hotspot.score, hotspot.edit_count, hotspot.path, hotspot.latest_commit
+            );
+            let mut op = MemoryLifecycleOp::pending(
+                deterministic_op_id(
+                    "git_hotspot",
+                    &[hotspot.path.clone(), hotspot.score.to_string()],
+                ),
+                MemorySource::Git,
+                MemoryOpType::CreateMemory,
+                Vec::new(),
+                evidence,
+                0.74,
+                now.to_rfc3339(),
+            );
+            op.requires_approval = true;
+            op.payload.canonical = Some(MemoryCreatePayload {
+                title: Some(title),
+                content,
+                tags: vec!["git".to_string(), "hotspot".to_string(), "code".to_string()],
+                kind: "code".to_string(),
+                status: Some("proposed".to_string()),
+                filenames: vec![hotspot.path.clone()],
+                related_files: Vec::new(),
+                links: Vec::new(),
+                source_commit: Some(hotspot.latest_commit.clone()),
+                review_after: Some(default_review_after_date(
+                    now.date_naive(),
+                    "code",
+                    MemorySource::Git,
+                    MemoryCandidateStatus::Proposed,
+                )),
+            });
+            op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
+                source: op.source,
+                op_type: op.op_type,
+                target_paths: vec![hotspot.path.clone()],
+                tags: vec!["git".to_string(), "hotspot".to_string(), "code".to_string()],
+                kind: Some("code".to_string()),
+                source_id: Some(format!("hotspot:{}", hotspot.path)),
+                title: op
+                    .payload
+                    .canonical
+                    .as_ref()
+                    .and_then(|payload| payload.title.clone()),
+                content: op
+                    .payload
+                    .canonical
+                    .as_ref()
+                    .map(|payload| payload.content.clone()),
+                evidence: None,
+            });
+            op.normalized()
+        })
+        .collect()
+}
+
+fn git_cochange_create_ops(
+    report: &GitHistoryReport,
+    now: DateTime<Utc>,
+) -> Vec<MemoryLifecycleOp> {
+    report
+        .cochanges
+        .iter()
+        .take(MAX_GIT_CREATE_OPS_PER_KIND)
+        .map(|pair| {
+            let title = format!("Git co-change pattern: {} + {}", pair.path_a, pair.path_b);
+            let content = format!(
+                "{}\n\nThese paths changed together {} times in recent history.\nCommits: {}",
+                title,
+                pair.count,
+                pair.commits.join(", ")
+            );
+            let evidence = format!(
+                "co-change count={} paths={},{} commits={}",
+                pair.count,
+                pair.path_a,
+                pair.path_b,
+                pair.commits.join(",")
+            );
+            let mut op = MemoryLifecycleOp::pending(
+                deterministic_op_id(
+                    "git_cochange",
+                    &[
+                        pair.path_a.clone(),
+                        pair.path_b.clone(),
+                        pair.count.to_string(),
+                    ],
+                ),
+                MemorySource::Git,
+                MemoryOpType::CreateMemory,
+                Vec::new(),
+                evidence,
+                0.78,
+                now.to_rfc3339(),
+            );
+            op.requires_approval = true;
+            op.payload.canonical = Some(MemoryCreatePayload {
+                title: Some(title),
+                content,
+                tags: vec![
+                    "git".to_string(),
+                    "cochange".to_string(),
+                    "pattern".to_string(),
+                ],
+                kind: "pattern".to_string(),
+                status: Some("proposed".to_string()),
+                filenames: vec![pair.path_a.clone(), pair.path_b.clone()],
+                related_files: Vec::new(),
+                links: Vec::new(),
+                source_commit: pair.commits.first().cloned(),
+                review_after: Some(default_review_after_date(
+                    now.date_naive(),
+                    "pattern",
+                    MemorySource::Git,
+                    MemoryCandidateStatus::Proposed,
+                )),
+            });
+            op.idempotency_key = compute_idempotency_key(&MemoryOpIdempotencyInput {
+                source: op.source,
+                op_type: op.op_type,
+                target_paths: vec![pair.path_a.clone(), pair.path_b.clone()],
+                tags: vec![
+                    "git".to_string(),
+                    "cochange".to_string(),
+                    "pattern".to_string(),
+                ],
+                kind: Some("pattern".to_string()),
+                source_id: Some(format!("cochange:{}:{}", pair.path_a, pair.path_b)),
+                title: op
+                    .payload
+                    .canonical
+                    .as_ref()
+                    .and_then(|payload| payload.title.clone()),
+                content: op
+                    .payload
+                    .canonical
+                    .as_ref()
+                    .map(|payload| payload.content.clone()),
+                evidence: None,
+            });
+            op.normalized()
+        })
+        .collect()
+}
+
+fn rewrite_paths_with_renames(paths: &[String], renames: &BTreeMap<String, String>) -> Vec<String> {
+    normalize_paths(
+        &paths
+            .iter()
+            .map(|path| renames.get(path).cloned().unwrap_or_else(|| path.clone()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn commit_change_paths(commit: &GitCommitSummary) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for change in &commit.changes {
+        paths.insert(change.path.clone());
+        if let Some(old_path) = &change.old_path {
+            paths.insert(old_path.clone());
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn parse_reverted_commit_refs(message: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    for word in message.split(|ch: char| !(ch.is_ascii_hexdigit())) {
+        if word.len() >= 7 && word.len() <= 40 && word.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            refs.push(word.to_ascii_lowercase());
+        }
+    }
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn commit_ref_matches(source_commit: &str, reverted: &str) -> bool {
+    let source = source_commit.to_ascii_lowercase();
+    let reverted = reverted.to_ascii_lowercase();
+    source.starts_with(&reverted) || reverted.starts_with(&source)
 }
 
 pub fn normalize_paths(paths: &[String]) -> Vec<String> {
@@ -1899,9 +2452,11 @@ async fn apply_create_memory(
                 .kind
                 .clone()
                 .unwrap_or_else(|| "domain".to_string()),
+            status: None,
             filenames: op.payload.filenames.clone().unwrap_or_default(),
             related_files: op.payload.related_files.clone().unwrap_or_default(),
             links: op.payload.links.clone().unwrap_or_default(),
+            source_commit: None,
             review_after: op.payload.review_after.clone(),
         })
         .normalized();
@@ -1925,18 +2480,21 @@ async fn apply_create_memory(
         &payload.kind,
     );
     frontmatter.related_files = payload.related_files;
-    frontmatter.status = Some(
-        if op.source.is_autonomous()
-            && !(op.status == MemoryOpStatus::Approved
-                || (!op.requires_approval && op.confidence >= HIGH_CONFIDENCE_APPROVAL_THRESHOLD))
-        {
-            "proposed".to_string()
-        } else {
-            "active".to_string()
-        },
-    );
+    frontmatter.status = Some(if let Some(status) = payload.status {
+        status
+    } else if op.source.is_autonomous()
+        && !(op.status == MemoryOpStatus::Approved
+            || (!op.requires_approval && op.confidence >= HIGH_CONFIDENCE_APPROVAL_THRESHOLD))
+    {
+        "proposed".to_string()
+    } else {
+        "active".to_string()
+    });
     if let Some(review_after) = payload.review_after {
         frontmatter.review_after = Some(review_after);
+    }
+    if let Some(source_commit) = payload.source_commit {
+        frontmatter.source_commit = Some(source_commit);
     }
     frontmatter.source_tool = Some(format!("buddy_memory_lifecycle:{}", op.source.as_str()));
     frontmatter.content_hash = Some(compute_content_hash(&content));
@@ -2512,6 +3070,35 @@ mod tests {
         ops.iter().map(|op| op.op_type).collect()
     }
 
+    fn git_commit(
+        oid: &str,
+        message: &str,
+        classifications: Vec<GitCommitClassification>,
+        changes: Vec<crate::git::operations::GitCommitFileChange>,
+    ) -> GitCommitSummary {
+        GitCommitSummary {
+            oid: oid.to_string(),
+            short_oid: oid.chars().take(12).collect(),
+            time: fixed_now(),
+            parent_oids: Vec::new(),
+            message: message.to_string(),
+            classifications,
+            changes,
+            file_cap_hit: false,
+        }
+    }
+
+    fn git_change(path: &str) -> crate::git::operations::GitCommitFileChange {
+        crate::git::operations::GitCommitFileChange {
+            path: path.to_string(),
+            old_path: None,
+            status: GitFileChangeStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            binary: false,
+        }
+    }
+
     #[test]
     fn usefulness_score_monotonicity_prefers_pinned_active_and_proposed_over_stale_duplicate() {
         let now = fixed_now();
@@ -2769,6 +3356,82 @@ mod tests {
                 .map(|op| op.idempotency_key.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn git_bugfix_commit_creates_lesson_candidate_with_source_sha() {
+        let commit = git_commit(
+            "abcdef1234567890abcdef1234567890abcdef12",
+            "fix parser bug because newline crash",
+            vec![
+                GitCommitClassification::Bugfix,
+                GitCommitClassification::Rationale,
+            ],
+            vec![git_change("src/parser.rs")],
+        );
+        let report = GitHistoryReport {
+            commits: vec![commit.clone()],
+            cochanges: Vec::new(),
+            hotspots: Vec::new(),
+            commit_cap_hit: false,
+        };
+
+        let ops = detect_git_memory_ops(&report, &[], fixed_now());
+        let lesson = ops
+            .iter()
+            .find(|op| {
+                op.op_type == MemoryOpType::CreateMemory
+                    && op
+                        .payload
+                        .canonical
+                        .as_ref()
+                        .map(|payload| payload.kind.as_str() == "lesson")
+                        .unwrap_or(false)
+            })
+            .expect("lesson op");
+        let payload = lesson.payload.canonical.as_ref().unwrap();
+
+        assert_eq!(lesson.source, MemorySource::Git);
+        assert_eq!(payload.source_commit.as_deref(), Some(commit.oid.as_str()));
+        assert_eq!(payload.status.as_deref(), Some("proposed"));
+        assert!(payload.content.contains(&commit.short_oid));
+    }
+
+    #[test]
+    fn git_revert_commit_marks_source_commit_memory_stale() {
+        let source = "1234567890abcdef1234567890abcdef12345678";
+        let report = GitHistoryReport {
+            commits: vec![git_commit(
+                "abcdef1234567890abcdef1234567890abcdef12",
+                &format!("Revert \"add risky lesson\" This reverts commit {source}."),
+                vec![GitCommitClassification::Revert],
+                vec![git_change("src/risky.rs")],
+            )],
+            cochanges: Vec::new(),
+            hotspots: Vec::new(),
+            commit_cap_hit: false,
+        };
+        let mut doc = snapshot(
+            "git-doc",
+            "Risky lesson",
+            "Remember risky code",
+            &["git"],
+            &["src/risky.rs"],
+            "proposed",
+            MemorySourceClass::AutoGenerated,
+        );
+        doc.source_commit = Some(source.to_string());
+
+        let ops = detect_git_memory_ops(&report, &[doc], fixed_now());
+        let stale = ops
+            .iter()
+            .find(|op| op.op_type == MemoryOpType::MarkStale)
+            .expect("stale op");
+
+        assert_eq!(stale.source, MemorySource::Git);
+        assert_eq!(stale.target_paths, strings(&["/tmp/git-doc.md"]));
+        assert!(stale.evidence.contains(source));
+        assert!(stale.requires_approval);
     }
 
     #[test]
