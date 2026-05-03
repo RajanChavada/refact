@@ -381,7 +381,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         gap="1"
         style={{ flexGrow: 1, height: "100%" }}
       >
-        <Container>
+        <Container style={{ height: "100%" }}>
           <PlaceHolderText />
         </Container>
       </Flex>

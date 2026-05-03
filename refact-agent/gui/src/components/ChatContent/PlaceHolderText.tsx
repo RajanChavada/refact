@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 
-import { Flex, Text } from "@radix-ui/themes";
+import { Flex } from "@radix-ui/themes";
 
 import { BuddyCanvas, useBuddyState } from "../../features/Buddy";
 
@@ -24,9 +24,9 @@ export const PlaceHolderText: React.FC = () => {
       direction="column"
       align="center"
       justify="center"
-      gap="4"
       width="100%"
-      minHeight="360px"
+      height="100%"
+      minHeight="100%"
     >
       <BuddyCanvas
         state={buddy.state}
@@ -35,7 +35,6 @@ export const PlaceHolderText: React.FC = () => {
         speechOverride={speech}
         bubblePosition="top"
       />
-      <Text>Welcome to Refact chat.</Text>
     </Flex>
   );
 };
