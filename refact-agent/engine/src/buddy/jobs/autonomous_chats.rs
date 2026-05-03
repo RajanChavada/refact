@@ -4525,7 +4525,7 @@ mod tests {
         let gcx = crate::global_context::tests::make_test_gcx().await;
 
         assert!(job.should_run(gcx.clone(), &ctx).await);
-        reset_local_git_evidence_scan_count(Some(root));
+        reset_local_git_evidence_scan_count(Some(&ctx.project_root));
         let result = job.execute(gcx, ctx).await;
 
         assert_eq!(local_git_evidence_scan_count(), 1);
