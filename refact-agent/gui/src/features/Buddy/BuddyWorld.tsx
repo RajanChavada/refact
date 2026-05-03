@@ -373,7 +373,10 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
       }),
     [activeQuest, currentTime, nowPlaying, pet, pulse, state],
   );
-  const waypoints = useMemo(() => buildBuddyWaypoints(world, state.name), [world, state.name]);
+  const waypoints = useMemo(
+    () => buildBuddyWaypoints(world, state.name),
+    [world, state.name],
+  );
   const showcaseTargets = useMemo(
     () => buildBuddyShowcaseTargets(world),
     [world],
@@ -778,7 +781,9 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
     }
     onCare("play", "scroll");
     if (!showcaseRun) {
-      setReaction(`${state.name} catches a warm sunbeam and opens the focus scroll.`);
+      setReaction(
+        `${state.name} catches a warm sunbeam and opens the focus scroll.`,
+      );
     }
   };
 
@@ -888,9 +893,13 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
         style={{ left: `${HOME_HOTSPOT.x}%`, top: `${HOME_HOTSPOT.y}%` }}
         onClick={handleHomeClick}
         aria-label={
-          homeDoorDisabled ? `${state.name} home entrance` : `Open ${state.name} home`
+          homeDoorDisabled
+            ? `${state.name} home entrance`
+            : `Open ${state.name} home`
         }
-        title={homeDoorDisabled ? `${state.name} is home` : `Open ${state.name} home`}
+        title={
+          homeDoorDisabled ? `${state.name} is home` : `Open ${state.name} home`
+        }
       />
 
       {world.objects.map((item) => (
@@ -910,7 +919,9 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
             }
             onOpenPage(item.page);
             if (!showcaseRun) {
-              setReaction(`${state.name} hops toward ${item.label.toLowerCase()}.`);
+              setReaction(
+                `${state.name} hops toward ${item.label.toLowerCase()}.`,
+              );
             }
           }}
           aria-label={`Open ${item.label}`}
@@ -971,7 +982,10 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
         </div>
       )}
 
-      <div className={styles.careDock} aria-label={`${state.name} scene care actions`}>
+      <div
+        className={styles.careDock}
+        aria-label={`${state.name} scene care actions`}
+      >
         <button
           type="button"
           className={styles.sceneButton}

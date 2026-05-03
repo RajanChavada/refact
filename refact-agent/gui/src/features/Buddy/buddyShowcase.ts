@@ -82,14 +82,16 @@ export const BUDDY_SHOWCASE_DEFINITIONS: Record<
     targetId: "memory",
     targetSprite: "memory_fireflies",
     pose: "meditate",
-    speech: (name) => `${name} gathers the memory fireflies into a soft night map.`,
+    speech: (name) =>
+      `${name} gathers the memory fireflies into a soft night map.`,
   },
   stargazing_constellation: {
     kind: "stargazing_constellation",
     targetId: "providers",
     targetSprite: "observatory",
     pose: "stargaze",
-    speech: (name) => `${name} reads the model stars and traces a careful constellation.`,
+    speech: (name) =>
+      `${name} reads the model stars and traces a careful constellation.`,
   },
 };
 

@@ -57,7 +57,8 @@ const MODEL_TYPE_LABELS: Record<
   },
   chat_buddy: {
     title: "Companion Model",
-    description: "Model used by your companion for background tasks and suggestions",
+    description:
+      "Model used by your companion for background tasks and suggestions",
   },
 };
 

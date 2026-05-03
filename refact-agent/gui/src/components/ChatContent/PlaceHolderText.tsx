@@ -10,7 +10,8 @@ const HELLO_TEMPLATES = [
   (name: string) => `Hey, I'm ${name}. Tell me what's on your mind.`,
   () => "Hi there! Want to explore some code together?",
   (name: string) => `Hello from ${name}. Let's make something nice.`,
-  (name: string) => `${name} reporting for snack-driven development. What's next?`,
+  (name: string) =>
+    `${name} reporting for snack-driven development. What's next?`,
   () => "I brought zero opinions and one tiny pixel sword.",
   (name: string) => `${name} has entered the chat. The bugs look nervous.`,
   () => "Ask me anything. If I don't know, I'll squint professionally.",
