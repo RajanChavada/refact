@@ -341,7 +341,7 @@ mod tests {
             .contains("Do something useful with $ARGUMENTS"));
         assert!(activated.allowed_tools.is_empty());
         assert!(activated.model_override.is_none());
-        assert!(activated.skill_dir.ends_with("skills/my-skill"));
+        assert!(Path::new(&activated.skill_dir).ends_with(Path::new("skills").join("my-skill")));
     }
 
     #[tokio::test]

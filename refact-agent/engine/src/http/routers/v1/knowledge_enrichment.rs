@@ -428,7 +428,7 @@ async fn canonicalize_allowed_enrichment_root(root: &FilePath) -> Option<PathBuf
 
 fn path_has_unsafe_component(path: &FilePath) -> bool {
     path.components()
-        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+        .any(|component| matches!(component, Component::ParentDir))
 }
 
 fn path_has_markdown_extension(path: &FilePath) -> bool {

@@ -2955,12 +2955,8 @@ fn reject_unsafe_path(path: &str) -> Result<(), String> {
     }
     let parsed = Path::new(path);
     for component in parsed.components() {
-        match component {
-            Component::ParentDir => return Err("memory path cannot contain '..'".to_string()),
-            Component::Prefix(_) => {
-                return Err("windows drive prefixes are not allowed".to_string())
-            }
-            _ => {}
+        if matches!(component, Component::ParentDir) {
+            return Err("memory path cannot contain '..'".to_string());
         }
     }
     Ok(())
