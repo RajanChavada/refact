@@ -77,27 +77,29 @@ export const ChatInputTopControls: React.FC<ChatInputTopControlsProps> = ({
   return (
     <>
       <Flex gap="1" align="center" wrap="wrap">
-        <HoverCard.Root>
-          <HoverCard.Trigger>
-            <button
-              type="button"
-              onClick={() => setDialogOpen(true)}
-              disabled={isDisabled}
-              aria-label="Configure project information"
-              className={classNames(
-                styles.iconButton,
-                includeProjectInfo && styles.active,
-              )}
-            >
-              <InfoCircledIcon />
-            </button>
-          </HoverCard.Trigger>
-          <HoverCard.Content size="1" side="top">
-            <Text as="p" size="2">
-              Project info: {includeProjectInfo ? "ON" : "OFF"}
-            </Text>
-          </HoverCard.Content>
-        </HoverCard.Root>
+        <span className={styles.projectInfoControl}>
+          <HoverCard.Root>
+            <HoverCard.Trigger>
+              <button
+                type="button"
+                onClick={() => setDialogOpen(true)}
+                disabled={isDisabled}
+                aria-label="Configure project information"
+                className={classNames(
+                  styles.iconButton,
+                  includeProjectInfo && styles.active,
+                )}
+              >
+                <InfoCircledIcon />
+              </button>
+            </HoverCard.Trigger>
+            <HoverCard.Content size="1" side="top">
+              <Text as="p" size="2">
+                Project info: {includeProjectInfo ? "ON" : "OFF"}
+              </Text>
+            </HoverCard.Content>
+          </HoverCard.Root>
+        </span>
 
         <HoverCard.Root>
           <HoverCard.Trigger>

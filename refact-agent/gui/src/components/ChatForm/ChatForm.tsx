@@ -51,7 +51,6 @@ function isTextFile(filename: string): boolean {
 
 import {
   BackToSideBarButton,
-  AgentIntegrationsButton,
   UnifiedSendButton,
   BrowserToggleButton,
   WandButton,
@@ -114,7 +113,6 @@ import {
   selectIsBuddyChat,
 } from "../../features/Chat";
 import { useReportErrorMutation } from "../../services/refact/buddy";
-import { push } from "../../features/Pages/pagesSlice";
 
 import { useUsageCounter } from "../UsageCounter/useUsageCounter";
 import { ChatInputTopControls } from "./ChatInputTopControls";
@@ -380,10 +378,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     [handleHelpInfo, setValue, setLineSelectionInteracted],
   );
 
-  const handleAgentIntegrationsClick = useCallback(() => {
-    dispatch(push({ name: "integrations page" }));
-  }, [dispatch]);
-
   useEffect(() => {
     if (isSendImmediately && !isWaiting && !isStreaming) {
       handleSubmit();
@@ -486,18 +480,36 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 }
                 onOpenFile={queryPathThenOpenFile}
               />
-              <Flex align="center" gap="2" justify="between" wrap="wrap">
+              <Flex
+                align="center"
+                gap="2"
+                justify="between"
+                wrap="wrap"
+                className={styles.topControlsRow}
+              >
                 <ChatInputTopControls
                   checkboxes={checkboxes}
                   onCheckedChange={onToggleCheckbox}
                   attachedFiles={attachedFiles}
                   disabled={isBuddyChat}
                 />
-                <Flex align="center" gap="2">
-                  <StreamingTokenCounter />
-                  <ProviderUsageIndicator />
-                  <UsageCounter />
-                  <TrajectoryButton disabled={isBuddyChat} />
+                <Flex
+                  align="center"
+                  gap="2"
+                  className={styles.topStatusControls}
+                >
+                  <span className={styles.hideTopTokensFirst}>
+                    <StreamingTokenCounter />
+                  </span>
+                  <span className={styles.hideTopTokensFirst}>
+                    <ProviderUsageIndicator />
+                  </span>
+                  <span className={styles.hideTopTokensFirst}>
+                    <UsageCounter />
+                  </span>
+                  <span className={styles.hideTopCompressLast}>
+                    <TrajectoryButton disabled={isBuddyChat} />
+                  </span>
                 </Flex>
               </Flex>
             </Box>
@@ -540,52 +552,78 @@ export const ChatForm: React.FC<ChatFormProps> = ({
               )}
             />
           </Box>
-          <Flex gap="2" wrap="wrap" py="2" px="3" align="center">
-            <ChatSettingsDropdown disabled={isBuddyChat} />
+          <Flex
+            gap="2"
+            wrap="nowrap"
+            py="2"
+            px="3"
+            align="center"
+            className={styles.bottomControlsRow}
+          >
+            <span className={styles.bottomModelControl}>
+              <ChatSettingsDropdown disabled={isBuddyChat} />
+            </span>
             <ModeSelect
               selectedMode={threadMode ?? DEFAULT_MODE}
               onModeChange={onSetMode}
               disabled={isBuddyChat || isModeDisabled}
             />
-            <WorktreeControl disabled={isBuddyChat} />
+            <span className={styles.bottomWorkspaceControl}>
+              <WorktreeControl disabled={isBuddyChat} />
+            </span>
 
-            <Flex justify="end" flexGrow="1" wrap="wrap" gap="2" align="center">
-              <BrowserToggleButton chatId={chatId} />
-              <AutoEnrichmentToggleButton disabled={isStreaming || isWaiting} />
-              <WandButton
-                currentText={value}
-                disabled={isStreaming || isWaiting}
-                onUpdateText={handleChange}
-              />
-              <AgentIntegrationsButton
-                title="Set up Agent Integrations"
-                onClick={handleAgentIntegrationsClick}
-              />
-              {onClose && (
-                <BackToSideBarButton
-                  disabled={isStreaming}
-                  title="Return to sidebar"
-                  onClick={onClose}
+            <Flex
+              justify="end"
+              flexGrow="1"
+              wrap="nowrap"
+              gap="2"
+              align="center"
+              className={styles.bottomActionControls}
+            >
+              <span className={styles.hideActionFirst}>
+                <BrowserToggleButton chatId={chatId} />
+              </span>
+              <span className={styles.hideActionSecond}>
+                <AutoEnrichmentToggleButton disabled={isStreaming || isWaiting} />
+              </span>
+              <span className={styles.hideActionThird}>
+                <WandButton
+                  currentText={value}
+                  disabled={isStreaming || isWaiting}
+                  onUpdateText={handleChange}
                 />
+              </span>
+              {onClose && (
+                <span className={styles.hideActionFourth}>
+                  <BackToSideBarButton
+                    disabled={isStreaming}
+                    title="Return to sidebar"
+                    onClick={onClose}
+                  />
+                </span>
               )}
               {config.features?.images !== false &&
                 isMultimodalitySupportedForCurrentModel && (
-                  <AttachImagesButton />
+                  <span className={styles.hideActionFifth}>
+                    <AttachImagesButton />
+                  </span>
                 )}
-              <MicrophoneButton
-                ref={microphoneRef}
-                onTranscript={(text) => {
-                  setValue((prev) => {
-                    if (prev.trim()) {
-                      return `${prev}\n${text}`;
-                    }
-                    return text;
-                  });
-                }}
-                onLiveTranscript={handleLiveTranscript}
-                onRecordingChange={handleRecordingChange}
-                disabled={disableMicrophone}
-              />
+              <span className={styles.hideActionSixth}>
+                <MicrophoneButton
+                  ref={microphoneRef}
+                  onTranscript={(text) => {
+                    setValue((prev) => {
+                      if (prev.trim()) {
+                        return `${prev}\n${text}`;
+                      }
+                      return text;
+                    });
+                  }}
+                  onLiveTranscript={handleLiveTranscript}
+                  onRecordingChange={handleRecordingChange}
+                  disabled={disableMicrophone}
+                />
+              </span>
               <UnifiedSendButton
                 disabled={isVoiceActive || !isOnline || allDisabled}
                 isStreaming={isStreaming || isWaiting}
