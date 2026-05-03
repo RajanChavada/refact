@@ -56,7 +56,7 @@ export interface BuddyWorldAtmosphere {
 export type BuddyWorldTone = "good" | "neutral" | "warning" | "danger";
 
 function identityName(semanticState: BuddySemanticState | undefined): string {
-  return semanticState?.name.trim() || "Your companion";
+  return semanticState?.name.trim() ?? "Your companion";
 }
 export type BuddyWorldSprite =
   | "task_grove"

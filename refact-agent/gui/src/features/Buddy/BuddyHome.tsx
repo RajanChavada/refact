@@ -482,7 +482,7 @@ export const BuddyHome: React.FC = () => {
         triggerSource: "suggestion",
       });
     },
-    [activeQuest?.title, dispatch],
+    [activeQuest?.title, dispatch, name],
   );
 
   const handleOpenActivityChat = useCallback(

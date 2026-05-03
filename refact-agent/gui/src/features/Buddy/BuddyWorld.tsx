@@ -539,6 +539,7 @@ export const BuddyWorld: React.FC<BuddyWorldProps> = ({
     reaction,
     showcaseRun,
     startShowcase,
+    state.name,
     waypoints,
   ]);
 
