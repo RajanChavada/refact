@@ -143,6 +143,17 @@ struct InitialSidebarPartMessage {
     part: InitialSidebarPart,
 }
 
+fn current_initial_sidebar_part(
+    message: InitialSidebarPartMessage,
+    load_generation: u64,
+) -> Option<InitialSidebarPart> {
+    if message.generation == load_generation {
+        Some(message.part)
+    } else {
+        None
+    }
+}
+
 fn all_receivers_closed(
     trajectory_rx: &Option<broadcast::Receiver<TrajectoryEvent>>,
     workspace_changed_rx: &Option<broadcast::Receiver<()>>,
@@ -439,33 +450,34 @@ async fn buddy_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent 
     load_buddy_part(gcx).await.into_event(0)
 }
 
-fn mark_section_ready(
+fn mark_section_settled(
     section: SidebarSection,
-    workspace_ready: &mut bool,
-    chats_ready: &mut bool,
-    tasks_ready: &mut bool,
-    buddy_ready: &mut bool,
+    workspace_settled: &mut bool,
+    chats_settled: &mut bool,
+    tasks_settled: &mut bool,
+    buddy_settled: &mut bool,
 ) {
     match section {
-        SidebarSection::Workspace => *workspace_ready = true,
-        SidebarSection::Chats => *chats_ready = true,
-        SidebarSection::Tasks => *tasks_ready = true,
-        SidebarSection::Buddy => *buddy_ready = true,
+        SidebarSection::Workspace => *workspace_settled = true,
+        SidebarSection::Chats => *chats_settled = true,
+        SidebarSection::Tasks => *tasks_settled = true,
+        SidebarSection::Buddy => *buddy_settled = true,
     }
 }
 
 fn try_finish_bootstrap(
-    workspace_ready: bool,
-    chats_ready: bool,
-    tasks_ready: bool,
-    buddy_ready: bool,
+    workspace_settled: bool,
+    chats_settled: bool,
+    tasks_settled: bool,
+    buddy_settled: bool,
     bootstrap_complete: &mut bool,
     initial_rx: &mut Option<mpsc::UnboundedReceiver<InitialSidebarPartMessage>>,
     buffered_live_events: &mut VecDeque<SidebarEvent>,
     seq_counter: &AtomicU64,
     subscription_id: &str,
 ) -> Vec<String> {
-    if workspace_ready && chats_ready && tasks_ready && buddy_ready && !*bootstrap_complete {
+    if workspace_settled && chats_settled && tasks_settled && buddy_settled && !*bootstrap_complete
+    {
         *bootstrap_complete = true;
         *initial_rx = None;
         let mut events = Vec::new();
@@ -557,10 +569,10 @@ pub async fn handle_sidebar_subscribe(
             load_generation,
         ));
         let (retry_tx, mut retry_rx) = mpsc::unbounded_channel::<InitialSidebarPartMessage>();
-        let mut workspace_ready = false;
-        let mut chats_ready = false;
-        let mut tasks_ready = false;
-        let mut buddy_ready = false;
+        let mut workspace_settled = false;
+        let mut chats_settled = false;
+        let mut tasks_settled = false;
+        let mut buddy_settled = false;
         let mut bootstrap_complete = false;
         let mut buffered_live_events = VecDeque::new();
         let mut initial_started_at = Instant::now();
@@ -579,23 +591,20 @@ pub async fn handle_sidebar_subscribe(
                 } => {
                     match part {
                         Some(message) => {
-                            if message.generation != load_generation {
+                            let Some(part) = current_initial_sidebar_part(message, load_generation) else {
                                 continue;
-                            }
-                            let part = message.part;
+                            };
                             let section = part.section();
                             let status = part.status();
                             let elapsed_ms = initial_started_at.elapsed().as_millis();
                             let event = part.into_event(elapsed_ms);
-                            if status == SidebarSectionStatus::Ready {
-                                mark_section_ready(
-                                    section,
-                                    &mut workspace_ready,
-                                    &mut chats_ready,
-                                    &mut tasks_ready,
-                                    &mut buddy_ready,
-                                );
-                            }
+                            mark_section_settled(
+                                section,
+                                &mut workspace_settled,
+                                &mut chats_settled,
+                                &mut tasks_settled,
+                                &mut buddy_settled,
+                            );
                             tracing::info!("sidebar initial {:?} finished with {:?} in {}ms", section, status, elapsed_ms);
                             if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
                                 yield Ok::<_, std::convert::Infallible>(event);
@@ -615,10 +624,10 @@ pub async fn handle_sidebar_subscribe(
                     }
 
                     for event in try_finish_bootstrap(
-                        workspace_ready,
-                        chats_ready,
-                        tasks_ready,
-                        buddy_ready,
+                        workspace_settled,
+                        chats_settled,
+                        tasks_settled,
+                        buddy_settled,
                         &mut bootstrap_complete,
                         &mut initial_rx,
                         &mut buffered_live_events,
@@ -631,22 +640,19 @@ pub async fn handle_sidebar_subscribe(
 
                 retry_part = retry_rx.recv() => {
                     if let Some(message) = retry_part {
-                        if message.generation != load_generation {
+                        let Some(part) = current_initial_sidebar_part(message, load_generation) else {
                             continue;
-                        }
-                        let part = message.part;
+                        };
                         let section = part.section();
                         let status = part.status();
                         let event = part.into_event(0);
-                        if status == SidebarSectionStatus::Ready {
-                            mark_section_ready(
-                                section,
-                                &mut workspace_ready,
-                                &mut chats_ready,
-                                &mut tasks_ready,
-                                &mut buddy_ready,
-                            );
-                        }
+                        mark_section_settled(
+                            section,
+                            &mut workspace_settled,
+                            &mut chats_settled,
+                            &mut tasks_settled,
+                            &mut buddy_settled,
+                        );
                         if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
                             yield Ok::<_, std::convert::Infallible>(event);
                         }
@@ -661,10 +667,10 @@ pub async fn handle_sidebar_subscribe(
                     }
 
                     for event in try_finish_bootstrap(
-                        workspace_ready,
-                        chats_ready,
-                        tasks_ready,
-                        buddy_ready,
+                        workspace_settled,
+                        chats_settled,
+                        tasks_settled,
+                        buddy_settled,
                         &mut bootstrap_complete,
                         &mut initial_rx,
                         &mut buffered_live_events,
@@ -727,10 +733,10 @@ pub async fn handle_sidebar_subscribe(
                     match result {
                         Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
                             load_generation = load_generation.wrapping_add(1);
-                            workspace_ready = false;
-                            chats_ready = false;
-                            tasks_ready = false;
-                            buddy_ready = false;
+                            workspace_settled = false;
+                            chats_settled = false;
+                            tasks_settled = false;
+                            buddy_settled = false;
                             bootstrap_complete = false;
                             buffered_live_events.clear();
                             initial_started_at = Instant::now();
@@ -894,6 +900,43 @@ pub async fn handle_sidebar_subscribe(
 mod tests {
     use super::*;
 
+    fn empty_part(section: SidebarSection, status: SidebarSectionStatus) -> InitialSidebarPart {
+        let error = (status == SidebarSectionStatus::Error).then(|| "boom".to_string());
+        match section {
+            SidebarSection::Workspace => InitialSidebarPart::Workspace {
+                workspace_roots: Vec::new(),
+                status,
+                error,
+            },
+            SidebarSection::Chats => InitialSidebarPart::Chats {
+                trajectories: Vec::new(),
+                status,
+                error,
+            },
+            SidebarSection::Tasks => InitialSidebarPart::Tasks {
+                tasks: Vec::new(),
+                status,
+                error,
+            },
+            SidebarSection::Buddy => InitialSidebarPart::Buddy {
+                buddy: serde_json::Value::Null,
+                status,
+                error,
+            },
+        }
+    }
+
+    fn buffered_notification() -> SidebarEvent {
+        SidebarEvent::Notification {
+            notification: NotificationEvent::TaskDone {
+                chat_id: "chat".to_string(),
+                tool_call_id: "tool".to_string(),
+                summary: "done".to_string(),
+                knowledge_path: None,
+            },
+        }
+    }
+
     #[test]
     fn sidebar_event_envelope_uses_v2_nested_event_shape() {
         let seq = AtomicU64::new(0);
@@ -949,5 +992,83 @@ mod tests {
             json["snapshot"]["trajectories"].as_array().unwrap().len(),
             0
         );
+    }
+
+    #[test]
+    fn sidebar_bootstrap_settles_for_all_ready_error_combinations_and_flushes() {
+        let statuses = [SidebarSectionStatus::Ready, SidebarSectionStatus::Error];
+
+        for workspace_status in statuses {
+            for chats_status in statuses {
+                for tasks_status in statuses {
+                    for buddy_status in statuses {
+                        let mut workspace_settled = false;
+                        let mut chats_settled = false;
+                        let mut tasks_settled = false;
+                        let mut buddy_settled = false;
+
+                        for part in [
+                            empty_part(SidebarSection::Workspace, workspace_status),
+                            empty_part(SidebarSection::Chats, chats_status),
+                            empty_part(SidebarSection::Tasks, tasks_status),
+                            empty_part(SidebarSection::Buddy, buddy_status),
+                        ] {
+                            assert!(matches!(
+                                part.status(),
+                                SidebarSectionStatus::Ready | SidebarSectionStatus::Error
+                            ));
+                            mark_section_settled(
+                                part.section(),
+                                &mut workspace_settled,
+                                &mut chats_settled,
+                                &mut tasks_settled,
+                                &mut buddy_settled,
+                            );
+                        }
+
+                        let (_tx, rx) = mpsc::unbounded_channel();
+                        let mut initial_rx = Some(rx);
+                        let mut bootstrap_complete = false;
+                        let mut buffered_live_events = VecDeque::from([buffered_notification()]);
+                        let seq = AtomicU64::new(0);
+                        let emitted = try_finish_bootstrap(
+                            workspace_settled,
+                            chats_settled,
+                            tasks_settled,
+                            buddy_settled,
+                            &mut bootstrap_complete,
+                            &mut initial_rx,
+                            &mut buffered_live_events,
+                            &seq,
+                            "sub-1",
+                        );
+
+                        assert!(bootstrap_complete);
+                        assert!(initial_rx.is_none());
+                        assert!(buffered_live_events.is_empty());
+                        assert_eq!(emitted.len(), 1);
+                        assert_eq!(seq.load(Ordering::SeqCst), 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sidebar_stale_initial_part_generation_is_ignored() {
+        let stale = InitialSidebarPartMessage {
+            generation: 1,
+            part: empty_part(SidebarSection::Workspace, SidebarSectionStatus::Ready),
+        };
+        let current = InitialSidebarPartMessage {
+            generation: 2,
+            part: empty_part(SidebarSection::Workspace, SidebarSectionStatus::Error),
+        };
+
+        assert!(current_initial_sidebar_part(stale, 2).is_none());
+        let part = current_initial_sidebar_part(current, 2).expect("current generation accepted");
+
+        assert_eq!(part.section(), SidebarSection::Workspace);
+        assert_eq!(part.status(), SidebarSectionStatus::Error);
     }
 }

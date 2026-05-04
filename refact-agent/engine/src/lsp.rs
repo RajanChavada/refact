@@ -64,6 +64,25 @@ async fn notify_workspace_changed(gcx: &Arc<ARwLock<GlobalContext>>) {
     }
 }
 
+fn unique_workspace_roots(folders: &[PathBuf]) -> Vec<PathBuf> {
+    let mut unique = Vec::new();
+    for folder in folders {
+        if !unique.iter().any(|existing| existing == folder) {
+            unique.push(folder.clone());
+        }
+    }
+    unique
+}
+
+fn workspace_roots_changed(current: &[PathBuf], next: &[PathBuf]) -> bool {
+    let current = unique_workspace_roots(current);
+    let next = unique_workspace_roots(next);
+    current.len() != next.len()
+        || current
+            .iter()
+            .any(|folder| !next.iter().any(|next_folder| next_folder == folder))
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct Choice {
     pub index: u32,
@@ -243,18 +262,27 @@ impl LanguageServer for LspBackend {
                 }
             }
         }
-        {
+        let folders = unique_workspace_roots(&folders);
+        let changed = {
             let gcx_locked = self.gcx.write().await;
-            *gcx_locked.documents_state.workspace_folders.lock().unwrap() = folders.clone();
-            info!("LSP workspace_folders {:?}", folders);
-        }
+            let mut workspace_folders =
+                gcx_locked.documents_state.workspace_folders.lock().unwrap();
+            if workspace_roots_changed(&workspace_folders, &folders) {
+                *workspace_folders = folders.clone();
+                info!("LSP workspace_folders {:?}", folders);
+                true
+            } else {
+                false
+            }
+        };
 
-        let gcx_clone = self.gcx.clone();
-        notify_workspace_changed(&gcx_clone).await;
-        tokio::spawn(async move {
-            files_in_workspace::on_workspaces_init(gcx_clone.clone()).await;
-            notify_workspace_changed(&gcx_clone).await;
-        });
+        if changed {
+            let gcx_clone = self.gcx.clone();
+            tokio::spawn(async move {
+                files_in_workspace::on_workspaces_init(gcx_clone.clone()).await;
+                notify_workspace_changed(&gcx_clone).await;
+            });
+        }
 
         let completion_options: CompletionOptions;
         completion_options = CompletionOptions {
@@ -417,8 +445,16 @@ impl LanguageServer for LspBackend {
                     .display()
                     .to_string(),
             );
+            let changed = {
+                let gcx_locked = self.gcx.read().await;
+                let workspace_folders =
+                    gcx_locked.documents_state.workspace_folders.lock().unwrap();
+                !workspace_folders.iter().any(|folder| folder == &path)
+            };
             files_in_workspace::add_folder(self.gcx.clone(), &path).await;
-            notify_workspace_changed(&self.gcx).await;
+            if changed {
+                notify_workspace_changed(&self.gcx).await;
+            }
         }
         for folder in params.event.removed {
             info!("did_change_workspace_folders/delete {}", folder.name);
@@ -430,8 +466,16 @@ impl LanguageServer for LspBackend {
                     .display()
                     .to_string(),
             );
+            let changed = {
+                let gcx_locked = self.gcx.read().await;
+                let workspace_folders =
+                    gcx_locked.documents_state.workspace_folders.lock().unwrap();
+                workspace_folders.iter().any(|folder| folder == &path)
+            };
             files_in_workspace::remove_folder(self.gcx.clone(), &path).await;
-            notify_workspace_changed(&self.gcx).await;
+            if changed {
+                notify_workspace_changed(&self.gcx).await;
+            }
         }
     }
 
@@ -467,6 +511,30 @@ impl LanguageServer for LspBackend {
                 // on_did_change(self.gcx.clone(), &cpath, &text).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_workspace_roots_changed_ignores_order_and_duplicates() {
+        let first = PathBuf::from("/workspace/first");
+        let second = PathBuf::from("/workspace/second");
+
+        assert!(!workspace_roots_changed(
+            &[first.clone(), second.clone()],
+            &[second.clone(), first.clone()]
+        ));
+        assert!(!workspace_roots_changed(
+            &[first.clone(), first.clone()],
+            std::slice::from_ref(&first)
+        ));
+        assert!(workspace_roots_changed(
+            std::slice::from_ref(&first),
+            &[first.clone(), second]
+        ));
     }
 }
 
