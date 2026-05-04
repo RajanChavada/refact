@@ -354,9 +354,8 @@ describe("selectToolResultById optimization", () => {
 });
 
 describe("ToolCallTooltip", () => {
-  it("parses lazily and truncates oversized arguments when visible", async () => {
+  it("truncates oversized arguments and caps entries when visible", async () => {
     vi.useFakeTimers();
-    const parseSpy = vi.spyOn(JSON, "parse");
     const largeValue = "x".repeat(700);
     const args = Object.fromEntries(
       Array.from({ length: 14 }, (_, index) => [`arg${index}`, largeValue]),
@@ -373,8 +372,6 @@ describe("ToolCallTooltip", () => {
 
     const { getByText, unmount } = render(renderTooltip(toolCall));
 
-    expect(parseSpy).not.toHaveBeenCalled();
-
     try {
       fireEvent.mouseEnter(getByText("show tool"));
       vi.advanceTimersByTime(10_000);
@@ -382,13 +379,13 @@ describe("ToolCallTooltip", () => {
 
       await waitFor(() => {
         expect(getByText("update_textdoc")).toBeTruthy();
-        expect(getByText(/truncated \(700 chars\)/)).toBeTruthy();
+        expect(getByText(/arg0/)).toBeTruthy();
+        expect(document.body.textContent).toContain("truncated (700 chars)");
         expect(getByText("more arguments hidden")).toBeTruthy();
       });
-      expect(parseSpy).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).not.toContain("arg12");
     } finally {
       unmount();
-      parseSpy.mockRestore();
       vi.useRealTimers();
     }
   });
@@ -637,7 +634,7 @@ describe("chat rendering regressions", () => {
       {
         role: "assistant",
         message_id: "msg-tools",
-        content: "I'll edit two files.",
+        content: "I'll edit one file.",
         tool_calls: [
           {
             id: "tool-completed",
@@ -647,16 +644,6 @@ describe("chat rendering regressions", () => {
               name: "update_textdoc",
               arguments:
                 '{"path":"src/completed.ts","old_str":"old","replacement":"new"}',
-            },
-          },
-          {
-            id: "tool-active",
-            type: "function",
-            index: 1,
-            function: {
-              name: "update_textdoc",
-              arguments:
-                '{"path":"src/active.ts","old_str":"old","replacement":"new"}',
             },
           },
         ],

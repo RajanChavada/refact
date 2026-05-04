@@ -42,7 +42,10 @@ export const resetSidebarReadiness = createAction(
   "currentProjectInfo/resetSidebarReadiness",
 );
 
+type ProjectIdentity = Pick<CurrentProjectInfo, "name" | "workspaceRoots">;
+
 function sameStringArray(left?: string[], right?: string[]): boolean {
+  if (left === right) return true;
   if (!left || !right) return false;
   if (left.length !== right.length) return false;
   return left.every((item, index) => item === right[index]);
@@ -60,24 +63,29 @@ function shouldPreserveWorkspaceRoots(
   return nextName === state.name;
 }
 
+function hasWorkspaceIdentityChanged(
+  current: ProjectIdentity,
+  next: CurrentProjectInfo,
+): boolean {
+  if (next.workspaceRoots !== undefined) {
+    return !sameStringArray(current.workspaceRoots, next.workspaceRoots);
+  }
+
+  return next.name.trim() !== current.name.trim();
+}
+
 export const currentProjectInfoReducer = createReducer(
   initialState,
   (builder) => {
     builder
       .addCase(setCurrentProjectInfo, (state, action) => {
         const next = action.payload;
+        const identityChanged = hasWorkspaceIdentityChanged(state, next);
         const nextRoots =
           next.workspaceRoots ??
           (shouldPreserveWorkspaceRoots(state, next)
             ? state.workspaceRoots
             : undefined);
-
-        const workspaceIdentityKnown =
-          state.workspaceRoots !== undefined &&
-          next.workspaceRoots !== undefined;
-        const sameWorkspace = workspaceIdentityKnown
-          ? sameStringArray(state.workspaceRoots, next.workspaceRoots)
-          : state.name === next.name;
 
         state.name = next.name;
         if (nextRoots !== undefined) {
@@ -86,7 +94,8 @@ export const currentProjectInfoReducer = createReducer(
           delete state.workspaceRoots;
         }
 
-        if (!sameWorkspace) {
+        if (identityChanged) {
+          state.workspaceSnapshotReceived = false;
           state.trajectoriesSnapshotReceived = false;
           state.tasksSnapshotReceived = false;
           state.buddySnapshotReceived = false;

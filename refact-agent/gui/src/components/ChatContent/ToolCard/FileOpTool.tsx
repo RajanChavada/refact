@@ -95,10 +95,10 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
 
   const args = useMemo((): MvArgs | RmArgs | AddWorkspaceArgs => {
     try {
-      return JSON.parse(toolCall.function.arguments) as
-        | MvArgs
-        | RmArgs
-        | AddWorkspaceArgs;
+      const parsed = JSON.parse(toolCall.function.arguments) as unknown;
+      return parsed && typeof parsed === "object"
+        ? (parsed as MvArgs | RmArgs | AddWorkspaceArgs)
+        : {};
     } catch {
       return {};
     }

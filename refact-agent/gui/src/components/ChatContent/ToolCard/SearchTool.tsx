@@ -56,6 +56,10 @@ function countMatches(content: string): number | null {
   return count > 0 ? count : null;
 }
 
+function getString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value : fallback;
+}
+
 export const SearchTool: React.FC<SearchToolProps> = ({
   toolCall,
   toolType,
@@ -73,16 +77,19 @@ export const SearchTool: React.FC<SearchToolProps> = ({
     | SearchSemanticArgs
     | SearchSymbolArgs => {
     try {
-      return JSON.parse(toolCall.function.arguments) as
-        | SearchPatternArgs
-        | SearchSemanticArgs
-        | SearchSymbolArgs;
+      const parsed = JSON.parse(toolCall.function.arguments) as unknown;
+      return parsed && typeof parsed === "object"
+        ? (parsed as SearchPatternArgs | SearchSemanticArgs | SearchSymbolArgs)
+        : {};
     } catch {
       return {};
     }
   }, [toolCall.function.arguments]);
 
   const status: ToolStatus = useMemo(() => {
+    if (!maybeResult && contextFiles && contextFiles.length > 0) {
+      return "success";
+    }
     if (!maybeResult) return "running";
     if (
       typeof maybeResult === "object" &&
@@ -92,7 +99,7 @@ export const SearchTool: React.FC<SearchToolProps> = ({
       return "error";
     }
     return "success";
-  }, [maybeResult]);
+  }, [contextFiles, maybeResult]);
 
   const content =
     maybeResult && typeof maybeResult.content === "string"
@@ -109,7 +116,7 @@ export const SearchTool: React.FC<SearchToolProps> = ({
     switch (toolType) {
       case "search_pattern": {
         const patternArgs = args as SearchPatternArgs;
-        const pattern = patternArgs.pattern ?? "pattern";
+        const pattern = getString(patternArgs.pattern, "pattern");
         return (
           <>
             Search <span className={styles.query}>{pattern}</span>
@@ -121,7 +128,7 @@ export const SearchTool: React.FC<SearchToolProps> = ({
       }
       case "search_semantic": {
         const semanticArgs = args as SearchSemanticArgs;
-        const query = semanticArgs.queries ?? "query";
+        const query = getString(semanticArgs.queries, "query");
         return (
           <>
             Search <span className={styles.query}>&quot;{query}&quot;</span>
@@ -133,7 +140,7 @@ export const SearchTool: React.FC<SearchToolProps> = ({
       }
       case "search_symbol_definition": {
         const symbolArgs = args as SearchSymbolArgs;
-        const symbols = symbolArgs.symbols ?? "symbol";
+        const symbols = getString(symbolArgs.symbols, "symbol");
         return (
           <>
             Find <span className={styles.query}>{symbols}</span>
@@ -149,8 +156,9 @@ export const SearchTool: React.FC<SearchToolProps> = ({
   const meta = useMemo(() => {
     if (toolType === "search_pattern" || toolType === "search_semantic") {
       const scopeArgs = args as SearchPatternArgs | SearchSemanticArgs;
-      if (scopeArgs.scope && scopeArgs.scope !== "workspace") {
-        return scopeArgs.scope;
+      const scope = getString(scopeArgs.scope, "");
+      if (scope && scope !== "workspace") {
+        return scope;
       }
     }
     return null;

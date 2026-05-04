@@ -579,7 +579,7 @@ function parseTasksFromArgs(argsStr: string): TodoItem[] | null {
     const tasksArray = (args as Record<string, unknown>).tasks;
     if (!Array.isArray(tasksArray)) return null;
 
-    if (tasksArray.length === 0) return [];
+    if (tasksArray.length === 0) return EMPTY_TASKS;
 
     const result: TodoItem[] = [];
     const seenIds = new Set<string>();
@@ -639,7 +639,7 @@ export function deriveTasksFromMessages(
     }
   }
 
-  return [];
+  return EMPTY_TASKS;
 }
 
 export const selectCurrentTasks = (() => {

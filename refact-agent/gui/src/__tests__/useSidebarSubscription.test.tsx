@@ -86,12 +86,12 @@ describe("useSidebarSubscription", () => {
       current_project: {
         name: "local-refact",
         workspaceRoots: ["/local/refact"],
-        serverSnapshotReceived: false,
+        workspaceSnapshotReceived: false,
       },
     });
 
     await waitFor(() => {
-      expect(store.getState().current_project.serverSnapshotReceived).toBe(
+      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
         true,
       );
     });
@@ -99,8 +99,8 @@ describe("useSidebarSubscription", () => {
     expect(store.getState().current_project).toEqual({
       name: "local-refact",
       workspaceRoots: ["/local/refact"],
-      serverSnapshotReceived: true,
-      historySnapshotReceived: true,
+      workspaceSnapshotReceived: true,
+      trajectoriesSnapshotReceived: true,
       tasksSnapshotReceived: true,
       buddySnapshotReceived: true,
     });
@@ -124,8 +124,8 @@ describe("useSidebarSubscription", () => {
       expect(store.getState().current_project).toEqual({
         name: "",
         workspaceRoots: [],
-        serverSnapshotReceived: true,
-        historySnapshotReceived: true,
+        workspaceSnapshotReceived: true,
+        trajectoriesSnapshotReceived: true,
         tasksSnapshotReceived: true,
         buddySnapshotReceived: true,
       });
@@ -169,7 +169,7 @@ describe("useSidebarSubscription", () => {
     const store = renderSidebarSubscription();
 
     await waitFor(() => {
-      expect(store.getState().current_project.serverSnapshotReceived).toBe(
+      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
         true,
       );
     });
@@ -181,7 +181,9 @@ describe("useSidebarSubscription", () => {
       }),
     );
 
-    expect(store.getState().current_project.serverSnapshotReceived).toBe(true);
+    expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
+      true,
+    );
   });
 
   it("returns to project loading when local IDE project info changes workspace after a server snapshot", async () => {
@@ -199,7 +201,7 @@ describe("useSidebarSubscription", () => {
     const store = renderSidebarSubscription();
 
     await waitFor(() => {
-      expect(store.getState().current_project.serverSnapshotReceived).toBe(
+      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
         true,
       );
     });
@@ -211,6 +213,11 @@ describe("useSidebarSubscription", () => {
       }),
     );
 
-    expect(store.getState().current_project.serverSnapshotReceived).toBe(false);
+    expect(store.getState().current_project).toMatchObject({
+      workspaceSnapshotReceived: false,
+      trajectoriesSnapshotReceived: false,
+      tasksSnapshotReceived: false,
+      buddySnapshotReceived: false,
+    });
   });
 });

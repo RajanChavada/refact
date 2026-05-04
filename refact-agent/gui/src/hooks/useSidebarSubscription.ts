@@ -435,12 +435,15 @@ export function useSidebarSubscription() {
     (event: SidebarEventEnvelope & { category: "snapshot" }) => {
       if (event.workspace_roots !== undefined) {
         processWorkspaceSnapshot(event.workspace_roots);
+      } else {
+        dispatch(markWorkspaceSnapshotReceived());
       }
       processTrajectoriesSnapshot(event.trajectories);
       processTasksSnapshot(event.tasks);
       processBuddySnapshot(event.buddy);
     },
     [
+      dispatch,
       processBuddySnapshot,
       processTasksSnapshot,
       processTrajectoriesSnapshot,

@@ -77,6 +77,30 @@ describe("currentProjectInfoReducer", () => {
     );
 
     expect(state.workspaceRoots).toEqual(["/tmp/b/refact"]);
+    expect(state.workspaceSnapshotReceived).toBe(true);
+    expect(state.trajectoriesSnapshotReceived).toBe(false);
+    expect(state.tasksSnapshotReceived).toBe(false);
+    expect(state.buddySnapshotReceived).toBe(false);
+  });
+
+  it("resets all sidebar readiness when workspace identity changes", () => {
+    const state = currentProjectInfoReducer(
+      {
+        name: "refact",
+        workspaceRoots: ["/tmp/a/refact"],
+        workspaceSnapshotReceived: true,
+        trajectoriesSnapshotReceived: true,
+        tasksSnapshotReceived: true,
+        buddySnapshotReceived: true,
+      },
+      setCurrentProjectInfo({
+        name: "other-refact",
+        workspaceRoots: ["/tmp/b/refact"],
+      }),
+    );
+
+    expect(state.workspaceRoots).toEqual(["/tmp/b/refact"]);
+    expect(state.workspaceSnapshotReceived).toBe(false);
     expect(state.trajectoriesSnapshotReceived).toBe(false);
     expect(state.tasksSnapshotReceived).toBe(false);
     expect(state.buddySnapshotReceived).toBe(false);

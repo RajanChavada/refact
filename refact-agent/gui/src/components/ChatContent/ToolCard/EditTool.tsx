@@ -57,8 +57,11 @@ function getDiffStats(diffs: DiffChunk[]): { added: number; removed: number } {
 
 function getFilePath(toolCall: ToolCall): string | null {
   try {
-    const args = JSON.parse(toolCall.function.arguments) as { path?: string };
-    return args.path ?? null;
+    const args = JSON.parse(toolCall.function.arguments) as Record<
+      string,
+      unknown
+    >;
+    return typeof args.path === "string" ? args.path : null;
   } catch {
     return null;
   }
@@ -124,7 +127,7 @@ const DiffBlock: React.FC<{ diff: DiffChunk }> = ({ diff }) => {
       {addLines.map((line, i) => (
         <DiffLine
           key={`add-${i}`}
-          lineNumber={diff.line1 + i}
+          lineNumber={diff.line2 + i}
           sign="+"
           line={line}
         />
@@ -269,7 +272,7 @@ export const EditTool: React.FC<EditToolProps> = ({
   }, [chatId, parsedToolCall, requestDryRun, sendToolCallToIde]);
 
   const handleReplace = useCallback(() => {
-    if (replaceContent) {
+    if (replaceContent !== null) {
       diffPasteBack(replaceContent, chatId, toolCall.id);
     }
   }, [chatId, diffPasteBack, replaceContent, toolCall.id]);
@@ -313,11 +316,8 @@ export const EditTool: React.FC<EditToolProps> = ({
       return "error";
     }
     if (isToolBusy) return "running";
-    // Has result but no diffs - could be an error message
-    if (hasResult && !hasDiffs) {
-      return "error";
-    }
-    return "success";
+    if (hasResult || hasDiffs) return "success";
+    return "running";
   }, [hasDiffs, hasResult, isToolBusy, maybeResult]);
 
   const summary = useMemo(() => {
@@ -381,15 +381,17 @@ export const EditTool: React.FC<EditToolProps> = ({
       onToggle={handleToggle}
       toolCall={toolCall}
     >
-      {status === "error" &&
-        maybeResult?.content &&
-        typeof maybeResult.content === "string" && (
-          <Box className={styles.errorContent}>
-            <Text size="1" color="red">
-              {maybeResult.content}
-            </Text>
-          </Box>
-        )}
+      {maybeResult?.content && typeof maybeResult.content === "string" && (
+        <Box
+          className={
+            status === "error" ? styles.errorContent : styles.resultContent
+          }
+        >
+          <Text size="1" color={status === "error" ? "red" : undefined}>
+            {maybeResult.content}
+          </Text>
+        </Box>
+      )}
       {shouldRenderDiffs && (
         <>
           <Flex gap="2" className={styles.actionBar}>
@@ -408,7 +410,7 @@ export const EditTool: React.FC<EditToolProps> = ({
                 </Flex>
               )}
             </Button>
-            {replaceContent && (
+            {replaceContent !== null && (
               <Button
                 size="1"
                 variant="soft"

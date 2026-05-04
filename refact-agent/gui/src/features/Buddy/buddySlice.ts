@@ -287,6 +287,9 @@ export interface BuddySliceState {
   seenNotificationIds: Record<string, number>;
 }
 
+const EMPTY_BUDDY_ACTIVITIES: BuddyActivityEntry[] = [];
+const EMPTY_BUDDY_SUGGESTIONS: BuddySuggestion[] = [];
+
 const initialState: BuddySliceState = {
   snapshot: null,
   loaded: false,
@@ -611,9 +614,9 @@ export const buddySlice = createSlice({
     selectBuddyState: (state) => state.snapshot?.state ?? null,
     selectBuddySettings: (state) => state.snapshot?.settings ?? null,
     selectBuddyActivities: (state) =>
-      state.snapshot?.state.recent_activities ?? [],
+      state.snapshot?.state.recent_activities ?? EMPTY_BUDDY_ACTIVITIES,
     selectBuddySuggestions: (state) =>
-      state.snapshot?.state.suggestion_state ?? [],
+      state.snapshot?.state.suggestion_state ?? EMPTY_BUDDY_SUGGESTIONS,
     selectBuddyConversations: (state) => state.conversations,
     selectIsBuddyEnabled: (state) => state.snapshot?.enabled ?? false,
     selectBuddyDiagnostics: (state) => state.recentDiagnostics,
