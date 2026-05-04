@@ -86,6 +86,8 @@ export const MessageFooter: React.FC<MessageFooterProps> = ({
       "cache_read_input_tokens",
     ],
   });
+  const cacheReadTokens = usage?.cache_read_input_tokens ?? 0;
+  const cacheCreationTokens = usage?.cache_creation_input_tokens ?? 0;
   const hasUsageInfo = Boolean(usage && contextTokens > 0) || hasUsd;
 
   return (
@@ -153,6 +155,18 @@ export const MessageFooter: React.FC<MessageFooterProps> = ({
                 {usage && (
                   <>
                     <TokenDisplay label="Context size" value={contextTokens} />
+                    {cacheReadTokens > 0 && (
+                      <TokenDisplay
+                        label="Cache read"
+                        value={cacheReadTokens}
+                      />
+                    )}
+                    {cacheCreationTokens > 0 && (
+                      <TokenDisplay
+                        label="Cache creation"
+                        value={cacheCreationTokens}
+                      />
+                    )}
                     <TokenDisplay label="Output tokens" value={outputTokens} />
                     {usage.completion_tokens_details?.reasoning_tokens !=
                       null &&
