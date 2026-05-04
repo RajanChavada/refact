@@ -357,8 +357,11 @@ export function useSidebarSubscription() {
           setCurrentProjectInfo({
             name: getWorkspaceDisplayName(workspaceRoots[0] ?? ""),
             workspaceRoots,
+            serverSnapshotReceived: true,
           }),
         );
+      } else {
+        dispatch(setCurrentProjectInfo({ serverSnapshotReceived: true }));
       }
 
       const trajectoryItems = event.trajectories.map((t: TrajectoryMeta) => ({
@@ -529,6 +532,7 @@ export function useSidebarSubscription() {
       const message =
         err instanceof Error ? err.message : "Failed to load history";
       dispatch(setHistoryLoadError(message));
+      dispatch(setHistoryLoading(false));
     }
   }, [dispatch, migrateFromLocalStorage]);
 

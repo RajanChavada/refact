@@ -8,7 +8,10 @@ export function useGetConfiguredProvidersQuery() {
   const lspPort = useAppSelector(selectLspPort);
   return providersApi.useGetConfiguredProvidersQuery(lspPort, {
     skip:
-      backendStatus === "unknown" || !Number.isFinite(lspPort) || lspPort <= 0,
+      backendStatus !== "online" || !Number.isFinite(lspPort) || lspPort <= 0,
+    refetchOnMountOrArgChange: true,
+    refetchOnFocus: true,
+    refetchOnReconnect: true,
   });
 }
 

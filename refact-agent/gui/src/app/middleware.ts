@@ -49,7 +49,11 @@ import {
   buildThreadScopePatch,
 } from "../features/Chat/Thread";
 import { saveLastThreadParams } from "../utils/threadStorage";
-import { savePersistedChatTabs } from "../utils/chatUiPersistence";
+import {
+  getProjectStorageNamespace,
+  savePersistedChatTabs,
+  setProjectStorageNamespace,
+} from "../utils/chatUiPersistence";
 import { integrationsApi } from "../services/refact/integrations";
 import { capsApi, isCapsErrorResponse } from "../services/refact/caps";
 import { promptsApi } from "../services/refact/prompts";
@@ -62,6 +66,7 @@ import {
   setError,
   setIsAuthError,
 } from "../features/Errors/errorsSlice";
+import { setCurrentProjectInfo } from "../features/Chat/currentProject";
 import { reportBuddyFrontendError } from "../features/Buddy/reportBuddyFrontendError";
 import { setThemeMode, updateConfig } from "../features/Config/configSlice";
 import { nextTip } from "../features/TipOfTheDay";
@@ -75,6 +80,7 @@ import {
 import { closeThread } from "../features/Chat/Thread";
 import {
   createChatWithId,
+  hydratePersistedChatTabs,
   requestSseRefresh,
 } from "../features/Chat/Thread/actions";
 import { push, selectCurrentPage } from "../features/Pages/pagesSlice";
@@ -117,6 +123,21 @@ function persistOpenChatTabs(state: RootState): void {
   });
 }
 
+let hydratedProjectStorageNamespace: string | null = null;
+
+function getStateProjectStorageNamespace(state: RootState): string | undefined {
+  const workspaceRoot = state.current_project.workspaceRoots?.find((root) =>
+    root.trim(),
+  );
+  if (workspaceRoot) return workspaceRoot;
+
+  const projectName = state.current_project.name.trim();
+  if (projectName) return projectName;
+
+  const workspaceName = state.config.currentWorkspaceName?.trim();
+  return workspaceName ? workspaceName : undefined;
+}
+
 startListening({
   matcher: isAnyOf(
     newChatAction,
@@ -143,6 +164,34 @@ startListening({
     }
 
     persistOpenChatTabs(listenerApi.getState());
+  },
+});
+
+startListening({
+  actionCreator: setCurrentProjectInfo,
+  effect: (_action, listenerApi) => {
+    setProjectStorageNamespace(
+      getStateProjectStorageNamespace(listenerApi.getState()),
+    );
+    const namespace = getProjectStorageNamespace();
+    if (namespace === hydratedProjectStorageNamespace) return;
+
+    hydratedProjectStorageNamespace = namespace;
+    listenerApi.dispatch(hydratePersistedChatTabs());
+  },
+});
+
+startListening({
+  actionCreator: updateConfig,
+  effect: (_action, listenerApi) => {
+    setProjectStorageNamespace(
+      getStateProjectStorageNamespace(listenerApi.getState()),
+    );
+    const namespace = getProjectStorageNamespace();
+    if (namespace === hydratedProjectStorageNamespace) return;
+
+    hydratedProjectStorageNamespace = namespace;
+    listenerApi.dispatch(hydratePersistedChatTabs());
   },
 });
 

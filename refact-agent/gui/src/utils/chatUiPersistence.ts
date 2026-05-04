@@ -7,6 +7,8 @@ const ASK_QUESTIONS_STORAGE_KEY = "refact:chat-ui:ask-questions:v1";
 const TASK_WORKSPACE_LAYOUT_STORAGE_KEY =
   "refact:chat-ui:task-workspace-layouts:v1";
 
+let projectStorageNamespace: string | null = null;
+
 const MAX_OPEN_CHAT_TABS = 50;
 const MAX_OPEN_TASKS = 25;
 const MAX_PLANNER_CHATS_PER_TASK = 50;
@@ -78,6 +80,24 @@ function getStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+function normalizeProjectStorageNamespace(value: string | undefined): string {
+  return value?.trim() ?? "";
+}
+
+function projectScopedStorageKey(baseKey: string): string {
+  const namespace = projectStorageNamespace;
+  return namespace ? `refact:project:${namespace}:${baseKey}` : baseKey;
+}
+
+export function getProjectStorageNamespace(): string | null {
+  return projectStorageNamespace;
+}
+
+export function setProjectStorageNamespace(value: string | undefined): void {
+  const next = normalizeProjectStorageNamespace(value);
+  projectStorageNamespace = next ? next : null;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -181,7 +201,7 @@ function normalizeChatTab(
 }
 
 export function loadPersistedChatTabs(): PersistedChatTabsState {
-  const record = readRecord(CHAT_TABS_STORAGE_KEY);
+  const record = readRecord(projectScopedStorageKey(CHAT_TABS_STORAGE_KEY));
   const rawOpenThreadIds = dedupeStrings(
     stringArrayOrEmpty(record?.openThreadIds).slice(-MAX_OPEN_CHAT_TABS),
   );
@@ -224,7 +244,7 @@ export function savePersistedChatTabs(input: PersistedChatTabsState): void {
       ? existing.currentThreadId
       : openThreadIds[openThreadIds.length - 1] ?? "";
 
-  writeRecord(CHAT_TABS_STORAGE_KEY, {
+  writeRecord(projectScopedStorageKey(CHAT_TABS_STORAGE_KEY), {
     version: 1,
     openThreadIds,
     currentThreadId,
@@ -251,11 +271,12 @@ function normalizeActiveTab(value: unknown): PersistedActiveTab | null {
 }
 
 export function loadPersistedActiveTab(): PersistedActiveTab | null {
-  return normalizeActiveTab(readRecord(ACTIVE_TAB_STORAGE_KEY)?.activeTab);
+  const record = readRecord(projectScopedStorageKey(ACTIVE_TAB_STORAGE_KEY));
+  return normalizeActiveTab(record?.activeTab);
 }
 
 export function savePersistedActiveTab(activeTab: PersistedActiveTab): void {
-  writeRecord(ACTIVE_TAB_STORAGE_KEY, {
+  writeRecord(projectScopedStorageKey(ACTIVE_TAB_STORAGE_KEY), {
     version: 1,
     activeTab,
     updatedAt: Date.now(),
@@ -317,7 +338,7 @@ function normalizeOpenTask(value: unknown): PersistedOpenTask | null {
 }
 
 export function loadPersistedTasksUIState(): PersistedTasksUIState {
-  const record = readRecord(TASKS_UI_STORAGE_KEY);
+  const record = readRecord(projectScopedStorageKey(TASKS_UI_STORAGE_KEY));
   const rawOpenTasks = Array.isArray(record?.openTasks) ? record.openTasks : [];
   const openTasks = rawOpenTasks
     .map(normalizeOpenTask)
@@ -328,7 +349,7 @@ export function loadPersistedTasksUIState(): PersistedTasksUIState {
 }
 
 export function savePersistedTasksUIState(state: PersistedTasksUIState): void {
-  writeRecord(TASKS_UI_STORAGE_KEY, {
+  writeRecord(projectScopedStorageKey(TASKS_UI_STORAGE_KEY), {
     version: 1,
     openTasks: state.openTasks.slice(-MAX_OPEN_TASKS),
     updatedAt: Date.now(),
@@ -437,7 +458,9 @@ export function clearAskQuestionsDraft(toolCallId: string | undefined): void {
 }
 
 function loadTaskWorkspaceLayouts(): Record<string, TaskWorkspaceLayout> {
-  const record = readRecord(TASK_WORKSPACE_LAYOUT_STORAGE_KEY);
+  const record = readRecord(
+    projectScopedStorageKey(TASK_WORKSPACE_LAYOUT_STORAGE_KEY),
+  );
   const layoutsRecord = isRecord(record?.layouts) ? record.layouts : {};
   const result: Record<string, TaskWorkspaceLayout> = {};
 
@@ -474,7 +497,7 @@ export function saveTaskWorkspaceLayout(
   if (!taskId.trim()) return;
   const layouts = loadTaskWorkspaceLayouts();
   layouts[taskId] = layout;
-  writeRecord(TASK_WORKSPACE_LAYOUT_STORAGE_KEY, {
+  writeRecord(projectScopedStorageKey(TASK_WORKSPACE_LAYOUT_STORAGE_KEY), {
     version: 1,
     layouts,
     updatedAt: Date.now(),

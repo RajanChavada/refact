@@ -273,15 +273,20 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
   const [startupResolved, setStartupResolved] = useState(false);
 
   useEffect(() => {
+    if (backendStatus !== "online") {
+      setStartupResolved(false);
+      return;
+    }
+
     if (providersQuery.isSuccess || providersQuery.isError) {
       setStartupResolved(true);
     }
-  }, [providersQuery.isError, providersQuery.isSuccess]);
+  }, [backendStatus, providersQuery.isError, providersQuery.isSuccess]);
 
   const showStartupSplash =
     !startupResolved &&
-    (backendLastOkAt === null ||
-      backendStatus !== "online" ||
+    backendLastOkAt === null &&
+    (backendStatus !== "online" ||
       providersQuery.isUninitialized ||
       providersQuery.isLoading ||
       providersQuery.isFetching);

@@ -16,7 +16,7 @@ import {
   selectPages,
 } from "../features/Pages/pagesSlice";
 import { ideToolCallResponse, ideSwitchToThread } from "./useEventBusForIDE";
-import { createAction } from "@reduxjs/toolkit/react";
+import { createAction } from "@reduxjs/toolkit";
 import { switchToThread } from "../features/Chat/Thread/actions";
 
 export const ideAttachFileToChat = createAction<string>("ide/attachFileToChat");

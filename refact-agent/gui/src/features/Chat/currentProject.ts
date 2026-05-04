@@ -4,22 +4,30 @@ import { RootState } from "../../app/store";
 export type CurrentProjectInfo = {
   name: string;
   workspaceRoots?: string[];
+  serverSnapshotReceived: boolean;
 };
+
+export type CurrentProjectInfoUpdate = Partial<CurrentProjectInfo>;
 
 const initialState: CurrentProjectInfo = {
   name: "",
+  serverSnapshotReceived: false,
 };
 
-export const setCurrentProjectInfo = createAction<CurrentProjectInfo>(
+export const setCurrentProjectInfo = createAction<CurrentProjectInfoUpdate>(
   "currentProjectInfo/setCurrentProjectInfo",
 );
 
 export const currentProjectInfoReducer = createReducer(
   initialState,
   (builder) => {
-    builder.addCase(setCurrentProjectInfo, (_state, action) => {
-      // state.name = action.payload.name;
-      return action.payload;
+    builder.addCase(setCurrentProjectInfo, (state, action) => {
+      return {
+        ...state,
+        ...action.payload,
+        serverSnapshotReceived:
+          action.payload.serverSnapshotReceived ?? state.serverSnapshotReceived,
+      };
     });
   },
 );
@@ -39,12 +47,14 @@ export const selectThreadProjectOrCurrentProject = (state: RootState) => {
 
 export const selectHasActiveProject = (state: RootState): boolean => {
   const workspaceRoots = state.current_project.workspaceRoots;
-  if (workspaceRoots !== undefined) {
-    return workspaceRoots.length > 0;
-  }
-
+  const hasWorkspaceRoot =
+    workspaceRoots !== undefined && workspaceRoots.length > 0;
   return Boolean(
-    state.current_project.name.trim() ||
+    hasWorkspaceRoot ||
+      state.current_project.name.trim() ||
       state.config.currentWorkspaceName?.trim(),
   );
 };
+
+export const selectHasProjectSnapshot = (state: RootState): boolean =>
+  state.current_project.serverSnapshotReceived === true;

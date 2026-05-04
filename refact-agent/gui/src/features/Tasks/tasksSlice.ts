@@ -4,6 +4,7 @@ import {
   loadPersistedTasksUIState,
   savePersistedTasksUIState,
 } from "../../utils/chatUiPersistence";
+import { hydratePersistedChatTabs } from "../Chat/Thread/actions";
 
 type ActiveChat =
   | { type: "planner"; chatId: string }
@@ -137,6 +138,11 @@ export const tasksSlice = createSlice({
         persistTasksUIState(state);
       }
     },
+  },
+  extraReducers: (builder) => {
+    builder.addCase(hydratePersistedChatTabs, (state) => {
+      state.openTasks = loadPersistedTasksUIState().openTasks;
+    });
   },
   selectors: {
     selectOpenTasks: (state) => state.openTasks,

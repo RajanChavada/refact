@@ -12,7 +12,7 @@ import styles from "./Dashboard.module.css";
 import { ChatLoading } from "../../components/ChatContent/ChatLoading";
 import { useAppSelector } from "../../hooks";
 import { selectBackendStatus } from "../Connection";
-import { selectHasActiveProject } from "../Chat/currentProject";
+import { selectHasProjectSnapshot } from "../Chat/currentProject";
 
 const OfflineState: React.FC = () => {
   const backendStatus = useAppSelector(selectBackendStatus);
@@ -44,7 +44,7 @@ export const Dashboard: React.FC = () => {
   const splitRef = useRef<HTMLDivElement>(null);
   const breakpoint = useDashboardLayout(containerRef);
   const backendStatus = useAppSelector(selectBackendStatus);
-  const hasActiveProject = useAppSelector(selectHasActiveProject);
+  const hasProjectSnapshot = useAppSelector(selectHasProjectSnapshot);
 
   const { collapsed, toggle } = useDashboardCollapseState();
   const {
@@ -55,7 +55,7 @@ export const Dashboard: React.FC = () => {
 
   const showResizeDivider = !collapsed.chats && !collapsed.tasks;
   const isOffline = backendStatus !== "online";
-  const projectLoading = !hasActiveProject;
+  const projectLoading = !hasProjectSnapshot;
 
   const chatsFlexStyle = collapsed.chats
     ? undefined

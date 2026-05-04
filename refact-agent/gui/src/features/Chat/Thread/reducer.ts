@@ -75,6 +75,7 @@ import {
   clearManualPreviewItems,
   openBuddyChat,
   newBuddyChatAction,
+  hydratePersistedChatTabs,
 } from "./actions";
 import { applyDeltaOps } from "../../../services/refact/chatSubscription";
 import type { WorktreeMeta } from "../../../services/refact/worktrees";
@@ -302,6 +303,28 @@ function isWorktreeMeta(value: unknown): value is WorktreeMeta {
 }
 
 export const chatReducer = createReducer(initialState, (builder) => {
+  builder.addCase(hydratePersistedChatTabs, (state) => {
+    const persistedTabs = loadPersistedChatTabs();
+    const threads: Chat["threads"] = {};
+
+    for (const tab of persistedTabs.tabs) {
+      if (tab.is_buddy_chat) continue;
+      threads[tab.id] =
+        state.threads[tab.id] ?? createPersistedThreadRuntime(tab, "agent");
+    }
+
+    const openThreadIds = persistedTabs.openThreadIds.filter(
+      (id) => threads[id] !== undefined,
+    );
+    const currentThreadId = openThreadIds.includes(persistedTabs.currentThreadId)
+      ? persistedTabs.currentThreadId
+      : openThreadIds[openThreadIds.length - 1] ?? "";
+
+    state.threads = threads;
+    state.open_thread_ids = openThreadIds;
+    state.current_thread_id = currentThreadId;
+  });
+
   builder.addCase(setToolUse, (state, action) => {
     state.tool_use = action.payload;
   });

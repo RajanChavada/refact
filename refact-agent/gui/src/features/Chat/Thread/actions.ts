@@ -528,6 +528,10 @@ export const ideToolRequired = createAction<IdeToolRequiredPayload>(
   "chatThread/ideToolRequired",
 );
 
+export const hydratePersistedChatTabs = createAction(
+  "chatThread/hydratePersistedChatTabs",
+);
+
 export const requestSseRefresh = createAction<{ chatId: string }>(
   "chatThread/requestSseRefresh",
 );
