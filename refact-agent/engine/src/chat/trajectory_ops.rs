@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 use uuid::Uuid;
 
-use crate::call_validation::{ChatContent, ChatMessage};
+use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
 use crate::global_context::GlobalContext;
 
 pub fn sanitize_message_for_new_thread(m: &ChatMessage) -> ChatMessage {
@@ -133,13 +133,140 @@ pub struct TransformStats {
     pub tool_messages_modified: usize,
 }
 
-const TOOLS_TO_PRESERVE: &[&str] = &["deep_research", "subagent", "strategic_planning", "code_review"];
+pub const TOOLS_TO_PRESERVE: &[&str] = &[
+    "deep_research",
+    "subagent",
+    "strategic_planning",
+    "code_review",
+];
 
 fn should_preserve_tool(name: &str) -> bool {
     TOOLS_TO_PRESERVE.iter().any(|t| *t == name)
 }
 
-fn approx_token_count(messages: &[ChatMessage]) -> usize {
+fn normalize_path_text(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+    normalized
+}
+
+fn memory_path_marker_present(text: &str) -> bool {
+    let normalized = normalize_path_text(text);
+    normalized.contains(".refact/knowledge/")
+        || normalized.contains(".refact/trajectories/")
+        || normalized.contains(".refact/tasks/")
+        || normalized.ends_with(".refact/knowledge")
+        || normalized.ends_with(".refact/trajectories")
+        || normalized.ends_with(".refact/tasks")
+}
+
+fn is_memory_path(path: &str) -> bool {
+    let normalized = normalize_path_text(path);
+    let parts: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+
+    parts.windows(2).any(|parts| {
+        parts[0] == ".refact" && matches!(parts[1], "knowledge" | "trajectories" | "tasks")
+    })
+}
+
+fn filter_memory_context_files(files: &[ContextFile]) -> (Vec<ContextFile>, usize) {
+    let remaining: Vec<_> = files
+        .iter()
+        .filter(|cf| !is_memory_path(&cf.file_name))
+        .cloned()
+        .collect();
+    let removed = files.len() - remaining.len();
+    (remaining, removed)
+}
+
+fn simple_text_contains_memory_context_path(text: &str) -> bool {
+    if let Ok(files) = serde_json::from_str::<Vec<ContextFile>>(text) {
+        return files.iter().any(|cf| is_memory_path(&cf.file_name));
+    }
+
+    text.lines().any(|line| {
+        let trimmed = line.trim();
+        let normalized = normalize_path_text(trimmed);
+        let has_context_path_label = normalized.contains("file_name")
+            || normalized.starts_with("FILE ")
+            || normalized.starts_with("file:")
+            || normalized.starts_with("path:")
+            || normalized.starts_with("- file:")
+            || normalized.starts_with("- path:");
+        has_context_path_label && memory_path_marker_present(&normalized)
+    })
+}
+
+fn handoff_conversation_and_excluded(
+    messages: &[ChatMessage],
+    opts: &HandoffOptions,
+    system_prefix_len: usize,
+    start_idx: usize,
+    edited_tool_ids: &HashSet<String>,
+) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
+    let mut conversation: Vec<ChatMessage> = Vec::new();
+    let mut selected_indices: HashSet<usize> = HashSet::new();
+
+    for (i, msg) in messages.iter().enumerate().skip(system_prefix_len) {
+        let should_include = if opts.include_all_user_assistant_only {
+            matches!(msg.role.as_str(), "user" | "assistant")
+        } else {
+            match msg.role.as_str() {
+                "user" => i >= start_idx,
+                "assistant" => {
+                    if i >= start_idx {
+                        if let Some(ref tool_calls) = msg.tool_calls {
+                            let has_non_preserved = tool_calls.iter().any(|tc| {
+                                !should_preserve_tool(&tc.function.name)
+                                    && !edited_tool_ids.contains(&tc.id)
+                            });
+                            has_non_preserved || tool_calls.is_empty()
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                }
+                "system" => false,
+                "context_file" => false,
+                "diff" => false,
+                "tool" => false,
+                _ => i >= start_idx,
+            }
+        };
+
+        if should_include {
+            selected_indices.insert(i);
+            if opts.include_all_user_assistant_only && msg.role == "assistant" {
+                let mut clean_msg = msg.clone();
+                clean_msg.tool_calls = None;
+                clean_msg.tool_call_id = String::new();
+                clean_msg.tool_failed = None;
+                conversation.push(clean_msg);
+            } else {
+                conversation.push(msg.clone());
+            }
+        }
+    }
+
+    let excluded = messages
+        .iter()
+        .enumerate()
+        .skip(system_prefix_len)
+        .filter(|(idx, _)| !selected_indices.contains(idx))
+        .map(|(_, msg)| msg.clone())
+        .collect();
+
+    (conversation, excluded)
+}
+
+pub fn approx_token_count(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
         .map(|m| {
@@ -163,15 +290,14 @@ pub fn compress_in_place(
     let mut tool_modified = 0;
 
     if opts.drop_all_context {
-        let mut i = 0;
-        while i < messages.len() {
-            if messages[i].role == "context_file" {
-                messages.remove(i);
+        messages.retain(|m| {
+            if m.role == "context_file" {
                 context_modified += 1;
+                false
             } else {
-                i += 1;
+                true
             }
-        }
+        });
     } else if opts.dedup_and_compress_context {
         let result = super::history_limit::compress_duplicate_context_files(messages);
         if let Ok((count, _)) = result {
@@ -180,33 +306,74 @@ pub fn compress_in_place(
     }
 
     if opts.drop_all_memories {
-        let mut i = 0;
-        while i < messages.len() {
-            if messages[i].role == "context_file" {
-                let content_text = messages[i].content.content_text_only().to_lowercase();
-                if content_text.contains("memory") || content_text.contains("knowledge") {
-                    messages.remove(i);
-                    context_modified += 1;
-                    continue;
-                }
+        for msg in messages.iter_mut() {
+            if msg.role != "context_file" {
+                continue;
             }
-            i += 1;
+            match &msg.content {
+                ChatContent::ContextFiles(files) => {
+                    let (remaining, removed) = filter_memory_context_files(files);
+                    if removed > 0 {
+                        context_modified += removed;
+                        msg.content = ChatContent::ContextFiles(remaining);
+                    }
+                }
+                ChatContent::SimpleText(text) => {
+                    if let Ok(files) = serde_json::from_str::<Vec<ContextFile>>(text) {
+                        let (remaining, removed) = filter_memory_context_files(&files);
+                        if removed > 0 {
+                            context_modified += removed;
+                            msg.content = ChatContent::SimpleText(
+                                serde_json::to_string(&remaining).map_err(|e| {
+                                    format!("Failed to serialize context files: {}", e)
+                                })?,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
+        messages.retain(|m| {
+            if m.role != "context_file" {
+                return true;
+            }
+            match &m.content {
+                ChatContent::ContextFiles(files) => !files.is_empty(),
+                ChatContent::SimpleText(text) => {
+                    if let Ok(files) = serde_json::from_str::<Vec<ContextFile>>(text) {
+                        !files.is_empty()
+                    } else if simple_text_contains_memory_context_path(text) {
+                        context_modified += 1;
+                        false
+                    } else {
+                        true
+                    }
+                }
+                _ => true,
+            }
+        });
     }
-
     if opts.drop_project_information {
-        let mut i = 0;
-        while i < messages.len() {
-            if messages[i].role == "system" {
-                let content_text = messages[i].content.content_text_only().to_lowercase();
-                if content_text.contains("project") || content_text.contains("workspace") {
-                    messages.remove(i);
+        let first_system_idx = messages.iter().position(|m| m.role == "system");
+        let mut idx = 0usize;
+        messages.retain(|msg| {
+            let keep = if msg.role != "system" {
+                true
+            } else if Some(idx) == first_system_idx {
+                true
+            } else {
+                let text = msg.content.content_text_only().to_lowercase();
+                if text.contains("project") || text.contains("workspace") {
                     context_modified += 1;
-                    continue;
+                    false
+                } else {
+                    true
                 }
-            }
-            i += 1;
-        }
+            };
+            idx += 1;
+            keep
+        });
     }
 
     if opts.compress_non_agentic_tools {
@@ -240,13 +407,13 @@ pub fn compress_in_place(
     if opts.strip_metering {
         for msg in messages.iter_mut() {
             msg.usage = None;
-            msg.extra.retain(|key, _| !key.starts_with("metering_coins_"));
+            msg.extra.clear();
         }
     }
 
-    let after_tokens = approx_token_count(messages);
+    let after_tokens_pre = approx_token_count(messages);
     let reduction_percent = if before_tokens > 0 {
-        ((before_tokens.saturating_sub(after_tokens)) * 100) / before_tokens
+        ((before_tokens.saturating_sub(after_tokens_pre)) * 100) / before_tokens
     } else {
         0
     };
@@ -258,13 +425,14 @@ pub fn compress_in_place(
             context_modified,
             tool_modified,
             before_tokens,
-            after_tokens,
+            after_tokens_pre,
             reduction_percent
         )),
         ..Default::default()
     };
     messages.push(instruction);
 
+    let after_tokens = approx_token_count(messages);
     Ok(TransformStats {
         before_message_count: before_count,
         after_message_count: messages.len(),
@@ -282,8 +450,6 @@ pub async fn handoff_select(
     generate_summary: bool,
     trajectory_id: &str,
 ) -> Result<(Vec<ChatMessage>, TransformStats, Option<String>), String> {
-    use crate::call_validation::ContextFile;
-
     let before_count = messages.len();
     let before_tokens = approx_token_count(messages);
 
@@ -398,61 +564,23 @@ pub async fn handoff_select(
         }
     }
 
-    let mut conversation: Vec<ChatMessage> = Vec::new();
-    for (i, msg) in messages.iter().enumerate().skip(system_prefix_len) {
-        let should_include = if opts.include_all_user_assistant_only {
-            match msg.role.as_str() {
-                "user" | "assistant" => true,
-                _ => false,
-            }
-        } else {
-            match msg.role.as_str() {
-                "user" => i >= start_idx,
-                "assistant" => {
-                    if i >= start_idx {
-                        if let Some(ref tool_calls) = msg.tool_calls {
-                            let has_non_preserved = tool_calls.iter().any(|tc| {
-                                !should_preserve_tool(&tc.function.name)
-                                    && !edited_tool_ids.contains(&tc.id)
-                            });
-                            has_non_preserved || tool_calls.is_empty()
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                }
-                "system" => false,
-                "context_file" => false,
-                "diff" => false,
-                "tool" => false,
-                _ => i >= start_idx,
-            }
-        };
-
-        if should_include {
-            if opts.include_all_user_assistant_only && msg.role == "assistant" {
-                let mut clean_msg = msg.clone();
-                clean_msg.tool_calls = None;
-                clean_msg.tool_call_id = String::new();
-                clean_msg.tool_failed = None;
-                conversation.push(clean_msg);
-            } else {
-                conversation.push(msg.clone());
-            }
-        }
-    }
+    let (conversation, excluded) = handoff_conversation_and_excluded(
+        messages,
+        opts,
+        system_prefix_len,
+        start_idx,
+        &edited_tool_ids,
+    );
 
     let mut llm_summary: Option<String> = None;
     let mut summary_msg: Option<ChatMessage> = None;
 
     if opts.llm_summary_for_excluded && generate_summary {
-        let all_conversation = sanitize_messages_for_new_thread(messages);
+        let excluded_sanitized = sanitize_messages_for_new_thread(&excluded);
 
-        if !all_conversation.is_empty() {
+        if !excluded_sanitized.is_empty() {
             let summary =
-                crate::agentic::compress_trajectory::compress_trajectory(gcx, &all_conversation)
+                crate::agentic::compress_trajectory::compress_trajectory(gcx, &excluded_sanitized)
                     .await
                     .map_err(|e| format!("Failed to generate summary: {}", e))?;
             summary_msg = Some(ChatMessage {
@@ -534,22 +662,39 @@ mod tests {
         }
     }
 
+    fn make_context_file(filename: &str, content: &str) -> ContextFile {
+        ContextFile {
+            file_name: filename.to_string(),
+            file_content: content.to_string(),
+            line1: 1,
+            line2: 100,
+            file_rev: None,
+            symbols: vec![],
+            gradient_type: -1,
+            usefulness: 0.0,
+            skip_pp: false,
+        }
+    }
+
     fn make_context_file_msg(filename: &str, content: &str) -> ChatMessage {
         ChatMessage {
             role: "context_file".to_string(),
-            content: ChatContent::ContextFiles(vec![ContextFile {
-                file_name: filename.to_string(),
-                file_content: content.to_string(),
-                line1: 1,
-                line2: 100,
-                file_rev: None,
-                symbols: vec![],
-                gradient_type: -1,
-                usefulness: 0.0,
-                skip_pp: false,
-            }]),
+            content: ChatContent::ContextFiles(vec![make_context_file(filename, content)]),
             ..Default::default()
         }
+    }
+
+    fn make_context_file_simple_text_msg(files: Vec<ContextFile>) -> ChatMessage {
+        ChatMessage {
+            role: "context_file".to_string(),
+            content: ChatContent::SimpleText(serde_json::to_string(&files).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    fn with_message_id(mut message: ChatMessage, message_id: &str) -> ChatMessage {
+        message.message_id = message_id.to_string();
+        message
     }
 
     fn make_assistant_with_tool_call(tool_call_id: &str, tool_name: &str) -> ChatMessage {
@@ -613,7 +758,12 @@ mod tests {
     #[test]
     fn test_compress_preserves_agentic_tools() {
         let long_content = "x".repeat(1000);
-        for tool_name in &["deep_research", "subagent", "strategic_planning", "code_review"] {
+        for tool_name in &[
+            "deep_research",
+            "subagent",
+            "strategic_planning",
+            "code_review",
+        ] {
             let mut messages = vec![
                 make_user_msg("hello"),
                 make_assistant_with_tool_call("tc1", tool_name),
@@ -720,11 +870,30 @@ mod tests {
 
     #[test]
     fn test_drop_all_memories() {
+        fn make_multi_context_file_msg(files: Vec<(&str, &str)>) -> ChatMessage {
+            ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(
+                    files
+                        .into_iter()
+                        .map(|(name, content)| make_context_file(name, content))
+                        .collect(),
+                ),
+                ..Default::default()
+            }
+        }
+
         let mut messages = vec![
             make_user_msg("hello"),
-            make_context_file_msg("memory.md", "some memory content"),
-            make_context_file_msg("knowledge.txt", "some knowledge"),
-            make_context_file_msg("regular.rs", "fn main() {}"),
+            make_context_file_msg(
+                "/home/user/.refact/knowledge/2026-01-01_mem.md",
+                "some memory",
+            ),
+            make_multi_context_file_msg(vec![
+                ("/home/user/.refact/knowledge/other.md", "knowledge"),
+                ("regular.rs", "fn main() {}"),
+            ]),
+            make_context_file_msg("src/lib.rs", "pub fn foo() {}"),
             make_assistant_msg("response"),
         ];
         let opts = CompressOptions {
@@ -732,13 +901,30 @@ mod tests {
             ..Default::default()
         };
         let stats = compress_in_place(&mut messages, &opts).unwrap();
+
         assert_eq!(stats.context_messages_modified, 2);
-        assert!(messages.iter().any(|m| {
+
+        assert!(!messages.iter().any(|m| {
             if let ChatContent::ContextFiles(files) = &m.content {
                 files
-                    .first()
-                    .map(|f| f.file_name == "regular.rs")
-                    .unwrap_or(false)
+                    .iter()
+                    .any(|f| f.file_name.contains(".refact/knowledge/2026"))
+            } else {
+                false
+            }
+        }));
+
+        assert!(messages.iter().any(|m| {
+            if let ChatContent::ContextFiles(files) = &m.content {
+                files.iter().any(|f| f.file_name == "regular.rs")
+            } else {
+                false
+            }
+        }));
+
+        assert!(messages.iter().any(|m| {
+            if let ChatContent::ContextFiles(files) = &m.content {
+                files.iter().any(|f| f.file_name == "src/lib.rs")
             } else {
                 false
             }
@@ -746,8 +932,191 @@ mod tests {
     }
 
     #[test]
-    fn test_drop_project_information() {
+    fn test_handoff_excluded_selection_with_empty_message_ids() {
+        let messages = vec![
+            make_system_msg("s"),
+            make_user_msg("first question"),
+            make_assistant_msg("first answer"),
+            make_user_msg("second question"),
+            make_assistant_msg("second answer"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let start_idx = messages.iter().rposition(|m| m.role == "user").unwrap();
+        let (conversation, excluded) =
+            handoff_conversation_and_excluded(&messages, &opts, 1, start_idx, &HashSet::new());
+
+        let conversation_text: Vec<_> = conversation
+            .iter()
+            .map(|m| m.content.content_text_only())
+            .collect();
+        let excluded_text: Vec<_> = excluded
+            .iter()
+            .map(|m| m.content.content_text_only())
+            .collect();
+
+        assert_eq!(conversation_text, vec!["second question", "second answer"]);
+        assert_eq!(excluded_text, vec!["first question", "first answer"]);
+    }
+
+    #[test]
+    fn test_handoff_excluded_selection_with_duplicate_message_ids() {
+        let messages = vec![
+            with_message_id(make_system_msg("s"), "system-id"),
+            with_message_id(make_user_msg("first question"), "duplicate-id"),
+            with_message_id(make_assistant_msg("first answer"), "duplicate-id"),
+            with_message_id(make_user_msg("second question"), "duplicate-id"),
+            with_message_id(make_assistant_msg("second answer"), "duplicate-id"),
+        ];
+        let opts = HandoffOptions {
+            include_last_user_plus: true,
+            ..Default::default()
+        };
+        let start_idx = messages.iter().rposition(|m| m.role == "user").unwrap();
+        let (conversation, excluded) =
+            handoff_conversation_and_excluded(&messages, &opts, 1, start_idx, &HashSet::new());
+
+        let conversation_text: Vec<_> = conversation
+            .iter()
+            .map(|m| m.content.content_text_only())
+            .collect();
+        let excluded_text: Vec<_> = excluded
+            .iter()
+            .map(|m| m.content.content_text_only())
+            .collect();
+
+        assert_eq!(conversation_text, vec!["second question", "second answer"]);
+        assert_eq!(excluded_text, vec!["first question", "first answer"]);
+    }
+
+    #[test]
+    fn test_drop_all_memories_removes_absolute_relative_and_windows_paths() {
         let mut messages = vec![
+            make_context_file_msg("/repo/.refact/knowledge/memory.md", "memory"),
+            make_context_file_msg(".refact/trajectories/chat.json", "trajectory"),
+            make_context_file_msg(
+                r#"C:\Users\user\repo\.refact\tasks\task-id\memories\note.md"#,
+                "task memory",
+            ),
+            make_context_file_msg("src/lib.rs", "pub fn lib() {}"),
+        ];
+        let opts = CompressOptions {
+            drop_all_memories: true,
+            ..Default::default()
+        };
+        let stats = compress_in_place(&mut messages, &opts).unwrap();
+
+        assert_eq!(stats.context_messages_modified, 3);
+        assert!(!messages.iter().any(|m| {
+            if let ChatContent::ContextFiles(files) = &m.content {
+                files.iter().any(|file| is_memory_path(&file.file_name))
+            } else {
+                false
+            }
+        }));
+        assert!(messages.iter().any(|m| {
+            if let ChatContent::ContextFiles(files) = &m.content {
+                files.iter().any(|file| file.file_name == "src/lib.rs")
+            } else {
+                false
+            }
+        }));
+    }
+
+    #[test]
+    fn test_drop_all_memories_removes_context_file_simple_text_with_memory_paths() {
+        let serialized_memory = make_context_file_simple_text_msg(vec![make_context_file(
+            ".refact/knowledge/preference.md",
+            "memory",
+        )]);
+        let embedded_memory = ChatMessage {
+            role: "context_file".to_string(),
+            content: ChatContent::SimpleText(
+                r#"[{"file_name":"C:\\repo\\.refact\\tasks\\task-id\\memo.md","file_content":"memo"}]"#.to_string(),
+            ),
+            ..Default::default()
+        };
+        let source = make_context_file_simple_text_msg(vec![make_context_file(
+            "src/main.rs",
+            "fn main() {}",
+        )]);
+        let mut messages = vec![serialized_memory, embedded_memory, source];
+        let opts = CompressOptions {
+            drop_all_memories: true,
+            ..Default::default()
+        };
+        let stats = compress_in_place(&mut messages, &opts).unwrap();
+
+        assert_eq!(stats.context_messages_modified, 2);
+        assert_eq!(
+            messages.iter().filter(|m| m.role == "context_file").count(),
+            1
+        );
+        let context_msg = messages.iter().find(|m| m.role == "context_file").unwrap();
+        let files: Vec<ContextFile> =
+            serde_json::from_str(&context_msg.content.content_text_only()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name, "src/main.rs");
+    }
+
+    #[test]
+    fn test_drop_all_memories_keeps_non_memory_source_context_files() {
+        let mut messages = vec![
+            make_context_file_msg("src/lib.rs", "pub fn lib() {}"),
+            make_context_file_msg("tests/.refact_fixture/tasks/example.rs", "fixture"),
+            ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::SimpleText(
+                    "file: src/mentions_refact.rs\nlet path = \".refact/tasks/not-a-context-path\";"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        ];
+        let opts = CompressOptions {
+            drop_all_memories: true,
+            ..Default::default()
+        };
+        let stats = compress_in_place(&mut messages, &opts).unwrap();
+
+        assert_eq!(stats.context_messages_modified, 0);
+        assert!(messages.iter().any(|m| {
+            if let ChatContent::ContextFiles(files) = &m.content {
+                files.iter().any(|file| file.file_name == "src/lib.rs")
+            } else {
+                false
+            }
+        }));
+        assert!(messages.iter().any(|m| {
+            if let ChatContent::ContextFiles(files) = &m.content {
+                files
+                    .iter()
+                    .any(|file| file.file_name == "tests/.refact_fixture/tasks/example.rs")
+            } else {
+                false
+            }
+        }));
+        assert!(messages.iter().any(|m| {
+            m.role == "context_file"
+                && matches!(&m.content, ChatContent::SimpleText(text) if text.contains("mentions_refact.rs"))
+        }));
+    }
+
+    #[test]
+    fn test_drop_project_information() {
+        // The first system message is the main agent prompt and must never be dropped,
+        // even if it contains "project" or "workspace". Secondary system messages that
+        // contain those words should be removed.
+        let mut messages = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: ChatContent::SimpleText(
+                    "You are an agent. Workspace: /home/user/project".to_string(),
+                ),
+                ..Default::default()
+            },
             ChatMessage {
                 role: "system".to_string(),
                 content: ChatContent::SimpleText("Project structure: ...".to_string()),
@@ -765,7 +1134,16 @@ mod tests {
             ..Default::default()
         };
         let stats = compress_in_place(&mut messages, &opts).unwrap();
+
+        // Only the second system message ("Project structure") should be dropped
         assert_eq!(stats.context_messages_modified, 1);
+
+        // First system message (the main prompt) must survive even though it contains "project"/"workspace"
+        assert!(messages
+            .iter()
+            .any(|m| m.role == "system" && m.content.content_text_only().contains("Workspace")));
+
+        // Third system message (no project/workspace) must also survive
         assert!(messages
             .iter()
             .any(|m| m.role == "system" && m.content.content_text_only().contains("assistant")));
@@ -997,7 +1375,10 @@ mod tests {
 
         assert_system_prefix(&selected);
         assert!(selected.iter().all(|m| m.role != "tool"));
-        assert_eq!(roles(&selected), vec!["system", "user", "assistant", "user"]);
+        assert_eq!(
+            roles(&selected),
+            vec!["system", "user", "assistant", "user"]
+        );
     }
 
     #[tokio::test]
@@ -1272,7 +1653,10 @@ mod tests {
             .unwrap();
 
         assert_system_prefix(&selected);
-        assert_eq!(roles(&selected), vec!["system", "user", "assistant", "user"]);
+        assert_eq!(
+            roles(&selected),
+            vec!["system", "user", "assistant", "user"]
+        );
     }
 
     #[tokio::test]

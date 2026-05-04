@@ -22,9 +22,10 @@ pub struct PkceSession {
     pub verifier: String,
     pub redirect_uri: String,
     pub created_at: i64,
+    pub provider_instance_id: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OAuthTokens {
     #[serde(default)]
     pub access_token: String,
@@ -88,10 +89,19 @@ struct CodexCliCredentials {
 
 #[derive(Debug, Deserialize)]
 struct CodexCliTokens {
+    #[serde(default)]
     access_token: String,
+    #[serde(default)]
     refresh_token: String,
-    #[allow(dead_code)]
+    #[serde(default)]
     id_token: Option<serde_json::Value>,
+}
+
+fn json_string(value: &Option<serde_json::Value>) -> Option<&str> {
+    value
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
 }
 
 lazy_static::lazy_static! {
@@ -110,19 +120,23 @@ fn generate_code_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(hash)
 }
 
-fn codex_home_dir() -> Option<std::path::PathBuf> {
-    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
-        let path = std::path::PathBuf::from(codex_home);
-        if path.exists() {
-            return Some(path);
+fn codex_home_dir() -> Result<std::path::PathBuf, String> {
+    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
+        if codex_home.to_string_lossy().trim().is_empty() {
+            return Err(
+                "CODEX_HOME is empty or whitespace. Unset it or set it to the Codex config directory."
+                    .to_string(),
+            );
         }
+        return Ok(std::path::PathBuf::from(codex_home));
     }
-    home::home_dir().map(|h| h.join(CODEX_HOME_DIR))
+    home::home_dir()
+        .map(|h| h.join(CODEX_HOME_DIR))
+        .ok_or_else(|| "Cannot determine Codex home directory".to_string())
 }
 
 pub fn read_codex_cli_credentials() -> Result<OAuthTokens, String> {
-    let codex_home = codex_home_dir()
-        .ok_or("Cannot determine Codex home directory")?;
+    let codex_home = codex_home_dir()?;
 
     let auth_path = codex_home.join("auth.json");
     if !auth_path.exists() {
@@ -138,39 +152,63 @@ pub fn read_codex_cli_credentials() -> Result<OAuthTokens, String> {
     let creds: CodexCliCredentials = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", auth_path.display(), e))?;
 
-    // In Codex CLI, OPENAI_API_KEY is obtained via token exchange and is the correct
-    // credential for api.openai.com endpoints. Prefer it if present.
-    if let Some(api_key) = creds.openai_api_key.as_ref().filter(|k| !k.is_empty()) {
-        return Ok(OAuthTokens {
-            access_token: String::new(),
-            refresh_token: String::new(),
-            expires_at: 0,
-            openai_api_key: api_key.clone(),
-            chatgpt_account_id: String::new(),
-            api_key_exchange_error: String::new(),
-        });
-    }
+    let openai_api_key = creds
+        .openai_api_key
+        .as_ref()
+        .filter(|key| !key.is_empty())
+        .cloned()
+        .unwrap_or_default();
 
-    let tokens = creds.tokens.ok_or_else(|| {
-        "No Codex CLI credentials found (expected OPENAI_API_KEY or OAuth tokens). Run 'codex login' first."
-            .to_string()
-    })?;
+    let Some(tokens) = creds.tokens else {
+        if !openai_api_key.is_empty() {
+            return Ok(OAuthTokens {
+                access_token: String::new(),
+                refresh_token: String::new(),
+                expires_at: 0,
+                openai_api_key,
+                chatgpt_account_id: String::new(),
+                api_key_exchange_error: String::new(),
+            });
+        }
+        return Err(
+            "No Codex CLI credentials found (expected OPENAI_API_KEY or OAuth tokens). Run 'codex login' first."
+                .to_string(),
+        );
+    };
 
     if tokens.access_token.is_empty() {
+        if !openai_api_key.is_empty() {
+            return Ok(OAuthTokens {
+                access_token: String::new(),
+                refresh_token: String::new(),
+                expires_at: 0,
+                openai_api_key,
+                chatgpt_account_id: String::new(),
+                api_key_exchange_error: String::new(),
+            });
+        }
         return Err("Empty access token in Codex CLI credentials".to_string());
     }
+
+    let chatgpt_account_id = json_string(&tokens.id_token)
+        .and_then(extract_chatgpt_account_id_from_jwt)
+        .or_else(|| extract_chatgpt_account_id_from_jwt(&tokens.access_token))
+        .unwrap_or_default();
+    let expires_at = extract_expiry_from_jwt(&tokens.access_token)
+        .or_else(|| json_string(&tokens.id_token).and_then(extract_expiry_from_jwt))
+        .unwrap_or(i64::MAX);
 
     Ok(OAuthTokens {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
-        expires_at: 0,
-        openai_api_key: String::new(),
-        chatgpt_account_id: String::new(),
+        expires_at,
+        openai_api_key,
+        chatgpt_account_id,
         api_key_exchange_error: String::new(),
     })
 }
 
-fn extract_chatgpt_account_id_from_jwt(jwt: &str) -> Option<String> {
+fn decode_jwt_payload(jwt: &str) -> Option<serde_json::Value> {
     let mut parts = jwt.split('.');
     let _header_b64 = parts.next()?;
     let payload_b64 = parts.next()?;
@@ -179,13 +217,23 @@ fn extract_chatgpt_account_id_from_jwt(jwt: &str) -> Option<String> {
     let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload_b64)
         .ok()?;
-    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    serde_json::from_slice(&payload_bytes).ok()
+}
 
-    payload
+fn extract_chatgpt_account_id_from_jwt(jwt: &str) -> Option<String> {
+    decode_jwt_payload(jwt)?
         .get("https://api.openai.com/auth")
         .and_then(|v| v.get("chatgpt_account_id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+fn extract_expiry_from_jwt(jwt: &str) -> Option<i64> {
+    decode_jwt_payload(jwt)?
+        .get("exp")
+        .and_then(|v| v.as_i64())
+        .filter(|exp| *exp > 0)
+        .and_then(|exp| exp.checked_mul(1000))
 }
 
 pub fn codex_cli_credentials_exist() -> bool {
@@ -224,7 +272,8 @@ fn build_authorize_url(code_challenge: &str, state: &str, redirect_uri: &str) ->
         ("state", state),
         ("originator", "codex_cli_rs"),
     ];
-    let qs = params.iter()
+    let qs = params
+        .iter()
         .map(|(k, v)| format!("{}={}", k, percent_encode_param(v)))
         .collect::<Vec<_>>()
         .join("&");
@@ -238,16 +287,24 @@ async fn prune_expired_sessions(sessions: &mut HashMap<String, PkceSession>) {
 
 /// Returns (session_id, authorize_url, callback_port).
 /// The callback_port is the port used in the redirect_uri (1455 if available, fallback otherwise).
-pub async fn start_oauth_session(fallback_port: u16) -> (String, String, u16) {
+pub async fn start_oauth_session(
+    fallback_port: u16,
+    provider_instance_id: impl Into<String>,
+) -> (String, String, u16) {
     let verifier = generate_code_verifier();
     let challenge = generate_code_challenge(&verifier);
     let session_id = uuid::Uuid::new_v4().to_string();
+    let provider_instance_id = provider_instance_id.into();
 
     // Use port 1455 (Codex CLI default) as primary; fall back to app port
     let callback_port = if port_available(CODEX_CALLBACK_PORT) {
         CODEX_CALLBACK_PORT
     } else {
-        tracing::warn!("OpenAI Codex OAuth: port {} unavailable, falling back to {}", CODEX_CALLBACK_PORT, fallback_port);
+        tracing::warn!(
+            "OpenAI Codex OAuth: port {} unavailable, falling back to {}",
+            CODEX_CALLBACK_PORT,
+            fallback_port
+        );
         fallback_port
     };
 
@@ -258,6 +315,7 @@ pub async fn start_oauth_session(fallback_port: u16) -> (String, String, u16) {
         verifier,
         redirect_uri,
         created_at: chrono::Utc::now().timestamp(),
+        provider_instance_id,
     };
 
     let mut sessions = PENDING_SESSIONS.lock().await;
@@ -267,20 +325,36 @@ pub async fn start_oauth_session(fallback_port: u16) -> (String, String, u16) {
     (session_id, authorize_url, callback_port)
 }
 
+#[cfg(test)]
+pub async fn pending_session_provider_instance_id(session_id: &str) -> Option<String> {
+    let sessions = PENDING_SESSIONS.lock().await;
+    sessions
+        .get(session_id)
+        .map(|session| session.provider_instance_id.clone())
+}
+
+#[cfg(test)]
+pub async fn clear_pending_sessions_for_test() {
+    let mut sessions = PENDING_SESSIONS.lock().await;
+    sessions.clear();
+}
+
 fn port_available(port: u16) -> bool {
     std::net::TcpListener::bind(format!("127.0.0.1:{}", port)).is_ok()
 }
 
-pub async fn exchange_code(
+pub async fn exchange_code_for_session(
     http_client: &reqwest::Client,
     session_id: &str,
     code: &str,
-) -> Result<OAuthTokens, String> {
+) -> Result<(OAuthTokens, String), String> {
     let session = {
         let mut sessions = PENDING_SESSIONS.lock().await;
-        sessions.remove(session_id)
+        sessions
+            .remove(session_id)
             .ok_or_else(|| "Invalid or expired OAuth session".to_string())?
     };
+    let provider_instance_id = session.provider_instance_id.clone();
 
     let params = [
         ("grant_type", "authorization_code"),
@@ -322,22 +396,31 @@ pub async fn exchange_code(
         match obtain_openai_api_key(http_client, &token_resp.id_token).await {
             Ok(k) => (k, String::new()),
             Err(e) => {
-                tracing::warn!("OpenAI Codex OAuth: failed to obtain OPENAI_API_KEY via token-exchange: {e}");
+                tracing::warn!(
+                    "OpenAI Codex OAuth: failed to obtain OPENAI_API_KEY via token-exchange: {e}"
+                );
                 (String::new(), e)
             }
         }
     } else {
-        (String::new(), "Token exchange response did not include id_token; cannot obtain OPENAI_API_KEY".to_string())
+        (
+            String::new(),
+            "Token exchange response did not include id_token; cannot obtain OPENAI_API_KEY"
+                .to_string(),
+        )
     };
 
-    Ok(OAuthTokens {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token,
-        expires_at,
-        openai_api_key,
-        chatgpt_account_id,
-        api_key_exchange_error,
-    })
+    Ok((
+        OAuthTokens {
+            access_token: token_resp.access_token,
+            refresh_token: token_resp.refresh_token,
+            expires_at,
+            openai_api_key,
+            chatgpt_account_id,
+            api_key_exchange_error,
+        },
+        provider_instance_id,
+    ))
 }
 
 pub async fn refresh_access_token(
@@ -403,7 +486,10 @@ async fn obtain_openai_api_key(
     }
 
     let params = [
-        ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+        ),
         ("client_id", CLIENT_ID),
         ("requested_token", "openai-api-key"),
         ("subject_token", id_token),
@@ -438,18 +524,18 @@ async fn obtain_openai_api_key(
     Ok(body.access_token)
 }
 
-/// Starts a temporary HTTP listener on the given port to handle the OAuth callback.
-/// Returns a JoinHandle that resolves when the callback is received or timeout expires.
-/// The callback exchanges the authorization code for tokens and returns them.
 pub async fn start_callback_listener(
     port: u16,
     http_client: reqwest::Client,
-) -> Result<tokio::task::JoinHandle<Option<OAuthTokens>>, String> {
+) -> Result<tokio::task::JoinHandle<Option<(OAuthTokens, String)>>, String> {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port))
         .await
         .map_err(|e| format!("Cannot bind callback listener on port {}: {}", port, e))?;
 
-    tracing::info!("OpenAI Codex OAuth: callback listener started on port {}", port);
+    tracing::info!(
+        "OpenAI Codex OAuth: callback listener started on port {}",
+        port
+    );
 
     let handle = tokio::spawn(async move {
         let timeout = tokio::time::Duration::from_secs(SESSION_TTL_SECS as u64);
@@ -495,16 +581,29 @@ pub async fn start_callback_listener(
         let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
 
         if let Some(err) = params.get("error") {
-            let desc = params.get("error_description").map(|s| s.as_str()).unwrap_or("Unknown error");
+            let desc = params
+                .get("error_description")
+                .map(|s| s.as_str())
+                .unwrap_or("Unknown error");
             tracing::warn!("OpenAI Codex OAuth error: {} — {}", err, desc);
-            send_http_response(&mut stream, 200, &callback_html(false, &format!("{}: {}", err, desc))).await;
+            send_http_response(
+                &mut stream,
+                200,
+                &callback_html(false, &format!("{}: {}", err, desc)),
+            )
+            .await;
             return None;
         }
 
         let code = match params.get("code") {
             Some(c) if !c.is_empty() => c.clone(),
             _ => {
-                send_http_response(&mut stream, 200, &callback_html(false, "No authorization code received")).await;
+                send_http_response(
+                    &mut stream,
+                    200,
+                    &callback_html(false, "No authorization code received"),
+                )
+                .await;
                 return None;
             }
         };
@@ -512,19 +611,37 @@ pub async fn start_callback_listener(
         let session_id = match params.get("state") {
             Some(s) if !s.is_empty() => s.clone(),
             _ => {
-                send_http_response(&mut stream, 200, &callback_html(false, "Missing state parameter")).await;
+                send_http_response(
+                    &mut stream,
+                    200,
+                    &callback_html(false, "Missing state parameter"),
+                )
+                .await;
                 return None;
             }
         };
 
-        match exchange_code(&http_client, &session_id, &code).await {
-            Ok(tokens) => {
-                send_http_response(&mut stream, 200, &callback_html(true, "Authentication successful. You can close this window.")).await;
-                Some(tokens)
+        match exchange_code_for_session(&http_client, &session_id, &code).await {
+            Ok((tokens, provider_instance_id)) => {
+                send_http_response(
+                    &mut stream,
+                    200,
+                    &callback_html(
+                        true,
+                        "Authentication successful. You can close this window.",
+                    ),
+                )
+                .await;
+                Some((tokens, provider_instance_id))
             }
             Err(e) => {
                 tracing::warn!("OpenAI Codex OAuth: token exchange failed: {}", e);
-                send_http_response(&mut stream, 200, &callback_html(false, &format!("Token exchange failed: {}", e))).await;
+                send_http_response(
+                    &mut stream,
+                    200,
+                    &callback_html(false, &format!("Token exchange failed: {}", e)),
+                )
+                .await;
                 None
             }
         }
@@ -533,32 +650,48 @@ pub async fn start_callback_listener(
     Ok(handle)
 }
 
-async fn send_http_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) {
-    use tokio::io::AsyncWriteExt;
+fn raw_http_response(status: u16, body: &str) -> String {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
         _ => "Error",
     };
-    let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status, reason, body.len(), body
-    );
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason,
+        body.as_bytes().len(),
+        body
+    )
+}
+
+async fn send_http_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) {
+    use tokio::io::AsyncWriteExt;
+    let response = raw_http_response(status, body);
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
 fn callback_html(success: bool, message: &str) -> String {
     let (title, heading, color) = if success {
-        ("Authentication Successful", "&#x2713; Authentication Successful", "#4ade80")
+        (
+            "Authentication Successful",
+            "&#x2713; Authentication Successful",
+            "#4ade80",
+        )
     } else {
-        ("Authentication Failed", "&#x2717; Authentication Failed", "#ef4444")
+        (
+            "Authentication Failed",
+            "&#x2717; Authentication Failed",
+            "#ef4444",
+        )
     };
     // HTML-escape the message to prevent XSS
     let escaped_message = message
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-        .replace('"', "&quot;");
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;");
     format!(
         r#"<!DOCTYPE html>
 <html><head><title>{title}</title></head>
@@ -569,4 +702,31 @@ fn callback_html(success: bool, message: &str) -> String {
 </div>
 </body></html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pending_oauth_session_tracks_provider_instance_id() {
+        clear_pending_sessions_for_test().await;
+        let (session_id, _authorize_url, _callback_port) =
+            start_oauth_session(8001, "openai_codex_work").await;
+
+        let provider_instance_id = pending_session_provider_instance_id(&session_id).await;
+        assert_eq!(provider_instance_id.as_deref(), Some("openai_codex_work"));
+
+        clear_pending_sessions_for_test().await;
+    }
+
+    #[test]
+    fn raw_callback_http_response_includes_csp() {
+        let response = raw_http_response(200, "ok");
+
+        assert!(response
+            .contains("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'"));
+        assert!(response.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(response.contains("Content-Length: 2"));
+    }
 }

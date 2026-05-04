@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use crate::call_validation::{ChatContent, ChatMessage, ContextFile, PostprocessS
 use crate::files_correction::canonical_path;
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::GlobalContext;
+use crate::at_commands::at_web_search::{format_search_results, SearchResult};
 use crate::postprocessing::pp_context_files::postprocess_context_files;
 use crate::postprocessing::pp_plain_text::postprocess_plain_text;
 use crate::tokens::count_text_tokens_with_fallback;
@@ -69,6 +70,8 @@ pub async fn postprocess_tool_results(
         postprocess_plain_text(other_messages, tokenizer.clone(), text_budget, &None).await;
     result.extend(text_messages);
 
+    deduplicate_web_search_tool_results(&mut result, existing_messages);
+
     let code_budget = total_budget.saturating_sub(text_budget) + text_remaining;
 
     let (file_message, notes, _code_used) = if !context_files.is_empty() {
@@ -101,6 +104,149 @@ pub async fn postprocess_tool_results(
     result
 }
 
+fn normalize_title_key(title: &str) -> String {
+    title
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_snippet_key(snippet: &str) -> String {
+    normalize_title_key(snippet)
+}
+
+fn canonicalize_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn deduplicate_search_results_for_postprocessing(results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let mut deduped: Vec<SearchResult> = Vec::new();
+    let mut by_url: HashMap<String, usize> = HashMap::new();
+    let mut by_title_snippet: HashMap<(String, String), usize> = HashMap::new();
+
+    for mut result in results {
+        result.title = result.title.trim().to_string();
+        result.url = canonicalize_url(&result.url);
+        result.snippet = result.snippet.trim().to_string();
+
+        if result.title.is_empty() || result.url.is_empty() {
+            continue;
+        }
+
+        let url_key = result.url.clone();
+        if let Some(existing_idx) = by_url.get(&url_key).copied() {
+            let existing = &mut deduped[existing_idx];
+            if existing.snippet.is_empty() && !result.snippet.is_empty() {
+                existing.snippet = result.snippet.clone();
+            }
+            continue;
+        }
+
+        let key = (
+            normalize_title_key(&result.title),
+            normalize_snippet_key(&result.snippet),
+        );
+        if let Some(existing_idx) = by_title_snippet.get(&key).copied() {
+            let existing = &mut deduped[existing_idx];
+            if existing.snippet.is_empty() && !result.snippet.is_empty() {
+                existing.snippet = result.snippet.clone();
+            }
+            continue;
+        }
+
+        let idx = deduped.len();
+        by_url.insert(url_key, idx);
+        by_title_snippet.insert(key, idx);
+        deduped.push(result);
+    }
+
+    deduped
+}
+
+fn extract_search_results_from_extra(msg: &ChatMessage) -> Option<Vec<SearchResult>> {
+    let raw = msg.extra.get("search_results")?.as_array()?;
+    let mut parsed = Vec::new();
+
+    for item in raw {
+        let obj = item.as_object()?;
+        let title = obj.get("title")?.as_str()?.to_string();
+        let url = obj.get("url")?.as_str()?.to_string();
+        let snippet = obj
+            .get("snippet")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let source = obj
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        parsed.push(SearchResult {
+            title,
+            url,
+            snippet,
+            source,
+        });
+    }
+
+    Some(parsed)
+}
+
+fn is_web_search_tool_message(msg: &ChatMessage, existing_messages: &[ChatMessage]) -> bool {
+    if msg.role != "tool" || msg.tool_call_id.is_empty() {
+        return false;
+    }
+
+    existing_messages.iter().any(|existing| {
+        existing
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                calls
+                    .iter()
+                    .any(|call| call.id == msg.tool_call_id && call.function.name == "web_search")
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn deduplicate_web_search_tool_results(
+    result: &mut [ChatMessage],
+    existing_messages: &[ChatMessage],
+) {
+    for msg in result.iter_mut() {
+        if !is_web_search_tool_message(msg, existing_messages) {
+            continue;
+        }
+
+        let Some(search_results) = extract_search_results_from_extra(msg) else {
+            continue;
+        };
+
+        let deduped = deduplicate_search_results_for_postprocessing(search_results);
+        if let Some(extra_results) = msg.extra.get_mut("search_results") {
+            *extra_results = serde_json::json!(deduped.clone());
+        }
+
+        if let ChatContent::SimpleText(text) = &mut msg.content {
+            let query = text
+                .strip_prefix("Web search results for \"")
+                .and_then(|rest| rest.split_once("\":\n\n"))
+                .map(|(q, _)| q.to_string())
+                .unwrap_or_else(|| "search".to_string());
+            *text = format_search_results(&query, &deduped);
+        }
+    }
+}
+
 fn deduplicate_and_merge_context_files(
     context_files: Vec<ContextFile>,
     existing_messages: &[ChatMessage],
@@ -108,8 +254,12 @@ fn deduplicate_and_merge_context_files(
     let mut file_groups: BTreeMap<String, Vec<ContextFile>> = BTreeMap::new();
 
     for cf in context_files {
-        let canonical = canonical_path(&cf.file_name).to_string_lossy().to_string();
-        file_groups.entry(canonical).or_default().push(cf);
+        let key = if cf.file_name.contains("://") {
+            cf.file_name.clone()
+        } else {
+            canonical_path(&cf.file_name).to_string_lossy().to_string()
+        };
+        file_groups.entry(key).or_default().push(cf);
     }
 
     let mut result = Vec::new();
@@ -210,7 +360,12 @@ fn has_truncation_markers(content: &str) -> bool {
 }
 
 fn find_coverage_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Option<(usize, String)> {
-    let cf_canonical = canonical_path(&cf.file_name);
+    let is_virtual = cf.file_name.contains("://");
+    let cf_canonical = if is_virtual {
+        PathBuf::from(&cf.file_name)
+    } else {
+        canonical_path(&cf.file_name)
+    };
     let cf_start = if cf.line1 == 0 { 1 } else { cf.line1 };
     let cf_end = if cf.line2 == 0 { usize::MAX } else { cf.line2 };
 
@@ -218,7 +373,7 @@ fn find_coverage_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Optio
         if msg.role != "context_file" {
             continue;
         }
-        
+
         let files_to_check: Vec<ContextFile> = match &msg.content {
             ChatContent::ContextFiles(files) => files.clone(),
             ChatContent::SimpleText(text) => {
@@ -232,7 +387,12 @@ fn find_coverage_in_history(cf: &ContextFile, messages: &[ChatMessage]) -> Optio
         };
 
         for existing in files_to_check {
-            if canonical_path(&existing.file_name) != cf_canonical {
+            let existing_canonical = if existing.file_name.contains("://") {
+                PathBuf::from(&existing.file_name)
+            } else {
+                canonical_path(&existing.file_name)
+            };
+            if existing_canonical != cf_canonical {
                 continue;
             }
             let same_rev = matches!(
@@ -371,11 +531,17 @@ async fn fill_skip_pp_files_with_budget(
     let max_files_by_budget = tokens_limit / MIN_PER_FILE_BUDGET;
     let files_to_skip = files.len().saturating_sub(max_files_by_budget);
     let files: Vec<_> = files.into_iter().take(max_files_by_budget).collect();
-    
+
     if files.is_empty() {
-        return (vec![], vec![format!("⚠️ {} files skipped due to token budget constraints", files_to_skip)]);
+        return (
+            vec![],
+            vec![format!(
+                "⚠️ {} files skipped due to token budget constraints",
+                files_to_skip
+            )],
+        );
     }
-    
+
     let per_file_budget = (tokens_limit / files.len()).min(MAX_PER_FILE_BUDGET);
     let mut result = Vec::new();
     let mut notes = Vec::new();
@@ -388,6 +554,51 @@ async fn fill_skip_pp_files_with_budget(
     }
 
     for mut cf in files {
+        // If content is already provided (e.g., skill:// virtual URIs), use it directly
+        if !cf.file_content.trim().is_empty() {
+            cf.file_rev = Some(official_text_hashing_function(&cf.file_content));
+
+            if let Some(dup_info) = find_duplicate_in_history(&cf, existing_messages) {
+                let range = if cf.line1 > 0 && cf.line2 > 0 {
+                    format!("{}:{}-{}", cf.file_name, cf.line1, cf.line2)
+                } else {
+                    cf.file_name.clone()
+                };
+                notes.push(format!(
+                    "📎 Skipped `{}`: already retrieved in message #{} via `{}`.",
+                    range,
+                    dup_info.0 + 1,
+                    dup_info.1
+                ));
+                continue;
+            }
+
+            let tokens = count_text_tokens_with_fallback(tokenizer.clone(), &cf.file_content);
+            if tokens > per_file_budget {
+                // Simple line-based truncation for prefilled content (markdown/instructions)
+                let mut truncated = String::new();
+                for line in cf.file_content.lines() {
+                    let candidate = if truncated.is_empty() {
+                        line.to_string()
+                    } else {
+                        format!("{}\n{}", truncated, line)
+                    };
+                    if count_text_tokens_with_fallback(tokenizer.clone(), &candidate)
+                        > per_file_budget
+                    {
+                        if !truncated.is_empty() {
+                            truncated.push_str("\n\n... (content truncated to fit token budget)");
+                        }
+                        break;
+                    }
+                    truncated = candidate;
+                }
+                cf.file_content = truncated;
+            }
+            result.push(cf);
+            continue;
+        }
+
         match get_file_text_from_memory_or_disk(gcx.clone(), &PathBuf::from(&cf.file_name)).await {
             Ok(text) => {
                 cf.file_rev = Some(official_text_hashing_function(&text));
@@ -453,7 +664,12 @@ fn find_duplicate_in_history(
     cf: &ContextFile,
     messages: &[ChatMessage],
 ) -> Option<(usize, String)> {
-    let cf_canonical = canonical_path(&cf.file_name);
+    let is_virtual = cf.file_name.contains("://");
+    let cf_canonical = if is_virtual {
+        PathBuf::from(&cf.file_name)
+    } else {
+        canonical_path(&cf.file_name)
+    };
     let cf_start = if cf.line1 == 0 { 1 } else { cf.line1 };
     let cf_end = if cf.line2 == 0 { usize::MAX } else { cf.line2 };
 
@@ -463,7 +679,12 @@ fn find_duplicate_in_history(
         }
         if let ChatContent::ContextFiles(files) = &msg.content {
             for existing in files {
-                if canonical_path(&existing.file_name) != cf_canonical {
+                let existing_canonical = if existing.file_name.contains("://") {
+                    PathBuf::from(&existing.file_name)
+                } else {
+                    canonical_path(&existing.file_name)
+                };
+                if existing_canonical != cf_canonical {
                     continue;
                 }
                 let same_rev = matches!(
@@ -543,6 +764,52 @@ fn format_lines_with_numbers(lines: &[&str], start: usize, end: usize) -> String
         .join("\n")
 }
 
+fn truncate_text_prefix_to_token_budget(
+    text: &str,
+    tokenizer: Option<Arc<Tokenizer>>,
+    tokens_limit: usize,
+    marker: &str,
+) -> String {
+    if text.is_empty() || tokens_limit == 0 {
+        return String::new();
+    }
+
+    if count_text_tokens_with_fallback(tokenizer.clone(), text) <= tokens_limit {
+        return text.to_string();
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0usize;
+    let mut high = chars.len();
+    let mut best_prefix = 0usize;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let prefix: String = chars[..mid].iter().collect();
+        let candidate = if mid < chars.len() {
+            format!("{}{}", prefix, marker)
+        } else {
+            prefix
+        };
+
+        let tokens = count_text_tokens_with_fallback(tokenizer.clone(), &candidate);
+        if tokens <= tokens_limit {
+            best_prefix = mid;
+            low = mid.saturating_add(1);
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let mut out: String = chars[..best_prefix].iter().collect();
+    if best_prefix < chars.len() {
+        out.push_str(marker);
+    }
+    out
+}
+
 fn truncate_file_head_tail(
     lines: &[&str],
     start: usize,
@@ -578,8 +845,17 @@ fn truncate_file_head_tail(
         let full_content = format!("{}{}{}", head_content, truncation_marker, tail_content);
         let tokens = count_text_tokens_with_fallback(tokenizer.clone(), &full_content);
 
-        if tokens <= tokens_limit || head_end <= start + 1 {
+        if tokens <= tokens_limit {
             return full_content;
+        }
+
+        if head_end <= start + 1 {
+            return truncate_text_prefix_to_token_budget(
+                &full_content,
+                tokenizer.clone(),
+                tokens_limit,
+                "\n... (content truncated to fit token budget)",
+            );
         }
 
         head_end = start + (head_end - start) * 80 / 100;
@@ -624,6 +900,17 @@ mod tests {
             tool_call_id: tool_call_id.to_string(),
             ..Default::default()
         }
+    }
+
+    fn make_web_search_tool_message(
+        content: &str,
+        tool_call_id: &str,
+        results: Vec<SearchResult>,
+    ) -> ChatMessage {
+        let mut msg = make_tool_message(content, tool_call_id);
+        msg.extra
+            .insert("search_results".to_string(), serde_json::json!(results));
+        msg
     }
 
     fn make_context_file_message(files: Vec<ContextFile>) -> ChatMessage {
@@ -795,6 +1082,18 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_file_head_tail_single_line_respects_budget() {
+        let long_line = "x".repeat(200_000);
+        let lines = vec![long_line.as_str()];
+        let token_budget = 120;
+        let result = truncate_file_head_tail(&lines, 0, 1, None, token_budget);
+        let used = count_text_tokens_with_fallback(None, &result);
+
+        assert!(used <= token_budget);
+        assert!(result.contains("content truncated"));
+    }
+
+    #[test]
     fn test_find_duplicate_path_normalization() {
         let cf = make_context_file("src/main.rs", 1, 10);
         let messages = vec![make_context_file_message(vec![make_context_file(
@@ -897,6 +1196,45 @@ mod tests {
         ];
         let name = find_tool_name_for_context(&messages, 2);
         assert_eq!(name, "tree");
+    }
+
+    #[test]
+    fn test_deduplicate_web_search_tool_results_rewrites_extra_and_text() {
+        let assistant = make_assistant_with_tool_calls(vec!["web_search"]);
+        let mut tool_messages = vec![make_web_search_tool_message(
+            "Web search results for \"rust\":\n\n1. [Rust Book](https://doc.rust-lang.org/book/)\n   Official book\n\n2. [Rust Book](https://doc.rust-lang.org/book/)\n   Duplicate\n",
+            "call_0",
+            vec![
+                SearchResult {
+                    title: "Rust Book".to_string(),
+                    url: "https://doc.rust-lang.org/book/".to_string(),
+                    snippet: "Official book".to_string(),
+                    source: Some("searxng".to_string()),
+                },
+                SearchResult {
+                    title: "Rust Book".to_string(),
+                    url: "https://doc.rust-lang.org/book".to_string(),
+                    snippet: "".to_string(),
+                    source: Some("duckduckgo".to_string()),
+                },
+            ],
+        )];
+
+        deduplicate_web_search_tool_results(&mut tool_messages, &[assistant]);
+
+        let msg = &tool_messages[0];
+        let extra_results = msg
+            .extra
+            .get("search_results")
+            .and_then(|v| v.as_array())
+            .expect("search_results array");
+        assert_eq!(extra_results.len(), 1);
+
+        let ChatContent::SimpleText(text) = &msg.content else {
+            panic!("expected simple text");
+        };
+        assert!(text.contains("1. [Rust Book](https://doc.rust-lang.org/book)"));
+        assert!(!text.contains("2. [Rust Book]"));
     }
 
     #[test]

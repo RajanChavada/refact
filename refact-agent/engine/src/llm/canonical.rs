@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::call_validation::{ChatMessage, ChatMeta, ChatUsage};
+use crate::call_validation::{ChatMessage, ChatUsage};
 use crate::llm::params::{CacheControl, CommonParams, ReasoningIntent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,10 +25,6 @@ pub struct LlmRequest {
     pub cache_control: CacheControl,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra_body: Option<serde_json::Map<String, Value>>,
-    /// Metadata for Refact cloud (chat_id, mode, etc.) - sent when support_metadata is true
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub meta: Option<ChatMeta>,
-
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
 }
@@ -62,7 +58,6 @@ impl LlmRequest {
             response_format: None,
             cache_control: CacheControl::Off,
             extra_body: None,
-            meta: None,
             previous_response_id: None,
         }
     }
@@ -90,11 +85,6 @@ impl LlmRequest {
         self
     }
 
-    pub fn with_meta(mut self, meta: ChatMeta) -> Self {
-        self.meta = Some(meta);
-        self
-    }
-
     pub fn with_cache_control(mut self, cache_control: CacheControl) -> Self {
         self.cache_control = cache_control;
         self
@@ -102,6 +92,12 @@ impl LlmRequest {
 
     pub fn with_previous_response_id(mut self, previous_response_id: Option<String>) -> Self {
         self.previous_response_id = previous_response_id;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_extra_body(mut self, extra: std::collections::HashMap<String, Value>) -> Self {
+        self.extra_body = Some(extra.into_iter().collect());
         self
     }
 }
@@ -185,19 +181,41 @@ mod tests {
         use serde_json::json;
 
         let deltas = vec![
-            LlmStreamDelta::AppendContent { text: "hello".to_string(), block_index: None },
-            LlmStreamDelta::AppendReasoning { text: "thinking".to_string(), block_index: None },
-            LlmStreamDelta::SetToolCalls { tool_calls: vec![json!({"id": "1"})] },
-            LlmStreamDelta::SetThinkingBlocks { blocks: vec![json!({"type": "thinking", "text": "..."})] },
-            LlmStreamDelta::AddCitation { citation: json!({"url": "https://example.com", "title": "Example"}) },
-            LlmStreamDelta::SetUsage { usage: ChatUsage::default() },
-            LlmStreamDelta::SetFinishReason { reason: "stop".to_string() },
-            LlmStreamDelta::MergeExtra { extra: serde_json::Map::new() },
+            LlmStreamDelta::AppendContent {
+                text: "hello".to_string(),
+                block_index: None,
+            },
+            LlmStreamDelta::AppendReasoning {
+                text: "thinking".to_string(),
+                block_index: None,
+            },
+            LlmStreamDelta::SetToolCalls {
+                tool_calls: vec![json!({"id": "1"})],
+            },
+            LlmStreamDelta::SetThinkingBlocks {
+                blocks: vec![json!({"type": "thinking", "text": "..."})],
+            },
+            LlmStreamDelta::AddCitation {
+                citation: json!({"url": "https://example.com", "title": "Example"}),
+            },
+            LlmStreamDelta::SetUsage {
+                usage: ChatUsage::default(),
+            },
+            LlmStreamDelta::SetFinishReason {
+                reason: "stop".to_string(),
+            },
+            LlmStreamDelta::MergeExtra {
+                extra: serde_json::Map::new(),
+            },
             LlmStreamDelta::Done,
         ];
 
         assert_eq!(deltas.len(), 9);
-        assert!(matches!(&deltas[3], LlmStreamDelta::SetThinkingBlocks { blocks } if blocks.len() == 1));
-        assert!(matches!(&deltas[4], LlmStreamDelta::AddCitation { citation } if citation.get("url").is_some()));
+        assert!(
+            matches!(&deltas[3], LlmStreamDelta::SetThinkingBlocks { blocks } if blocks.len() == 1)
+        );
+        assert!(
+            matches!(&deltas[4], LlmStreamDelta::AddCitation { citation } if citation.get("url").is_some())
+        );
     }
 }

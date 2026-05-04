@@ -16,7 +16,7 @@ pub enum CompressionStrength {
 pub(crate) fn remove_invalid_tool_calls_and_tool_calls_results(messages: &mut Vec<ChatMessage>) {
     let tool_call_ids: HashSet<_> = messages
         .iter()
-        .filter(|m| !m.tool_call_id.is_empty())
+        .filter(|m| (m.role == "tool" || m.role == "diff") && !m.tool_call_id.is_empty())
         .map(|m| &m.tool_call_id)
         .cloned()
         .collect();
@@ -367,7 +367,7 @@ fn replace_broken_tool_call_messages(
     }
 }
 
-fn validate_chat_history(messages: &Vec<ChatMessage>) -> Result<Vec<ChatMessage>, String> {
+fn validate_chat_history_slice(messages: &[ChatMessage]) -> Result<(), String> {
     // 1. Check that there is at least one message (and that at least one is "system" or "user")
     if messages.is_empty() {
         return Err("Invalid chat history: no messages present".to_string());
@@ -413,7 +413,9 @@ fn validate_chat_history(messages: &Vec<ChatMessage>) -> Result<Vec<ChatMessage>
                         // Look for a following "tool" message whose tool_call_id equals tc.id
                         let mut found = false;
                         for later_msg in messages.iter().skip(idx + 1) {
-                            if later_msg.tool_call_id == tc.id {
+                            if (later_msg.role == "tool" || later_msg.role == "diff")
+                                && later_msg.tool_call_id == tc.id
+                            {
                                 found = true;
                                 break;
                             }
@@ -429,7 +431,19 @@ fn validate_chat_history(messages: &Vec<ChatMessage>) -> Result<Vec<ChatMessage>
             }
         }
     }
+    Ok(())
+}
+
+pub(crate) fn validate_chat_history(
+    messages: &Vec<ChatMessage>,
+) -> Result<Vec<ChatMessage>, String> {
+    validate_chat_history_slice(messages)?;
     Ok(messages.to_vec())
+}
+
+fn validate_chat_history_owned(messages: Vec<ChatMessage>) -> Result<Vec<ChatMessage>, String> {
+    validate_chat_history_slice(&messages)?;
+    Ok(messages)
 }
 
 pub fn fix_and_limit_messages_history(
@@ -439,7 +453,7 @@ pub fn fix_and_limit_messages_history(
     let mut mutable_messages = messages.clone();
     replace_broken_tool_call_messages(&mut mutable_messages, sampling_parameters_to_patch, 16000);
     remove_invalid_tool_calls_and_tool_calls_results(&mut mutable_messages);
-    validate_chat_history(&mutable_messages)
+    validate_chat_history_owned(mutable_messages)
 }
 
 #[cfg(test)]
@@ -581,5 +595,77 @@ mod tests {
         remove_invalid_tool_calls_and_tool_calls_results(&mut messages);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].role, "diff");
+    }
+
+    #[test]
+    fn test_context_file_with_matching_id_does_not_satisfy_tool_call() {
+        // A context_file message carrying the same tool_call_id must NOT count
+        // as answering the assistant's tool call — only role=tool/diff qualifies.
+        let mut messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: "call_x".to_string(),
+                    index: Some(0),
+                    function: ChatToolFunction {
+                        name: "cat".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    tool_type: "function".to_string(),
+                    extra_content: None,
+                }]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "context_file".to_string(),
+                tool_call_id: "call_x".to_string(),
+                content: ChatContent::SimpleText("file content".to_string()),
+                ..Default::default()
+            },
+        ];
+        remove_invalid_tool_calls_and_tool_calls_results(&mut messages);
+        // The assistant message with the unanswered tool call must be removed.
+        assert!(
+            messages.iter().all(|m| m.role != "assistant"),
+            "assistant with unanswered tool call should have been removed, got: {:?}",
+            messages.iter().map(|m| &m.role).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_replace_broken_tool_call_messages_converts_garbage_args_to_cd_instruction() {
+        let mut messages = vec![ChatMessage {
+            role: "assistant".to_string(),
+            tool_calls: Some(vec![crate::call_validation::ChatToolCall {
+                id: "call_1".to_string(),
+                index: Some(0),
+                function: crate::call_validation::ChatToolFunction {
+                    name: "shell".to_string(),
+                    arguments: "noise {\"command\":\"pwd\"} tail".to_string(),
+                },
+                tool_type: "function".to_string(),
+                extra_content: None,
+            }]),
+            ..Default::default()
+        }];
+        let mut sampling = SamplingParameters::default();
+
+        replace_broken_tool_call_messages(&mut messages, &mut sampling, 16000);
+
+        assert_eq!(messages[0].role, "cd_instruction");
+        assert!(messages[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_fix_valid_history_returns_correct_content() {
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: crate::call_validation::ChatContent::SimpleText("hello".to_string()),
+            ..Default::default()
+        }];
+        let mut sampling = SamplingParameters::default();
+        let result = fix_and_limit_messages_history(&messages, &mut sampling).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].role, "user");
     }
 }

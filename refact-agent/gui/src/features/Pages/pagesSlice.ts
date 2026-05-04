@@ -12,10 +12,6 @@ export interface FIMDebugPage {
   name: "fill in the middle debug page";
 }
 
-export interface StatisticsPage {
-  name: "statistics page";
-}
-
 export interface DocumentationSettingsPage {
   name: "documentation settings";
 }
@@ -58,14 +54,48 @@ export interface CustomizationPage {
   name: "customization";
   kind?: "modes" | "subagents" | "toolbox_commands" | "code_lens";
   configId?: string;
+  draftId?: string;
 }
 
 export interface DefaultModelsPage {
   name: "default models";
+  draftId?: string;
 }
 
 export interface StatsDashboardPage {
   name: "stats dashboard";
+}
+
+export interface ExtensionsPage {
+  name: "extensions";
+  tab?: "skills" | "commands" | "hooks";
+  itemId?: string;
+  draftId?: string;
+}
+
+export interface MCPMarketplacePage {
+  name: "mcp marketplace";
+}
+
+export interface SkillsMarketplacePage {
+  name: "skills marketplace";
+}
+
+export interface CommandsMarketplacePage {
+  name: "commands marketplace";
+}
+
+export interface SubagentsMarketplacePage {
+  name: "subagents marketplace";
+}
+
+export interface MarketplaceHubPage {
+  name: "marketplace hub";
+}
+
+export interface BuddyPage {
+  name: "buddy";
+  draftId?: string;
 }
 
 export interface IntegrationsSetupPage {
@@ -81,7 +111,6 @@ export type Page =
   | ChatPage
   | HistoryList
   | FIMDebugPage
-  | StatisticsPage
   | DocumentationSettingsPage
   | ChatThreadHistoryPage
   | IntegrationsSetupPage
@@ -93,12 +122,23 @@ export type Page =
   | KnowledgeGraphPage
   | CustomizationPage
   | DefaultModelsPage
-  | StatsDashboardPage;
+  | StatsDashboardPage
+  | ExtensionsPage
+  | MCPMarketplacePage
+  | SkillsMarketplacePage
+  | CommandsMarketplacePage
+  | SubagentsMarketplacePage
+  | MarketplaceHubPage
+  | BuddyPage;
 
 export function isIntegrationSetupPage(
   page: Page,
 ): page is IntegrationsSetupPage {
   return page.name === "integrations page";
+}
+
+export function isExtensionsPage(page: Page): page is ExtensionsPage {
+  return page.name === "extensions";
 }
 
 export type PageSliceState = Page[];

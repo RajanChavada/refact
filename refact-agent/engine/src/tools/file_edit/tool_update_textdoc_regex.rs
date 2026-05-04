@@ -4,17 +4,20 @@ use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::IntegrationConfirmation;
 use crate::privacy::load_privacy_if_needed;
 use crate::tools::file_edit::auxiliary::{
-    await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary, parse_bool_arg,
-    parse_path_for_update, parse_string_arg, str_replace_regex, sync_documents_ast,
+    append_scope_warnings, await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary,
+    normalize_line_endings, parse_bool_arg, parse_path_for_update, parse_string_arg,
+    scope_warnings_to_tool_message, str_replace_regex, sync_documents_ast,
 };
 use crate::tools::tools_description::{
-    MatchConfirmDeny, MatchConfirmDenyResult, Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType,
+    MatchConfirmDeny, MatchConfirmDenyResult, Tool, ToolDesc, ToolSource, ToolSourceType,
+    json_schema_from_params,
 };
 use async_trait::async_trait;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use crate::worktrees::scope::ExecutionScope;
 use std::sync::Arc;
 use tokio::sync::Mutex as AMutex;
 use tokio::sync::RwLock as ARwLock;
@@ -30,22 +33,27 @@ struct Args {
     replacement: String,
     multiple: bool,
     expected_matches: Option<usize>,
+    literal: bool,
+    scope_warnings: Vec<String>,
 }
 
 async fn parse_args(
     gcx: Arc<ARwLock<GlobalContext>>,
     args: &HashMap<String, Value>,
-    code_workdir: &Option<PathBuf>,
+    execution_scope: Option<&ExecutionScope>,
 ) -> Result<Args, String> {
     let privacy = load_privacy_if_needed(gcx.clone()).await;
-    let path = parse_path_for_update(gcx, args, privacy, code_workdir).await?;
+    let resolved = parse_path_for_update(gcx, args, privacy, execution_scope).await?;
+    let path = resolved.path;
     let pattern_str = parse_string_arg(args, "pattern", "Provide pattern to match")?;
     let literal = parse_bool_arg(args, "literal", true)?;
+    // Normalize CRLF in the pattern so it matches LF-normalized file content
+    let pattern_str_normalized = normalize_line_endings(&pattern_str);
     let pattern = if literal {
-        Regex::new(&regex::escape(&pattern_str))
+        Regex::new(&regex::escape(&pattern_str_normalized))
             .map_err(|e| format!("⚠️ Pattern too complex: {}. 💡 Use shorter pattern", e))?
     } else {
-        Regex::new(&pattern_str).map_err(|e| {
+        Regex::new(&pattern_str_normalized).map_err(|e| {
             format!(
                 "⚠️ Invalid regex: {}. 💡 Check syntax, or set literal:true",
                 e
@@ -65,6 +73,8 @@ async fn parse_args(
         replacement,
         multiple,
         expected_matches,
+        literal,
+        scope_warnings: resolved.warnings,
     })
 }
 
@@ -72,9 +82,9 @@ pub async fn tool_update_text_doc_regex_exec(
     gcx: Arc<ARwLock<GlobalContext>>,
     args: &HashMap<String, Value>,
     dry: bool,
-    code_workdir: &Option<PathBuf>,
+    execution_scope: Option<&ExecutionScope>,
 ) -> Result<(String, String, Vec<DiffChunk>, String), String> {
-    let a = parse_args(gcx.clone(), args, code_workdir).await?;
+    let a = parse_args(gcx.clone(), args, execution_scope).await?;
     await_ast_indexing(gcx.clone()).await?;
     let (before, after) = str_replace_regex(
         gcx.clone(),
@@ -83,12 +93,16 @@ pub async fn tool_update_text_doc_regex_exec(
         &a.replacement,
         a.multiple,
         a.expected_matches,
+        a.literal,
         dry,
     )
     .await?;
     sync_documents_ast(gcx.clone(), &a.path).await?;
     let chunks = convert_edit_to_diffchunks(a.path.clone(), &before, &after)?;
-    let summary = edit_result_summary(&before, &after, &a.path);
+    let summary = append_scope_warnings(
+        edit_result_summary(&before, &after, &a.path),
+        &a.scope_warnings,
+    );
     Ok((before, after, chunks, summary))
 }
 
@@ -100,12 +114,16 @@ impl Tool for ToolUpdateTextDocRegex {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = {
+        let (gcx, execution_scope) = {
             let ccx_locked = ccx.lock().await;
-            ccx_locked.global_context.clone()
+            (
+                ccx_locked.global_context.clone(),
+                ccx_locked.execution_scope.clone(),
+            )
         };
-        let (_, _, chunks, _) =
-            tool_update_text_doc_regex_exec(gcx.clone(), args, false, &None).await?;
+        let (_, _, chunks, summary) =
+            tool_update_text_doc_regex_exec(gcx.clone(), args, false, execution_scope.as_ref())
+                .await?;
 
         let related_section = {
             let idx_arc = { gcx.read().await.knowledge_index.clone() };
@@ -138,6 +156,10 @@ impl Tool for ToolUpdateTextDocRegex {
             ..Default::default()
         })];
 
+        if let Some(message) = scope_warnings_to_tool_message(&summary, tool_call_id) {
+            out.push(message);
+        }
+
         if !related_section.trim().is_empty() {
             out.push(ContextEnum::ChatMessage(ChatMessage {
                 role: "tool".to_string(),
@@ -156,12 +178,17 @@ impl Tool for ToolUpdateTextDocRegex {
         ccx: Arc<AMutex<AtCommandsContext>>,
         args: &HashMap<String, Value>,
     ) -> Result<MatchConfirmDeny, String> {
-        let gcx = {
+        let (gcx, execution_scope, msgs_len) = {
             let ccx_locked = ccx.lock().await;
-            ccx_locked.global_context.clone()
+            (
+                ccx_locked.global_context.clone(),
+                ccx_locked.execution_scope.clone(),
+                ccx_locked.messages.len(),
+            )
         };
-        let can_exec = parse_args(gcx.clone(), args, &None).await.is_ok();
-        let msgs_len = ccx.lock().await.messages.len();
+        let can_exec = parse_args(gcx.clone(), args, execution_scope.as_ref())
+            .await
+            .is_ok();
         if msgs_len != 0 && !can_exec {
             return Ok(MatchConfirmDeny {
                 result: MatchConfirmDenyResult::PASS,
@@ -202,39 +229,9 @@ impl Tool for ToolUpdateTextDocRegex {
             experimental: false,
             allow_parallel: false,
             description: "Updates an existing document using pattern matching. By default treats pattern as literal text (literal:true). Set literal:false for regex.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "path".to_string(),
-                    description: "Absolute path to the file to change.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "pattern".to_string(),
-                    description: "Pattern to match. Treated as literal text by default, or regex if literal:false.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "replacement".to_string(),
-                    description: "The new text that will replace the matched pattern.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "literal".to_string(),
-                    description: "If true (default), pattern is treated as literal text. If false, pattern is a regex.".to_string(),
-                    param_type: "boolean".to_string(),
-                },
-                ToolParam {
-                    name: "multiple".to_string(),
-                    description: "If true, replaces all occurrences; if false (default), only the first.".to_string(),
-                    param_type: "boolean".to_string(),
-                },
-                ToolParam {
-                    name: "expected_matches".to_string(),
-                    description: "If provided, fails if actual match count differs (safety check).".to_string(),
-                    param_type: "integer".to_string(),
-                },
-            ],
-            parameters_required: vec!["path".to_string(), "pattern".to_string(), "replacement".to_string()],
+            input_schema: json_schema_from_params(&[("path", "string", "Absolute path to the file to change."), ("pattern", "string", "Pattern to match. Treated as literal text by default, or regex if literal:false."), ("replacement", "string", "The new text that will replace the matched pattern."), ("literal", "boolean", "If true (default), pattern is treated as literal text. If false, pattern is a regex."), ("multiple", "boolean", "If true, replaces all occurrences; if false (default), only the first."), ("expected_matches", "integer", "If provided, fails if actual match count differs (safety check).")], &["path", "pattern", "replacement"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 }

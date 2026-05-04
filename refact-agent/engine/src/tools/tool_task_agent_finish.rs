@@ -2,20 +2,24 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::process::Command;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use serde_json::Value;
 use tokio::sync::Mutex as AMutex;
+use tokio::sync::RwLock as ARwLock;
 use async_trait::async_trait;
 use chrono::Utc;
-use uuid::Uuid;
 
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::global_context::GlobalContext;
+use crate::agentic::generate_commit_message::generate_commit_message_by_diff;
+
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::tasks::storage;
-use crate::tasks::types::StatusUpdate;
-use crate::chat::{get_or_create_session_with_trajectory, process_command_queue};
-use crate::chat::types::{ChatCommand, CommandRequest};
+use crate::tasks::types::{BoardCard, StatusUpdate};
+use crate::worktrees::types::WorktreeMeta;
 
 async fn get_task_id(ccx: &Arc<AMutex<AtCommandsContext>>) -> Result<String, String> {
     let ccx_lock = ccx.lock().await;
@@ -39,10 +43,48 @@ async fn get_card_id(ccx: &Arc<AMutex<AtCommandsContext>>) -> Result<String, Str
         })
 }
 
-fn auto_commit_worktree(
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResolvedAgentWorktree {
+    root: PathBuf,
+    branch: Option<String>,
+    name: Option<String>,
+}
+
+fn resolve_agent_worktree(
+    thread_worktree: Option<WorktreeMeta>,
+    card: &BoardCard,
+) -> Option<ResolvedAgentWorktree> {
+    if let Some(meta) = thread_worktree {
+        return Some(ResolvedAgentWorktree {
+            root: meta.root,
+            branch: meta.branch,
+            name: Some(meta.id),
+        });
+    }
+    card.agent_worktree
+        .as_ref()
+        .map(|root| ResolvedAgentWorktree {
+            root: PathBuf::from(root),
+            branch: card.agent_branch.clone(),
+            name: card.agent_worktree_name.clone(),
+        })
+}
+
+async fn auto_commit_worktree(
+    gcx: Arc<ARwLock<GlobalContext>>,
     worktree_path: &Path,
     card_id: &str,
     card_title: &str,
+) -> Result<Option<String>, String> {
+    auto_commit_worktree_with_message(gcx, worktree_path, card_id, card_title, None).await
+}
+
+async fn auto_commit_worktree_with_message(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    worktree_path: &Path,
+    card_id: &str,
+    card_title: &str,
+    commit_msg_override: Option<String>,
 ) -> Result<Option<String>, String> {
     if !worktree_path.exists() {
         return Ok(None);
@@ -57,11 +99,18 @@ fn auto_commit_worktree(
         .args(["status", "--porcelain"])
         .current_dir(worktree_path)
         .output()
-        .map_err(|e| format!("Failed to check git status: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to check git status in worktree '{}': {}",
+                worktree_path.display(),
+                e
+            )
+        })?;
 
     if !status_output.status.success() {
         return Err(format!(
-            "git status failed: {}",
+            "git status failed in worktree '{}': {}",
+            worktree_path.display(),
             String::from_utf8_lossy(&status_output.stderr)
         ));
     }
@@ -75,16 +124,44 @@ fn auto_commit_worktree(
         .args(["add", "-A"])
         .current_dir(worktree_path)
         .output()
-        .map_err(|e| format!("Failed to stage changes: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to stage changes in worktree '{}': {}",
+                worktree_path.display(),
+                e
+            )
+        })?;
 
     if !add_output.status.success() {
         return Err(format!(
-            "git add failed: {}",
+            "git add failed in worktree '{}': {}",
+            worktree_path.display(),
             String::from_utf8_lossy(&add_output.stderr)
         ));
     }
 
-    let commit_msg = format!("Card {}: {}", card_id, card_title);
+    let diff_output = Command::new("git")
+        .args(["diff", "--cached"])
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|e| {
+            format!(
+                "Failed to get diff in worktree '{}': {}",
+                worktree_path.display(),
+                e
+            )
+        })?;
+    let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
+
+    let commit_msg = match commit_msg_override {
+        Some(msg) if !msg.trim().is_empty() => msg,
+        _ => match generate_commit_message_by_diff(gcx, &diff, &Some(card_title.to_string())).await
+        {
+            Ok(msg) if !msg.trim().is_empty() => msg,
+            _ => format!("Card {}: {}", card_id, card_title),
+        },
+    };
+
     let commit_output = Command::new("git")
         .args([
             "-c",
@@ -98,21 +175,37 @@ fn auto_commit_worktree(
         ])
         .current_dir(worktree_path)
         .output()
-        .map_err(|e| format!("Failed to commit: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to commit in worktree '{}': {}",
+                worktree_path.display(),
+                e
+            )
+        })?;
 
     if !commit_output.status.success() {
         let stderr = String::from_utf8_lossy(&commit_output.stderr);
         if stderr.contains("nothing to commit") {
             return Ok(None);
         }
-        return Err(format!("git commit failed: {}", stderr));
+        return Err(format!(
+            "git commit failed in worktree '{}': {}",
+            worktree_path.display(),
+            stderr
+        ));
     }
 
     let rev_output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(worktree_path)
         .output()
-        .map_err(|e| format!("Failed to get commit hash: {}", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to get commit hash in worktree '{}': {}",
+                worktree_path.display(),
+                e
+            )
+        })?;
 
     let commit_hash = String::from_utf8_lossy(&rev_output.stdout)
         .trim()
@@ -141,19 +234,9 @@ impl Tool for ToolTaskAgentFinish {
             experimental: false,
             allow_parallel: false,
             description: "Mark the current card as completed or failed. Task agents MUST call this exactly once when finished. This updates the task board and notifies the planner.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "success".to_string(),
-                    param_type: "boolean".to_string(),
-                    description: "true if the card was completed successfully, false if it failed".to_string(),
-                },
-                ToolParam {
-                    name: "report".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Summary of what was done (if success) or why it failed (if failure)".to_string(),
-                },
-            ],
-            parameters_required: vec!["success".to_string(), "report".to_string()],
+            input_schema: json_schema_from_params(&[("success", "boolean", "true if the card was completed successfully, false if it failed"), ("report", "string", "Summary of what was done (if success) or why it failed (if failure)")], &["success", "report"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -180,22 +263,34 @@ impl Tool for ToolTaskAgentFinish {
 
         let gcx = ccx.lock().await.global_context.clone();
 
+        let _ =
+            crate::chat::task_agent_monitor::update_card_heartbeat(gcx.clone(), &task_id, &card_id)
+                .await;
+
         let board_pre = storage::load_board(gcx.clone(), &task_id).await?;
         let card_pre = board_pre
             .get_card(&card_id)
             .ok_or(format!("Card {} not found", card_id))?;
-        let worktree_path = card_pre.agent_worktree.clone();
+        let thread_worktree = ccx.lock().await.execution_scope_worktree();
+        let resolved_worktree = resolve_agent_worktree(thread_worktree, card_pre);
         let card_title_for_commit = card_pre.title.clone();
 
         let commit_result = if success {
-            if let Some(ref wt) = worktree_path {
-                let wt_path = Path::new(wt);
-                match auto_commit_worktree(wt_path, &card_id, &card_title_for_commit) {
+            if let Some(ref worktree) = resolved_worktree {
+                match auto_commit_worktree(
+                    gcx.clone(),
+                    &worktree.root,
+                    &card_id,
+                    &card_title_for_commit,
+                )
+                .await
+                {
                     Ok(hash) => hash,
                     Err(e) => {
                         return Err(format!(
-                            "Auto-commit failed: {}. Please ensure your changes are committed before calling task_agent_finish(success=true). \
+                            "Auto-commit failed in worktree '{}': {}. Please ensure your changes are committed before calling task_agent_finish(success=true). \
                             You can run `git add -A && git commit -m 'your message'` in the worktree, or investigate the error.",
+                            worktree.root.display(),
                             e
                         ));
                     }
@@ -266,19 +361,26 @@ impl Tool for ToolTaskAgentFinish {
         storage::update_task_stats(gcx.clone(), &task_id).await?;
 
         if !success {
-            if let Some(ref wt) = worktree_path {
-                if let Some(branch) = board.get_card(&card_id).and_then(|c| c.agent_branch.clone()) {
+            if let Some(ref worktree) = resolved_worktree {
+                if let Some(branch) = worktree.branch.clone() {
+                    let worktree_root = worktree.root.to_string_lossy().to_string();
                     let _diff = crate::chat::task_agent_monitor::cleanup_failed_agent_worktree(
-                        gcx.clone(), wt, &branch, None
-                    ).await;
+                        gcx.clone(),
+                        &worktree_root,
+                        &branch,
+                        worktree.name.as_deref(),
+                    )
+                    .await;
                     let card_id_clear = card_id.clone();
                     let _ = storage::update_board_atomic(gcx.clone(), &task_id, move |board| {
                         if let Some(c) = board.get_card_mut(&card_id_clear) {
                             c.agent_worktree = None;
                             c.agent_branch = None;
+                            c.agent_worktree_name = None;
                         }
                         Ok(())
-                    }).await;
+                    })
+                    .await;
                 }
             }
         }
@@ -291,7 +393,7 @@ impl Tool for ToolTaskAgentFinish {
                 )
             } else {
                 format!(
-                    "✅ **Card Completed: {}**\n\n**Report:**\n{}\n\nPlanner will be notified when all agents complete.",
+                    "✅ **Card Completed: {}**\n\n**Report:**\n{}\n\nPlanner notified. Other agents are still running.",
                     card_title, report
                 )
             }
@@ -303,7 +405,7 @@ impl Tool for ToolTaskAgentFinish {
                 )
             } else {
                 format!(
-                    "❌ **Card Failed: {}**\n\n**Reason:**\n{}\n\nPlanner will be notified when all agents complete.",
+                    "❌ **Card Failed: {}**\n\n**Reason:**\n{}\n\nPlanner notified. Other agents are still running.",
                     card_title, report
                 )
             }
@@ -316,108 +418,13 @@ impl Tool for ToolTaskAgentFinish {
             report.chars().take(100).collect::<String>()
         );
 
-        if all_finished {
-            let since = match storage::load_task_meta(gcx.clone(), &task_id).await {
-                Ok(meta) => meta
-                    .last_agents_summary_at
-                    .as_deref()
-                    .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-                    .map(|dt| dt.with_timezone(&Utc)),
-                Err(_) => None,
-            };
-
-            let mut results = Vec::new();
-            for card in &board.cards {
-                if card.agent_chat_id.is_none() {
-                    continue;
-                }
-                if let Some(ref since_dt) = since {
-                    let Some(completed_at) = card
-                        .completed_at
-                        .as_deref()
-                        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-                        .map(|dt| dt.with_timezone(&Utc))
-                    else {
-                        continue;
-                    };
-                    if completed_at < *since_dt {
-                        continue;
-                    }
-                }
-                let status = if card.column == "done" {
-                    "✅ done"
-                } else if card.column == "failed" {
-                    "❌ failed"
-                } else {
-                    continue;
-                };
-                let report_preview: String = card
-                    .final_report
-                    .as_deref()
-                    .unwrap_or("")
-                    .chars()
-                    .take(200)
-                    .collect();
-                results.push(format!(
-                    "**{} ({})**: {}\n{}",
-                    card.id, card.title, status, report_preview
-                ));
-            }
-
-            let planner_message = format!(
-                "**All agents have completed.**\n\n{}\n\nRun `task_board_get(card_id)` to see full details for any card.",
-                if results.is_empty() {
-                    let note = since
-                        .as_ref()
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_else(|| "(unknown)".to_string());
-                    format!("_(No newly-finished cards detected since {}.)_", note)
-                } else {
-                    results.join("\n\n")
-                }
-            );
-
-            let sessions = {
-                let gcx_locked = gcx.read().await;
-                gcx_locked.chat_sessions.clone()
-            };
-
-            let planner_chat_id = storage::get_planner_chat_id(gcx.clone(), &task_id).await?;
-            let planner_session =
-                get_or_create_session_with_trajectory(gcx.clone(), &sessions, &planner_chat_id)
-                    .await;
-
-            let request = CommandRequest {
-                client_request_id: format!("task-all-finished-{}", Uuid::new_v4()),
-                priority: true,
-                command: ChatCommand::UserMessage {
-                    content: serde_json::Value::String(planner_message),
-                    attachments: vec![],
-                },
-            };
-
-            let processor_flag = {
-                let mut session = planner_session.lock().await;
-                session.command_queue.push_back(request);
-                session.emit_queue_update();
-                session.queue_notify.notify_one();
-                session.queue_processor_running.clone()
-            };
-
-            if !processor_flag.swap(true, Ordering::SeqCst) {
-                tokio::spawn(process_command_queue(
-                    gcx.clone(),
-                    planner_session.clone(),
-                    processor_flag,
-                ));
-            }
-
-            // Best-effort: mark summary as emitted to avoid repeating historical cards.
-            if let Ok(mut meta) = storage::load_task_meta(gcx.clone(), &task_id).await {
-                meta.last_agents_summary_at = Some(Utc::now().to_rfc3339());
-                let _ = storage::save_task_meta(gcx.clone(), &task_id, &meta).await;
-            }
-        }
+        crate::chat::task_agent_monitor::notify_planner_agents_finished(
+            gcx.clone(),
+            &task_id,
+            &board,
+            all_finished,
+        )
+        .await?;
 
         {
             let ccx_lock = ccx.lock().await;
@@ -438,5 +445,143 @@ impl Tool for ToolTaskAgentFinish {
 
     fn tool_depends_on(&self) -> Vec<String> {
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::types::BoardCard;
+
+    fn run_git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        if !output.status.success() {
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    fn init_repo(root: &Path) {
+        run_git(root, &["init"]);
+        run_git(root, &["checkout", "-b", "main"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test User"]);
+        std::fs::write(root.join("file.txt"), "hello\n").unwrap();
+        run_git(root, &["add", "file.txt"]);
+        run_git(root, &["commit", "-m", "initial"]);
+    }
+
+    fn test_card(worktree: Option<String>) -> BoardCard {
+        BoardCard {
+            id: "T-1".to_string(),
+            title: "Card T-1".to_string(),
+            column: "doing".to_string(),
+            priority: "P1".to_string(),
+            depends_on: vec![],
+            instructions: String::new(),
+            assignee: Some("agent-1".to_string()),
+            agent_chat_id: Some("agent-chat-1".to_string()),
+            status_updates: vec![],
+            final_report: None,
+            created_at: Utc::now().to_rfc3339(),
+            started_at: Some(Utc::now().to_rfc3339()),
+            last_heartbeat_at: None,
+            completed_at: None,
+            agent_branch: Some("legacy-branch".to_string()),
+            agent_worktree: worktree,
+            agent_worktree_name: Some("legacy-id".to_string()),
+            target_files: vec![],
+        }
+    }
+
+    fn sample_worktree_meta(temp: &Path) -> WorktreeMeta {
+        let root = temp.join("thread-worktree");
+        let source = temp.join("source");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&source).unwrap();
+        WorktreeMeta {
+            id: "thread-id".to_string(),
+            kind: "task_agent".to_string(),
+            root,
+            source_workspace_root: source.clone(),
+            repo_root: source,
+            branch: Some("thread-branch".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: Some("base".to_string()),
+            task_id: Some("task-1".to_string()),
+            card_id: Some("T-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            enforce: true,
+        }
+    }
+
+    #[test]
+    fn task_spawn_agent_finish_prefers_thread_worktree_over_board_mirror() {
+        let temp = tempfile::tempdir().unwrap();
+        let meta = sample_worktree_meta(temp.path());
+        let legacy_root = temp.path().join("legacy-root");
+        let card = test_card(Some(legacy_root.to_string_lossy().to_string()));
+
+        let resolved = resolve_agent_worktree(Some(meta.clone()), &card).unwrap();
+        assert_eq!(resolved.root, meta.root);
+        assert_eq!(resolved.branch.as_deref(), Some("thread-branch"));
+        assert_eq!(resolved.name.as_deref(), Some("thread-id"));
+
+        let legacy = resolve_agent_worktree(None, &card).unwrap();
+        assert_eq!(legacy.root, legacy_root);
+        assert_eq!(legacy.branch.as_deref(), Some("legacy-branch"));
+        assert_eq!(legacy.name.as_deref(), Some("legacy-id"));
+    }
+
+    #[tokio::test]
+    async fn task_spawn_agent_finish_auto_commits_from_worktree_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let worktree = temp.path().join("agent-worktree");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        run_git(
+            &source,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "refact/task/task-1/card/T-1/agent",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(worktree.join("file.txt"), "changed in worktree\n").unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+
+        let commit = auto_commit_worktree_with_message(
+            gcx,
+            &worktree,
+            "T-1",
+            "Card T-1",
+            Some("test commit".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert!(commit.is_some());
+        assert!(run_git(&worktree, &["status", "--porcelain"])
+            .trim()
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(source.join("file.txt")).unwrap(),
+            "hello\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.join("file.txt")).unwrap(),
+            "changed in worktree\n"
+        );
     }
 }

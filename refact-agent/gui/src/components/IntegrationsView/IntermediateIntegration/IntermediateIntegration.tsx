@@ -7,16 +7,24 @@ import { useGetIntegrationDataByPathQuery } from "../../../hooks/useGetIntegrati
 import { validateSnakeCase } from "../../../utils/validateSnakeCase";
 import { createProjectLabelsWithConflictMarkers } from "../../../utils/createProjectLabelsWithConflictMarkers";
 import { IntegrationPathField } from "./IntegrationPathField";
+import { MCPSetupWizard } from "../MCPSetupWizard";
 
 type IntegrationCmdlineProps = {
   integration: NotConfiguredIntegrationWithIconRecord;
   handleSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  handleMCPWizardSubmit?: (configPath: string, integrName: string) => void;
 };
 
 export const IntermediateIntegration: FC<IntegrationCmdlineProps> = ({
   integration,
   handleSubmit,
+  handleMCPWizardSubmit,
 }) => {
+  const isMCP =
+    integration.integr_name === "mcp_TEMPLATE" ||
+    (integration.integr_name.startsWith("mcp") &&
+      integration.integr_name.endsWith("TEMPLATE"));
+
   const [integrationType, integrationTemplate] =
     integration.integr_name.split("_");
   const [commandName, setCommandName] = useState(
@@ -34,7 +42,7 @@ export const IntermediateIntegration: FC<IntegrationCmdlineProps> = ({
     const validProjectPaths = integration.project_path.filter(
       (path) => path !== "",
     );
-    return createProjectLabelsWithConflictMarkers(validProjectPaths); // Start with just the last folder name
+    return createProjectLabelsWithConflictMarkers(validProjectPaths);
   }, [integration.project_path]);
 
   const handleCommandNameChange = (value: string) => {
@@ -45,6 +53,15 @@ export const IntermediateIntegration: FC<IntegrationCmdlineProps> = ({
       setErrorMessage("");
     }
   };
+
+  if (isMCP && handleMCPWizardSubmit) {
+    return (
+      <MCPSetupWizard
+        integration={integration}
+        onSubmit={handleMCPWizardSubmit}
+      />
+    );
+  }
 
   return (
     <Flex direction="column" gap="4" width="100%">

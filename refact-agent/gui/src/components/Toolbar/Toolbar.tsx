@@ -1,6 +1,13 @@
 import { TextField, HoverCard, Text, Badge } from "@radix-ui/themes";
 import { Dropdown, DropdownNavigationOptions } from "./Dropdown";
-import { Cross1Icon, PlusIcon, CheckboxIcon } from "@radix-ui/react-icons";
+import {
+  Cross1Icon,
+  PlusIcon,
+  CheckboxIcon,
+  ExternalLinkIcon,
+  MoonIcon,
+  SunIcon,
+} from "@radix-ui/react-icons";
 import classNames from "classnames";
 import { RefactIcon } from "../../images";
 import { newChatAction } from "../../events";
@@ -43,15 +50,16 @@ import { StatusDot } from "../StatusDot";
 import {
   useAppDispatch,
   useAppSelector,
+  useAppearance,
   useEventsBusForIDE,
+  useOpenUrl,
 } from "../../hooks";
-import { telemetryApi } from "../../services/refact/telemetry";
 import { useGetChatModesQuery } from "../../services/refact/chatModes";
 
 import styles from "./Toolbar.module.css";
-import { useActiveTeamsGroup } from "../../hooks/useActiveTeamsGroup";
 import { ConnectionStatusIndicator } from "../ConnectionStatus";
 import { getModeColor } from "../../utils/modeColors";
+import { selectLspPort } from "../../features/Config/configSlice";
 
 export type DashboardTab = {
   type: "dashboard";
@@ -82,19 +90,53 @@ export type ToolbarProps = {
   activeTab: Tab;
 };
 
+type ToolbarIconButtonProps = {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  className?: string;
+  disabled?: boolean;
+};
+
+const ToolbarIconButton = ({
+  label,
+  onClick,
+  children,
+  className,
+  disabled,
+}: ToolbarIconButtonProps) => (
+  <HoverCard.Root>
+    <HoverCard.Trigger>
+      <button
+        type="button"
+        className={classNames(styles.iconButton, className)}
+        onClick={onClick}
+        aria-label={label}
+        disabled={disabled}
+      >
+        {children}
+      </button>
+    </HoverCard.Trigger>
+    <HoverCard.Content size="1" side="bottom">
+      <Text as="p" size="2">
+        {label}
+      </Text>
+    </HoverCard.Content>
+  </HoverCard.Root>
+);
+
 export const Toolbar = ({ activeTab }: ToolbarProps) => {
   const dispatch = useAppDispatch();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeTabRef = useRef<HTMLDivElement | null>(null);
-
-  const [sendTelemetryEvent] =
-    telemetryApi.useLazySendTelemetryChatEventQuery();
+  const { isDarkMode, toggle: toggleDarkMode } = useAppearance();
+  const openUrl = useOpenUrl();
 
   const tabs = useAppSelector(selectTabsDisplayData);
   const allThreads = useAppSelector(selectAllThreads);
   const currentChatId = useAppSelector(selectChatId);
+  const lspPort = useAppSelector(selectLspPort);
   const openTasks = useAppSelector(selectOpenTasksFromRoot);
-  const { newChatEnabled } = useActiveTeamsGroup();
   const { data: modesData } = useGetChatModesQuery(undefined);
   const { data: tasksList = [] } = useListTasksQuery(undefined);
 
@@ -112,73 +154,30 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
     (to: DropdownNavigationOptions | "chat") => {
       if (to === "settings") {
         openSettings();
-        void sendTelemetryEvent({
-          scope: `openSettings`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "hot keys") {
         openHotKeys();
-        void sendTelemetryEvent({
-          scope: `openHotkeys`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "fim") {
         dispatch(push({ name: "fill in the middle debug page" }));
-        void sendTelemetryEvent({
-          scope: `openDebugFim`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "stats") {
         dispatch(push({ name: "stats dashboard" }));
-        void sendTelemetryEvent({
-          scope: `openStats`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "integrations") {
         dispatch(push({ name: "integrations page" }));
-        void sendTelemetryEvent({
-          scope: `openIntegrations`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "providers") {
         dispatch(push({ name: "providers page" }));
-        void sendTelemetryEvent({
-          scope: `openProviders`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "knowledge graph") {
         dispatch(push({ name: "knowledge graph" }));
-        void sendTelemetryEvent({
-          scope: `openKnowledgeGraph`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "customization") {
         dispatch(push({ name: "customization" }));
-        void sendTelemetryEvent({
-          scope: `openCustomization`,
-          success: true,
-          error_message: "",
-        });
       } else if (to === "default models") {
         dispatch(push({ name: "default models" }));
-        void sendTelemetryEvent({
-          scope: `openDefaultModels`,
-          success: true,
-          error_message: "",
-        });
+      } else if (to === "extensions") {
+        dispatch(push({ name: "extensions" }));
       } else if (to === "chat") {
         dispatch(popBackTo({ name: "history" }));
         dispatch(push({ name: "chat" }));
       }
     },
-    [dispatch, sendTelemetryEvent, openSettings, openHotKeys],
+    [dispatch, openSettings, openHotKeys],
   );
 
   const onCreateNewChat = useCallback(() => {
@@ -203,18 +202,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
 
     dispatch(newChatAction());
     handleNavigation("chat");
-    void sendTelemetryEvent({
-      scope: `openNewChat`,
-      success: true,
-      error_message: "",
-    });
-  }, [
-    dispatch,
-    currentChatId,
-    allThreads,
-    sendTelemetryEvent,
-    handleNavigation,
-  ]);
+  }, [dispatch, currentChatId, allThreads, handleNavigation]);
 
   const onCreateNewTask = useCallback(() => {
     createTask({ name: "New Task" })
@@ -222,16 +210,15 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
       .then((task) => {
         dispatch(openTask({ id: task.id, name: task.name }));
         dispatch(push({ name: "task workspace", taskId: task.id }));
-        void sendTelemetryEvent({
-          scope: `openNewTask`,
-          success: true,
-          error_message: "",
-        });
       })
       .catch(() => {
         /* handled by RTK Query */
       });
-  }, [createTask, dispatch, sendTelemetryEvent]);
+  }, [createTask, dispatch]);
+
+  const onOpenChatInBrowser = useCallback(() => {
+    openUrl(`http://127.0.0.1:${lspPort}`);
+  }, [lspPort, openUrl]);
 
   const goToTab = useCallback(
     (tab: Tab) => {
@@ -262,13 +249,8 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
         dispatch(popBackTo({ name: "history" }));
         dispatch(push({ name: "chat" }));
       }
-      void sendTelemetryEvent({
-        scope: `goToTab/${tab.type}`,
-        success: true,
-        error_message: "",
-      });
     },
-    [dispatch, sendTelemetryEvent, activeTab, allThreads],
+    [dispatch, activeTab, allThreads],
   );
 
   const handleCloseTaskTab = useCallback(
@@ -378,26 +360,16 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
   return (
     <div className={styles.toolbar}>
       <div className={styles.toolbarSection}>
-        <HoverCard.Root>
-          <HoverCard.Trigger>
-            <button
-              type="button"
-              className={classNames(styles.iconButton, styles.homeButton)}
-              onClick={() => {
-                setRenameState(null);
-                goToTab({ type: "dashboard" });
-              }}
-              aria-label="Home"
-            >
-              <RefactIcon style={{ color: "#E7150D" }} />
-            </button>
-          </HoverCard.Trigger>
-          <HoverCard.Content size="1" side="bottom">
-            <Text as="p" size="2">
-              Home
-            </Text>
-          </HoverCard.Content>
-        </HoverCard.Root>
+        <ToolbarIconButton
+          label="Home"
+          className={styles.homeButton}
+          onClick={() => {
+            setRenameState(null);
+            goToTab({ type: "dashboard" });
+          }}
+        >
+          <RefactIcon style={{ color: "#E7150D" }} />
+        </ToolbarIconButton>
       </div>
 
       <div className={styles.toolbarDivider} />
@@ -525,7 +497,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
                     <StatusDot state={statusState} size="small" />
                   </span>
                   <span className={styles.tabTitle}>{tab.title}</span>
-                  {modeLabel && (
+                  {!tab.is_buddy_chat && modeLabel && (
                     <Badge
                       size="1"
                       color={getModeColor(tab.mode)}
@@ -554,43 +526,33 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
 
       <div className={styles.toolbarSection}>
         <ConnectionStatusIndicator />
+      </div>
 
-        <HoverCard.Root>
-          <HoverCard.Trigger>
-            <button
-              type="button"
-              className={styles.iconButton}
-              onClick={onCreateNewTask}
-              aria-label="New Task"
-            >
-              <CheckboxIcon />
-            </button>
-          </HoverCard.Trigger>
-          <HoverCard.Content size="1" side="bottom">
-            <Text as="p" size="2">
-              New Task
-            </Text>
-          </HoverCard.Content>
-        </HoverCard.Root>
+      <div className={styles.toolbarDivider} />
 
-        <HoverCard.Root>
-          <HoverCard.Trigger>
-            <button
-              type="button"
-              className={styles.iconButton}
-              onClick={onCreateNewChat}
-              disabled={!newChatEnabled}
-              aria-label="New Chat"
-            >
-              <PlusIcon />
-            </button>
-          </HoverCard.Trigger>
-          <HoverCard.Content size="1" side="bottom">
-            <Text as="p" size="2">
-              New Chat
-            </Text>
-          </HoverCard.Content>
-        </HoverCard.Root>
+      <div className={styles.toolbarSection}>
+        <ToolbarIconButton label="New Chat" onClick={onCreateNewChat}>
+          <PlusIcon />
+        </ToolbarIconButton>
+
+        <ToolbarIconButton label="New Task" onClick={onCreateNewTask}>
+          <CheckboxIcon />
+        </ToolbarIconButton>
+      </div>
+
+      <div className={styles.toolbarDivider} />
+
+      <div className={styles.toolbarSection}>
+        <ToolbarIconButton
+          label="Open Chat in Browser"
+          onClick={onOpenChatInBrowser}
+        >
+          <ExternalLinkIcon />
+        </ToolbarIconButton>
+
+        <ToolbarIconButton label="Toggle Dark Mode" onClick={toggleDarkMode}>
+          {isDarkMode ? <MoonIcon /> : <SunIcon />}
+        </ToolbarIconButton>
 
         <Dropdown handleNavigation={handleNavigation} useGhostTrigger />
       </div>

@@ -60,12 +60,6 @@
   padding-bottom: 2px;
 }
 
-.entertainmentText {
-  color: var(--gray-10);
-  font-size: 12px;
-  white-space: normal;
-}
-
 .entertainmentContent {
   padding-left: 28px;
   padding-top: 2px;
@@ -75,14 +69,12 @@
   composes: scrollbarThin from "../../shared/scrollbar.module.css";
 }
 
-/* Keep progress typography stable; let Markdown do structure. */
 .entertainmentMarkdown {
   color: var(--gray-10);
   font-size: 12px;
   line-height: 1.5;
 }
 
-/* Avoid extra vertical rhythm inside the fixed-height scroller. */
 .entertainmentMarkdown :global(p) {
   margin: 0;
   white-space: pre-wrap;

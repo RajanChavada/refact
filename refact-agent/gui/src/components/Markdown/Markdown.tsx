@@ -14,12 +14,12 @@ import {
   Blockquote,
   Em,
   Kbd,
-  Link,
   Quote,
   Strong,
   Flex,
   Table,
 } from "@radix-ui/themes";
+import { Link } from "../Link";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
@@ -38,7 +38,7 @@ export type MarkdownProps = Pick<
   React.ComponentProps<typeof ReactMarkdown>,
   "children" | "allowedElements" | "unwrapDisallowed"
 > &
-  Pick<ShikiCodeBlockProps, "showLineNumbers" | "color"> & {
+  Pick<ShikiCodeBlockProps, "showLineNumbers" | "color" | "isStreaming"> & {
     canHaveInteractiveElements?: boolean;
     wrap?: boolean;
   } & Partial<MarkdownControls>;
@@ -86,6 +86,7 @@ const _Markdown: React.FC<MarkdownProps> = ({
   showLineNumbers,
   wrap,
   onCopyClick,
+  isStreaming,
 }) => {
   const internalLinkContext = useInternalLinkHandler();
 
@@ -116,6 +117,7 @@ const _Markdown: React.FC<MarkdownProps> = ({
             showLineNumbers={showLineNumbers}
             wrap={wrap}
             onCopyClick={onCopyClick}
+            isStreaming={isStreaming}
             {...props}
           />
         );
@@ -225,6 +227,7 @@ const _Markdown: React.FC<MarkdownProps> = ({
     showLineNumbers,
     wrap,
     onCopyClick,
+    isStreaming,
   ]);
   return (
     <ReactMarkdown

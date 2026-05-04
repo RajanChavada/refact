@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::caps::model_caps::ModelCapabilities;
 use crate::llm::adapter::WireFormat;
+use crate::providers::config::is_legacy_refact_model;
 
 static REGEX_CACHE: OnceLock<RwLock<HashMap<&'static str, Regex>>> = OnceLock::new();
 
@@ -44,6 +45,28 @@ pub enum ModelSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelPricingTier {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<f64>,
+}
+
+impl ModelPricingTier {
+    pub fn is_valid(&self) -> bool {
+        let valid_price = |p: f64| p.is_finite() && p >= 0.0;
+        self.prompt.map_or(true, valid_price)
+            && self.generated.map_or(true, valid_price)
+            && self.cache_read.map_or(true, valid_price)
+            && self.cache_creation.map_or(true, valid_price)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelPricing {
     pub prompt: f64,
     pub generated: f64,
@@ -51,13 +74,22 @@ pub struct ModelPricing {
     pub cache_read: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_over_200k: Option<ModelPricingTier>,
 }
 
 impl ModelPricing {
     pub fn is_valid(&self) -> bool {
         let valid_price = |p: f64| p.is_finite() && p >= 0.0;
         let valid_opt = |p: Option<f64>| p.map_or(true, valid_price);
-        valid_price(self.prompt) && valid_price(self.generated) && valid_opt(self.cache_read) && valid_opt(self.cache_creation)
+        valid_price(self.prompt)
+            && valid_price(self.generated)
+            && valid_opt(self.cache_read)
+            && valid_opt(self.cache_creation)
+            && self
+                .context_over_200k
+                .as_ref()
+                .map_or(true, ModelPricingTier::is_valid)
     }
 }
 
@@ -68,6 +100,10 @@ pub struct CustomModelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_tools: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_parallel_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_strict_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_multimodality: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_options: Option<Vec<String>>,
@@ -75,6 +111,8 @@ pub struct CustomModelConfig {
     pub supports_thinking_budget: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_adaptive_thinking_budget: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_cache_control: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokenizer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,6 +150,10 @@ pub struct AvailableModel {
     pub display_name: Option<String>,
     pub n_ctx: usize,
     pub supports_tools: bool,
+    #[serde(default)]
+    pub supports_parallel_tools: bool,
+    #[serde(default)]
+    pub supports_strict_tools: bool,
     pub supports_multimodality: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_options: Option<Vec<String>>,
@@ -119,6 +161,8 @@ pub struct AvailableModel {
     pub supports_thinking_budget: bool,
     #[serde(default)]
     pub supports_adaptive_thinking_budget: bool,
+    #[serde(default = "default_true")]
+    pub supports_cache_control: bool,
     pub tokenizer: Option<String>,
     pub enabled: bool,
     pub is_custom: bool,
@@ -132,27 +176,54 @@ pub struct AvailableModel {
     pub max_output_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_variants: Vec<ProviderVariant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_format_override: Option<WireFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_override: Option<String>,
+    /// Optional base/root model identifier (e.g. "Qwen/Qwen3.6-27B-FP8" from vLLM).
+    /// Used as a fallback for model capabilities registry resolution when the
+    /// provider-reported id is a custom alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_model: Option<String>,
 }
 
 impl AvailableModel {
-    pub fn from_caps(id: &str, caps: &ModelCapabilities, enabled: bool, pricing: Option<ModelPricing>) -> Self {
+    pub fn from_caps(
+        id: &str,
+        caps: &ModelCapabilities,
+        enabled: bool,
+        pricing: Option<ModelPricing>,
+    ) -> Self {
         Self {
             id: id.to_string(),
             display_name: None,
             n_ctx: caps.n_ctx,
             supports_tools: caps.supports_tools,
-            supports_multimodality: caps.supports_vision,
+            supports_parallel_tools: caps.supports_parallel_tools,
+            supports_strict_tools: caps.supports_strict_tools,
+            supports_multimodality: caps.supports_vision
+                || caps.supports_video
+                || caps.supports_audio
+                || caps.supports_pdf,
             reasoning_effort_options: caps.reasoning_effort_options.clone(),
             supports_thinking_budget: caps.supports_thinking_budget,
             supports_adaptive_thinking_budget: caps.supports_adaptive_thinking_budget,
-            tokenizer: if caps.tokenizer.is_empty() { None } else { Some(caps.tokenizer.clone()) },
+            supports_cache_control: caps.supports_cache_control,
+            tokenizer: if caps.tokenizer.is_empty() {
+                None
+            } else {
+                Some(caps.tokenizer.clone())
+            },
             enabled,
             is_custom: false,
-            pricing,
+            pricing: pricing.or_else(|| caps.pricing.clone()),
             available_providers: Vec::new(),
             selected_provider: None,
-            max_output_tokens: None,
+            max_output_tokens: (caps.max_output_tokens > 0).then_some(caps.max_output_tokens),
             provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: None,
         }
     }
 
@@ -162,10 +233,15 @@ impl AvailableModel {
             display_name: None,
             n_ctx: config.n_ctx.unwrap_or(4096),
             supports_tools: config.supports_tools.unwrap_or(false),
+            supports_parallel_tools: config.supports_parallel_tools.unwrap_or(false),
+            supports_strict_tools: config.supports_strict_tools.unwrap_or(false),
             supports_multimodality: config.supports_multimodality.unwrap_or(false),
             reasoning_effort_options: config.reasoning_effort_options.clone(),
             supports_thinking_budget: config.supports_thinking_budget.unwrap_or(false),
-            supports_adaptive_thinking_budget: config.supports_adaptive_thinking_budget.unwrap_or(false),
+            supports_adaptive_thinking_budget: config
+                .supports_adaptive_thinking_budget
+                .unwrap_or(false),
+            supports_cache_control: config.supports_cache_control.unwrap_or(true),
             tokenizer: config.tokenizer.clone(),
             enabled,
             is_custom: true,
@@ -174,6 +250,9 @@ impl AvailableModel {
             selected_provider: None,
             max_output_tokens: config.max_output_tokens,
             provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: None,
         }
     }
 }
@@ -192,6 +271,10 @@ pub struct ProviderModel {
     pub endpoint_override: Option<String>,
     pub user_configured: bool,
     pub removable: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,13 +297,15 @@ pub struct ProviderRuntime {
     pub auth_token: String,
     #[serde(skip_serializing)]
     pub tokenizer_api_key: String,
-    /// Extra headers for HTTP requests. Currently populated by CustomProvider
-    /// but not yet connected to the LLM request flow (which uses the caps system).
-    /// Kept for future integration when provider system replaces caps for requests.
+    /// Extra headers for HTTP requests. These are propagated into model records
+    /// and adapter settings for request construction. Values may contain secrets
+    /// and must not be serialized in public API responses.
     #[serde(skip_serializing)]
-    #[allow(dead_code)]
     pub extra_headers: HashMap<String, String>,
-    pub support_metadata: bool,
+    /// Whether this provider supports Anthropic-style prompt cache_control headers.
+    /// Set to false for providers like vLLM that reject unknown fields.
+    #[serde(default = "default_true")]
+    pub supports_cache_control: bool,
     pub chat_models: Vec<ProviderModel>,
     pub completion_models: Vec<ProviderModel>,
     pub embedding_model: Option<ProviderModel>,
@@ -229,20 +314,80 @@ pub struct ProviderRuntime {
 impl ProviderRuntime {
     pub fn redacted(&self) -> Self {
         Self {
-            api_key: if self.api_key.is_empty() { String::new() } else { "***".to_string() },
-            auth_token: if self.auth_token.is_empty() { String::new() } else { "***".to_string() },
-            tokenizer_api_key: if self.tokenizer_api_key.is_empty() { String::new() } else { "***".to_string() },
+            api_key: if self.api_key.is_empty() {
+                String::new()
+            } else {
+                "***".to_string()
+            },
+            auth_token: if self.auth_token.is_empty() {
+                String::new()
+            } else {
+                "***".to_string()
+            },
+            tokenizer_api_key: if self.tokenizer_api_key.is_empty() {
+                String::new()
+            } else {
+                "***".to_string()
+            },
             extra_headers: HashMap::new(),
             ..self.clone()
         }
     }
 }
 
+pub fn parse_extra_headers_value(value: &serde_yaml::Value) -> Result<serde_yaml::Mapping, String> {
+    match value {
+        serde_yaml::Value::Mapping(map) => Ok(map.clone()),
+        serde_yaml::Value::Null => Ok(serde_yaml::Mapping::new()),
+        serde_yaml::Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(serde_yaml::Mapping::new());
+            }
+            let parsed: serde_yaml::Value = serde_yaml::from_str(trimmed)
+                .map_err(|e| format!("extra_headers must be a YAML/JSON object: {e}"))?;
+            match parsed {
+                serde_yaml::Value::Mapping(map) => Ok(map),
+                serde_yaml::Value::Null => Ok(serde_yaml::Mapping::new()),
+                _ => Err("extra_headers must be a YAML/JSON object".to_string()),
+            }
+        }
+        _ => Err("extra_headers must be a YAML/JSON object".to_string()),
+    }
+}
+
+pub fn extra_headers_mapping_to_hash_map(
+    existing: Option<&HashMap<String, String>>,
+    incoming: &serde_yaml::Mapping,
+) -> HashMap<String, String> {
+    let mut next_headers = HashMap::new();
+    for (key, value) in incoming {
+        let Some(key) = key.as_str() else {
+            continue;
+        };
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+        if value == "***" {
+            if let Some(existing_value) = existing.and_then(|headers| headers.get(key)) {
+                next_headers.insert(key.to_string(), existing_value.clone());
+            }
+        } else {
+            next_headers.insert(key.to_string(), value.to_string());
+        }
+    }
+    next_headers
+}
+
 #[async_trait]
 pub trait ProviderTrait: Send + Sync {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
-    fn display_name(&self) -> &'static str;
+    fn display_name(&self) -> &str;
+
+    fn base_provider_name(&self) -> &str {
+        self.name()
+    }
 
     /// Downcast to concrete type. Used for provider-specific operations
     /// that aren't part of the trait interface (e.g., accessing provider-specific fields).
@@ -336,12 +481,8 @@ pub trait ProviderTrait: Send + Sync {
         false
     }
 
-    fn model_pricing(&self, _model_id: &str) -> Option<ModelPricing> {
+    fn custom_model_pricing(&self, _model_id: &str) -> Option<ModelPricing> {
         None
-    }
-
-    fn set_running_models(&mut self, _running_models: Vec<String>) {
-        // Default: no-op, providers that need running_models filtering override this
     }
 
     /// Discover and return available models for this provider.
@@ -357,6 +498,17 @@ pub trait ProviderTrait: Send + Sync {
         self.get_available_models_from_caps(model_caps)
     }
 
+    /// Optional startup hook for providers that need to refresh dynamic state
+    /// (for example, model catalogs) and persist provider-local config.
+    async fn startup_refresh_and_sync(
+        &mut self,
+        _http_client: &reqwest::Client,
+        _config_dir: &std::path::Path,
+        _instance_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     fn get_available_models_from_caps(
         &self,
         model_caps: &HashMap<String, ModelCapabilities>,
@@ -368,17 +520,41 @@ pub trait ProviderTrait: Send + Sync {
         let mut models_map: HashMap<String, AvailableModel> = HashMap::new();
 
         let regex_opt: Option<Regex> = self.model_filter_regex().and_then(get_cached_regex);
+        let provider_aliases = model_caps_provider_aliases(self.base_provider_name());
+        let has_provider_qualified_caps = model_caps
+            .keys()
+            .any(|key| model_caps_key_has_provider_alias(key, &provider_aliases));
 
         for (name, caps) in model_caps {
+            let Some(model_id) =
+                model_caps_provider_model_id(&provider_aliases, has_provider_qualified_caps, name)
+            else {
+                continue;
+            };
+            if is_legacy_refact_model(model_id) {
+                continue;
+            }
             let matches = match &regex_opt {
-                Some(regex) => regex.is_match(name),
+                Some(regex) => regex.is_match(model_id),
                 None => true,
             };
             if matches {
-                let disabled = self.disabled_models().contains(&name.to_string());
-                let enabled = if disabled { false } else { enabled_set.contains(name.as_str()) };
-                let pricing = self.model_pricing(name);
-                models_map.insert(name.clone(), AvailableModel::from_caps(name, caps, enabled, pricing));
+                let disabled = self
+                    .disabled_models()
+                    .iter()
+                    .any(|disabled| disabled == name || disabled.as_str() == model_id);
+                let enabled = if disabled {
+                    false
+                } else {
+                    enabled_set.contains(name.as_str()) || enabled_set.contains(model_id)
+                };
+                let pricing = self
+                    .custom_model_pricing(model_id)
+                    .or_else(|| self.custom_model_pricing(name));
+                models_map.insert(
+                    model_id.to_string(),
+                    AvailableModel::from_caps(model_id, caps, enabled, pricing),
+                );
             }
         }
 
@@ -392,8 +568,10 @@ pub trait ProviderTrait: Send + Sync {
         let enabled_set: std::collections::HashSet<_> =
             self.enabled_models().iter().map(|s| s.as_str()).collect();
 
-        let mut models: Vec<AvailableModel> = self.custom_models()
+        let mut models: Vec<AvailableModel> = self
+            .custom_models()
             .iter()
+            .filter(|(id, _)| !is_legacy_refact_model(id))
             .map(|(id, config)| {
                 let enabled = enabled_set.contains(id.as_str());
                 AvailableModel::from_custom(id, config, enabled)
@@ -408,32 +586,105 @@ pub trait ProviderTrait: Send + Sync {
 // Helper functions for reducing boilerplate in provider implementations
 // ============================================================================
 
+fn model_caps_provider_model_id<'a>(
+    provider_aliases: &[String],
+    has_provider_qualified_caps: bool,
+    capability_key: &'a str,
+) -> Option<&'a str> {
+    if !capability_key.contains('/') {
+        return (!has_provider_qualified_caps).then_some(capability_key);
+    }
+
+    for provider_alias in provider_aliases {
+        let prefix = format!("{provider_alias}/");
+        if let Some(model_id) = capability_key.strip_prefix(&prefix) {
+            return Some(model_id);
+        }
+    }
+
+    None
+}
+
+fn model_caps_key_has_provider_alias(key: &str, provider_aliases: &[String]) -> bool {
+    provider_aliases
+        .iter()
+        .any(|provider_alias| key.starts_with(&format!("{provider_alias}/")))
+}
+
+fn model_caps_provider_aliases(provider_name: &str) -> Vec<String> {
+    let mut aliases = vec![provider_name.to_string(), provider_name.replace('_', "-")];
+    for suffix in ["_responses", "-responses"] {
+        if let Some(stripped) = provider_name.strip_suffix(suffix) {
+            aliases.push(stripped.to_string());
+            aliases.push(stripped.replace('_', "-"));
+        }
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
 pub fn merge_custom_models(
     models: &mut Vec<AvailableModel>,
     custom_models: &HashMap<String, CustomModelConfig>,
     enabled_set: &std::collections::HashSet<&str>,
 ) {
     for (id, config) in custom_models {
+        if is_legacy_refact_model(id) {
+            continue;
+        }
         let enabled = enabled_set.contains(id.as_str());
         if let Some(existing) = models.iter_mut().find(|m| m.id == *id) {
             let has_capability_overrides = config.n_ctx.is_some()
                 || config.supports_tools.is_some()
+                || config.supports_parallel_tools.is_some()
+                || config.supports_strict_tools.is_some()
                 || config.supports_multimodality.is_some()
                 || config.reasoning_effort_options.is_some()
                 || config.supports_thinking_budget.is_some()
                 || config.supports_adaptive_thinking_budget.is_some()
+                || config.supports_cache_control.is_some()
                 || config.tokenizer.is_some()
                 || config.max_output_tokens.is_some();
-            if let Some(n_ctx) = config.n_ctx { existing.n_ctx = n_ctx; }
-            if let Some(v) = config.supports_tools { existing.supports_tools = v; }
-            if let Some(v) = config.supports_multimodality { existing.supports_multimodality = v; }
-            if config.reasoning_effort_options.is_some() { existing.reasoning_effort_options = config.reasoning_effort_options.clone(); }
-            if let Some(v) = config.supports_thinking_budget { existing.supports_thinking_budget = v; }
-            if let Some(v) = config.supports_adaptive_thinking_budget { existing.supports_adaptive_thinking_budget = v; }
-            if config.tokenizer.is_some() { existing.tokenizer = config.tokenizer.clone(); }
-            if config.pricing.is_some() { existing.pricing = config.pricing.clone(); }
-            if config.max_output_tokens.is_some() { existing.max_output_tokens = config.max_output_tokens; }
-            if has_capability_overrides { existing.is_custom = true; }
+            if let Some(n_ctx) = config.n_ctx {
+                existing.n_ctx = n_ctx;
+            }
+            if let Some(v) = config.supports_tools {
+                existing.supports_tools = v;
+            }
+            if let Some(v) = config.supports_parallel_tools {
+                existing.supports_parallel_tools = v;
+            }
+            if let Some(v) = config.supports_strict_tools {
+                existing.supports_strict_tools = v;
+            }
+            if let Some(v) = config.supports_multimodality {
+                existing.supports_multimodality = v;
+            }
+            if config.reasoning_effort_options.is_some() {
+                existing.reasoning_effort_options = config.reasoning_effort_options.clone();
+            }
+            if let Some(v) = config.supports_thinking_budget {
+                existing.supports_thinking_budget = v;
+            }
+            if let Some(v) = config.supports_adaptive_thinking_budget {
+                existing.supports_adaptive_thinking_budget = v;
+            }
+            if let Some(v) = config.supports_cache_control {
+                existing.supports_cache_control = v;
+            }
+            if config.tokenizer.is_some() {
+                existing.tokenizer = config.tokenizer.clone();
+            }
+            if config.pricing.is_some() {
+                existing.pricing = config.pricing.clone();
+            }
+            if config.max_output_tokens.is_some() {
+                existing.max_output_tokens = config.max_output_tokens;
+            }
+            if has_capability_overrides {
+                existing.is_custom = true;
+            }
         } else {
             models.push(AvailableModel::from_custom(id, config, enabled));
         }
@@ -448,7 +699,12 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
 
 pub fn derive_endpoint_from_chat_url(chat_endpoint: &str) -> Option<String> {
     let s = chat_endpoint.trim().trim_end_matches('/');
-    for suffix in &["/v1/chat/completions", "/chat/completions", "/v1/completions", "/completions"] {
+    for suffix in &[
+        "/v1/chat/completions",
+        "/chat/completions",
+        "/v1/completions",
+        "/completions",
+    ] {
         if let Some(base) = s.strip_suffix(suffix) {
             if !base.is_empty() {
                 return Some(base.to_string());
@@ -463,17 +719,27 @@ pub fn parse_enabled_models(yaml: &serde_yaml::Value, enabled_models: &mut Vec<S
     if let Some(models) = yaml.get("enabled_models").and_then(|v| v.as_sequence()) {
         enabled_models.clear();
         enabled_models.extend(
-            models.iter().filter_map(|v| v.as_str().map(String::from))
+            models
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|model_id| !is_legacy_refact_model(model_id))
+                .map(String::from),
         );
     }
 }
 
 /// Parse custom_models from YAML, replacing the existing map
-pub fn parse_custom_models(yaml: &serde_yaml::Value, custom_models: &mut HashMap<String, CustomModelConfig>) {
+pub fn parse_custom_models(
+    yaml: &serde_yaml::Value,
+    custom_models: &mut HashMap<String, CustomModelConfig>,
+) {
     if let Some(custom) = yaml.get("custom_models").and_then(|v| v.as_mapping()) {
         custom_models.clear();
         for (key, value) in custom {
             if let Some(model_id) = key.as_str() {
+                if is_legacy_refact_model(model_id) {
+                    continue;
+                }
                 if let Ok(config) = serde_yaml::from_value(value.clone()) {
                     custom_models.insert(model_id.to_string(), config);
                 }
@@ -484,6 +750,11 @@ pub fn parse_custom_models(yaml: &serde_yaml::Value, custom_models: &mut HashMap
 
 /// Standard implementation for set_model_enabled (allowlist - adds when enabled)
 pub fn set_model_enabled_impl(enabled_models: &mut Vec<String>, model_id: &str, enabled: bool) {
+    if is_legacy_refact_model(model_id) {
+        enabled_models.retain(|m| !is_legacy_refact_model(m));
+        return;
+    }
+
     if enabled {
         if !enabled_models.iter().any(|m| m == model_id) {
             enabled_models.push(model_id.to_string());
@@ -493,24 +764,46 @@ pub fn set_model_enabled_impl(enabled_models: &mut Vec<String>, model_id: &str, 
     }
 }
 
-/// Standard implementation for set_model_enabled with denylist semantics
-/// (adds to disabled_models when disabled, removes when enabled)
-pub fn set_model_disabled_impl(disabled_models: &mut Vec<String>, model_id: &str, enabled: bool) {
-    if enabled {
-        disabled_models.retain(|m| m != model_id);
-    } else {
-        if !disabled_models.iter().any(|m| m == model_id) {
-            disabled_models.push(model_id.to_string());
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-/// Parse disabled_models from YAML, replacing the existing list
-pub fn parse_disabled_models(yaml: &serde_yaml::Value, disabled_models: &mut Vec<String>) {
-    if let Some(models) = yaml.get("disabled_models").and_then(|v| v.as_sequence()) {
-        disabled_models.clear();
-        disabled_models.extend(
-            models.iter().filter_map(|v| v.as_str().map(String::from))
+    #[test]
+    fn models_dev_available_model_omits_empty_override_fields_when_serialized() {
+        let model = AvailableModel::from_caps(
+            "test-model",
+            &ModelCapabilities {
+                n_ctx: 4096,
+                supports_tools: true,
+                ..Default::default()
+            },
+            true,
+            None,
         );
+
+        let value = serde_json::to_value(model).unwrap();
+
+        assert!(value.get("wire_format_override").is_none());
+        assert!(value.get("endpoint_override").is_none());
+    }
+
+    #[test]
+    fn models_dev_available_model_deserializes_without_override_fields() {
+        let model: AvailableModel = serde_json::from_value(json!({
+            "id": "old-model",
+            "display_name": null,
+            "n_ctx": 8192,
+            "supports_tools": true,
+            "supports_multimodality": false,
+            "tokenizer": null,
+            "enabled": true,
+            "is_custom": false
+        }))
+        .unwrap();
+
+        assert_eq!(model.id, "old-model");
+        assert!(model.wire_format_override.is_none());
+        assert!(model.endpoint_override.is_none());
     }
 }

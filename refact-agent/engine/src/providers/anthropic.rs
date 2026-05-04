@@ -11,7 +11,6 @@ use crate::providers::traits::{
     CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
     parse_enabled_models, parse_custom_models, set_model_enabled_impl,
 };
-use crate::providers::pricing::anthropic_pricing;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnthropicProvider {
@@ -25,11 +24,11 @@ pub struct AnthropicProvider {
 
 #[async_trait]
 impl ProviderTrait for AnthropicProvider {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "anthropic"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "Anthropic"
     }
 
@@ -112,7 +111,7 @@ available:
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
-            support_metadata: false,
+            supports_cache_control: true,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
             embedding_model: None,
@@ -148,12 +147,9 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        anthropic_pricing(model_id)
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 }

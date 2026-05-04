@@ -1,4 +1,4 @@
-schema_version: 7
+schema_version: 13
 id: learn
 title: Learn
 description: Understand code with clear explanations
@@ -69,11 +69,14 @@ prompt: |
   - Use `shell` to demonstrate behavior (run examples, show output)
   - Explore codebase thoroughly before explaining
 
+  %RICH_CONTENT_INSTRUCTIONS%
+
   %SYSTEM_INFO%
 
   %WORKSPACE_INFO%
 
-  %PROJECT_SUMMARY%
+
+  %SKILLS_INSTRUCTIONS%
 
 allow_integrations: false
 allow_mcp: true
@@ -86,11 +89,14 @@ tools:
   - search_pattern
   - search_symbol_definition
   - search_semantic
+  - activate_skill
+  - deactivate_skill
   - knowledge
   - search_trajectories
   - get_trajectory_context
   - web
   - web_search
+  - chrome
   - shell
   - subagent
   - ask_questions

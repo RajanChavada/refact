@@ -1,44 +1,85 @@
 import { render, waitFor } from "../../utils/test-utils";
 import { describe, expect, it } from "vitest";
+import { http, HttpResponse } from "msw";
 import {
   server,
   goodUser,
   goodPing,
   chatLinks,
-  telemetryChat,
-  telemetryNetwork,
   goodCaps,
-  emptyTrajectories,
   trajectorySave,
   trajectoryDelete,
   chatSessionSubscribe,
   chatSessionCommand,
   chatSessionAbort,
-  sidebarSubscribe,
   emptyTasks,
 } from "../../utils/mockServer";
 import { InnerApp } from "../../features/App";
 import { HistoryState } from "../../features/History/historySlice";
+import type { TrajectoryMeta } from "../../services/refact/trajectories";
 
 describe("Delete a Chat form history", () => {
   it("can delete a chat", async () => {
+    const now = new Date().toISOString();
+    const trajectory: TrajectoryMeta = {
+      id: "abc123",
+      title: "Test title",
+      created_at: now,
+      updated_at: now,
+      model: "foo",
+      mode: "AGENT",
+      message_count: 0,
+      total_lines_added: 0,
+      total_lines_removed: 0,
+      tasks_total: 0,
+      tasks_done: 0,
+      tasks_failed: 0,
+    };
+
     server.use(
       goodUser,
       goodPing,
       chatLinks,
-      telemetryChat,
-      telemetryNetwork,
       goodCaps,
-      emptyTrajectories,
+      http.get("http://127.0.0.1:8001/v1/trajectories", () => {
+        return HttpResponse.json({
+          items: [trajectory],
+          next_cursor: null,
+          has_more: false,
+        });
+      }),
       trajectorySave,
       trajectoryDelete,
       chatSessionSubscribe,
       chatSessionCommand,
       chatSessionAbort,
-      sidebarSubscribe,
+      http.get("http://127.0.0.1:8001/v1/sidebar/subscribe", () => {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  category: "snapshot",
+                  trajectories: [trajectory],
+                  tasks: [],
+                  workspace_roots: ["/tmp/refact-test"],
+                })}\n\n`,
+              ),
+            );
+          },
+        });
+
+        return new HttpResponse(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          },
+        });
+      }),
       emptyTasks,
     );
-    const now = new Date().toISOString();
     const history: HistoryState = {
       chats: {
         abc123: {
@@ -62,16 +103,13 @@ describe("Delete a Chat form history", () => {
     const { user, store, ...app } = render(<InnerApp />, {
       preloadedState: {
         history,
-        teams: {
-          group: { id: "123", name: "test" },
-        },
         pages: [{ name: "history" }],
         config: {
           apiKey: "test",
           lspPort: 8001,
           themeProps: {},
           host: "vscode",
-          addressURL: "Refact",
+          currentWorkspaceName: "refact-test",
         },
       },
     });
@@ -80,12 +118,15 @@ describe("Delete a Chat form history", () => {
 
     const restoreButtonText = await app.findByText(itemTitleToDelete);
 
-    // Find the delete button - in compact view, it uses aria-label="Delete"
+    // Find the delete button - uses aria-label="Delete chat"
     let container = restoreButtonText.parentElement;
-    while (container && !container.querySelector('[aria-label="Delete"]')) {
+    while (
+      container &&
+      !container.querySelector('[aria-label="Delete chat"]')
+    ) {
       container = container.parentElement;
     }
-    const deleteButton = container?.querySelector('[aria-label="Delete"]');
+    const deleteButton = container?.querySelector('[aria-label="Delete chat"]');
 
     expect(deleteButton).not.toBeNull();
 

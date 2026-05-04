@@ -10,6 +10,7 @@ import {
   TextField,
   SegmentedControl,
   Card,
+  Callout,
 } from "@radix-ui/themes";
 import {
   ArrowLeftIcon,
@@ -19,7 +20,10 @@ import {
   FileIcon,
   CodeIcon,
   MixerHorizontalIcon,
+  ExternalLinkIcon,
+  InfoCircledIcon,
 } from "@radix-ui/react-icons";
+import { skipToken } from "@reduxjs/toolkit/query";
 
 import { ScrollArea } from "../../components/ScrollArea";
 import { PageWrapper } from "../../components/PageWrapper";
@@ -33,6 +37,7 @@ import {
   ConfigItem,
   ConfigKind,
 } from "../../services/refact/customization";
+import { useGetDraftQuery } from "../../services/refact/buddy";
 import type { Config } from "../Config/configSlice";
 import {
   CodeLensForm,
@@ -47,6 +52,9 @@ import {
   ConfigPatch,
   validateConfigId,
 } from "./components/configUtils";
+import { useAppDispatch } from "../../hooks";
+import { push } from "../Pages/pagesSlice";
+import { BuddyDraftPreview } from "../Buddy/BuddyDraftPreview";
 
 import styles from "./Customization.module.css";
 
@@ -56,6 +64,7 @@ export type CustomizationProps = {
   tabbed: Config["tabbed"];
   initialKind?: ConfigKind;
   initialConfigId?: string;
+  draftId?: string;
 };
 
 const KIND_LABELS: Record<ConfigKind, string> = {
@@ -152,19 +161,26 @@ type EditorView = "form" | "yaml";
 
 const jsYamlPromise = import("js-yaml");
 
-const ConfigEditor: React.FC<{
+export const ConfigEditor: React.FC<{
   kind: ConfigKind;
   configId: string;
   configItem: ConfigItem;
   onSaved: () => void;
-}> = ({ kind, configId, configItem, onSaved }) => {
+  draftId?: string;
+}> = ({ kind, configId, configItem, onSaved, draftId }) => {
   const { data, isLoading, error } = useGetConfigQuery({ kind, id: configId });
+  const {
+    data: draft,
+    isLoading: draftLoading,
+    error: draftError,
+  } = useGetDraftQuery(draftId ?? skipToken);
   const [saveConfig, { isLoading: isSaving }] = useSaveConfigMutation();
   const [configJson, setConfigJson] = useState<Record<string, unknown> | null>(
     null,
   );
   const [yaml, setYaml] = useState<string>("");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [draftExpired, setDraftExpired] = useState(false);
   const [targetScope, setTargetScope] = useState<"global" | "local">(
     configItem.scope,
   );
@@ -174,7 +190,34 @@ const ConfigEditor: React.FC<{
   const syncVersionRef = useRef(0);
 
   useEffect(() => {
-    if (data) {
+    if (draftError) {
+      setDraftExpired(true);
+    }
+  }, [draftError]);
+
+  useEffect(() => {
+    if (draft) {
+      const version = ++syncVersionRef.current;
+      void (async () => {
+        try {
+          const jsYaml = await jsYamlPromise;
+          if (version !== syncVersionRef.current) return;
+          const parsed = jsYaml.load(draft.yaml_or_json);
+          if (isPlainObject(parsed)) {
+            const sanitized = sanitizeObject(parsed) as Record<string, unknown>;
+            setConfigJson(sanitized);
+            setYaml(draft.yaml_or_json);
+            setYamlParseError(null);
+          }
+        } catch {
+          // ignore parse error; fall back to server data
+        }
+      })();
+    }
+  }, [draft]);
+
+  useEffect(() => {
+    if (data && !draft) {
       if (yamlSyncTimeoutRef.current) {
         clearTimeout(yamlSyncTimeoutRef.current);
         yamlSyncTimeoutRef.current = null;
@@ -184,7 +227,7 @@ const ConfigEditor: React.FC<{
       setYaml(data.raw_yaml);
       setYamlParseError(null);
     }
-  }, [data]);
+  }, [data, draft]);
 
   useEffect(() => {
     const versionRef = syncVersionRef;
@@ -282,6 +325,7 @@ const ConfigEditor: React.FC<{
         id: configId,
         config: configJson,
         scope: targetScope,
+        draft_id: draftId,
       }).unwrap();
       if (!result.ok && result.errors.length > 0) {
         setSaveError(result.errors.map((e) => e.error).join(", "));
@@ -291,9 +335,9 @@ const ConfigEditor: React.FC<{
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     }
-  }, [configJson, kind, configId, saveConfig, onSaved, targetScope]);
+  }, [configJson, kind, configId, saveConfig, onSaved, targetScope, draftId]);
 
-  if (isLoading) return <Spinner spinning />;
+  if (isLoading || draftLoading) return <Spinner spinning />;
   if (error) return <Text color="red">Error loading config</Text>;
   if (!configJson) return <Text color="gray">Loading...</Text>;
 
@@ -302,6 +346,15 @@ const ConfigEditor: React.FC<{
 
   return (
     <Flex direction="column" gap="2" className={styles.configEditor}>
+      {draftExpired && (
+        <Callout.Root color="orange">
+          <Callout.Icon>
+            <InfoCircledIcon />
+          </Callout.Icon>
+          <Callout.Text>Draft expired</Callout.Text>
+        </Callout.Root>
+      )}
+      {draft && <BuddyDraftPreview draft={draft} />}
       <Flex
         justify="between"
         align="center"
@@ -564,7 +617,9 @@ export const Customization: React.FC<CustomizationProps> = ({
   tabbed,
   initialKind = "modes",
   initialConfigId,
+  draftId,
 }) => {
+  const dispatch = useAppDispatch();
   const [activeKind, setActiveKind] = useState<ConfigKind>(initialKind);
   const [selectedConfigId, setSelectedConfigId] = useState<string | null>(
     initialConfigId ?? null,
@@ -660,6 +715,20 @@ export const Customization: React.FC<CustomizationProps> = ({
             if (!selectedConfigId) {
               return (
                 <ScrollArea scrollbars="vertical" className={styles.listPanel}>
+                  {activeKind === "subagents" && (
+                    <Flex justify="end" p="2">
+                      <Button
+                        size="1"
+                        variant="outline"
+                        onClick={() =>
+                          dispatch(push({ name: "subagents marketplace" }))
+                        }
+                      >
+                        <ExternalLinkIcon />
+                        Browse Subagents Marketplace
+                      </Button>
+                    </Flex>
+                  )}
                   <ConfigList
                     items={getItemsForKind(activeKind)}
                     selectedId={selectedConfigId}
@@ -676,6 +745,20 @@ export const Customization: React.FC<CustomizationProps> = ({
             if (!selectedItem) {
               return (
                 <ScrollArea scrollbars="vertical" className={styles.listPanel}>
+                  {activeKind === "subagents" && (
+                    <Flex justify="end" p="2">
+                      <Button
+                        size="1"
+                        variant="outline"
+                        onClick={() =>
+                          dispatch(push({ name: "subagents marketplace" }))
+                        }
+                      >
+                        <ExternalLinkIcon />
+                        Browse Subagents Marketplace
+                      </Button>
+                    </Flex>
+                  )}
                   <ConfigList
                     items={getItemsForKind(activeKind)}
                     selectedId={selectedConfigId}
@@ -701,6 +784,7 @@ export const Customization: React.FC<CustomizationProps> = ({
                   configId={selectedConfigId}
                   configItem={selectedItem}
                   onSaved={() => void refetch()}
+                  draftId={draftId}
                 />
               </div>
             );

@@ -13,13 +13,12 @@ import { isDetailMessage } from "./commands";
 // TODO: Cache invalidation logic.
 export const integrationsApi = createApi({
   reducerPath: "integrationsApi",
-  tagTypes: ["INTEGRATIONS", "INTEGRATION"],
+  tagTypes: ["INTEGRATIONS", "INTEGRATION", "MCP_OAUTH"],
   baseQuery: fetchBaseQuery({
     prepareHeaders: (headers, api) => {
       const getState = api.getState as () => RootState;
       const state = getState();
       const token = state.config.apiKey;
-      headers.set("credentials", "same-origin");
       if (token) {
         headers.set("Authorization", `Bearer ${token}`);
       }
@@ -195,6 +194,103 @@ export const integrationsApi = createApi({
         return {
           data: response.data,
         };
+      },
+    }),
+
+    mcpOauthStart: builder.mutation<
+      MCPOAuthStartResponse,
+      { config_path: string; scopes?: string[] }
+    >({
+      async queryFn(arg, api, extraOptions, baseQuery) {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/mcp/oauth/start`;
+        const response = await baseQuery({
+          ...extraOptions,
+          url,
+          method: "POST",
+          body: arg,
+        });
+        if (response.error) return { error: response.error };
+        return { data: response.data as MCPOAuthStartResponse };
+      },
+    }),
+
+    mcpOauthExchange: builder.mutation<
+      { success: boolean },
+      { session_id: string; code: string }
+    >({
+      invalidatesTags: [{ type: "MCP_OAUTH" }],
+      async queryFn(arg, api, extraOptions, baseQuery) {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/mcp/oauth/exchange`;
+        const response = await baseQuery({
+          ...extraOptions,
+          url,
+          method: "POST",
+          body: arg,
+        });
+        if (response.error) return { error: response.error };
+        return { data: response.data as { success: boolean } };
+      },
+    }),
+
+    mcpOauthLogout: builder.mutation<
+      { success: boolean },
+      { config_path: string }
+    >({
+      invalidatesTags: (_result, _error, arg) => [
+        { type: "MCP_OAUTH", id: arg.config_path },
+      ],
+      async queryFn(arg, api, extraOptions, baseQuery) {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/mcp/oauth/logout`;
+        const response = await baseQuery({
+          ...extraOptions,
+          url,
+          method: "POST",
+          body: arg,
+        });
+        if (response.error) return { error: response.error };
+        return { data: response.data as { success: boolean } };
+      },
+    }),
+
+    mcpOauthCancel: builder.mutation<
+      { cancelled: boolean },
+      { session_id: string }
+    >({
+      invalidatesTags: ["MCP_OAUTH"],
+      async queryFn(arg, api, extraOptions, baseQuery) {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/mcp/oauth/cancel`;
+        const response = await baseQuery({
+          ...extraOptions,
+          url,
+          method: "POST",
+          body: arg,
+        });
+        if (response.error) return { error: response.error };
+        return { data: response.data as { cancelled: boolean } };
+      },
+    }),
+
+    mcpOauthStatus: builder.query<MCPOAuthStatusResponse, string>({
+      providesTags: (_result, _error, configPath) => [
+        { type: "MCP_OAUTH", id: configPath },
+      ],
+      async queryFn(configPath, api, extraOptions, baseQuery) {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const url = `http://127.0.0.1:${port}/v1/mcp/oauth/status?config_path=${encodeURIComponent(
+          configPath,
+        )}`;
+        const response = await baseQuery({ ...extraOptions, url });
+        if (response.error) return { error: response.error };
+        return { data: response.data as MCPOAuthStatusResponse };
       },
     }),
   }),
@@ -397,7 +493,7 @@ export type IntegrationField<T extends IntegrationPrimitive> = {
   f_placeholder?: T; // should match f_type
   f_default?: T | Record<string, IntegrationPrimitive>;
   f_label?: string;
-  f_extra?: boolean; // rather the field is hidden by default or not
+  f_extra?: boolean | Record<string, unknown>; // rather the field is hidden by default or not; can be object like {"password": true}
   smartlinks?: SmartLink[];
 };
 
@@ -424,7 +520,11 @@ function isIntegrationField<T extends IntegrationPrimitive>(
     return false;
   }
 
-  if ("f_extra" in json && typeof json.f_extra !== "boolean") {
+  if (
+    "f_extra" in json &&
+    typeof json.f_extra !== "boolean" &&
+    typeof json.f_extra !== "object"
+  ) {
     return false;
   }
   if ("f_placeholder" in json && !isPrimitive(json.f_placeholder)) {
@@ -657,3 +757,14 @@ export function areToolConfirmation(json: unknown): json is ToolConfirmation {
 
   return true;
 }
+export type MCPOAuthStartResponse = {
+  session_id: string;
+  authorize_url: string;
+};
+
+export type MCPOAuthStatusResponse = {
+  auth_type: string;
+  authenticated: boolean;
+  expires_at: number;
+  scopes: string[];
+};

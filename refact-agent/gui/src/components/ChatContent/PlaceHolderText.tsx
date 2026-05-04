@@ -1,81 +1,55 @@
-import React, { useCallback } from "react";
+import React, { useMemo } from "react";
 
-import { Flex, Text, Link } from "@radix-ui/themes";
+import { Flex } from "@radix-ui/themes";
 
-import { useConfig, useAppSelector, useEventsBusForIDE } from "../../hooks";
+import { BuddyCanvas, useBuddyState } from "../../features/Buddy";
 
-import { currentTipOfTheDay } from "../../features/TipOfTheDay";
+const HELLO_TEMPLATES = [
+  (name: string) => `Hi! I'm ${name}. What should we build today?`,
+  () => "Hello! I'm ready when you are.",
+  (name: string) => `Hey, I'm ${name}. Tell me what's on your mind.`,
+  () => "Hi there! Want to explore some code together?",
+  (name: string) => `Hello from ${name}. Let's make something nice.`,
+  (name: string) =>
+    `${name} reporting for snack-driven development. What's next?`,
+  () => "I brought zero opinions and one tiny pixel sword.",
+  (name: string) => `${name} has entered the chat. The bugs look nervous.`,
+  () => "Ask me anything. If I don't know, I'll squint professionally.",
+  (name: string) => `${name} is awake, caffeinated, and probably over-indexed.`,
+  () => "Ready to turn mysterious red text into slightly less mysterious text.",
+  (name: string) => `${name} found a loose semicolon. It claims innocence.`,
+  () => "Let's make the computer do the thing on purpose this time.",
+  (name: string) => `${name} is listening. Logs feared this day would come.`,
+  () => "Drop a task here. I'll poke it with a tiny stick first.",
+  (name: string) => `${name} warmed up the rubber duck. Begin confession.`,
+  () => "Today's forecast: scattered TODOs with a chance of refactor.",
+  (name: string) => `${name} is ready to negotiate with the compiler.`,
+];
 
-const TipOfTheDay: React.FC = () => {
-  const tip = useAppSelector(currentTipOfTheDay);
-
-  return (
-    <Text>
-      💡 <b>Tip of the day</b>: {tip}
-    </Text>
-  );
-};
+const pickHello = (name: string) =>
+  HELLO_TEMPLATES[Math.floor(Math.random() * HELLO_TEMPLATES.length)](name);
 
 export const PlaceHolderText: React.FC = () => {
-  const config = useConfig();
-  const hasVecDB = config.features?.vecdb ?? false;
-  const hasAst = config.features?.ast ?? false;
-  const { openSettings } = useEventsBusForIDE();
-
-  const handleOpenSettings = useCallback(
-    (event: React.MouseEvent<HTMLAnchorElement>) => {
-      event.preventDefault();
-      openSettings();
-    },
-    [openSettings],
-  );
-
-  if (config.host === "web") {
-    <Flex direction="column" gap="4">
-      <Text>Welcome to Refact chat!</Text>;
-      <TipOfTheDay />
-    </Flex>;
-  }
-
-  if (!hasVecDB && !hasAst) {
-    return (
-      <Flex direction="column" gap="4">
-        <Text>Welcome to Refact chat!</Text>
-        <Text>
-          💡 You can turn on VecDB and AST in{" "}
-          <Link onClick={handleOpenSettings}>settings</Link>.
-        </Text>
-        <TipOfTheDay />
-      </Flex>
-    );
-  } else if (!hasVecDB) {
-    return (
-      <Flex direction="column" gap="4">
-        <Text>Welcome to Refact chat!</Text>
-        <Text>
-          💡 You can turn on VecDB in{" "}
-          <Link onClick={handleOpenSettings}>settings</Link>.
-        </Text>
-        <TipOfTheDay />
-      </Flex>
-    );
-  } else if (!hasAst) {
-    return (
-      <Flex direction="column" gap="4">
-        <Text>Welcome to Refact chat!</Text>
-        <Text>
-          💡 You can turn on AST in{" "}
-          <Link onClick={handleOpenSettings}>settings</Link>.
-        </Text>
-        <TipOfTheDay />
-      </Flex>
-    );
-  }
+  const buddy = useBuddyState();
+  const name = buddy.state.name.trim() || "your companion";
+  const speech = useMemo(() => pickHello(name), [name]);
 
   return (
-    <Flex direction="column" gap="4">
-      <Text>Welcome to Refact chat.</Text>
-      <TipOfTheDay />
+    <Flex
+      direction="column"
+      align="center"
+      justify="center"
+      width="100%"
+      height="100%"
+      minHeight="100%"
+    >
+      <BuddyCanvas
+        state={buddy.state}
+        onEvent={buddy.handleCanvasEvent}
+        displaySize={220}
+        speechOverride={speech}
+        bubblePosition="top"
+      />
     </Flex>
   );
 };

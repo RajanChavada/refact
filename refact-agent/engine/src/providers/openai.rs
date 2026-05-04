@@ -6,14 +6,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::caps::model_caps::ModelCapabilities;
+use crate::caps::model_caps::{resolve_model_caps, ModelCapabilities};
 use crate::llm::adapter::WireFormat;
-use crate::providers::config::resolve_env_var;
+use crate::providers::config::{is_legacy_refact_model, resolve_env_var};
 use crate::providers::traits::{
     AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
     merge_custom_models, parse_enabled_models, parse_custom_models, set_model_enabled_impl,
 };
-use crate::providers::pricing::openai_pricing;
 
 const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
 
@@ -31,11 +30,11 @@ pub struct OpenAIProvider {
 
 #[async_trait]
 impl ProviderTrait for OpenAIProvider {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "openai"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "OpenAI"
     }
 
@@ -114,9 +113,15 @@ available:
         let api_key = resolve_env_var(&self.api_key, "", "openai api_key");
 
         let (wire_format, chat_endpoint) = if self.use_responses_api {
-            (WireFormat::OpenaiResponses, "https://api.openai.com/v1/responses".to_string())
+            (
+                WireFormat::OpenaiResponses,
+                "https://api.openai.com/v1/responses".to_string(),
+            )
         } else {
-            (WireFormat::OpenaiChatCompletions, "https://api.openai.com/v1/chat/completions".to_string())
+            (
+                WireFormat::OpenaiChatCompletions,
+                "https://api.openai.com/v1/chat/completions".to_string(),
+            )
         };
 
         Ok(ProviderRuntime {
@@ -132,7 +137,7 @@ available:
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
-            support_metadata: false,
+            supports_cache_control: true,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
             embedding_model: None,
@@ -168,13 +173,10 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        openai_pricing(model_id)
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 
     async fn fetch_available_models(
@@ -196,24 +198,28 @@ available:
             Ok(resp) => resp,
             Err(e) => {
                 tracing::warn!("OpenAI: failed to fetch models: {}", e);
-                return self.get_available_models_from_caps(model_caps);
+                return self.get_custom_models_only();
             }
         };
 
         if !response.status().is_success() {
-            tracing::warn!("OpenAI: models endpoint returned status {}", response.status());
-            return self.get_available_models_from_caps(model_caps);
+            tracing::warn!(
+                "OpenAI: models endpoint returned status {}",
+                response.status()
+            );
+            return self.get_custom_models_only();
         }
 
         let json: serde_json::Value = match response.json().await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("OpenAI: failed to parse models response: {}", e);
-                return self.get_available_models_from_caps(model_caps);
+                return self.get_custom_models_only();
             }
         };
 
-        let filter_regex = self.model_filter_regex()
+        let filter_regex = self
+            .model_filter_regex()
             .and_then(|pattern| Regex::new(pattern).ok());
 
         let enabled_set: std::collections::HashSet<&str> =
@@ -228,6 +234,13 @@ available:
                     None => continue,
                 };
 
+                if is_legacy_refact_model(&id) {
+                    continue;
+                }
+                if !is_openai_chat_model_id(&id) {
+                    continue;
+                }
+
                 let matches_filter = match &filter_regex {
                     Some(regex) => regex.is_match(&id),
                     None => true,
@@ -237,44 +250,48 @@ available:
                 }
 
                 let enabled = enabled_set.contains(id.as_str());
-                let pricing = self.model_pricing(&id);
+                let resolved_caps = resolve_model_caps(model_caps, &format!("openai/{id}"))
+                    .or_else(|| resolve_model_caps(model_caps, &id));
+                let pricing = self.custom_model_pricing(&id).or_else(|| {
+                    resolved_caps
+                        .as_ref()
+                        .and_then(|resolved| resolved.caps.pricing.clone())
+                });
 
-                if let Some(caps) = model_caps.get(&id) {
-                    models_map.insert(id.clone(), AvailableModel::from_caps(&id, caps, enabled, pricing));
+                if let Some(resolved) = resolved_caps {
+                    models_map.insert(
+                        id.clone(),
+                        AvailableModel::from_caps(&id, &resolved.caps, enabled, pricing),
+                    );
                 } else {
-                    models_map.insert(id.clone(), AvailableModel {
-                        id: id.clone(),
-                        display_name: None,
-                        n_ctx: 128_000,
-                        supports_tools: true,
-                        supports_multimodality: true,
-                        reasoning_effort_options: None,
-                        supports_thinking_budget: false,
-                        supports_adaptive_thinking_budget: false,
-                        tokenizer: None,
-                        enabled,
-                        is_custom: false,
-                        pricing,
-                        available_providers: Vec::new(),
-                        selected_provider: None,
-                        max_output_tokens: None,
-                        provider_variants: Vec::new(),
-                    });
+                    models_map.insert(
+                        id.clone(),
+                        AvailableModel {
+                            id: id.clone(),
+                            display_name: None,
+                            n_ctx: 128_000,
+                            supports_tools: true,
+                            supports_parallel_tools: true,
+                            supports_strict_tools: false,
+                            supports_multimodality: true,
+                            reasoning_effort_options: None,
+                            supports_thinking_budget: false,
+                            supports_adaptive_thinking_budget: false,
+                            supports_cache_control: true,
+                            tokenizer: None,
+                            enabled,
+                            is_custom: false,
+                            pricing,
+                            available_providers: Vec::new(),
+                            selected_provider: None,
+                            max_output_tokens: None,
+                            provider_variants: Vec::new(),
+                            wire_format_override: None,
+                            endpoint_override: None,
+                            base_model: None,
+                        },
+                    );
                 }
-            }
-        }
-
-        // Also include models from model_caps that match filter but weren't in API response
-        // (some models might be in caps registry but not returned by the models endpoint)
-        for (name, caps) in model_caps {
-            let matches = match &filter_regex {
-                Some(regex) => regex.is_match(name),
-                None => true,
-            };
-            if matches && !models_map.contains_key(name) {
-                let enabled = enabled_set.contains(name.as_str());
-                let pricing = self.model_pricing(name);
-                models_map.insert(name.clone(), AvailableModel::from_caps(name, caps, enabled, pricing));
             }
         }
 
@@ -283,4 +300,33 @@ available:
         models.sort_by(|a, b| a.id.cmp(&b.id));
         models
     }
+}
+
+fn is_openai_chat_model_id(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    if [
+        "audio",
+        "dall-e",
+        "embedding",
+        "image",
+        "moderation",
+        "realtime",
+        "speech",
+        "transcribe",
+        "tts",
+        "whisper",
+    ]
+    .iter()
+    .any(|blocked| id.contains(blocked))
+    {
+        return false;
+    }
+
+    id.starts_with("gpt-")
+        || id == "o1"
+        || id.starts_with("o1-")
+        || id == "o3"
+        || id.starts_with("o3-")
+        || id == "o4"
+        || id.starts_with("o4-")
 }

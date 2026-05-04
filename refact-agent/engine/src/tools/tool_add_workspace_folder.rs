@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
 use crate::files_in_workspace::enqueue_all_files_from_workspace_folders;
 
@@ -27,14 +29,9 @@ impl Tool for ToolAddWorkspaceFolder {
             experimental: false,
             allow_parallel: false,
             description: "Add a folder to the workspace so its files become available for search and editing. Use this when you need to access files in a directory that isn't currently indexed (e.g., submodules, extra_repos, or external directories).".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "path".to_string(),
-                    description: "Absolute path to the folder to add to the workspace.".to_string(),
-                    param_type: "string".to_string(),
-                },
-            ],
-            parameters_required: vec!["path".to_string()],
+            input_schema: json_schema_from_params(&[("path", "string", "Absolute path to the folder to add to the workspace.")], &["path"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -59,7 +56,8 @@ impl Tool for ToolAddWorkspaceFolder {
             return Err(format!("Path is not a directory: {}", path_str));
         }
 
-        let abs_path = path.canonicalize()
+        let abs_path = path
+            .canonicalize()
             .map_err(|e| format!("Failed to resolve path '{}': {}", path_str, e))?;
 
         let gcx = ccx.lock().await.global_context.clone();
@@ -72,20 +70,27 @@ impl Tool for ToolAddWorkspaceFolder {
 
         if already_exists {
             let msg = format!("Folder is already in workspace: {}", abs_path.display());
-            return Ok((false, vec![ContextEnum::ChatMessage(ChatMessage {
-                role: "tool".to_string(),
-                content: ChatContent::SimpleText(msg),
-                tool_calls: None,
-                tool_call_id: tool_call_id.clone(),
-                ..Default::default()
-            })]));
+            return Ok((
+                false,
+                vec![ContextEnum::ChatMessage(ChatMessage {
+                    role: "tool".to_string(),
+                    content: ChatContent::SimpleText(msg),
+                    tool_calls: None,
+                    tool_call_id: tool_call_id.clone(),
+                    ..Default::default()
+                })],
+            ));
         }
 
         {
             let gcx_locked = gcx.read().await;
-            let mut workspace_folders = gcx_locked.documents_state.workspace_folders.lock().unwrap();
+            let mut workspace_folders =
+                gcx_locked.documents_state.workspace_folders.lock().unwrap();
             workspace_folders.push(abs_path.clone());
-            tracing::info!("add_workspace_folder: added {} to workspace folders", abs_path.display());
+            tracing::info!(
+                "add_workspace_folder: added {} to workspace folders",
+                abs_path.display()
+            );
         }
 
         let file_count = enqueue_all_files_from_workspace_folders(gcx.clone(), true, false).await;
@@ -95,12 +100,15 @@ impl Tool for ToolAddWorkspaceFolder {
             file_count
         );
 
-        Ok((false, vec![ContextEnum::ChatMessage(ChatMessage {
-            role: "tool".to_string(),
-            content: ChatContent::SimpleText(msg),
-            tool_calls: None,
-            tool_call_id: tool_call_id.clone(),
-            ..Default::default()
-        })]))
+        Ok((
+            false,
+            vec![ContextEnum::ChatMessage(ChatMessage {
+                role: "tool".to_string(),
+                content: ChatContent::SimpleText(msg),
+                tool_calls: None,
+                tool_call_id: tool_call_id.clone(),
+                ..Default::default()
+            })],
+        ))
     }
 }

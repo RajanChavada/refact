@@ -5,7 +5,6 @@ use similar::{Algorithm, TextDiff};
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 
 use crate::global_context::GlobalContext;
-use crate::providers::traits::ModelPricing;
 use crate::tokens::{cached_tokenizer, count_text_tokens_with_fallback};
 
 const CACHE_GUARD_TOOL_NAME: &str = "cache_guard";
@@ -37,11 +36,9 @@ pub fn is_cache_guard_pause_reason(reason: &crate::chat::types::PauseReason) -> 
     reason.tool_name == CACHE_GUARD_TOOL_NAME || is_cache_guard_pause_id(&reason.tool_call_id)
 }
 
-pub async fn is_guard_enabled_for_model(
-    gcx: Arc<ARwLock<GlobalContext>>,
-    model_id: &str,
-) -> bool {
-    let Some(pricing) = get_model_pricing(&gcx, model_id).await else {
+pub async fn is_guard_enabled_for_model(gcx: Arc<ARwLock<GlobalContext>>, model_id: &str) -> bool {
+    let Some(pricing) = crate::providers::pricing::lookup_model_pricing(&gcx, model_id).await
+    else {
         return false;
     };
     pricing.cache_read.is_some() || pricing.cache_creation.is_some()
@@ -67,6 +64,11 @@ fn is_append_only_prefix_inner(
         | (Value::Number(_), Value::Number(_))
         | (Value::String(_), Value::String(_)) => prev == next,
         (Value::Array(a), Value::Array(b)) => {
+            // The "tools" array is part of the prompt prefix — any change (including
+            // appending a new tool) invalidates the LLM cache. Require strict equality.
+            if parent_key == Some("tools") {
+                return a == b;
+            }
             if a.len() > b.len() {
                 return false;
             }
@@ -113,7 +115,7 @@ pub async fn estimate_extra_cache_miss_usd(
     model_id: &str,
     previous_sanitized: &Value,
 ) -> Option<f64> {
-    let pricing = get_model_pricing(&gcx, model_id).await?;
+    let pricing = crate::providers::pricing::lookup_model_pricing(&gcx, model_id).await?;
     let cache_read_rate = pricing.cache_read?;
     if pricing.prompt <= cache_read_rate {
         return Some(0.0);
@@ -146,7 +148,10 @@ pub async fn check_or_pause_cache_guard(
     // the server handles caching via response chaining. The request body intentionally
     // sends only tail items (not the full conversation), so the append-only prefix
     // check does not apply.
-    if request_body.get("previous_response_id").is_some_and(|v| !v.is_null()) {
+    if request_body
+        .get("previous_response_id")
+        .is_some_and(|v| !v.is_null())
+    {
         return Ok(None);
     }
 
@@ -219,24 +224,6 @@ pub async fn commit_cache_guard_snapshot(
     session.cache_guard_snapshot = Some(sanitized_body);
 }
 
-async fn get_model_pricing(
-    gcx: &Arc<ARwLock<GlobalContext>>,
-    model_id: &str,
-) -> Option<ModelPricing> {
-    let parts: Vec<&str> = model_id.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let provider_name = parts[0];
-    let model_name = parts[1];
-
-    let gcx_locked = gcx.read().await;
-    let registry = gcx_locked.providers.read().await;
-    registry
-        .get(provider_name)
-        .and_then(|provider| provider.model_pricing(model_name))
-}
-
 fn sanitize_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -301,6 +288,34 @@ mod tests {
     }
 
     #[test]
+    fn test_tools_array_strict_equality() {
+        let tool_a =
+            json!({"type": "function", "function": {"name": "tool_a", "description": "A"}});
+        let tool_b =
+            json!({"type": "function", "function": {"name": "tool_b", "description": "B"}});
+
+        // Identical tools → OK
+        let prev = json!({"messages": [1], "tools": [tool_a.clone()]});
+        let next = json!({"messages": [1, 2], "tools": [tool_a.clone()]});
+        assert!(is_append_only_prefix(&prev, &next));
+
+        // New tool appended mid-session → violation (breaks LLM cache prefix)
+        let next_extra = json!({"messages": [1, 2], "tools": [tool_a.clone(), tool_b.clone()]});
+        assert!(!is_append_only_prefix(&prev, &next_extra));
+
+        // Tool removed mid-session → violation
+        let prev2 = json!({"messages": [1], "tools": [tool_a.clone(), tool_b.clone()]});
+        let next_removed = json!({"messages": [1, 2], "tools": [tool_a.clone()]});
+        assert!(!is_append_only_prefix(&prev2, &next_removed));
+
+        // Tool description changed mid-session → violation
+        let tool_a_changed =
+            json!({"type": "function", "function": {"name": "tool_a", "description": "Changed"}});
+        let next_changed = json!({"messages": [1, 2], "tools": [tool_a_changed]});
+        assert!(!is_append_only_prefix(&prev, &next_changed));
+    }
+
+    #[test]
     fn test_append_only_prefix_messages_keys_strict() {
         let prev = json!({
             "messages": [
@@ -328,6 +343,40 @@ mod tests {
         assert!(is_cache_guard_pause_reason(&reason));
         assert!(is_cache_guard_pause_id("cacheguard_force_once"));
         assert!(!is_cache_guard_pause_id("call_123"));
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_cache_guard_uses_central_pricing_lookup() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let mut model_caps = std::collections::HashMap::new();
+        model_caps.insert(
+            "openai/gpt-4o".to_string(),
+            crate::caps::model_caps::ModelCapabilities {
+                n_ctx: 128_000,
+                max_output_tokens: 16_384,
+                pricing: Some(crate::providers::traits::ModelPricing {
+                    prompt: 2.5,
+                    generated: 10.0,
+                    cache_read: Some(1.25),
+                    cache_creation: None,
+                    context_over_200k: None,
+                }),
+                ..Default::default()
+            },
+        );
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(std::sync::Arc::new(crate::caps::CodeAssistantCaps {
+                model_caps: std::sync::Arc::new(model_caps),
+                ..Default::default()
+            }));
+            gcx.caps_last_attempted_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+        }
+
+        assert!(is_guard_enabled_for_model(gcx, "openai/gpt-4o").await);
     }
 
     #[test]

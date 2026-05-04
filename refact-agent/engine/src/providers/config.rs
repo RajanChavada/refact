@@ -27,6 +27,8 @@ pub struct ProviderDefaults {
     pub chat_light: ModelTypeDefaults,
     #[serde(default)]
     pub chat_thinking: ModelTypeDefaults,
+    #[serde(default)]
+    pub chat_buddy: ModelTypeDefaults,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,15 +36,31 @@ pub struct ProviderDefaults {
 }
 
 impl ProviderDefaults {
+    pub fn clear_legacy_refact_models(&mut self) -> bool {
+        let mut changed = false;
+
+        changed |= clear_legacy_refact_model_field(&mut self.chat.model);
+        changed |= clear_legacy_refact_model_field(&mut self.chat_light.model);
+        changed |= clear_legacy_refact_model_field(&mut self.chat_thinking.model);
+        changed |= clear_legacy_refact_model_field(&mut self.chat_buddy.model);
+        changed |= clear_legacy_refact_model_field(&mut self.completion_model);
+        changed |= clear_legacy_refact_model_field(&mut self.embedding_model);
+
+        changed
+    }
+
     pub fn defaults_for_model(
         &self,
         model_id: &str,
         _chat_default_model: &str,
         chat_light_model: &str,
         chat_thinking_model: &str,
+        chat_buddy_model: &str,
     ) -> &ModelTypeDefaults {
         if !chat_thinking_model.is_empty() && model_id == chat_thinking_model {
             &self.chat_thinking
+        } else if !chat_buddy_model.is_empty() && model_id == chat_buddy_model {
+            &self.chat_buddy
         } else if !chat_light_model.is_empty() && model_id == chat_light_model {
             &self.chat_light
         } else {
@@ -54,12 +72,22 @@ impl ProviderDefaults {
         let defaults_path = config_dir.join("providers.d").join("defaults.yaml");
         match tokio::fs::read_to_string(&defaults_path).await {
             Ok(content) => {
-                serde_yaml::from_str(&content)
-                    .map_err(|e| format!("Failed to parse defaults.yaml: {}", e))
+                let mut defaults: Self = serde_yaml::from_str(&content)
+                    .map_err(|e| format!("Failed to parse defaults.yaml: {}", e))?;
+                if defaults.clear_legacy_refact_models() {
+                    tracing::warn!(
+                        "Legacy Refact Cloud model defaults in providers.d/defaults.yaml were reset to none"
+                    );
+                    if let Err(e) = defaults.save(config_dir).await {
+                        tracing::warn!(
+                            "Failed to persist migrated providers.d/defaults.yaml: {}",
+                            e
+                        );
+                    }
+                }
+                Ok(defaults)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self::default())
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("Failed to read defaults.yaml: {}", e)),
         }
     }
@@ -74,7 +102,9 @@ impl ProviderDefaults {
             .map_err(|e| format!("Failed to create providers.d directory: {}", e))?;
 
         let defaults_path = providers_dir.join("defaults.yaml");
-        let content = serde_yaml::to_string(self)
+        let mut normalized = self.clone();
+        normalized.clear_legacy_refact_models();
+        let content = serde_yaml::to_string(&normalized)
             .map_err(|e| format!("Failed to serialize defaults: {}", e))?;
 
         let temp_path = providers_dir.join(format!(
@@ -96,6 +126,30 @@ impl ProviderDefaults {
     }
 }
 
+pub fn is_legacy_refact_model(model: &str) -> bool {
+    let model = model.trim();
+    model == "refact" || model.starts_with("refact/") || model.contains("/refact/")
+}
+
+fn clear_legacy_refact_model_field(model: &mut Option<String>) -> bool {
+    let Some(value) = model.as_mut() else {
+        return false;
+    };
+
+    let trimmed = value.trim();
+    if is_legacy_refact_model(trimmed) {
+        *model = Some(String::new());
+        return true;
+    }
+
+    if trimmed != value.as_str() {
+        *value = trimmed.to_string();
+        return true;
+    }
+
+    false
+}
+
 pub fn resolve_env_var(value: &str, fallback: &str, context: &str) -> String {
     if value.is_empty() {
         return fallback.to_string();
@@ -110,5 +164,37 @@ pub fn resolve_env_var(value: &str, fallback: &str, context: &str) -> String {
         }
     } else {
         value.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ModelTypeDefaults, ProviderDefaults};
+
+    #[test]
+    fn clear_legacy_refact_models_resets_only_refact_models_to_none() {
+        let mut defaults = ProviderDefaults {
+            chat: ModelTypeDefaults {
+                model: Some("openai/gpt-5".to_string()),
+                ..Default::default()
+            },
+            chat_light: ModelTypeDefaults {
+                model: Some("refact/grok-4-fast-non-reasoning".to_string()),
+                ..Default::default()
+            },
+            chat_thinking: ModelTypeDefaults {
+                model: Some("  refact/o4-mini-deep-research  ".to_string()),
+                ..Default::default()
+            },
+            completion_model: Some("refact/qwen2.5-coder".to_string()),
+            ..Default::default()
+        };
+
+        assert!(defaults.clear_legacy_refact_models());
+
+        assert_eq!(defaults.chat.model.as_deref(), Some("openai/gpt-5"));
+        assert_eq!(defaults.chat_light.model.as_deref(), Some(""));
+        assert_eq!(defaults.chat_thinking.model.as_deref(), Some(""));
+        assert_eq!(defaults.completion_model.as_deref(), Some(""));
     }
 }

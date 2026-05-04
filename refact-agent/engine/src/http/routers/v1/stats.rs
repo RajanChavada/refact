@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::custom_error::ScratchError;
 use crate::global_context::SharedGlobalContext;
-use crate::stats::reader::{aggregate_summary, read_stats_events_filtered};
+use crate::stats::reader::{aggregate_summary, read_stats_events_from_dirs};
 
 #[derive(Deserialize)]
 pub struct StatsQuery {
@@ -38,13 +38,16 @@ pub async fn handle_v1_stats_llm_summary(
     Extension(gcx): Extension<SharedGlobalContext>,
     Query(params): Query<StatsQuery>,
 ) -> Result<Response<Body>, ScratchError> {
-    let stats_dir = crate::stats::get_stats_dir(gcx).await;
+    let stats_dirs = crate::stats::get_stats_dirs_for_read(gcx).await;
     let from = params.from.as_deref();
     let to = params.to.as_deref();
-    let events = read_stats_events_filtered(&stats_dir, from, to);
+    let events = read_stats_events_from_dirs(&stats_dirs, from, to);
     let summary = aggregate_summary(&events, from, to);
     let body = serde_json::to_string(&summary).map_err(|e| {
-        ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {}", e))
+        ScratchError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialization error: {}", e),
+        )
     })?;
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -57,10 +60,10 @@ pub async fn handle_v1_stats_llm_events(
     Extension(gcx): Extension<SharedGlobalContext>,
     Query(params): Query<StatsEventsQuery>,
 ) -> Result<Response<Body>, ScratchError> {
-    let stats_dir = crate::stats::get_stats_dir(gcx).await;
+    let stats_dirs = crate::stats::get_stats_dirs_for_read(gcx).await;
     let from = params.from.as_deref();
     let to = params.to.as_deref();
-    let mut events = read_stats_events_filtered(&stats_dir, from, to);
+    let mut events = read_stats_events_from_dirs(&stats_dirs, from, to);
 
     if let Some(ref model_prefix) = params.model {
         events.retain(|e| e.model_id.starts_with(model_prefix.as_str()));
@@ -93,7 +96,10 @@ pub async fn handle_v1_stats_llm_events(
         offset,
     };
     let body = serde_json::to_string(&resp).map_err(|e| {
-        ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("serialization error: {}", e))
+        ScratchError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialization error: {}", e),
+        )
     })?;
     Ok(Response::builder()
         .status(StatusCode::OK)

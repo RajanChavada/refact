@@ -1,4 +1,4 @@
-schema_version: 7
+schema_version: 13
 id: explore
 title: Explore
 description: Read-only exploration for context gathering without editing
@@ -50,13 +50,17 @@ prompt: |
 
   %CD_INSTRUCTIONS%
 
+  %COMPRESS_HANDOFF_INSTRUCTIONS%
+
+  %RICH_CONTENT_INSTRUCTIONS%
+
   %SYSTEM_INFO%
 
   %ENVIRONMENT_INFO%
 
   %WORKSPACE_INFO%
 
-  %PROJECT_SUMMARY%
+  %SKILLS_INSTRUCTIONS%
 
   %PROJECT_CONFIGS%
 
@@ -73,13 +77,19 @@ tools:
   - search_pattern
   - search_symbol_definition
   - search_semantic
+  - activate_skill
+  - deactivate_skill
   - knowledge
   - web
   - web_search
+  - chrome
   - subagent
   - ask_questions
+  - handoff_to_mode
 
 tool_confirm:
   rules:
+    - match: "handoff_to_mode"
+      action: ask
     - match: "*"
       action: auto

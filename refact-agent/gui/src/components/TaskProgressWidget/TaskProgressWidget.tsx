@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { Flex, Text, Box, Separator } from "@radix-ui/themes";
 import classNames from "classnames";
@@ -18,7 +18,11 @@ import type { TodoItem, TodoStatus } from "../../features/Chat/Thread/types";
 import { Chevron } from "../Collapsible";
 
 import { StatusDot, type StatusDotState } from "../StatusDot";
-import { CircularProgress } from "../ChatHistory/CircularProgress";
+import { CircularProgress } from "../CircularProgress/CircularProgress";
+import {
+  addBuddyCrashBreadcrumb,
+  setBuddyCrashHotSlot,
+} from "../../features/Buddy/reportBuddyFrontendError";
 import styles from "./TaskProgressWidget.module.css";
 
 function getStatusDotState(
@@ -95,6 +99,15 @@ export const TaskProgressWidget: React.FC = () => {
   const isExpanded = useAppSelector(selectTaskWidgetExpanded);
   const isStreaming = useAppSelector(selectIsStreaming);
   const { done, total, activeTitle } = useAppSelector(selectTaskProgress);
+
+  useEffect(() => {
+    const summary =
+      total > 0 ? `${done}/${total} active=${activeTitle ?? "none"}` : null;
+    setBuddyCrashHotSlot("tasks", summary);
+    if (summary) {
+      addBuddyCrashBreadcrumb("tasks", summary);
+    }
+  }, [activeTitle, done, total]);
 
   const handleOpenChange = useCallback(
     (open: boolean) => {

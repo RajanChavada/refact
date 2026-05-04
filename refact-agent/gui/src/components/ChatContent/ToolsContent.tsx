@@ -38,6 +38,7 @@ import { useCollapsibleStore } from "./useStoredOpen";
 import { ShikiCodeBlock } from "../Markdown/ShikiCodeBlock";
 import { Markdown } from "../Markdown";
 import classNames from "classnames";
+import { FileIcon, GearIcon, RowsIcon } from "@radix-ui/react-icons";
 import { AnimatedText } from "../Text";
 import {
   ReadTool,
@@ -57,6 +58,7 @@ import {
   GenericTool,
   TaskDoneTool,
   AskQuestionsTool,
+  ChromeTool,
   OpenAIResponsesTool,
   OpenAIWebSearchCallTool,
   OpenAIFileSearchCallTool,
@@ -68,7 +70,41 @@ import {
   OpenAIRefusalTool,
   OpenAIMcpCallTool,
   OpenAIMcpListToolsTool,
+  CompressReportTool,
 } from "./ToolCard";
+
+const CC_TOOL_RENAMES: Partial<Record<string, string>> = {
+  delegate: "subagent",
+  plan: "strategic_planning",
+  finish: "task_done",
+  ask: "ask_questions",
+  write: "create_textdoc",
+  patch: "update_textdoc",
+  patch_re: "update_textdoc_regex",
+  patch_ln: "update_textdoc_by_lines",
+  patch_at: "update_textdoc_anchored",
+  undo: "undo_textdoc",
+  review: "code_review",
+  research: "deep_research",
+  set_tasks: "tasks_set",
+  save_knowledge: "create_knowledge",
+  hist_search: "search_trajectories",
+  hist_get: "get_trajectory_context",
+  load_skill: "activate_skill",
+  unload_skill: "deactivate_skill",
+  ctx_probe: "compress_chat_probe",
+  ctx_apply: "compress_chat_apply",
+  switch_mode: "handoff_to_mode",
+};
+
+function normalizeToolName(name: string | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  if (name.startsWith("t_")) {
+    const base = name.slice(2);
+    return CC_TOOL_RENAMES[base] ?? base;
+  }
+  return name;
+}
 
 function parseProgressEntry(entry: string): { step?: string; text: string } {
   const m = entry.match(/^(\d+\/\d+):\s*([\s\S]+)$/);
@@ -215,10 +251,13 @@ export const SingleModelToolContent: React.FC<{
   const store = useCollapsibleStore();
 
   const toolCallsId = useMemo(() => {
-    return toolCalls.reduce<string[]>((acc, toolCall) => {
-      if (typeof toolCall.id === "string") return [...acc, toolCall.id];
-      return acc;
-    }, []);
+    const out: string[] = [];
+    for (const toolCall of toolCalls) {
+      if (typeof toolCall.id === "string") {
+        out.push(toolCall.id);
+      }
+    }
+    return out;
   }, [toolCalls]);
 
   const toolCallsIdKey = toolCallsId.join("|");
@@ -344,11 +383,22 @@ export const ToolContent: React.FC<ToolContentProps> = ({
   diffsByToolId,
 }) => {
   const features = useAppSelector(selectFeatures);
-  const ids = toolCalls.reduce<string[]>((acc, cur) => {
-    if (cur.id !== undefined) return [...acc, cur.id];
-    return acc;
-  }, []);
-  const allToolResults = useAppSelector(selectManyToolResultsByIds(ids));
+  const ids = useMemo(() => {
+    const out: string[] = [];
+    for (const toolCall of toolCalls) {
+      if (toolCall.id !== undefined) {
+        out.push(toolCall.id);
+      }
+    }
+    return out;
+  }, [toolCalls]);
+  const idsKey = ids.join("|");
+  const selectResults = useMemo(
+    () => selectManyToolResultsByIds(ids),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [idsKey],
+  );
+  const allToolResults = useAppSelector(selectResults);
 
   return processToolCalls(
     toolCalls,
@@ -370,11 +420,16 @@ function processToolCalls(
 ) {
   if (toolCalls.length === 0) return processed;
   const [head, ...tail] = toolCalls;
+  const headName = normalizeToolName(head.function.name) ?? head.function.name;
+  const normalizedHead: ToolCall = {
+    ...head,
+    function: { ...head.function, name: headName },
+  };
   const result = toolResults.find((result) => result.tool_call_id === head.id);
   const contextFiles = head.id ? contextFilesByToolId[head.id] : undefined;
   const diffs = head.id ? diffsByToolId[head.id] : undefined;
 
-  if (head.function.name === "cat") {
+  if (headName === "cat") {
     const elem = (
       <ReadTool
         key={`read-tool-${processed.length}`}
@@ -392,7 +447,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "tree") {
+  if (headName === "tree") {
     const elem = (
       <ListTool
         key={`list-tool-${processed.length}`}
@@ -410,7 +465,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_pattern") {
+  if (headName === "search_pattern") {
     const elem = (
       <SearchTool
         key={`search-pattern-tool-${processed.length}`}
@@ -429,7 +484,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_semantic") {
+  if (headName === "search_semantic") {
     const elem = (
       <SearchTool
         key={`search-semantic-tool-${processed.length}`}
@@ -448,7 +503,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_symbol_definition") {
+  if (headName === "search_symbol_definition") {
     const elem = (
       <SearchTool
         key={`search-symbol-tool-${processed.length}`}
@@ -467,7 +522,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "shell") {
+  if (headName === "shell") {
     const elem = (
       <NewShellTool key={`shell-tool-${processed.length}`} toolCall={head} />
     );
@@ -481,7 +536,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "shell_service") {
+  if (headName === "shell_service") {
     const elem = (
       <NewShellServiceTool
         key={`shell-service-tool-${processed.length}`}
@@ -498,7 +553,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "subagent") {
+  if (headName === "subagent") {
     const elem = (
       <NewSubagentTool
         key={`subagent-tool-${processed.length}`}
@@ -515,10 +570,10 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "strategic_planning") {
+  if (headName === "strategic_planning") {
     const elem = (
       <PlanningTool
-        key={`strategic-planning-tool-${processed.length}`}
+        key={`strategic-planning-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -532,10 +587,10 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "code_review") {
+  if (headName === "code_review") {
     const elem = (
       <NewCodeReviewTool
-        key={`code-review-tool-${processed.length}`}
+        key={`code-review-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -549,10 +604,10 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "deep_research") {
+  if (headName === "deep_research") {
     const elem = (
       <ResearchTool
-        key={`deep-research-tool-${processed.length}`}
+        key={`deep-research-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -566,7 +621,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "knowledge") {
+  if (headName === "knowledge") {
     const elem = (
       <KnowledgeTool
         key={`knowledge-tool-${processed.length}`}
@@ -585,7 +640,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "search_trajectories") {
+  if (headName === "search_trajectories") {
     const elem = (
       <KnowledgeTool
         key={`trajectories-tool-${processed.length}`}
@@ -604,7 +659,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "get_trajectory_context") {
+  if (headName === "get_trajectory_context") {
     const elem = (
       <KnowledgeTool
         key={`trajectory-context-tool-${processed.length}`}
@@ -623,7 +678,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "create_knowledge") {
+  if (headName === "create_knowledge") {
     const elem = (
       <KnowledgeTool
         key={`create-knowledge-tool-${processed.length}`}
@@ -642,7 +697,18 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "web") {
+  if (headName === "activate_skill") {
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      processed,
+      contextFilesByToolId,
+      diffsByToolId,
+    );
+  }
+
+  if (headName === "web") {
     const elem = (
       <WebTool
         key={`web-tool-${processed.length}`}
@@ -661,7 +727,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "web_search") {
+  if (headName === "web_search") {
     const elem = (
       <WebTool
         key={`web-search-tool-${processed.length}`}
@@ -680,11 +746,11 @@ function processToolCalls(
     );
   }
 
-  if (isRawTextDocToolCall(head)) {
+  if (isRawTextDocToolCall(normalizedHead)) {
     const elem = (
       <EditTool
         key={`edit-tool-${head.function.name}-${processed.length}`}
-        toolCall={head}
+        toolCall={normalizedHead}
         diffs={diffs}
       />
     );
@@ -698,7 +764,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "mv") {
+  if (headName === "mv") {
     const elem = (
       <FileOpTool
         key={`mv-tool-${processed.length}`}
@@ -716,7 +782,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "rm") {
+  if (headName === "rm") {
     const elem = (
       <FileOpTool
         key={`rm-tool-${processed.length}`}
@@ -735,7 +801,7 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "add_workspace_folder") {
+  if (headName === "add_workspace_folder") {
     const elem = (
       <FileOpTool
         key={`add-workspace-tool-${processed.length}`}
@@ -753,24 +819,10 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "tasks_set") {
+  if (headName === "tasks_set") {
     const elem = (
-      <TasksTool key={`tasks-tool-${processed.length}`} toolCall={head} />
-    );
-    return processToolCalls(
-      tail,
-      toolResults,
-      features,
-      [...processed, elem],
-      contextFilesByToolId,
-      diffsByToolId,
-    );
-  }
-
-  if (head.function.name === "task_done") {
-    const elem = (
-      <TaskDoneTool
-        key={`task-done-tool-${processed.length}`}
+      <TasksTool
+        key={`tasks-tool-${head.id ?? processed.length}`}
         toolCall={head}
       />
     );
@@ -784,7 +836,24 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name === "ask_questions") {
+  if (headName === "task_done") {
+    const elem = (
+      <TaskDoneTool
+        key={`task-done-tool-${head.id ?? processed.length}`}
+        toolCall={head}
+      />
+    );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+    );
+  }
+
+  if (headName === "ask_questions") {
     const elem = (
       <AskQuestionsTool
         key={`ask-questions-tool-${processed.length}`}
@@ -801,8 +870,8 @@ function processToolCalls(
     );
   }
 
-  if (head.function.name?.startsWith("openai_")) {
-    const name = head.function.name;
+  if (headName?.startsWith("openai_")) {
+    const name = headName;
     let elem: React.ReactNode;
     switch (name) {
       case "openai_web_search_call":
@@ -894,6 +963,41 @@ function processToolCalls(
         );
     }
 
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+    );
+  }
+
+  if (
+    headName === "compress_chat_probe" ||
+    headName === "compress_chat_apply"
+  ) {
+    const elem = (
+      <CompressReportTool
+        key={`compress-tool-${head.id ?? processed.length}`}
+        toolCall={head}
+        toolType={headName}
+      />
+    );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+    );
+  }
+
+  if (headName === "chrome") {
+    const elem = (
+      <ChromeTool key={`chrome-tool-${processed.length}`} toolCall={head} />
+    );
     return processToolCalls(
       tail,
       toolResults,
@@ -1122,9 +1226,9 @@ type ToolUsageSummaryProps = {
   waiting: boolean;
 };
 
-function getFileIcon(path: string): string {
-  if (path.endsWith("/") || !path.includes(".")) return "📂";
-  return "📄";
+function getFileIcon(path: string): React.ReactNode {
+  if (path.endsWith("/") || !path.includes(".")) return <RowsIcon />;
+  return <FileIcon />;
 }
 
 function truncatePath(path: string, maxLen = 50): string {
@@ -1163,7 +1267,7 @@ const ToolUsageSummary = forwardRef<HTMLDivElement, ToolUsageSummaryProps>(
             style={{ cursor: "pointer" }}
           >
             <Flex gap="2" align="center" justify="center">
-              {waiting ? <Spinner /> : "🔨"}
+              {waiting ? <Spinner /> : <GearIcon />}
               {toolUsageAmount.map(({ functionName, amountOfCalls }, index) => (
                 <span key={functionName}>
                   <ToolUsageDisplay
@@ -1181,7 +1285,7 @@ const ToolUsageSummary = forwardRef<HTMLDivElement, ToolUsageSummaryProps>(
               </Text>
             )}
             {shownAttachedFiles?.map((file, index) => (
-              <Text weight="light" size="1" key={index} ml="4">
+              <Text weight="light" size="1" key={index} ml="4" as="div">
                 {getFileIcon(file)} {truncatePath(file)}
               </Text>
             ))}

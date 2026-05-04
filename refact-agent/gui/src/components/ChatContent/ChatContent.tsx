@@ -15,6 +15,7 @@ import {
   isChatContextFileMessage,
   isDiffMessage,
   isAssistantMessage,
+  isErrorMessage,
   isToolMessage,
   isSystemMessage,
   UserMessage,
@@ -47,6 +48,9 @@ import { GroupedDiffs } from "./DiffContent";
 import { popBackTo } from "../../features/Pages/pagesSlice";
 import { ChatLinks, UncommittedChangesWarning } from "../ChatLinks";
 import { PlaceHolderText } from "./PlaceHolderText";
+import { SkillActivatedCard } from "./SkillActivatedCard";
+import { SkillReportCard } from "./SkillReportCard";
+import { isSkillReportContent, parseSkillReport } from "./skillReportUtils";
 import { QueuedMessage } from "./QueuedMessage";
 import { selectSseStatusForChat } from "../../features/Connection";
 import { LogoAnimation } from "../LogoAnimation/LogoAnimation.tsx";
@@ -60,6 +64,8 @@ import { VirtualizedChatList } from "./VirtualizedChatList";
 import { useCollapsibleState } from "./useCollapsibleState";
 import { useCollapsibleStoreProvider } from "./useCollapsibleStoreProvider";
 import { CollapsibleStoreProvider } from "./useStoredOpen";
+import { SelectionToolbar } from "./SelectionToolbar";
+import { ErrorMessageCard } from "./ErrorMessage";
 
 export type ChatContentProps = {
   onRetry: (index: number, question: UserMessage["content"]) => void;
@@ -99,7 +105,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     selectSseStatusForChat(s, renderChatId),
   );
 
-  const isConfig = thread !== null && thread.mode === "CONFIGURE";
+  const isConfig = thread !== null && thread.mode === "configurator";
   const isWaiting = useAppSelector((s) => selectIsWaitingById(s, renderChatId));
   const integrationMeta = useAppSelector(selectIntegration);
   const isWaitingForConfirmation = useAppSelector((s) =>
@@ -132,6 +138,9 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         createChatWithId({
           id: newChatId,
           title,
+          parentId: renderChatId,
+          linkType: "branch",
+          worktree: thread?.worktree,
         }),
       );
 
@@ -148,7 +157,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         console.error("Failed to branch chat:", err);
       });
     },
-    [dispatch, thread?.title, renderChatId, lspPort, apiKey],
+    [dispatch, thread?.title, thread?.worktree, renderChatId, lspPort, apiKey],
   );
 
   const handleDelete = useCallback(
@@ -193,7 +202,11 @@ export const ChatContent: React.FC<ChatContentProps> = ({
   ]);
 
   const shouldConfigButtonBeVisible = useMemo(() => {
-    return isConfig && !integrationMeta?.path?.includes("project_summary");
+    return (
+      isConfig &&
+      !integrationMeta?.path?.includes("project_summary") &&
+      !integrationMeta?.path?.includes("setup")
+    );
   }, [isConfig, integrationMeta?.path]);
 
   useDiffFileReload();
@@ -232,7 +245,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         <Container>
           <UncommittedChangesWarning />
         </Container>
-        <Container pt="4" pb="8">
+        <Flex justify="center" pt="4" pb="8">
           {!isWaitingForConfirmation && (
             <LogoAnimation
               size="8"
@@ -240,7 +253,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
               isWaiting={isWaiting}
             />
           )}
-        </Container>
+        </Flex>
       </>
     ),
     [isStreaming, isWaiting, isWaitingForConfirmation],
@@ -251,6 +264,9 @@ export const ChatContent: React.FC<ChatContentProps> = ({
       switch (item.type) {
         case "plain_text":
           return <PlainText>{item.content}</PlainText>;
+
+        case "error":
+          return <ErrorMessageCard errors={item.errors} />;
 
         case "assistant":
           return (
@@ -268,12 +284,6 @@ export const ChatContent: React.FC<ChatContentProps> = ({
               contextFilesByToolId={item.contextFilesByToolId}
               diffsByToolId={item.diffsByToolId}
               usage={item.message.usage}
-              metering_coins_prompt={item.message.metering_coins_prompt}
-              metering_coins_generated={item.message.metering_coins_generated}
-              metering_coins_cache_creation={
-                item.message.metering_coins_cache_creation
-              }
-              metering_coins_cache_read={item.message.metering_coins_cache_read}
               isStreaming={item.isStreaming}
             />
           );
@@ -318,6 +328,27 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         case "system":
           return <SystemPrompt content={item.content} />;
 
+        case "skill_activated":
+          return (
+            <SkillActivatedCard
+              key={item.key}
+              name={item.name}
+              body={item.body}
+              allowedTools={item.allowedTools}
+              modelOverride={item.modelOverride}
+            />
+          );
+
+        case "skill_report":
+          return (
+            <SkillReportCard
+              key={item.key}
+              skillName={item.skillName}
+              report={item.report}
+              storeKey={`sr:${item.key}`}
+            />
+          );
+
         default:
           return null;
       }
@@ -350,7 +381,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         gap="1"
         style={{ flexGrow: 1, height: "100%" }}
       >
-        <Container>
+        <Container style={{ height: "100%" }}>
           <PlaceHolderText />
         </Container>
       </Flex>
@@ -359,6 +390,7 @@ export const ChatContent: React.FC<ChatContentProps> = ({
 
   return (
     <CollapsibleStoreProvider value={collapsibleStore}>
+      <SelectionToolbar />
       <Box
         style={{ flexGrow: 1, height: "100%", position: "relative" }}
         data-element="ChatContent"
@@ -434,6 +466,17 @@ const READ_TOOLS = new Set([
   "knowledge",
   "search_trajectories",
   "get_trajectory_context",
+  // CC OAuth mode aliases
+  "t_cat",
+  "t_tree",
+  "t_search_pattern",
+  "t_search_semantic",
+  "t_search_symbol_definition",
+  "t_web",
+  "t_web_search",
+  "t_knowledge",
+  "t_hist_search",
+  "t_hist_get",
 ]);
 
 const EDIT_TOOLS = new Set([
@@ -446,12 +489,21 @@ const EDIT_TOOLS = new Set([
   "apply_patch",
   "undo_textdoc",
   "rm",
+  // CC OAuth mode aliases
+  "t_write",
+  "t_patch",
+  "t_patch_re",
+  "t_patch_ln",
+  "t_patch_at",
+  "t_undo",
+  "t_rm",
 ]);
 
 type DisplayItemAssistant = {
   type: "assistant";
   key: string;
   index: number;
+  messageIndex: number;
   message: AssistantMessage;
   contextFilesByToolId: Record<string, ChatContextFile[]>;
   diffsByToolId: Record<string, DiffChunk[]>;
@@ -462,6 +514,7 @@ type DisplayItemUser = {
   type: "user";
   key: string;
   index: number;
+  messageIndex: number;
   message: UserMessage;
   isLastUser: boolean;
 };
@@ -469,6 +522,7 @@ type DisplayItemUser = {
 type DisplayItemContextFiles = {
   type: "context_files";
   key: string;
+  messageIndex: number;
   files: ChatContextFile[];
   toolCallId?: string;
 };
@@ -476,19 +530,47 @@ type DisplayItemContextFiles = {
 type DisplayItemDiffGroup = {
   type: "diff_group";
   key: string;
+  messageIndex: number;
   diffs: DiffMessage[];
 };
 
 type DisplayItemSystem = {
   type: "system";
   key: string;
+  messageIndex: number;
   content: string;
 };
 
 type DisplayItemPlainText = {
   type: "plain_text";
   key: string;
+  messageIndex: number;
   content: string;
+};
+
+type DisplayItemError = {
+  type: "error";
+  key: string;
+  messageIndex: number;
+  errors: string[];
+};
+
+type DisplayItemSkillActivated = {
+  type: "skill_activated";
+  key: string;
+  messageIndex: number;
+  name: string;
+  body: string;
+  allowedTools: string[];
+  modelOverride: string | null;
+};
+
+type DisplayItemSkillReport = {
+  type: "skill_report";
+  key: string;
+  messageIndex: number;
+  skillName: string;
+  report: string;
 };
 
 type DisplayItem =
@@ -497,7 +579,442 @@ type DisplayItem =
   | DisplayItemContextFiles
   | DisplayItemDiffGroup
   | DisplayItemSystem
-  | DisplayItemPlainText;
+  | DisplayItemPlainText
+  | DisplayItemError
+  | DisplayItemSkillActivated
+  | DisplayItemSkillReport;
+
+function updateAssistantStreamingFlags(
+  items: DisplayItem[],
+  isStreaming: boolean,
+  lastAssistantIdx: number,
+): DisplayItem[] {
+  let needsPatch = false;
+  for (const item of items) {
+    if (item.type !== "assistant") continue;
+    const shouldStream = isStreaming && item.index === lastAssistantIdx;
+    if (shouldStream !== item.isStreaming) {
+      needsPatch = true;
+      break;
+    }
+  }
+
+  if (!needsPatch) return items;
+
+  return items.map((item) => {
+    if (item.type !== "assistant") return item;
+    const shouldStream = isStreaming && item.index === lastAssistantIdx;
+    return shouldStream === item.isStreaming
+      ? item
+      : { ...item, isStreaming: shouldStream };
+  });
+}
+
+function findLastAssistantMessageIndex(messages: ChatMessages): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") return i;
+  }
+  return -1;
+}
+
+function findRebuildStartIndex(messages: ChatMessages, index: number): number {
+  let rebuildStart = index;
+  let sawSupplemental = false;
+
+  for (let i = index - 1; i >= 0; i--) {
+    const msg = messages[i];
+
+    if (
+      isToolMessage(msg) ||
+      isChatContextFileMessage(msg) ||
+      isDiffMessage(msg)
+    ) {
+      sawSupplemental = true;
+      rebuildStart = i;
+      continue;
+    }
+
+    if (msg.role === "assistant") {
+      return i;
+    }
+
+    return sawSupplemental ? rebuildStart : index;
+  }
+
+  return sawSupplemental ? rebuildStart : index;
+}
+
+function rebuildDisplayItemsFromStart(
+  previousItems: DisplayItem[],
+  nextMessages: ChatMessages,
+  isStreaming: boolean,
+  rebuildStart: number,
+): DisplayItem[] {
+  const hidden = computeHiddenQaMessageIndices(nextMessages);
+  const tailItems = buildDisplayItemsFromIndex(
+    nextMessages,
+    isStreaming,
+    hidden,
+    rebuildStart,
+  );
+  const prefixItems = previousItems.filter(
+    (item) => item.messageIndex < rebuildStart,
+  );
+
+  return updateAssistantStreamingFlags(
+    [...prefixItems, ...tailItems],
+    isStreaming,
+    findLastAssistantMessageIndex(nextMessages),
+  );
+}
+
+function assistantGroupingSignature(message: AssistantMessage): string {
+  return (message.tool_calls ?? [])
+    .map((toolCall) => {
+      const name = toolCall.function.name ?? "";
+      const id = toolCall.id ?? "";
+      return `${id}:${name}`;
+    })
+    .join("|");
+}
+
+function buildDisplayItemsFromIndex(
+  messages: ChatMessages,
+  isStreaming: boolean,
+  hiddenQaIndices: Set<number>,
+  startIndex: number,
+): DisplayItem[] {
+  const items: DisplayItem[] = [];
+  if (startIndex >= messages.length) return items;
+
+  let lastUserIdx = -1;
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "user" && !hiddenQaIndices.has(i) && lastUserIdx === -1) {
+      lastUserIdx = i;
+    }
+    if (msg.role === "assistant" && lastAssistantIdx === -1) {
+      lastAssistantIdx = i;
+    }
+    if (lastUserIdx !== -1 && lastAssistantIdx !== -1) break;
+  }
+
+  for (let i = startIndex; i < messages.length; i++) {
+    const head = messages[i];
+
+    if (isToolMessage(head)) continue;
+
+    if (isErrorMessage(head)) {
+      const errors = [head.content];
+      let j = i + 1;
+      while (j < messages.length) {
+        const candidate = messages[j];
+        if (!isErrorMessage(candidate)) break;
+        errors.push(candidate.content);
+        j++;
+      }
+      items.push({
+        type: "error",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        errors,
+      });
+      i = j - 1;
+      continue;
+    }
+
+    if (head.role === "plain_text") {
+      if (
+        typeof head.content === "string" &&
+        isSkillReportContent(head.content)
+      ) {
+        const parsed = parseSkillReport(head.content);
+        if (parsed) {
+          items.push({
+            type: "skill_report",
+            key: getMessageKey(head, i),
+            messageIndex: i,
+            skillName: parsed.skillName,
+            report: parsed.report,
+          });
+          continue;
+        }
+      }
+      items.push({
+        type: "plain_text",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        content: head.content,
+      });
+      continue;
+    }
+
+    if (head.role === "assistant") {
+      const toolCalls = "tool_calls" in head ? head.tool_calls ?? [] : [];
+      const isOnlyActivateSkill =
+        toolCalls.length > 0 &&
+        toolCalls.every((tc) => tc.function.name === "activate_skill") &&
+        !("content" in head && head.content && String(head.content).trim());
+      if (isOnlyActivateSkill) {
+        continue;
+      }
+
+      const key = getMessageKey(head, i);
+      const contextFilesAfter: DisplayItemContextFiles[] = [];
+      const diffMessagesAfter: DiffMessage[] = [];
+      let diffGroupStartIndex: number | null = null;
+      const contextFilesByToolId: Partial<Record<string, ChatContextFile[]>> =
+        {};
+      const diffsByToolId: Partial<Record<string, DiffChunk[]>> = {};
+
+      const eligibleToolCalls = toolCalls.filter(
+        (tc) => tc.id && tc.function.name && READ_TOOLS.has(tc.function.name),
+      );
+      const eligibleToolIds = new Set(
+        eligibleToolCalls
+          .map((tc) => tc.id)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const lastEligibleToolId =
+        eligibleToolCalls.length > 0
+          ? eligibleToolCalls[eligibleToolCalls.length - 1].id
+          : null;
+
+      const editToolCalls = toolCalls.filter(
+        (tc) => tc.id && tc.function.name && EDIT_TOOLS.has(tc.function.name),
+      );
+      const editToolIds = new Set(
+        editToolCalls
+          .map((tc) => tc.id)
+          .filter((id): id is string => Boolean(id)),
+      );
+
+      let j = i + 1;
+      while (j < messages.length) {
+        const nextMsg = messages[j];
+
+        if (isToolMessage(nextMsg)) {
+          j++;
+          continue;
+        }
+
+        if (isChatContextFileMessage(nextMsg)) {
+          if (
+            nextMsg.tool_call_id === "knowledge_enrichment" ||
+            nextMsg.tool_call_id === "project_context"
+          ) {
+            break;
+          }
+
+          let targetToolId: string | null = null;
+
+          if (
+            nextMsg.tool_call_id &&
+            eligibleToolIds.has(nextMsg.tool_call_id)
+          ) {
+            targetToolId = nextMsg.tool_call_id;
+          } else if (!nextMsg.tool_call_id && lastEligibleToolId) {
+            targetToolId = lastEligibleToolId;
+          }
+
+          if (targetToolId) {
+            const prev = contextFilesByToolId[targetToolId] ?? [];
+            contextFilesByToolId[targetToolId] = [...prev, ...nextMsg.content];
+          } else {
+            contextFilesAfter.push({
+              type: "context_files",
+              key: getMessageKey(nextMsg, j),
+              messageIndex: j,
+              files: nextMsg.content,
+              toolCallId: nextMsg.tool_call_id,
+            });
+          }
+          j++;
+          continue;
+        }
+
+        if (isDiffMessage(nextMsg)) {
+          if (nextMsg.tool_call_id && editToolIds.has(nextMsg.tool_call_id)) {
+            const prevDiffs = diffsByToolId[nextMsg.tool_call_id] ?? [];
+            diffsByToolId[nextMsg.tool_call_id] = [
+              ...prevDiffs,
+              ...nextMsg.content,
+            ];
+          } else {
+            if (diffGroupStartIndex === null) diffGroupStartIndex = j;
+            diffMessagesAfter.push(nextMsg);
+          }
+          j++;
+          continue;
+        }
+
+        break;
+      }
+
+      items.push({
+        type: "assistant",
+        key,
+        index: i,
+        messageIndex: i,
+        message: head,
+        contextFilesByToolId: contextFilesByToolId as Record<
+          string,
+          ChatContextFile[]
+        >,
+        diffsByToolId: diffsByToolId as Record<string, DiffChunk[]>,
+        isStreaming: isStreaming && i === lastAssistantIdx,
+      });
+
+      for (const ctxItem of contextFilesAfter) {
+        items.push(ctxItem);
+      }
+
+      if (diffMessagesAfter.length > 0) {
+        items.push({
+          type: "diff_group",
+          key: `diffs-${key}`,
+          messageIndex: diffGroupStartIndex ?? i,
+          diffs: diffMessagesAfter,
+        });
+      }
+
+      i = j - 1;
+      continue;
+    }
+
+    if (head.role === "user") {
+      if (hiddenQaIndices.has(i)) {
+        continue;
+      }
+
+      items.push({
+        type: "user",
+        key: getMessageKey(head, i),
+        index: i,
+        messageIndex: i,
+        message: head,
+        isLastUser: i === lastUserIdx,
+      });
+      continue;
+    }
+
+    if (head.role === "cd_instruction" && typeof head.content === "string") {
+      const parsed = tryParseSkillActivated(head.content);
+      if (parsed) {
+        items.push({
+          type: "skill_activated",
+          key: getMessageKey(head, i),
+          messageIndex: i,
+          ...parsed,
+        });
+      }
+      continue;
+    }
+
+    if (isChatContextFileMessage(head)) {
+      items.push({
+        type: "context_files",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        files: head.content,
+        toolCallId: head.tool_call_id,
+      });
+      continue;
+    }
+
+    if (isSystemMessage(head)) {
+      items.push({
+        type: "system",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        content: head.content,
+      });
+      continue;
+    }
+
+    if (isDiffMessage(head)) {
+      const key = getMessageKey(head, i);
+      const diffs: DiffMessage[] = [head];
+      let j = i + 1;
+      while (j < messages.length) {
+        const m = messages[j];
+        if (isToolMessage(m)) {
+          j++;
+          continue;
+        }
+        if (isDiffMessage(m)) {
+          diffs.push(m);
+          j++;
+          continue;
+        }
+        break;
+      }
+
+      items.push({
+        type: "diff_group",
+        key: `diffs-${key}`,
+        messageIndex: i,
+        diffs,
+      });
+      i = j - 1;
+      continue;
+    }
+  }
+
+  return items;
+}
+
+function patchTailDisplayItems(
+  previousMessages: ChatMessages,
+  nextMessages: ChatMessages,
+  previousItems: DisplayItem[],
+  isStreaming: boolean,
+): DisplayItem[] | null {
+  if (previousMessages.length >= nextMessages.length) return null;
+
+  const sharedLen = previousMessages.length;
+  for (let i = 0; i < sharedLen; i++) {
+    if (previousMessages[i] !== nextMessages[i]) return null;
+  }
+
+  const rebuildStart = findRebuildStartIndex(nextMessages, sharedLen);
+  const nextItems = rebuildDisplayItemsFromStart(
+    previousItems,
+    nextMessages,
+    isStreaming,
+    rebuildStart,
+  );
+
+  return nextItems;
+}
+
+function tryParseSkillActivated(
+  content: string,
+): Omit<DisplayItemSkillActivated, "type" | "key" | "messageIndex"> | null {
+  const prefix = "💿 SKILL_ACTIVATED ";
+  const firstNewline = content.indexOf("\n");
+  const headerLine =
+    firstNewline === -1 ? content : content.slice(0, firstNewline);
+  if (!headerLine.startsWith(prefix)) return null;
+  try {
+    const meta = JSON.parse(headerLine.slice(prefix.length)) as {
+      name?: string;
+      allowed_tools?: string[];
+      model_override?: string | null;
+    };
+    const body =
+      firstNewline === -1 ? "" : content.slice(firstNewline + 1).trimStart();
+    return {
+      name: meta.name ?? "",
+      body,
+      allowedTools: meta.allowed_tools ?? [],
+      modelOverride: meta.model_override ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function buildDisplayItems(
   messages: ChatMessages,
@@ -526,23 +1043,68 @@ function buildDisplayItems(
 
     if (isToolMessage(head)) continue;
 
+    if (isErrorMessage(head)) {
+      const errors = [head.content];
+      let j = i + 1;
+      while (j < messages.length) {
+        const candidate = messages[j];
+        if (!isErrorMessage(candidate)) break;
+        errors.push(candidate.content);
+        j++;
+      }
+      items.push({
+        type: "error",
+        key: getMessageKey(head, i),
+        messageIndex: i,
+        errors,
+      });
+      i = j - 1;
+      continue;
+    }
+
     if (head.role === "plain_text") {
+      if (
+        typeof head.content === "string" &&
+        isSkillReportContent(head.content)
+      ) {
+        const parsed = parseSkillReport(head.content);
+        if (parsed) {
+          items.push({
+            type: "skill_report",
+            key: getMessageKey(head, i),
+            messageIndex: i,
+            skillName: parsed.skillName,
+            report: parsed.report,
+          });
+          continue;
+        }
+      }
       items.push({
         type: "plain_text",
         key: getMessageKey(head, i),
+        messageIndex: i,
         content: head.content,
       });
       continue;
     }
 
     if (head.role === "assistant") {
+      const toolCalls = "tool_calls" in head ? head.tool_calls ?? [] : [];
+      const isOnlyActivateSkill =
+        toolCalls.length > 0 &&
+        toolCalls.every((tc) => tc.function.name === "activate_skill") &&
+        !("content" in head && head.content && String(head.content).trim());
+      if (isOnlyActivateSkill) {
+        continue;
+      }
+
       const key = getMessageKey(head, i);
       const contextFilesAfter: DisplayItemContextFiles[] = [];
       const diffMessagesAfter: DiffMessage[] = [];
+      let diffGroupStartIndex: number | null = null;
       const contextFilesByToolId: Record<string, ChatContextFile[]> = {};
       const diffsByToolId: Record<string, DiffChunk[]> = {};
 
-      const toolCalls = head.tool_calls ?? [];
       const eligibleToolCalls = toolCalls.filter(
         (tc) => tc.id && tc.function.name && READ_TOOLS.has(tc.function.name),
       );
@@ -601,6 +1163,7 @@ function buildDisplayItems(
             contextFilesAfter.push({
               type: "context_files",
               key: getMessageKey(nextMsg, j),
+              messageIndex: j,
               files: nextMsg.content,
               toolCallId: nextMsg.tool_call_id,
             });
@@ -618,6 +1181,7 @@ function buildDisplayItems(
               ...nextMsg.content,
             ];
           } else {
+            if (diffGroupStartIndex === null) diffGroupStartIndex = j;
             diffMessagesAfter.push(nextMsg);
           }
           j++;
@@ -631,6 +1195,7 @@ function buildDisplayItems(
         type: "assistant",
         key,
         index: i,
+        messageIndex: i,
         message: head,
         contextFilesByToolId,
         diffsByToolId,
@@ -645,6 +1210,7 @@ function buildDisplayItems(
         items.push({
           type: "diff_group",
           key: `diffs-${key}`,
+          messageIndex: diffGroupStartIndex ?? i,
           diffs: diffMessagesAfter,
         });
       }
@@ -662,9 +1228,23 @@ function buildDisplayItems(
         type: "user",
         key: getMessageKey(head, i),
         index: i,
+        messageIndex: i,
         message: head,
         isLastUser: i === lastUserIdx,
       });
+      continue;
+    }
+
+    if (head.role === "cd_instruction" && typeof head.content === "string") {
+      const parsed = tryParseSkillActivated(head.content);
+      if (parsed) {
+        items.push({
+          type: "skill_activated",
+          key: getMessageKey(head, i),
+          messageIndex: i,
+          ...parsed,
+        });
+      }
       continue;
     }
 
@@ -672,6 +1252,7 @@ function buildDisplayItems(
       items.push({
         type: "context_files",
         key: getMessageKey(head, i),
+        messageIndex: i,
         files: head.content,
         toolCallId: head.tool_call_id,
       });
@@ -682,6 +1263,7 @@ function buildDisplayItems(
       items.push({
         type: "system",
         key: getMessageKey(head, i),
+        messageIndex: i,
         content: head.content,
       });
       continue;
@@ -708,6 +1290,7 @@ function buildDisplayItems(
       items.push({
         type: "diff_group",
         key: `diffs-${key}`,
+        messageIndex: i,
         diffs,
       });
       i = j - 1;
@@ -725,7 +1308,14 @@ function tryIncrementalDisplayItemsUpdate(
   isStreaming: boolean,
 ): DisplayItem[] | null {
   if (!previousMessages || !previousItems) return null;
-  if (previousMessages.length !== nextMessages.length) return null;
+  if (previousMessages.length !== nextMessages.length) {
+    return patchTailDisplayItems(
+      previousMessages,
+      nextMessages,
+      previousItems,
+      isStreaming,
+    );
+  }
 
   let changedIndex = -1;
   for (let i = 0; i < nextMessages.length; i++) {
@@ -744,28 +1334,30 @@ function tryIncrementalDisplayItemsUpdate(
   }
 
   if (changedIndex === -1) {
-    let needsStreamingPatch = false;
-    for (const item of previousItems) {
-      if (item.type !== "assistant") continue;
-      const shouldStream = isStreaming && item.index === lastAssistantIdx;
-      if (shouldStream !== item.isStreaming) {
-        needsStreamingPatch = true;
-        break;
-      }
-    }
-    if (!needsStreamingPatch) return previousItems;
-    return previousItems.map((item) => {
-      if (item.type !== "assistant") return item;
-      const shouldStream = isStreaming && item.index === lastAssistantIdx;
-      return shouldStream === item.isStreaming
-        ? item
-        : { ...item, isStreaming: shouldStream };
-    });
+    return updateAssistantStreamingFlags(
+      previousItems,
+      isStreaming,
+      lastAssistantIdx,
+    );
   }
 
   const changedMessage = nextMessages[changedIndex];
   if (changedMessage.role !== "assistant") return null;
   if (!isAssistantMessage(changedMessage)) return null;
+
+  const previousMessage = previousMessages[changedIndex];
+  if (
+    !isAssistantMessage(previousMessage) ||
+    assistantGroupingSignature(previousMessage) !==
+      assistantGroupingSignature(changedMessage)
+  ) {
+    return rebuildDisplayItemsFromStart(
+      previousItems,
+      nextMessages,
+      isStreaming,
+      changedIndex,
+    );
+  }
 
   const nextItems = previousItems.map((item) => {
     if (item.type !== "assistant") return item;
@@ -811,7 +1403,11 @@ function computeHiddenQaMessageIndices(messages: ChatMessages): Set<number> {
     const msg = messages[i];
     if (msg.role === "assistant" && "tool_calls" in msg && msg.tool_calls) {
       for (const tc of msg.tool_calls) {
-        if (tc.function.name === "ask_questions" && tc.id) {
+        if (
+          (tc.function.name === "ask_questions" ||
+            tc.function.name === "t_ask") &&
+          tc.id
+        ) {
           askQuestionsToolIds.set(tc.id, i);
         }
       }

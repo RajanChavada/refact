@@ -11,10 +11,11 @@ export interface PersistedModeParams {
   reasoning_effort?: ReasoningEffort;
   thinking_budget?: number;
   temperature?: number;
+  frequency_penalty?: number;
   max_tokens?: number;
+  parallel_tool_calls?: boolean;
   increase_max_tokens?: boolean;
   include_project_info?: boolean;
-  context_tokens_cap?: number;
   system_prompt?: SystemPrompts;
   checkpoints_enabled?: boolean;
   follow_ups_enabled?: boolean;

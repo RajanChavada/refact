@@ -84,8 +84,6 @@ function isCapsMetadata(json: unknown): json is CapsMetadata {
 
 export type CapsResponse = {
   caps_version: number;
-  cloud_name: string;
-
   chat_default_model: string;
   chat_models: Record<string, CodeChatModel>;
   code_chat_default_system_prompt: string;
@@ -95,16 +93,14 @@ export type CapsResponse = {
   embedding_model?: EmbeddingModel;
   chat_thinking_model: string;
   chat_light_model: string;
+  chat_buddy_model: string;
 
   endpoint_chat_passthrough: string;
   endpoint_style: string;
   endpoint_template: string;
   running_models: string[];
-  telemetry_basic_dest: string;
   tokenizer_path_template: string;
-  telemetry_basic_retrieve_my_own: string;
   tokenizer_rewrite_path: Record<string, unknown>;
-  support_metadata: boolean;
   metadata: CapsMetadata | null;
   customization: string;
 };

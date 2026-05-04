@@ -7,6 +7,7 @@ use ropey::Rope;
 use crate::custom_error::ScratchError;
 use crate::git::checkpoints::Checkpoint;
 use crate::scratchpads::multimodality::MultimodalElement;
+use crate::worktrees::types::WorktreeMeta;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CursorPosition {
@@ -190,9 +191,15 @@ impl ChatToolFunction {
     /// LLMs sometimes emit empty strings, `""`, `null`, or other non-object JSON
     /// as tool arguments (especially on truncated responses). This method treats any
     /// arguments string that doesn't look like a JSON object as equivalent to `{}`.
-    pub fn parse_args(&self) -> Result<std::collections::HashMap<String, serde_json::Value>, serde_json::Error> {
+    pub fn parse_args(
+        &self,
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>, serde_json::Error> {
         let trimmed = self.arguments.trim();
-        let args_str = if trimmed.starts_with('{') { trimmed } else { "{}" };
+        let args_str = if trimmed.starts_with('{') {
+            trimmed
+        } else {
+            "{}"
+        };
         serde_json::from_str(args_str)
     }
 }
@@ -239,9 +246,19 @@ pub struct ChatUsage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
     pub total_tokens: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cache_creation_input_tokens", alias = "cache_creation_tokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "cache_creation_input_tokens",
+        alias = "cache_creation_tokens"
+    )]
     pub cache_creation_tokens: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cache_read_input_tokens", alias = "cache_read_tokens")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "cache_read_input_tokens",
+        alias = "cache_read_tokens"
+    )]
     pub cache_read_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metering_usd: Option<MeteringUsd>,
@@ -289,6 +306,7 @@ pub enum ChatModelType {
     Light,
     Default,
     Thinking,
+    Buddy,
 }
 
 impl Default for ChatModelType {
@@ -326,6 +344,8 @@ pub struct ChatMeta {
     pub include_project_info: bool,
     #[serde(default)]
     pub context_tokens_cap: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeMeta>,
 }
 
 fn default_mode_id() -> String {
@@ -342,6 +362,7 @@ impl Default for ChatMeta {
             current_config_file: String::new(),
             include_project_info: true,
             context_tokens_cap: None,
+            worktree: None,
         }
     }
 }
@@ -351,21 +372,30 @@ impl Default for ChatMeta {
 /// Returns error if mode is empty or contains invalid characters.
 pub fn normalize_mode_id(mode: &str) -> Result<String, String> {
     let trimmed = mode.trim();
-    
+
     if trimmed.is_empty() {
         return Ok("agent".to_string());
     }
-    
+
     // Validate characters: lowercase, digits, underscore, hyphen
-    if !trimmed.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
         // Try to normalize uppercase legacy values
         let normalized = trimmed.to_lowercase();
-        if !normalized.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-            return Err(format!("Invalid mode ID: '{}' contains invalid characters", trimmed));
+        if !normalized
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        {
+            return Err(format!(
+                "Invalid mode ID: '{}' contains invalid characters",
+                trimmed
+            ));
         }
         return Ok(normalized);
     }
-    
+
     Ok(trimmed.to_string())
 }
 
@@ -381,22 +411,19 @@ pub async fn validate_mode_for_request(
     mode: &str,
 ) -> Result<String, String> {
     let canonical = canonical_mode_id(mode)?;
-    
-    let mode_config = crate::yaml_configs::customization_registry::get_mode_config(
-        gcx,
-        &canonical,
-        None,
-    ).await;
-    
+
+    let mode_config =
+        crate::yaml_configs::customization_registry::get_mode_config(gcx, &canonical, None).await;
+
     if mode_config.is_none() {
         return Err(format!("Mode '{}' does not exist in registry", canonical));
     }
-    
+
     Ok(canonical)
 }
 
 /// Canonicalize a mode ID string with full validation and legacy mapping.
-/// 
+///
 /// This function:
 /// 1. Normalizes format (lowercases, validates characters)
 /// 2. Maps legacy enum values to canonical mode IDs
@@ -413,29 +440,31 @@ pub async fn validate_mode_for_request(
 /// - "invalid!mode" → Err
 pub fn canonical_mode_id(mode: &str) -> Result<String, String> {
     let trimmed = mode.trim();
-    
+
     if trimmed.is_empty() {
         return Ok("agent".to_string());
     }
-    
+
     if trimmed.len() > 128 {
-        return Err(format!("Mode ID too long: {} chars (max 128)", trimmed.len()));
+        return Err(format!(
+            "Mode ID too long: {} chars (max 128)",
+            trimmed.len()
+        ));
     }
-    
+
     let normalized = normalize_mode_id(trimmed)?;
-    
+
     let canonical = match normalized.to_uppercase().as_str() {
         "NO_TOOLS" => "explore".to_string(),
         "EXPLORE" => "explore".to_string(),
         "AGENT" => "agent".to_string(),
         "CONFIGURE" | "CONFIGURATOR" => "configurator".to_string(),
-        "PROJECT_SUMMARY" => "project_summary".to_string(),
         "PLAN" => "plan".to_string(),
         "TASK_PLANNER" => "task_planner".to_string(),
         "TASK_AGENT" => "task_agent".to_string(),
         _ => normalized,
     };
-    
+
     Ok(canonical)
 }
 

@@ -3,6 +3,7 @@ import { hasProperty } from "../../utils";
 import { isDetailMessage } from "./commands";
 import { PROVIDERS_URL, PROVIDER_DEFAULTS_URL } from "./consts";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { capsApi } from "./caps";
 
 export type WireFormat =
   | "openai_chat_completions"
@@ -20,6 +21,7 @@ export type ProviderModel = {
   reasoning_effort_options?: string[] | null;
   supports_thinking_budget?: boolean;
   supports_adaptive_thinking_budget?: boolean;
+  supports_cache_control?: boolean;
   supports_agent: boolean;
   wire_format_override: WireFormat | null;
   endpoint_override: string | null;
@@ -29,6 +31,7 @@ export type ProviderModel = {
 
 export type ProviderRuntime = {
   name: string;
+  base_provider: string;
   display_name: string;
   enabled: boolean;
   readonly: boolean;
@@ -36,7 +39,6 @@ export type ProviderRuntime = {
   chat_endpoint: string;
   completion_endpoint: string;
   embedding_endpoint: string;
-  support_metadata: boolean;
   chat_models: ProviderModel[];
   completion_models: ProviderModel[];
   embedding_model: ProviderModel | null;
@@ -46,6 +48,7 @@ export type ProviderStatus = "not_configured" | "configured" | "active";
 
 export type ProviderListItem = {
   name: string;
+  base_provider: string;
   display_name: string;
   enabled: boolean;
   readonly: boolean;
@@ -60,6 +63,7 @@ export type ProviderListResponse = {
 
 export type ProviderDetailResponse = {
   name: string;
+  base_provider: string;
   display_name: string;
   enabled: boolean;
   readonly: boolean;
@@ -89,6 +93,7 @@ export type AvailableModel = {
   reasoning_effort_options?: string[] | null;
   supports_thinking_budget?: boolean;
   supports_adaptive_thinking_budget?: boolean;
+  supports_cache_control?: boolean;
   tokenizer: string | null;
   enabled: boolean;
   is_custom: boolean;
@@ -126,6 +131,58 @@ export type AvailableModelsResponse = {
   error?: string | null;
 };
 
+export type ClaudeCodeUsageWindow = {
+  percent_used: number;
+  resets_at?: string | null;
+};
+
+export type ClaudeCodeExtraUsage = {
+  is_enabled: boolean;
+  used_credits: number;
+  monthly_limit?: number | null;
+  utilization?: number | null;
+};
+
+export type ClaudeCodeUsageData = {
+  five_hour?: ClaudeCodeUsageWindow | null;
+  seven_day?: ClaudeCodeUsageWindow | null;
+  extra_usage?: ClaudeCodeExtraUsage | null;
+};
+
+export type ClaudeCodeUsageResponse = {
+  data?: ClaudeCodeUsageData | null;
+  error?: string | null;
+};
+
+export type OpenAICodexUsageWindow = {
+  used_percent: number;
+  reset_at?: string | null;
+};
+
+export type OpenAICodexRateLimit = {
+  limit_reached: boolean;
+  primary_window?: OpenAICodexUsageWindow | null;
+  secondary_window?: OpenAICodexUsageWindow | null;
+};
+
+export type OpenAICodexCredits = {
+  balance: number;
+  unlimited: boolean;
+  has_credits: boolean;
+};
+
+export type OpenAICodexUsageData = {
+  plan_type?: string | null;
+  rate_limit?: OpenAICodexRateLimit | null;
+  code_review_rate_limit?: OpenAICodexRateLimit | null;
+  credits?: OpenAICodexCredits | null;
+};
+
+export type OpenAICodexUsageResponse = {
+  data?: OpenAICodexUsageData | null;
+  error?: string | null;
+};
+
 export type OpenRouterAccountInfoResponse = {
   data: {
     key_name?: string | null;
@@ -153,6 +210,23 @@ export type OpenRouterModelEndpointsResponse = {
   available_providers: string[];
 };
 
+export type ProviderScopedQueryArg = {
+  providerName?: string;
+  useInstanceRoute?: boolean;
+};
+
+export type ProviderScopedQueryRequiredArg = {
+  providerName: string;
+  useInstanceRoute?: boolean;
+};
+
+export type ProviderIdentitySettings = Pick<
+  ProviderDetailResponse,
+  "base_provider" | "display_name"
+>;
+
+export type ModelPricing = NonNullable<AvailableModel["pricing"]>;
+
 export type ModelToggleRequest = {
   model_id: string;
   enabled: boolean;
@@ -170,7 +244,10 @@ export type CustomModelConfig = {
   reasoning_effort_options?: string[] | null;
   supports_thinking_budget?: boolean;
   supports_adaptive_thinking_budget?: boolean;
+  supports_cache_control?: boolean;
   tokenizer?: string | null;
+  pricing?: ModelPricing | null;
+  max_output_tokens?: number | null;
 };
 
 export type AddCustomModelRequest = {
@@ -191,8 +268,31 @@ export type ProviderDefaults = {
   chat: ModelTypeDefaults;
   chat_light: ModelTypeDefaults;
   chat_thinking: ModelTypeDefaults;
+  chat_buddy?: ModelTypeDefaults;
   completion_model?: string;
   embedding_model?: string;
+};
+
+export type ProviderDefaultsUpdateRequest = ProviderDefaults & {
+  draft_id?: string;
+};
+
+export type OAuthStartMode = "callback" | "manual_code" | "device";
+
+export type OAuthStartResponse = {
+  session_id: string;
+  authorize_url: string;
+  user_code?: string;
+  instructions?: string;
+  poll_interval?: number;
+  mode?: OAuthStartMode;
+};
+
+export type OAuthExchangeResponse = {
+  success: boolean;
+  auth_status: string;
+  status?: string;
+  poll_interval?: number;
 };
 
 export type ErrorLogInstance = {
@@ -205,6 +305,41 @@ export type ConfiguredProvidersResponse = {
   providers: ProviderListItem[];
   error_log?: ErrorLogInstance[];
 };
+
+export type CreateProviderInstanceRequest = {
+  base_provider: string;
+  display_name: string;
+  enabled?: false;
+};
+
+function providerBaseName(provider: { name: string; base_provider?: string }) {
+  const baseProvider = provider.base_provider?.trim();
+  return baseProvider === "" || baseProvider === undefined
+    ? provider.name
+    : baseProvider;
+}
+
+function providerScopedPath(
+  singletonPath: string,
+  defaultProviderName: string,
+  args: ProviderScopedQueryArg | undefined,
+  suffix: string,
+) {
+  if (!args?.useInstanceRoute) return singletonPath;
+  const providerName = args.providerName?.trim();
+  if (!providerName || providerName === defaultProviderName)
+    return singletonPath;
+  return `${PROVIDERS_URL}/${encodeURIComponent(providerName)}${suffix}`;
+}
+
+export function providerIdentitySettings(
+  provider: ProviderIdentitySettings,
+): ProviderIdentitySettings {
+  return {
+    base_provider: provider.base_provider,
+    display_name: provider.display_name,
+  };
+}
 
 export const providersApi = createApi({
   reducerPath: "providers",
@@ -226,13 +361,8 @@ export const providersApi = createApi({
     },
   }),
   endpoints: (builder) => ({
-    getConfiguredProviders: builder.query<
-      ConfiguredProvidersResponse,
-      undefined
-    >({
-      queryFn: async (_args, api, extraOptions, baseQuery) => {
-        const state = api.getState() as RootState;
-        const port = state.config.lspPort as unknown as number;
+    getConfiguredProviders: builder.query<ConfiguredProvidersResponse, number>({
+      queryFn: async (port, _api, extraOptions, baseQuery) => {
         const url = `http://127.0.0.1:${port}${PROVIDERS_URL}`;
 
         const result = await baseQuery({
@@ -245,7 +375,7 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
-        if (!isProviderListResponse(result.data)) {
+        if (!isProviderListResponseWire(result.data)) {
           return {
             meta: result.meta,
             error: {
@@ -256,7 +386,12 @@ export const providersApi = createApi({
           };
         }
 
-        return { data: { providers: result.data.providers, error_log: [] } };
+        return {
+          data: {
+            providers: normalizeProviderListResponse(result.data).providers,
+            error_log: [],
+          },
+        };
       },
       providesTags: [{ type: "PROVIDERS", id: "LIST" }],
     }),
@@ -285,7 +420,7 @@ export const providersApi = createApi({
           return { error: result.error };
         }
 
-        if (!isProviderDetailResponse(result.data)) {
+        if (!isProviderDetailResponseWire(result.data)) {
           return {
             meta: result.meta,
             error: {
@@ -296,7 +431,9 @@ export const providersApi = createApi({
           };
         }
 
-        return { data: result.data };
+        return {
+          data: normalizeProviderDetailResponse(result.data),
+        };
       },
     }),
 
@@ -420,14 +557,16 @@ export const providersApi = createApi({
 
     getOpenRouterModelEndpoints: builder.query<
       OpenRouterModelEndpointsResponse,
-      { providerName: string; modelId: string }
+      ProviderScopedQueryRequiredArg & { modelId: string }
     >({
       queryFn: async (args, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${
-          args.providerName
-        }/models/${encodeURIComponent(args.modelId)}/endpoints`;
+        const providerName =
+          args.useInstanceRoute === true ? args.providerName : "openrouter";
+        const url = `http://127.0.0.1:${port}${PROVIDERS_URL}/${providerName}/models/${encodeURIComponent(
+          args.modelId,
+        )}/endpoints`;
 
         const result = await baseQuery({
           ...extraOptions,
@@ -458,12 +597,18 @@ export const providersApi = createApi({
 
     getOpenRouterAccountInfo: builder.query<
       OpenRouterAccountInfoResponse,
-      undefined
+      ProviderScopedQueryArg | undefined
     >({
-      queryFn: async (_args, api, extraOptions, baseQuery) => {
+      queryFn: async (args, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}/v1/openrouter/account-info`;
+        const path = providerScopedPath(
+          "/v1/openrouter/account-info",
+          "openrouter",
+          args,
+          "/account-info",
+        );
+        const url = `http://127.0.0.1:${port}${path}`;
 
         const result = await baseQuery({
           ...extraOptions,
@@ -481,11 +626,20 @@ export const providersApi = createApi({
       },
     }),
 
-    getOpenRouterHealth: builder.query<OpenRouterHealthResponse, undefined>({
-      queryFn: async (_args, api, extraOptions, baseQuery) => {
+    getOpenRouterHealth: builder.query<
+      OpenRouterHealthResponse,
+      ProviderScopedQueryArg | undefined
+    >({
+      queryFn: async (args, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort as unknown as number;
-        const url = `http://127.0.0.1:${port}/v1/openrouter/health`;
+        const path = providerScopedPath(
+          "/v1/openrouter/health",
+          "openrouter",
+          args,
+          "/health",
+        );
+        const url = `http://127.0.0.1:${port}${path}`;
 
         const result = await baseQuery({
           ...extraOptions,
@@ -500,6 +654,106 @@ export const providersApi = createApi({
         }
 
         return { data: result.data as OpenRouterHealthResponse };
+      },
+    }),
+
+    getClaudeCodeUsage: builder.query<
+      ClaudeCodeUsageResponse,
+      ProviderScopedQueryArg | undefined
+    >({
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const path = providerScopedPath(
+          "/v1/claude-code/usage",
+          "claude_code",
+          args,
+          "/usage",
+        );
+        const url = `http://127.0.0.1:${port}${path}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10_000);
+        let result: Awaited<ReturnType<typeof baseQuery>>;
+        try {
+          result = await baseQuery({
+            ...extraOptions,
+            method: "GET",
+            url,
+            credentials: "same-origin",
+            redirect: "follow",
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        if (!isUsageResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: "Invalid response from /v1/claude-code/usage",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: result.data };
+      },
+    }),
+
+    getOpenAICodexUsage: builder.query<
+      OpenAICodexUsageResponse,
+      ProviderScopedQueryArg | undefined
+    >({
+      queryFn: async (args, api, extraOptions, baseQuery) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort as unknown as number;
+        const path = providerScopedPath(
+          "/v1/openai-codex/usage",
+          "openai_codex",
+          args,
+          "/usage",
+        );
+        const url = `http://127.0.0.1:${port}${path}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10_000);
+        let result: Awaited<ReturnType<typeof baseQuery>>;
+        try {
+          result = await baseQuery({
+            ...extraOptions,
+            method: "GET",
+            url,
+            credentials: "same-origin",
+            redirect: "follow",
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (result.error) {
+          return { error: result.error };
+        }
+
+        if (!isUsageResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: "Invalid response from /v1/openai-codex/usage",
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+
+        return { data: result.data as OpenAICodexUsageResponse };
       },
     }),
 
@@ -543,6 +797,8 @@ export const providersApi = createApi({
             },
           };
         }
+
+        api.dispatch(capsApi.util.resetApiState());
 
         return {
           data: {
@@ -590,6 +846,8 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
+
+        api.dispatch(capsApi.util.resetApiState());
 
         return {
           data: {
@@ -642,6 +900,8 @@ export const providersApi = createApi({
           };
         }
 
+        api.dispatch(capsApi.util.resetApiState());
+
         return { data: { success: true, model_id: args.model.id } };
       },
     }),
@@ -687,6 +947,8 @@ export const providersApi = createApi({
           };
         }
 
+        api.dispatch(capsApi.util.resetApiState());
+
         return { data: { success: true, model_id: args.modelId } };
       },
     }),
@@ -698,6 +960,7 @@ export const providersApi = createApi({
       invalidatesTags: (_result, _error, { providerName }) => [
         { type: "PROVIDER", id: providerName },
         { type: "PROVIDER_MODELS", id: providerName },
+        { type: "AVAILABLE_MODELS", id: providerName },
         { type: "PROVIDERS", id: "LIST" },
       ],
       queryFn: async (args, api, extraOptions, baseQuery) => {
@@ -727,12 +990,14 @@ export const providersApi = createApi({
           };
         }
 
+        api.dispatch(capsApi.util.resetApiState());
+
         return { data: { success: true } };
       },
     }),
 
     oauthStart: builder.mutation<
-      { session_id: string; authorize_url: string },
+      OAuthStartResponse,
       { providerName: string; mode?: string }
     >({
       queryFn: async (args, api, extraOptions, baseQuery) => {
@@ -751,23 +1016,32 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
-        const data = result.data as {
-          session_id: string;
-          authorize_url: string;
-        };
-        return { data };
+        if (!isOAuthStartResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/oauth/start`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+        return { data: result.data };
       },
     }),
 
     oauthExchange: builder.mutation<
-      { success: boolean; auth_status: string },
+      OAuthExchangeResponse,
       { providerName: string; session_id: string; code: string }
     >({
-      invalidatesTags: (_result, _error, { providerName }) => [
-        { type: "PROVIDER", id: providerName },
-        { type: "PROVIDERS", id: "LIST" },
-        { type: "AVAILABLE_MODELS", id: providerName },
-      ],
+      invalidatesTags: (result, _error, { providerName }) =>
+        result?.success
+          ? [
+              { type: "PROVIDER", id: providerName },
+              { type: "PROVIDERS", id: "LIST" },
+              { type: "AVAILABLE_MODELS", id: providerName },
+            ]
+          : [],
       queryFn: async (args, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort as unknown as number;
@@ -784,11 +1058,20 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
-        const data = result.data as {
-          success: boolean;
-          auth_status: string;
-        };
-        return { data };
+        if (!isOAuthExchangeResponse(result.data)) {
+          return {
+            meta: result.meta,
+            error: {
+              error: `Invalid response from /v1/providers/${args.providerName}/oauth/exchange`,
+              data: result.data,
+              status: "CUSTOM_ERROR",
+            },
+          };
+        }
+        if (result.data.success) {
+          api.dispatch(capsApi.util.resetApiState());
+        }
+        return { data: result.data };
       },
     }),
 
@@ -816,6 +1099,7 @@ export const providersApi = createApi({
         if (result.error) {
           return { error: result.error };
         }
+        api.dispatch(capsApi.util.resetApiState());
         return { data: { success: true } };
       },
     }),
@@ -851,6 +1135,8 @@ export const providersApi = createApi({
             },
           };
         }
+
+        api.dispatch(capsApi.util.resetApiState());
 
         return { data: { success: true } };
       },
@@ -890,7 +1176,10 @@ export const providersApi = createApi({
       },
     }),
 
-    updateDefaults: builder.mutation<{ success: boolean }, ProviderDefaults>({
+    updateDefaults: builder.mutation<
+      { success: boolean },
+      ProviderDefaultsUpdateRequest
+    >({
       invalidatesTags: ["DEFAULTS"],
       queryFn: async (defaults, api, extraOptions, baseQuery) => {
         const state = api.getState() as RootState;
@@ -910,6 +1199,8 @@ export const providersApi = createApi({
           return { error: result.error };
         }
 
+        api.dispatch(capsApi.util.resetApiState());
+
         return { data: { success: true } };
       },
     }),
@@ -917,7 +1208,29 @@ export const providersApi = createApi({
   refetchOnMountOrArgChange: true,
 });
 
-function isProviderListResponse(data: unknown): data is ProviderListResponse {
+type ProviderListItemWire = Omit<ProviderListItem, "base_provider"> & {
+  base_provider?: string;
+};
+
+type ProviderListResponseWire = {
+  providers: ProviderListItemWire[];
+};
+
+type ProviderRuntimeWire = Omit<ProviderRuntime, "base_provider"> & {
+  base_provider?: string;
+};
+
+type ProviderDetailResponseWire = Omit<
+  ProviderDetailResponse,
+  "base_provider" | "runtime"
+> & {
+  base_provider?: string;
+  runtime?: ProviderRuntimeWire | null;
+};
+
+function isProviderListResponseWire(
+  data: unknown,
+): data is ProviderListResponseWire {
   if (typeof data !== "object" || data === null) return false;
   if (!hasProperty(data, "providers")) return false;
   if (!Array.isArray(data.providers)) return false;
@@ -929,9 +1242,17 @@ function isProviderListResponse(data: unknown): data is ProviderListResponse {
   return true;
 }
 
-function isProviderListItem(data: unknown): data is ProviderListItem {
+function isOptionalBaseProviderField(data: object): boolean {
+  return (
+    !hasProperty(data, "base_provider") ||
+    typeof data.base_provider === "string"
+  );
+}
+
+function isProviderListItem(data: unknown): data is ProviderListItemWire {
   if (typeof data !== "object" || data === null) return false;
   if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
+  if (!isOptionalBaseProviderField(data)) return false;
   if (
     !hasProperty(data, "display_name") ||
     typeof data.display_name !== "string"
@@ -943,15 +1264,41 @@ function isProviderListItem(data: unknown): data is ProviderListItem {
     return false;
   if (!hasProperty(data, "model_count") || typeof data.model_count !== "number")
     return false;
-  // has_credentials and status are optional for backward compat
+  if (!hasProperty(data, "has_credentials")) return false;
+  if (typeof data.has_credentials !== "boolean") return false;
+  if (!hasProperty(data, "status")) return false;
+  if (
+    data.status !== "not_configured" &&
+    data.status !== "configured" &&
+    data.status !== "active"
+  )
+    return false;
   return true;
 }
 
-function isProviderDetailResponse(
+function normalizeProviderListItem(
+  provider: ProviderListItemWire,
+): ProviderListItem {
+  return {
+    ...provider,
+    base_provider: providerBaseName(provider),
+  };
+}
+
+function normalizeProviderListResponse(
+  response: ProviderListResponseWire,
+): ProviderListResponse {
+  return {
+    providers: response.providers.map(normalizeProviderListItem),
+  };
+}
+
+function isProviderDetailResponseWire(
   data: unknown,
-): data is ProviderDetailResponse {
+): data is ProviderDetailResponseWire {
   if (typeof data !== "object" || data === null) return false;
   if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
+  if (!isOptionalBaseProviderField(data)) return false;
   if (
     !hasProperty(data, "display_name") ||
     typeof data.display_name !== "string"
@@ -962,8 +1309,61 @@ function isProviderDetailResponse(
   if (!hasProperty(data, "readonly") || typeof data.readonly !== "boolean")
     return false;
   if (!hasProperty(data, "settings")) return false;
-  // runtime can be null
+  if (hasProperty(data, "runtime") && !isProviderRuntime(data.runtime)) {
+    return false;
+  }
   return true;
+}
+
+function isProviderRuntime(data: unknown): data is ProviderRuntimeWire | null {
+  if (data === null || data === undefined) return true;
+  if (typeof data !== "object") return false;
+  if (!hasProperty(data, "name") || typeof data.name !== "string") return false;
+  if (!isOptionalBaseProviderField(data)) return false;
+  if (
+    !hasProperty(data, "display_name") ||
+    typeof data.display_name !== "string"
+  )
+    return false;
+  return true;
+}
+
+function normalizeProviderRuntime(
+  runtime: ProviderDetailResponseWire["runtime"],
+  provider: Pick<ProviderDetailResponse, "base_provider">,
+): ProviderRuntime | null {
+  if (!runtime) return null;
+  return {
+    ...runtime,
+    base_provider: providerBaseName({
+      name: runtime.name,
+      base_provider: runtime.base_provider ?? provider.base_provider,
+    }),
+  };
+}
+
+function normalizeProviderDetailResponse(
+  provider: ProviderDetailResponseWire,
+): ProviderDetailResponse {
+  const base_provider = providerBaseName(provider);
+  return {
+    ...provider,
+    base_provider,
+    runtime: normalizeProviderRuntime(provider.runtime, { base_provider }),
+  };
+}
+
+export function isProviderListResponse(
+  data: unknown,
+): data is ProviderListResponse {
+  if (!isProviderListResponseWire(data)) return false;
+  return data.providers.every((provider) => Boolean(provider.base_provider));
+}
+
+export function isProviderDetailResponse(
+  data: unknown,
+): data is ProviderDetailResponse {
+  return isProviderDetailResponseWire(data) && Boolean(data.base_provider);
 }
 
 function isProviderSchemaResponse(
@@ -1005,6 +1405,54 @@ function isOpenRouterModelEndpointsResponse(
   return true;
 }
 
+function isUsageResponse(data: unknown): data is ClaudeCodeUsageResponse {
+  if (typeof data !== "object" || data === null) return false;
+  // Must have at least one of `data` or `error` key
+  return hasProperty(data, "data") || hasProperty(data, "error");
+}
+
+function isOAuthStartMode(data: unknown): data is OAuthStartMode {
+  return data === "callback" || data === "manual_code" || data === "device";
+}
+
+function isOptionalStringField(data: object, key: string): boolean {
+  return !hasProperty(data, key) || typeof data[key] === "string";
+}
+
+function isOptionalNumberField(data: object, key: string): boolean {
+  return (
+    !hasProperty(data, key) ||
+    (typeof data[key] === "number" && Number.isFinite(data[key]))
+  );
+}
+
+function isOAuthStartResponse(data: unknown): data is OAuthStartResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "session_id") || typeof data.session_id !== "string")
+    return false;
+  if (
+    !hasProperty(data, "authorize_url") ||
+    typeof data.authorize_url !== "string"
+  )
+    return false;
+  if (!isOptionalStringField(data, "user_code")) return false;
+  if (!isOptionalStringField(data, "instructions")) return false;
+  if (!isOptionalNumberField(data, "poll_interval")) return false;
+  if (hasProperty(data, "mode") && !isOAuthStartMode(data.mode)) return false;
+  return true;
+}
+
+function isOAuthExchangeResponse(data: unknown): data is OAuthExchangeResponse {
+  if (typeof data !== "object" || data === null) return false;
+  if (!hasProperty(data, "success") || typeof data.success !== "boolean")
+    return false;
+  if (!hasProperty(data, "auth_status") || typeof data.auth_status !== "string")
+    return false;
+  if (!isOptionalStringField(data, "status")) return false;
+  if (!isOptionalNumberField(data, "poll_interval")) return false;
+  return true;
+}
+
 function isModelTypeDefaults(data: unknown): data is ModelTypeDefaults {
   if (typeof data !== "object" || data === null) return false;
   return true;
@@ -1021,6 +1469,8 @@ function isProviderDefaults(data: unknown): data is ProviderDefaults {
     !isModelTypeDefaults(obj.chat_thinking)
   )
     return false;
+  if (hasProperty(obj, "chat_buddy") && !isModelTypeDefaults(obj.chat_buddy))
+    return false;
   if (hasProperty(obj, "detail")) return false;
   return true;
 }
@@ -1036,6 +1486,8 @@ export const {
   useGetOpenRouterModelEndpointsQuery,
   useGetOpenRouterAccountInfoQuery,
   useGetOpenRouterHealthQuery,
+  useGetClaudeCodeUsageQuery,
+  useGetOpenAICodexUsageQuery,
   useToggleModelMutation,
   useSetModelProviderMutation,
   useAddCustomModelMutation,

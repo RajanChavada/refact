@@ -15,6 +15,7 @@ import type { ProviderListItem } from "../../../../services/refact";
 import {
   useGetAvailableModelsQuery,
   useGetOpenRouterAccountInfoQuery,
+  type AvailableModel,
 } from "../../../../services/refact";
 import { toPascalCase } from "../../../../utils/toPascalCase";
 
@@ -30,6 +31,8 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
   provider,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  const baseProvider = provider.base_provider;
+  const isCustomProvider = baseProvider === "custom";
   const {
     data: modelsData,
     isSuccess,
@@ -39,26 +42,50 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
   } = useGetAvailableModelsQuery({ providerName: provider.name });
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingModel, setEditingModel] = useState<
+    AvailableModel | undefined
+  >();
   const { data: openRouterAccount } = useGetOpenRouterAccountInfoQuery(
-    undefined,
+    { providerName: provider.name, useInstanceRoute: true },
     {
-      skip: provider.name !== "openrouter",
+      skip: baseProvider !== "openrouter",
     },
   );
 
-  const filteredModels = useMemo(() => {
+  const handleOpenCreateModal = () => {
+    setEditingModel(undefined);
+    setIsAddModalOpen(true);
+  };
+
+  const handleOpenEditModal = (model: AvailableModel) => {
+    setEditingModel(model);
+    setIsAddModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsAddModalOpen(false);
+    setEditingModel(undefined);
+  };
+
+  const providerModels = useMemo(() => {
     if (!modelsData?.models) return [];
+    if (!isCustomProvider) return modelsData.models;
+
+    return modelsData.models.filter((model) => model.is_custom);
+  }, [isCustomProvider, modelsData?.models]);
+
+  const filteredModels = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return modelsData.models;
-    return modelsData.models.filter((model) => {
+    if (!query) return providerModels;
+    return providerModels.filter((model) => {
       const name = (model.display_name ?? model.id).toLowerCase();
       const id = model.id.toLowerCase();
       return name.includes(query) || id.includes(query);
     });
-  }, [modelsData?.models, searchQuery]);
+  }, [providerModels, searchQuery]);
 
   const groupedByFamily = useMemo(() => {
-    if (provider.name !== "openrouter") return null;
+    if (baseProvider !== "openrouter") return null;
     const groups = new Map<string, typeof filteredModels>();
 
     filteredModels.forEach((model) => {
@@ -69,7 +96,7 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
     });
 
     return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [filteredModels, provider.name]);
+  }, [baseProvider, filteredModels]);
 
   if (isLoading) return <Spinner spinning />;
 
@@ -107,13 +134,11 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
     );
   }
 
-  const totalModels = modelsData.models.length;
-  const enabledCount = modelsData.models.filter(
-    (model) => model.enabled,
-  ).length;
+  const totalModels = providerModels.length;
+  const enabledCount = providerModels.filter((model) => model.enabled).length;
 
   return (
-    <Flex direction="column" gap="3" mt="4">
+    <Flex direction="column" gap="3" mt="4" flexShrink="0">
       <Separator size="4" />
 
       <Flex align="center" justify="between" gap="3" wrap="wrap">
@@ -122,23 +147,23 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
             Available Models
           </Heading>
           <Badge size="1" color="gray">
-            {enabledCount}/{totalModels} enabled
+            {isCustomProvider && totalModels === 0
+              ? "None"
+              : `${enabledCount}/${totalModels} enabled`}
           </Badge>
-          <TextField.Root
-            size="1"
-            placeholder="Search models"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            style={{ minWidth: 180 }}
-          />
+          {totalModels > 0 && (
+            <TextField.Root
+              size="1"
+              placeholder="Search models"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              style={{ minWidth: 180 }}
+            />
+          )}
         </Flex>
 
         {!provider.readonly && (
-          <Button
-            size="1"
-            variant="soft"
-            onClick={() => setIsAddModalOpen(true)}
-          >
+          <Button size="1" variant="soft" onClick={handleOpenCreateModal}>
             <PlusIcon /> Add Custom Model
           </Button>
         )}
@@ -153,7 +178,7 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
         </Callout.Root>
       )}
 
-      {provider.name === "openrouter" && openRouterAccount?.data && (
+      {baseProvider === "openrouter" && openRouterAccount?.data && (
         <Callout.Root color="blue" size="1">
           <Callout.Icon>
             <InfoCircledIcon />
@@ -174,7 +199,9 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
         <Flex direction="column" align="center" gap="2" py="4">
           <Text as="span" size="2" color="gray">
             {totalModels === 0
-              ? "No models available for this provider."
+              ? isCustomProvider
+                ? "No custom models configured."
+                : "No models available for this provider."
               : "No models match your search."}
           </Text>
           {!provider.readonly && (
@@ -196,7 +223,9 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
                       key={model.id}
                       model={model}
                       providerName={provider.name}
+                      baseProvider={baseProvider}
                       isReadonlyProvider={provider.readonly}
+                      onEditModel={handleOpenEditModal}
                     />
                   ))}
                 </Flex>
@@ -206,7 +235,9 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
                   key={model.id}
                   model={model}
                   providerName={provider.name}
+                  baseProvider={baseProvider}
                   isReadonlyProvider={provider.readonly}
+                  onEditModel={handleOpenEditModal}
                 />
               ))}
         </Flex>
@@ -215,7 +246,9 @@ export const ProviderModelsList: FC<ProviderModelsListProps> = ({
       <AddCustomModelModal
         providerName={provider.name}
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
+        onClose={handleCloseModal}
+        initialModel={editingModel}
+        isEditingCustomModel={editingModel?.is_custom ?? false}
       />
     </Flex>
   );

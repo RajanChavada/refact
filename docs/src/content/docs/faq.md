@@ -1,39 +1,44 @@
 ---
 title: FAQ
-description: Frequently Asked Question(s)
+description: Frequently asked questions about local-first Refact.
 ---
 
-### What programming languages do you support?
+## Do I need a Refact account?
 
-We support multiple code LLMs, each of them has been trained on different programming languages. 
+No. Refact runs locally in your IDE and uses the providers or local runtimes you configure.
 
-Our own model Refact 1.6B has been trained and works best for the following languages (alphabetical order): Bash, C#, C++, D, Golang, Java, JavaScript, Julia, Lua, Perl, PHP, Python, R, Racket, Ruby, Rust, Scala, Swift, TypeScript.
-Even if the model has not been specifically trained on a particular coding language, it can still make useful suggestions for code in that language. 
+## Do I need to run a separate backend?
 
-### What models are under the hood? 
+No. The VS Code extension and JetBrains plugin start the local `refact-lsp` engine. Configure model providers or local runtimes in the Refact UI.
 
-We use a combination of our own models and 3rd party models for different functions. 
+## Which providers can I use?
 
-Our own model is Refact 1.6B code LLM. It's State-of-the-art for the size and In addition to regular prompting, this model can infill code in the middle and produce changes to the code by following instructions. Check it out https://huggingface.co/smallcloudai/Refact-1_6B-fim 
+Refact supports Anthropic, OpenAI, OpenAI Responses, OpenAI Codex, OpenRouter, Ollama, LM Studio, vLLM, Groq, DeepSeek, Doubao, xAI, Gemini, Qwen, Kimi, Zhipu, MiniMax, GitHub Copilot, Custom, and Claude Code provider flows.
 
-For chat we use models from the GPT family, you have the option to opt-out of them.  
-In the self-hosted version we also have StarCoder, Code Llama and WizardCoder models. 
+## Can I use local models?
 
-For a full list of our supported models and their functionality, check our [docs](https://docs.refact.ai/supported-models/). 
+Yes. Use Ollama, LM Studio, vLLM, or a custom OpenAI-compatible endpoint. Start the runtime, make the model available there, add the runtime in Refact, and select the model in **Default Models**.
 
-### Do you plan to support more IDEs? 
+## How am I billed?
 
-Yes! We already support VS Code and JetBrains. We have plans to support even more IDEs. If you want to contribute to our new plugins, please reach us out in Discord.
+Refact does not sell model access. Billing, quotas, rate limits, and model access are handled by the provider or local runtime you configure.
 
-### Do you have a self-hosted option? 
-Yes. Refact has a free self-hosted version that you can check here. 
+## Does Refact send my code to Smallcloud or Refact-hosted services?
 
-### Is it possible to fine-tune Refact to the company codebase? 
-Yes. Fine-tuning is currently supported in our free self-hosted and Enterprise plans. 
+The normal setup path sends requests only to configured providers, endpoints, and integrations. Local project data such as trajectories, tasks, knowledge, provider settings, and usage summaries are stored locally.
 
-### Can I buy Refact license for my company?
+## Does local-first mean completely offline?
 
-Sure! We currently have an Enterprise self-hosted plan and we plan to add team cloud plan soon. If you're interested in purchasing a license for your company, please [contact us](https://refact.ai/contact). 
+The IDE UI and Refact engine run locally. A workflow is fully local only when the configured model runtime and enabled tools are local. Hosted model providers and external integrations require network access.
 
-### How can I contribute? 
-We welcome contributions! If you're interested in contributing, please check our [GitHub](https://github.com/smallcloudai/refact/). 
+## Where are model capabilities stored?
+
+The engine includes local capability metadata and combines it with configured provider data. This is why the model documentation describes provider families and capabilities instead of a fixed exhaustive model list.
+
+## What default models should I choose?
+
+Start with one strong chat or agent model, one faster chat model if available, and one completion-capable model if you want inline suggestions. Add an embedding model when you use semantic search or knowledge workflows.
+
+## Can I change providers later?
+
+Yes. Add, remove, or disable providers in **Provider Setup**, then update **Default Models**. Existing local trajectories and task data remain in your project/user Refact directories.

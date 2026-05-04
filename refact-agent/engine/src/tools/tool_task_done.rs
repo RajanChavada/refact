@@ -8,7 +8,9 @@ use tracing::error;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::memories::{memories_add_enriched, EnrichmentParams};
 use crate::http::routers::v1::sidebar::NotificationEvent;
 
@@ -30,10 +32,7 @@ fn spawn_memory_enrichment_task(
 
         match memories_add_enriched(ccx, &report, enrichment_params).await {
             Ok(knowledge_path) => {
-                tracing::info!(
-                    "task_done: knowledge saved to {}",
-                    knowledge_path.display()
-                );
+                tracing::info!("task_done: knowledge saved to {}", knowledge_path.display());
                 tracing::info!(
                     "task_done: to load full content later, use cat(paths=\"{}\")",
                     knowledge_path.display()
@@ -63,24 +62,9 @@ impl Tool for ToolTaskDone {
             experimental: false,
             allow_parallel: false,
             description: "Mark the current task as complete with a detailed report. Automatically saves to knowledge base. Use as the FINAL action when a task is fully completed.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "report".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Detailed markdown report of what was accomplished".to_string(),
-                },
-                ToolParam {
-                    name: "summary".to_string(),
-                    param_type: "string".to_string(),
-                    description: "One-line summary for notifications and titles".to_string(),
-                },
-                ToolParam {
-                    name: "files_changed".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Comma-separated list or JSON array of file paths that were modified".to_string(),
-                },
-            ],
-            parameters_required: vec!["report".to_string(), "summary".to_string()],
+            input_schema: json_schema_from_params(&[("report", "string", "Detailed markdown report of what was accomplished"), ("summary", "string", "One-line summary for notifications and titles"), ("files_changed", "string", "Comma-separated list or JSON array of file paths that were modified")], &["report", "summary"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 

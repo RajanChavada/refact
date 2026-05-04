@@ -6,6 +6,10 @@ on:
     tags:
       - engine/*
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: refact-agent/engine
@@ -27,7 +31,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             code-target: win32-x64
             ext: .exe
-            whl-tag: win_amd64
           - os: windows-latest
             target: i686-pc-windows-msvc
             code-target: win32-ia32
@@ -36,16 +39,13 @@ jobs:
             target: aarch64-pc-windows-msvc
             code-target: win32-arm64
             ext: .exe
-            whl-tag: win_arm64
           - os: ubuntu-20.04
             target: x86_64-unknown-linux-gnu
             code-target: linux-x64
-            whl-tag: manylinux2014_x86_64
             cross: true
           - os: ubuntu-20.04
             target: aarch64-unknown-linux-gnu
             code-target: linux-arm64
-            whl-tag: manylinux2014_aarch64
             cross: true
           #          - os: ubuntu-22.04
           #            target: arm-unknown-linux-gnueabihf
@@ -53,11 +53,9 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             code-target: darwin-x64
-            whl-tag: macosx_13_0_x86_64
           - os: macos-14
             target: aarch64-apple-darwin
             code-target: darwin-arm64
-            whl-tag: macosx_13_0_arm64
 
     env:
       LLM_LS_TARGET: ${{ matrix.target }}
@@ -86,10 +84,16 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: brew install llvm
 
-      - name: setup cross-rs
+      - name: Add swap space (Linux cross-compilation needs extra RAM for LTO)
         if: matrix.cross
         run: |
-          cargo install cross --git https://github.com/cross-rs/cross
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=128M count=64
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
       - name: Install ARM target toolchain
         if: matrix.target == 'arm-unknown-linux-gnueabihf'
@@ -98,63 +102,53 @@ jobs:
       - name: Restore cached cargo
         uses: swatinem/rust-cache@v2
         with:
+          workspaces: |
+            refact-agent/engine -> target
           key: ${{ matrix.os }}-${{ matrix.target }}-cargo
           shared-key: ${{ matrix.os }}-${{ matrix.target }}-cargo
 
-      - name: Build and test artifact
+      - name: Install cross-rs
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+          fallback: none
+
+      - name: Test artifact
+        if: matrix.cross == null && startsWith(matrix.os, 'windows')
+        run: cargo test --release --lib --tests || exit 1
+
+      - name: Build artifact
         if: matrix.cross == null && startsWith(matrix.os, 'windows')
         run: |
-          cargo test --release || exit 1
           cargo build --release || exit 1
-          mkdir python_binding_and_cmdline/refact/bin
-          cp ./target/release/refact-lsp${{ matrix.ext }} python_binding_and_cmdline/refact/bin
           cp ./target/release/refact-lsp${{ matrix.ext }} ../..
 
-      - name: Build and test artifact
+      - name: Test artifact
+        if: matrix.cross == null && !startsWith(matrix.os, 'windows')
+        run: OPENSSL_STATIC=1 cargo test --release --lib --tests --target ${{ matrix.target }} || exit 1
+
+      - name: Build artifact
         if: matrix.cross == null && !startsWith(matrix.os, 'windows')
         run: |
-          OPENSSL_STATIC=1 cargo test --release --target ${{ matrix.target }} || exit 1
           OPENSSL_STATIC=1 cargo build --release --target ${{ matrix.target }} || exit 1
-          mkdir python_binding_and_cmdline/refact/bin
-          cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} python_binding_and_cmdline/refact/bin
           cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} ../..
 
-      - name: build linux-like artifacts
+      - name: Test linux-like artifact
         if: matrix.cross
-        run: |
-          CROSS_NO_WARNINGS=0 cross test --release --target ${{ matrix.target }} || exit 1
-          CROSS_NO_WARNINGS=0 cross build --release --target ${{ matrix.target }} || exit 1
-          mkdir python_binding_and_cmdline/refact/bin
-          cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} python_binding_and_cmdline/refact/bin
-          cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} ../..
-
-      - if: matrix.whl-tag
-        shell: bash
         env:
-          WHL_TAG: ${{ matrix.whl-tag }}
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '1' || '2' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'thin' || 'true' }}
+        run: CROSS_NO_WARNINGS=0 cross test --release --lib --tests --target ${{ matrix.target }} || exit 1
+
+      - name: Build linux-like artifact
+        if: matrix.cross
+        env:
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '1' || '2' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'thin' || 'true' }}
         run: |
-          version=$(grep '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          sed -i.bak -E "s/version=\"[^\"]+\"/version=\"$version\"/" python_binding_and_cmdline/setup.py
-          
-          pip install wheel build setuptools
-          python -m build --wheel --no-isolation python_binding_and_cmdline --outdir artefacts/
-          
-      - name: Upload whl to release
-        uses: svenstaro/upload-release-action@v2
-        if: matrix.whl-tag
-        with:
-          repo_token: ${{ github.token }}
-          asset_name: whl-${{ matrix.target }}
-          file: artefacts/*.whl
-          tag: ${{ github.ref }}
-          overwrite: true
-          file_glob: true
-      
-      - name: Upload whl pypi
-        if: matrix.whl-tag
-        run: |
-          pip install twine
-          twine upload -p ${{ secrets.PYPI_TOKEN }} --skip-existing artefacts/*.whl 
+          CROSS_NO_WARNINGS=0 cross build --release --target ${{ matrix.target }} || exit 1
+          cp ./target/${{ matrix.target }}/release/refact-lsp${{ matrix.ext }} ../..
 
       - name: Package artifact in ZIP (WIN)
         uses: vimtor/action-zip@v1.2

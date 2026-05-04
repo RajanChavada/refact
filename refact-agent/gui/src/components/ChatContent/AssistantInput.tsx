@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo } from "react";
 import { Markdown } from "../Markdown";
 
-import { Box, Flex, Text, Link, Card } from "@radix-ui/themes";
+import { Box, Flex, Text, Card } from "@radix-ui/themes";
+import { Link } from "../Link";
 import {
   ChatContextFile,
   DiffChunk,
@@ -12,10 +13,10 @@ import {
 } from "../../services/refact";
 import { ToolContent } from "./ToolsContent";
 import { fallbackCopying } from "../../utils/fallbackCopying";
-import { telemetryApi } from "../../services/refact/telemetry";
 import { ReasoningContent } from "./ReasoningContent";
 import { MessageFooter, MessageWrapper } from "./MessageFooter";
 import { ServerContentBlocks } from "./ServerContentBlocks";
+import { GlobeIcon } from "@radix-ui/react-icons";
 import scrollbarStyles from "../shared/scrollbar.module.css";
 
 type ChatInputProps = {
@@ -32,10 +33,6 @@ type ChatInputProps = {
   contextFilesByToolId?: Record<string, ChatContextFile[]>;
   diffsByToolId?: Record<string, DiffChunk[]>;
   usage?: Usage | null;
-  metering_coins_prompt?: number;
-  metering_coins_generated?: number;
-  metering_coins_cache_creation?: number;
-  metering_coins_cache_read?: number;
   isStreaming?: boolean;
 };
 
@@ -53,15 +50,8 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
   contextFilesByToolId,
   diffsByToolId,
   usage,
-  metering_coins_prompt,
-  metering_coins_generated,
-  metering_coins_cache_creation,
-  metering_coins_cache_read,
   isStreaming = false,
 }) => {
-  const [sendTelemetryEvent] =
-    telemetryApi.useLazySendTelemetryChatEventQuery();
-
   // Get unique server-executed tool names for display
   const serverToolNames = useMemo(() => {
     if (!serverExecutedTools || serverExecutedTools.length === 0) return [];
@@ -71,40 +61,21 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
     return [...new Set(names)];
   }, [serverExecutedTools]);
 
-  const handleCopy = useCallback(
-    (text: string) => {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      if (window.navigator?.clipboard?.writeText) {
-        void window.navigator.clipboard
-          .writeText(text)
-          .catch(() => {
-            // eslint-disable-next-line no-console
-            console.log("failed to copy to clipboard");
-            void sendTelemetryEvent({
-              scope: `codeBlockCopyToClipboard`,
-              success: false,
-              error_message:
-                "window.navigator?.clipboard?.writeText: failed to copy to clipboard",
-            });
-          })
-          .then(() => {
-            void sendTelemetryEvent({
-              scope: `codeBlockCopyToClipboard`,
-              success: true,
-              error_message: "",
-            });
-          });
-      } else {
-        fallbackCopying(text);
-        void sendTelemetryEvent({
-          scope: `codeBlockCopyToClipboard`,
-          success: true,
-          error_message: "",
-        });
-      }
-    },
-    [sendTelemetryEvent],
-  );
+  const handleCopy = useCallback((text: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if (window.navigator?.clipboard?.writeText) {
+      void window.navigator.clipboard
+        .writeText(text)
+        .catch(() => {
+          // eslint-disable-next-line no-console
+          console.log("failed to copy to clipboard");
+          fallbackCopying(text);
+        })
+        .then(() => undefined);
+    } else {
+      fallbackCopying(text);
+    }
+  }, []);
 
   const combinedReasoning = useMemo(() => {
     if (reasoningContent) {
@@ -149,7 +120,11 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
       )}
       {message && (
         <Box py="4">
-          <Markdown canHaveInteractiveElements={true} onCopyClick={handleCopy}>
+          <Markdown
+            canHaveInteractiveElements={true}
+            onCopyClick={handleCopy}
+            isStreaming={isStreaming}
+          >
             {message}
           </Markdown>
         </Box>
@@ -160,7 +135,9 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
           <Flex direction="column" gap="2" p="2">
             {serverToolNames.length > 0 && (
               <Flex gap="2" align="center">
-                <Text size="2">☁️</Text>
+                <Text size="2" color="gray">
+                  <GlobeIcon />
+                </Text>
                 <Text size="2" color="gray">
                   {serverToolNames.join(", ")}
                 </Text>
@@ -209,7 +186,11 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
       )}
 
       {serverExecutedTools && serverExecutedTools.length > 0 && (
-        <ToolContent toolCalls={serverExecutedTools} />
+        <ToolContent
+          toolCalls={serverExecutedTools}
+          contextFilesByToolId={contextFilesByToolId}
+          diffsByToolId={diffsByToolId}
+        />
       )}
 
       {toolCalls && (
@@ -225,10 +206,6 @@ const _AssistantInput: React.FC<ChatInputProps> = ({
         onBranch={onBranch}
         onDelete={onDelete}
         usage={usage}
-        metering_coins_prompt={metering_coins_prompt}
-        metering_coins_generated={metering_coins_generated}
-        metering_coins_cache_creation={metering_coins_cache_creation}
-        metering_coins_cache_read={metering_coins_cache_read}
       />
     </MessageWrapper>
   );

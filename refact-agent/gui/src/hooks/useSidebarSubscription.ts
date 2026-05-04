@@ -8,6 +8,7 @@ import {
 import type { TrajectoryMeta } from "../services/refact/trajectories";
 import {
   hydrateHistoryFromMeta,
+  replaceSnapshotHistory,
   deleteChatById,
   updateChatMetaById,
   setHistoryLoading,
@@ -20,7 +21,28 @@ import {
   closeThread,
   updateChatRuntimeFromSessionState,
 } from "../features/Chat/Thread";
+import { setCurrentProjectInfo } from "../features/Chat/currentProject";
 import { tasksApi } from "../services/refact/tasks";
+import {
+  setBuddySnapshot,
+  setBuddyUnavailable,
+  updateBuddyState,
+  addBuddyActivity,
+  addBuddySuggestion,
+  dismissBuddySuggestion,
+  updateBuddySettings,
+  addBuddyDiagnostic,
+  enqueueRuntimeEvent,
+  setActiveSpeech,
+  addOpportunity,
+  resolveOpportunity,
+  setPulse,
+  addDraft,
+  consumeDraft,
+  removeDraft,
+} from "../features/Buddy/buddySlice";
+import { executeBuddyNavigation } from "../features/Buddy/executeBuddyAction";
+
 import {
   trajectoriesApi,
   chatThreadToTrajectoryData,
@@ -29,6 +51,13 @@ import { useAppSelector } from "./useAppSelector";
 
 const RECONNECT_DELAY_MS = 500;
 const MIGRATION_KEY = "refact-trajectories-migrated";
+
+function getWorkspaceDisplayName(root: string): string {
+  const trimmed = root.trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized.split("/").pop() ?? normalized;
+}
 
 function getLegacyHistory(): ChatHistoryItem[] {
   try {
@@ -114,7 +143,7 @@ export function useSidebarSubscription() {
         event.error !== undefined ||
         event.model !== undefined ||
         event.mode !== undefined ||
-        event.total_coins !== undefined ||
+        event.worktree !== undefined ||
         event.total_lines_added !== undefined ||
         event.total_lines_removed !== undefined ||
         event.tasks_total !== undefined ||
@@ -138,8 +167,7 @@ export function useSidebarSubscription() {
           metaPatch.link_type = event.link_type;
         if (event.root_chat_id !== undefined)
           metaPatch.root_chat_id = event.root_chat_id;
-        if (event.total_coins !== undefined)
-          metaPatch.total_coins = event.total_coins;
+        if (event.worktree !== undefined) metaPatch.worktree = event.worktree;
         if (event.total_lines_added !== undefined)
           metaPatch.total_lines_added = event.total_lines_added;
         if (event.total_lines_removed !== undefined)
@@ -205,7 +233,7 @@ export function useSidebarSubscription() {
               parent_id: event.parent_id,
               link_type: event.link_type,
               root_chat_id: event.root_chat_id,
-              total_coins: event.total_coins,
+              worktree: event.worktree,
               total_lines_added: event.total_lines_added ?? 0,
               total_lines_removed: event.total_lines_removed ?? 0,
               tasks_total: 0,
@@ -323,6 +351,16 @@ export function useSidebarSubscription() {
 
   const processSnapshot = useCallback(
     (event: SidebarEventEnvelope & { category: "snapshot" }) => {
+      if (event.workspace_roots !== undefined) {
+        const workspaceRoots = event.workspace_roots;
+        dispatch(
+          setCurrentProjectInfo({
+            name: getWorkspaceDisplayName(workspaceRoots[0] ?? ""),
+            workspaceRoots,
+          }),
+        );
+      }
+
       const trajectoryItems = event.trajectories.map((t: TrajectoryMeta) => ({
         id: t.id,
         title: t.title,
@@ -335,7 +373,7 @@ export function useSidebarSubscription() {
         parent_id: t.parent_id,
         link_type: t.link_type,
         root_chat_id: t.root_chat_id,
-        total_coins: t.total_coins,
+        worktree: t.worktree,
         total_lines_added: t.total_lines_added,
         total_lines_removed: t.total_lines_removed,
         tasks_total: t.tasks_total,
@@ -343,7 +381,7 @@ export function useSidebarSubscription() {
         tasks_failed: t.tasks_failed,
       }));
 
-      dispatch(hydrateHistoryFromMeta(trajectoryItems));
+      dispatch(replaceSnapshotHistory(trajectoryItems));
       dispatch(setHistoryLoadError(null));
       dispatch(setHistoryLoading(false));
 
@@ -354,6 +392,74 @@ export function useSidebarSubscription() {
           () => event.tasks,
         ),
       );
+
+      if (event.buddy) {
+        if ("state" in event.buddy) {
+          dispatch(setBuddySnapshot(event.buddy));
+        } else {
+          // Backend reports buddy as disabled or not yet initialised
+          dispatch(setBuddyUnavailable());
+        }
+      }
+    },
+    [dispatch],
+  );
+
+  const processBuddyEvent = useCallback(
+    (event: SidebarEventEnvelope & { category: "buddy" }) => {
+      const { buddy_event } = event;
+      switch (buddy_event.event_type) {
+        case "StateUpdated":
+          dispatch(updateBuddyState(buddy_event.state));
+          break;
+        case "ActivityAdded":
+          dispatch(addBuddyActivity(buddy_event.activity));
+          break;
+        case "SuggestionAdded":
+          dispatch(addBuddySuggestion(buddy_event.suggestion));
+          break;
+        case "SuggestionDismissed":
+          dispatch(dismissBuddySuggestion(buddy_event.suggestion_id));
+          break;
+        case "SettingsChanged":
+          dispatch(updateBuddySettings(buddy_event.settings));
+          break;
+        case "DiagnosticAdded":
+          dispatch(addBuddyDiagnostic(buddy_event.diagnostic));
+          break;
+        case "RuntimeEvent":
+          dispatch(enqueueRuntimeEvent(buddy_event.event));
+          break;
+        case "SpeechUpdated":
+          dispatch(setActiveSpeech(buddy_event.speech));
+          break;
+        case "NavigationRequest":
+          executeBuddyNavigation(buddy_event.page, dispatch);
+          break;
+        case "OpportunityProduced":
+          dispatch(addOpportunity(buddy_event.opportunity));
+          break;
+        case "OpportunityResolved":
+          dispatch(
+            resolveOpportunity({
+              id: buddy_event.opportunity_id,
+              status: buddy_event.status,
+            }),
+          );
+          break;
+        case "PulseUpdated":
+          dispatch(setPulse(buddy_event.pulse));
+          break;
+        case "DraftCreated":
+          dispatch(addDraft(buddy_event.draft));
+          break;
+        case "DraftConsumed":
+          dispatch(consumeDraft(buddy_event.draft_id));
+          break;
+        case "DraftRemoved":
+          dispatch(removeDraft(buddy_event.draft_id));
+          break;
+      }
     },
     [dispatch],
   );
@@ -461,6 +567,10 @@ export function useSidebarSubscription() {
         processTrajectoryEvent(
           envelope as SidebarEventEnvelope & { category: "trajectory" },
         );
+      } else if (envelope.category === "buddy") {
+        processBuddyEvent(
+          envelope as SidebarEventEnvelope & { category: "buddy" },
+        );
       } else {
         processTaskEvent(
           envelope as SidebarEventEnvelope & { category: "task" },
@@ -491,6 +601,7 @@ export function useSidebarSubscription() {
     processSnapshot,
     processTrajectoryEvent,
     processTaskEvent,
+    processBuddyEvent,
     scheduleReconnect,
   ]);
 

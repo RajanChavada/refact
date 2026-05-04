@@ -13,6 +13,8 @@ use crate::call_validation::{
 };
 use crate::chat::types::TaskMeta;
 use crate::global_context::GlobalContext;
+use crate::worktrees::scope::ExecutionScope;
+use crate::worktrees::types::WorktreeMeta;
 
 use crate::at_commands::at_file::AtFile;
 use crate::at_commands::at_ast_definition::AtAstDefinition;
@@ -37,6 +39,7 @@ pub struct AtCommandsContext {
     pub root_chat_id: String,
     pub current_model: String,
     pub task_meta: Option<TaskMeta>,
+    pub execution_scope: Option<ExecutionScope>,
     pub subchat_depth: usize,
 
     pub at_commands: HashMap<String, Arc<dyn AtCommand + Send>>,
@@ -59,6 +62,7 @@ impl AtCommandsContext {
         root_chat_id: Option<String>,
         current_model: String,
         task_meta: Option<TaskMeta>,
+        worktree: Option<WorktreeMeta>,
     ) -> Self {
         Self::new_with_abort(
             global_context,
@@ -70,6 +74,7 @@ impl AtCommandsContext {
             root_chat_id,
             current_model,
             task_meta,
+            worktree,
             None,
         )
         .await
@@ -85,6 +90,37 @@ impl AtCommandsContext {
         root_chat_id: Option<String>,
         current_model: String,
         task_meta: Option<TaskMeta>,
+        worktree: Option<WorktreeMeta>,
+        abort_flag: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        let execution_scope = worktree.map(|worktree| ExecutionScope::from_worktree(&worktree));
+        Self::new_with_abort_and_execution_scope(
+            global_context,
+            n_ctx,
+            top_n,
+            is_preview,
+            messages,
+            chat_id,
+            root_chat_id,
+            current_model,
+            task_meta,
+            execution_scope,
+            abort_flag,
+        )
+        .await
+    }
+
+    pub async fn new_with_abort_and_execution_scope(
+        global_context: Arc<ARwLock<GlobalContext>>,
+        n_ctx: usize,
+        top_n: usize,
+        is_preview: bool,
+        messages: Vec<ChatMessage>,
+        chat_id: String,
+        root_chat_id: Option<String>,
+        current_model: String,
+        task_meta: Option<TaskMeta>,
+        execution_scope: Option<ExecutionScope>,
         abort_flag: Option<Arc<AtomicBool>>,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<serde_json::Value>();
@@ -102,6 +138,7 @@ impl AtCommandsContext {
             root_chat_id: effective_root,
             current_model,
             task_meta,
+            execution_scope,
             subchat_depth: 0,
             at_commands: at_commands_dict(global_context.clone()).await,
             subchat_tool_parameters: IndexMap::new(),
@@ -110,6 +147,27 @@ impl AtCommandsContext {
             subchat_rx: Arc::new(AMutex::new(rx)),
             abort_flag: abort_flag.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
         }
+    }
+
+    #[cfg(test)]
+    pub fn execution_scope_root(&self) -> Option<std::path::PathBuf> {
+        self.execution_scope
+            .as_ref()
+            .map(|scope| scope.effective_root().to_path_buf())
+    }
+
+    #[cfg(test)]
+    pub fn effective_project_dirs(&self) -> Vec<std::path::PathBuf> {
+        self.execution_scope
+            .as_ref()
+            .map(|scope| scope.effective_project_dirs())
+            .unwrap_or_default()
+    }
+
+    pub fn execution_scope_worktree(&self) -> Option<WorktreeMeta> {
+        self.execution_scope
+            .as_ref()
+            .map(|scope| scope.worktree().clone())
     }
 }
 
@@ -176,16 +234,11 @@ pub async fn at_commands_dict(
         ),
     ]);
 
-    let (ast_on, vecdb_on, active_group_id) = {
+    let (ast_on, vecdb_on) = {
         let gcx_locked = gcx.read().await;
         let vecdb_on = gcx_locked.vec_db.lock().await.is_some();
-        (
-            gcx_locked.ast_service.is_some(),
-            vecdb_on,
-            gcx_locked.active_group_id.clone(),
-        )
+        (gcx_locked.ast_service.is_some(), vecdb_on)
     };
-    let allow_knowledge = active_group_id.is_some();
     let mut result = HashMap::new();
     for (key, value) in at_commands_dict {
         let depends_on = value.depends_on();
@@ -193,9 +246,6 @@ pub async fn at_commands_dict(
             continue;
         }
         if depends_on.contains(&"vecdb".to_string()) && !vecdb_on {
-            continue;
-        }
-        if depends_on.contains(&"knowledge".to_string()) && !allow_knowledge {
             continue;
         }
         result.insert(key, value);
@@ -221,4 +271,61 @@ pub fn filter_only_context_file_from_context_tool(tools: &Vec<ContextEnum>) -> V
             }
         })
         .collect::<Vec<ContextFile>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn sample_worktree() -> (tempfile::TempDir, WorktreeMeta) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("worktree");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        let root = dunce::simplified(&fs::canonicalize(root).unwrap()).to_path_buf();
+        let source = dunce::simplified(&fs::canonicalize(source).unwrap()).to_path_buf();
+        (
+            temp,
+            WorktreeMeta {
+                id: "wt-context".to_string(),
+                kind: "chat".to_string(),
+                root,
+                source_workspace_root: source.clone(),
+                repo_root: source,
+                branch: Some("feature".to_string()),
+                base_branch: Some("main".to_string()),
+                base_commit: Some("base".to_string()),
+                task_id: None,
+                card_id: None,
+                agent_id: None,
+                enforce: true,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn subchat_worktree_at_commands_context_has_execution_scope() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let (_temp, worktree) = sample_worktree();
+        let ccx = AtCommandsContext::new(
+            gcx,
+            4096,
+            20,
+            false,
+            vec![],
+            "chat-1".to_string(),
+            None,
+            "model".to_string(),
+            None,
+            Some(worktree.clone()),
+        )
+        .await;
+
+        assert!(ccx.execution_scope.is_some());
+        assert_eq!(ccx.execution_scope_root(), Some(worktree.root.clone()));
+        assert_eq!(ccx.effective_project_dirs(), vec![worktree.root.clone()]);
+        assert_eq!(ccx.execution_scope_worktree(), Some(worktree));
+    }
 }

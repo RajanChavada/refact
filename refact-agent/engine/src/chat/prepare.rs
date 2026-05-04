@@ -14,6 +14,7 @@ use crate::llm::params::CacheControl;
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::scratchpads::scratchpad_utils::HasRagResults;
 use crate::tools::tools_description::ToolDesc;
+use crate::tools::tool_name_alias::build_registry_from_names;
 use super::tools::execute_tools;
 use super::types::ThreadParams;
 
@@ -36,11 +37,7 @@ fn responses_stateful_tail(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 }
 
 fn last_system_message(messages: &[ChatMessage]) -> Option<ChatMessage> {
-    messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "system")
-        .cloned()
+    messages.iter().rev().find(|m| m.role == "system").cloned()
 }
 
 pub struct PreparedChat {
@@ -57,6 +54,13 @@ pub struct ChatPrepareOptions {
     pub tool_choice: Option<ToolChoice>,
     pub parallel_tool_calls: Option<bool>,
     pub cache_control: CacheControl,
+}
+
+fn remove_visualization_only_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    messages
+        .into_iter()
+        .filter(|message| message.role != "error")
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +103,7 @@ pub async fn prepare_chat_passthrough(
     options: &ChatPrepareOptions,
 ) -> Result<PreparedChat, String> {
     let mut has_rag_results = HasRagResults::new();
+    let messages = remove_visualization_only_messages(messages);
     let tool_names: HashSet<String> = tools.iter().map(|x| x.name.clone()).collect();
 
     // 1. Resolve model early to get reasoning params before history limiting
@@ -133,7 +138,7 @@ pub async fn prepare_chat_passthrough(
     };
     let task_meta = ccx.lock().await.task_meta.clone();
     let messages = if options.prepend_system_prompt {
-        prepend_the_right_system_prompt_and_maybe_more_initial_messages(
+        let (msgs, _) = prepend_the_right_system_prompt_and_maybe_more_initial_messages(
             gcx.clone(),
             messages,
             meta,
@@ -143,7 +148,8 @@ pub async fn prepare_chat_passthrough(
             mode_id,
             model_id,
         )
-        .await
+        .await;
+        msgs
     } else {
         messages
     };
@@ -172,10 +178,8 @@ pub async fn prepare_chat_passthrough(
             if last_msg.role == "assistant" {
                 if let Some(ref tool_calls) = last_msg.tool_calls {
                     // Verify these tool calls are pending (no tool results exist for them)
-                    let pending_call_ids: HashSet<String> = tool_calls
-                        .iter()
-                        .map(|tc| tc.id.clone())
-                        .collect();
+                    let pending_call_ids: HashSet<String> =
+                        tool_calls.iter().map(|tc| tc.id.clone()).collect();
                     let answered_call_ids: HashSet<String> = messages
                         .iter()
                         .filter(|m| m.role == "tool" || m.role == "diff")
@@ -188,7 +192,14 @@ pub async fn prepare_chat_passthrough(
                         .cloned()
                         .collect();
 
-                    if !unanswered_calls.is_empty() && pending_call_ids.len() == unanswered_calls.len() + answered_call_ids.iter().filter(|id| pending_call_ids.contains(*id)).count() {
+                    if !unanswered_calls.is_empty()
+                        && pending_call_ids.len()
+                            == unanswered_calls.len()
+                                + answered_call_ids
+                                    .iter()
+                                    .filter(|id| pending_call_ids.contains(*id))
+                                    .count()
+                    {
                         let mut prerun_thread = thread.clone();
                         prerun_thread.context_tokens_cap = Some(effective_n_ctx);
                         prerun_thread.model = model_id.to_string();
@@ -209,45 +220,120 @@ pub async fn prepare_chat_passthrough(
         }
     }
 
-    // 6. Build tools list
+    // 6. Build tools list with alias layer to ensure provider-safe names (≤64 chars)
     let filtered_tools: Vec<ToolDesc> = if options.supports_tools {
-        tools
-            .iter()
-            .filter(|x| x.is_supported_by(model_id))
-            .cloned()
-            .collect()
+        tools.to_vec()
     } else {
         vec![]
     };
     let strict_tools = model_record.supports_strict_tools;
-    let openai_tools: Vec<Value> = filtered_tools
+    let tool_names: Vec<String> = filtered_tools.iter().map(|t| t.name.clone()).collect();
+    let alias_registry = build_registry_from_names(&tool_names);
+    let mut openai_tools: Vec<Value> = filtered_tools
         .iter()
-        .map(|tool| tool.clone().into_openai_style(strict_tools))
+        .map(|tool| {
+            let alias = alias_registry
+                .get_alias(&tool.name)
+                .unwrap_or(&tool.name)
+                .to_string();
+            let mut v = tool.clone().into_openai_style(strict_tools);
+            if alias != tool.name {
+                if let Some(func) = v.get_mut("function") {
+                    func["name"] = serde_json::Value::String(alias);
+                }
+            }
+            v
+        })
         .collect();
+
+    // 6b. Enrich handoff_to_mode tool with dynamic mode list
+    if options.supports_tools {
+        let handoff_alias = alias_registry
+            .get_alias("handoff_to_mode")
+            .unwrap_or("handoff_to_mode");
+        if let Some(idx) = openai_tools.iter().position(|t| {
+            t.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .map(|n| n == handoff_alias)
+                .unwrap_or(false)
+        }) {
+            if let Some(registry) =
+                crate::yaml_configs::customization_registry::get_project_registry(gcx.clone()).await
+            {
+                let mut mode_lines = Vec::new();
+                let mut mode_ids = Vec::new();
+                let mut modes: Vec<_> = registry.modes.values().collect();
+                modes.sort_by(|a, b| a.id.cmp(&b.id));
+                for mode in modes {
+                    if mode.specific {
+                        continue;
+                    }
+                    let title = if mode.title.is_empty() {
+                        mode.id.clone()
+                    } else {
+                        mode.title.clone()
+                    };
+                    let mut desc = mode.description.clone();
+                    if desc.len() > 120 {
+                        desc = format!("{}...", desc.chars().take(120).collect::<String>());
+                    }
+                    mode_lines.push(format!(
+                        "- {}: {}",
+                        mode.id,
+                        if desc.is_empty() { title } else { desc }
+                    ));
+                    mode_ids.push(mode.id.clone());
+                }
+                let mode_list = mode_lines.join("\n");
+                if let Some(func) = openai_tools[idx].get_mut("function") {
+                    if let Some(desc_val) = func.get_mut("description") {
+                        let desc = desc_val.as_str().unwrap_or("");
+                        let enriched = format!("{}\n\nAvailable modes:\n{}", desc, mode_list);
+                        *desc_val = serde_json::Value::String(enriched);
+                    }
+                    if let Some(params) = func.get_mut("parameters") {
+                        if let Some(props) = params.get_mut("properties") {
+                            if let Some(target_mode) = props.get_mut("target_mode") {
+                                let desc =
+                                    format!("Target mode ID. Available modes:\n{}", mode_list);
+                                target_mode["description"] = serde_json::Value::String(desc);
+                                target_mode["enum"] = serde_json::Value::Array(
+                                    mode_ids
+                                        .into_iter()
+                                        .map(serde_json::Value::String)
+                                        .collect(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 7. History validation and fixing
     let limited_msgs = fix_and_limit_messages_history(&messages, sampling_parameters)?;
 
     // 8. Strip thinking blocks if thinking is disabled
-    let limited_adapted_msgs =
+    let mut limited_adapted_msgs =
         strip_thinking_blocks_if_disabled(limited_msgs, sampling_parameters, &model_record);
-
-    // 9. Linearize thread: merge consecutive user-like messages for cache-friendly
-    //    strict role alternation (system/user/assistant/user/assistant/...)
-    let mut linearized_msgs = super::linearize::linearize_thread_for_llm(&limited_adapted_msgs);
 
     // OpenAI Responses API stateful multi-turn: when we chain with previous_response_id,
     // we should send only the new tail items (tool outputs and/or new user message).
     if model_record.base.wire_format == WireFormat::OpenaiResponses
-        && thread.previous_response_id.as_ref().is_some_and(|s| !s.is_empty())
+        && thread
+            .previous_response_id
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
     {
-        let tail = responses_stateful_tail(linearized_msgs.clone());
+        let tail = responses_stateful_tail(limited_adapted_msgs.clone());
         let mut stitched = Vec::new();
         if let Some(sys) = last_system_message(&limited_adapted_msgs) {
             stitched.push(sys);
         }
         stitched.extend(tail);
-        linearized_msgs = stitched;
+        limited_adapted_msgs = stitched;
     }
 
     // 10. Build LlmRequest
@@ -256,6 +342,7 @@ pub async fn prepare_chat_passthrough(
         n_ctx: Some(effective_n_ctx),
         max_tokens: sampling_parameters.max_new_tokens,
         temperature: sampling_parameters.temperature,
+        top_p: sampling_parameters.top_p,
         frequency_penalty: sampling_parameters.frequency_penalty,
         stop: sampling_parameters.stop.clone(),
         n: Some(1),
@@ -267,26 +354,28 @@ pub async fn prepare_chat_passthrough(
         ToolChoice::Auto => CanonicalToolChoice::Auto,
         ToolChoice::None => CanonicalToolChoice::None,
         ToolChoice::Required => CanonicalToolChoice::Required,
-        ToolChoice::Function { name } => CanonicalToolChoice::Function { name: name.clone() },
+        ToolChoice::Function { name } => {
+            let aliased_name = alias_registry.get_alias(name).unwrap_or(name).to_string();
+            CanonicalToolChoice::Function { name: aliased_name }
+        }
     });
 
-    let mut llm_request = LlmRequest::new(model_id.to_string(), linearized_msgs.clone())
+    let mut llm_request = LlmRequest::new(model_id.to_string(), limited_adapted_msgs.clone())
         .with_params(common_params)
         .with_tools(openai_tools, tool_choice)
         .with_reasoning(reasoning)
-        .with_parallel_tool_calls(options.parallel_tool_calls.unwrap_or(false))
+        .with_parallel_tool_calls(
+            options.parallel_tool_calls.unwrap_or(false) && model_record.supports_parallel_tools,
+        )
         .with_cache_control(options.cache_control);
 
     if model_record.base.wire_format == WireFormat::OpenaiResponses {
         llm_request = llm_request.with_previous_response_id(thread.previous_response_id.clone());
     }
 
-    // Add meta for Refact cloud when support_metadata is enabled
-    if model_record.base.support_metadata {
-        llm_request = llm_request.with_meta(meta.clone());
-    }
-
-    if model_record.base.id.starts_with("openrouter/") && !model_record.available_providers.is_empty() {
+    if model_record.base.id.starts_with("openrouter/")
+        && !model_record.available_providers.is_empty()
+    {
         if let Some(selected_provider) = model_record.selected_provider.as_ref() {
             let mut extra_body = llm_request.extra_body.unwrap_or_default();
             extra_body.insert(
@@ -299,7 +388,7 @@ pub async fn prepare_chat_passthrough(
 
     Ok(PreparedChat {
         llm_request,
-        limited_messages: linearized_msgs,
+        limited_messages: limited_adapted_msgs,
         rag_results: has_rag_results.in_json,
     })
 }
@@ -311,7 +400,8 @@ fn adapt_sampling_for_reasoning_models(
     let user_set_max_tokens = sampling_parameters.max_new_tokens > 0;
 
     if !user_set_max_tokens {
-        sampling_parameters.max_new_tokens = model_record.default_max_tokens
+        sampling_parameters.max_new_tokens = model_record
+            .default_max_tokens
             .or(model_record.max_output_tokens)
             .unwrap_or(4096);
     }
@@ -468,7 +558,8 @@ mod tests {
         ChatModelRecord {
             base: Default::default(),
             default_temperature: Some(0.7),
-            reasoning_effort_options: effort_options.map(|opts| opts.into_iter().map(|s| s.to_string()).collect()),
+            reasoning_effort_options: effort_options
+                .map(|opts| opts.into_iter().map(|s| s.to_string()).collect()),
             ..Default::default()
         }
     }
@@ -487,7 +578,12 @@ mod tests {
             base: Default::default(),
             default_temperature: Some(0.7),
             supports_adaptive_thinking_budget: true,
-            reasoning_effort_options: Some(vec!["low".to_string(), "medium".to_string(), "high".to_string(), "max".to_string()]),
+            reasoning_effort_options: Some(vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "max".to_string(),
+            ]),
             ..Default::default()
         }
     }

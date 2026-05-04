@@ -51,11 +51,16 @@ function isTextFile(filename: string): boolean {
 
 import {
   BackToSideBarButton,
-  AgentIntegrationsButton,
   UnifiedSendButton,
   BrowserToggleButton,
+  WandButton,
+  AutoEnrichmentToggleButton,
 } from "../Buttons";
-import { StreamingTokenCounter, UsageCounter } from "../UsageCounter";
+import {
+  StreamingTokenCounter,
+  UsageCounter,
+  ProviderUsageIndicator,
+} from "../UsageCounter";
 import { TrajectoryButton } from "../Trajectory";
 import { TextAreaWithChips } from "../TextAreaWithChips";
 import { selectHost } from "../../features/Config/configSlice";
@@ -68,39 +73,31 @@ import {
   useCapsForToolUse,
   useAutoFocusOnce,
   useChatActions,
+  useFirstSendAutoFlip,
 } from "../../hooks";
-import { ErrorCallout, Callout } from "../Callout";
+import { Callout } from "../Callout";
 import { ComboBox } from "../ComboBox";
 import { UnifiedAttachmentsTray } from "./UnifiedAttachmentsTray";
 import { ChatSettingsDropdown } from "./ChatSettingsDropdown";
 import { ModeSelect } from "./ModeSelect";
+import { WorktreeControl } from "../../features/Worktrees";
 import { addCheckboxValuesToInput } from "./utils";
 import { useCommandCompletionAndPreviewFiles } from "./useCommandCompletionAndPreviewFiles";
 import { useAppSelector, useAppDispatch } from "../../hooks";
-import {
-  clearError,
-  getErrorMessage,
-  getErrorType,
-} from "../../features/Errors/errorsSlice";
+import { getErrorMessage } from "../../features/Errors/errorsSlice";
 import { useAttachedFiles, useCheckboxes } from "./useCheckBoxes";
 import { useInputValue } from "./useInputValue";
 import {
   clearInformation,
   getInformationMessage,
-  showBalanceLowCallout,
 } from "../../features/Errors/informationSlice";
-import {
-  BallanceCallOut,
-  BallanceLowInformation,
-  InformationCallout,
-} from "../Callout/Callout";
+import { InformationCallout } from "../Callout/Callout";
 import { ToolConfirmation } from "./ToolConfirmation";
 import { selectThreadConfirmation } from "../../features/Chat";
 import { AttachImagesButton } from "../Dropzone";
 import { MicrophoneButton, MicrophoneButtonRef } from "./MicrophoneButton";
 import { useAttachedImages } from "../../hooks/useAttachedImages";
 import {
-  clearChatError,
   selectChatError,
   selectCurrentThreadId,
   selectIsStreaming,
@@ -109,11 +106,13 @@ import {
   selectQueuedItems,
   selectThreadImages,
   selectThreadMode,
+  selectManualPreviewItems,
+  removeManualPreviewItem,
   setThreadMode,
   DEFAULT_MODE,
+  selectIsBuddyChat,
 } from "../../features/Chat";
-import { telemetryApi } from "../../services/refact";
-import { push } from "../../features/Pages/pagesSlice";
+import { useReportErrorMutation } from "../../services/refact/buddy";
 
 import { useUsageCounter } from "../UsageCounter/useUsageCounter";
 import { ChatInputTopControls } from "./ChatInputTopControls";
@@ -142,11 +141,19 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const host = useAppSelector(selectHost);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
   const globalError = useAppSelector(getErrorMessage);
-  const globalErrorType = useAppSelector(getErrorType);
   const chatError = useAppSelector(selectChatError);
   const chatId = useAppSelector(selectCurrentThreadId);
+  const isBuddyChat = useAppSelector((state) =>
+    selectIsBuddyChat(state, chatId),
+  );
   const information = useAppSelector(getInformationMessage);
   const pauseReasonsWithPause = useAppSelector(selectThreadConfirmation);
+  const [reportError] = useReportErrorMutation();
+  useEffect(() => {
+    if (chatError) {
+      void reportError({ error: chatError, chat_id: chatId });
+    }
+  }, [chatError, chatId, reportError]);
   const [helpInfo, setHelpInfo] = React.useState<React.ReactNode | null>(null);
   const [isVoiceActive, setIsVoiceActive] = React.useState(false);
   const [liveTranscript, setLiveTranscript] = React.useState("");
@@ -156,8 +163,10 @@ export const ChatForm: React.FC<ChatFormProps> = ({
   const messages = useAppSelector(selectMessages);
   const queuedItems = useAppSelector(selectQueuedItems);
   const threadMode = useAppSelector(selectThreadMode);
+  const manualPreviewItems = useAppSelector(selectManualPreviewItems);
   const autoFocus = useAutoFocusOnce();
   const { abort, regenerate } = useChatActions();
+  useFirstSendAutoFlip();
 
   const onSetMode = useCallback(
     (
@@ -173,16 +182,8 @@ export const ChatForm: React.FC<ChatFormProps> = ({
 
   const isModeDisabled = useMemo(() => isStreaming, [isStreaming]);
   const attachedFiles = useAttachedFiles();
-  const shouldShowBalanceLow = useAppSelector(showBalanceLowCallout);
   const attachedImages = useAppSelector(selectThreadImages);
   const microphoneRef = React.useRef<MicrophoneButtonRef>(null);
-
-  const onClearError = useCallback(() => {
-    dispatch(clearError());
-    if (chatId) {
-      dispatch(clearChatError({ id: chatId }));
-    }
-  }, [dispatch, chatId]);
 
   const allDisabled = caps.usableModelsForPlan.every((option) => {
     if (typeof option === "string") return false;
@@ -260,9 +261,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     unCheckAll,
     setLineSelectionInteracted,
   } = useCheckboxes();
-
-  const [sendTelemetryEvent] =
-    telemetryApi.useLazySendTelemetryChatEventQuery();
 
   const [value, setValue, isSendImmediately, setIsSendImmediately] =
     useInputValue(() => unCheckAll());
@@ -380,15 +378,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     [handleHelpInfo, setValue, setLineSelectionInteracted],
   );
 
-  const handleAgentIntegrationsClick = useCallback(() => {
-    dispatch(push({ name: "integrations page" }));
-    void sendTelemetryEvent({
-      scope: `openIntegrations`,
-      success: true,
-      error_message: "",
-    });
-  }, [dispatch, sendTelemetryEvent]);
-
   useEffect(() => {
     if (isSendImmediately && !isWaiting && !isStreaming) {
       handleSubmit();
@@ -430,34 +419,6 @@ export const ChatForm: React.FC<ChatFormProps> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [disableMicrophone]);
 
-  if (globalError) {
-    return (
-      <Flex direction="column" mt="2" gap="2">
-        <ErrorCallout onClick={onClearError} timeout={null}>
-          {globalError}
-        </ErrorCallout>
-      </Flex>
-    );
-  }
-
-  if (chatError) {
-    return (
-      <Flex direction="column" mt="2" gap="2">
-        <ErrorCallout onClick={onClearError} timeout={null}>
-          {chatError}
-        </ErrorCallout>
-      </Flex>
-    );
-  }
-
-  if (information) {
-    return (
-      <InformationCallout mt="2" onClick={onClearInformation} timeout={2000}>
-        {information}
-      </InformationCallout>
-    );
-  }
-
   if (pauseReasonsWithPause.pause) {
     return (
       <ToolConfirmation pauseReasons={pauseReasonsWithPause.pause_reasons} />
@@ -466,15 +427,16 @@ export const ChatForm: React.FC<ChatFormProps> = ({
 
   return (
     <Box style={{ flexShrink: 0, position: "relative" }}>
-      {globalErrorType === "balance" && (
-        <BallanceCallOut
-          mt="0"
+      {!globalError && !chatError && information && (
+        <InformationCallout
+          mt="2"
           mb="2"
-          mx="0"
-          onClick={() => dispatch(clearError())}
-        />
+          onClick={onClearInformation}
+          timeout={2000}
+        >
+          {information}
+        </InformationCallout>
       )}
-      {shouldShowBalanceLow && <BallanceLowInformation mt="0" mb="2" mx="0" />}
       {!isOnline && (
         <Callout type="info" mb="2">
           Oops, seems that connection was lost... Check your internet connection
@@ -509,18 +471,45 @@ export const ChatForm: React.FC<ChatFormProps> = ({
               <UnifiedAttachmentsTray
                 attachedFiles={attachedFiles}
                 previewFiles={previewFiles}
+                manualPreviewItems={manualPreviewItems}
+                onRemoveManualPreviewItem={
+                  chatId
+                    ? (index) =>
+                        dispatch(removeManualPreviewItem({ chatId, index }))
+                    : undefined
+                }
                 onOpenFile={queryPathThenOpenFile}
               />
-              <Flex align="center" gap="2" justify="between" wrap="wrap">
+              <Flex
+                align="center"
+                gap="2"
+                justify="between"
+                wrap="wrap"
+                className={styles.topControlsRow}
+              >
                 <ChatInputTopControls
                   checkboxes={checkboxes}
                   onCheckedChange={onToggleCheckbox}
                   attachedFiles={attachedFiles}
+                  disabled={isBuddyChat}
                 />
-                <Flex align="center" gap="2">
-                  <StreamingTokenCounter />
-                  <UsageCounter />
-                  <TrajectoryButton />
+                <Flex
+                  align="center"
+                  gap="2"
+                  className={styles.topStatusControls}
+                >
+                  <span className={styles.hideTopTokensFirst}>
+                    <StreamingTokenCounter />
+                  </span>
+                  <span className={styles.hideTopTokensFirst}>
+                    <ProviderUsageIndicator />
+                  </span>
+                  <span className={styles.hideTopTokensFirst}>
+                    <UsageCounter />
+                  </span>
+                  <span className={styles.hideTopCompressLast}>
+                    <TrajectoryButton disabled={isBuddyChat} />
+                  </span>
                 </Flex>
               </Flex>
             </Box>
@@ -545,7 +534,7 @@ export const ChatForm: React.FC<ChatFormProps> = ({
                 isVoiceActive
                   ? "Listening..."
                   : commands.completions.length < 1
-                    ? "Type @ for commands"
+                    ? "Type @ or / for commands"
                     : ""
               }
               render={(props) => (
@@ -563,45 +552,81 @@ export const ChatForm: React.FC<ChatFormProps> = ({
               )}
             />
           </Box>
-          <Flex gap="2" wrap="wrap" py="2" px="3" align="center">
-            <ChatSettingsDropdown />
-            <ModeSelect
-              selectedMode={threadMode ?? DEFAULT_MODE}
-              onModeChange={onSetMode}
-              disabled={isModeDisabled}
-            />
-
-            <Flex justify="end" flexGrow="1" wrap="wrap" gap="2" align="center">
-              <BrowserToggleButton chatId={chatId} />
-              <AgentIntegrationsButton
-                title="Set up Agent Integrations"
-                onClick={handleAgentIntegrationsClick}
+          <Flex
+            gap="2"
+            wrap="nowrap"
+            py="2"
+            px="3"
+            align="center"
+            className={styles.bottomControlsRow}
+          >
+            <span className={styles.bottomModelControl}>
+              <ChatSettingsDropdown disabled={isBuddyChat} />
+            </span>
+            <span className={styles.bottomModeControl}>
+              <ModeSelect
+                selectedMode={threadMode ?? DEFAULT_MODE}
+                onModeChange={onSetMode}
+                disabled={isBuddyChat || isModeDisabled}
               />
-              {onClose && (
-                <BackToSideBarButton
-                  disabled={isStreaming}
-                  title="Return to sidebar"
-                  onClick={onClose}
+            </span>
+            <span className={styles.bottomWorkspaceControl}>
+              <WorktreeControl disabled={isBuddyChat} />
+            </span>
+
+            <Flex
+              justify="end"
+              wrap="nowrap"
+              gap="2"
+              align="center"
+              className={styles.bottomActionControls}
+            >
+              <span className={styles.hideActionFirst}>
+                <BrowserToggleButton chatId={chatId} />
+              </span>
+              <span className={styles.hideActionSecond}>
+                <AutoEnrichmentToggleButton
+                  disabled={isStreaming || isWaiting}
                 />
+              </span>
+              <span className={styles.hideActionThird}>
+                <WandButton
+                  currentText={value}
+                  disabled={isStreaming || isWaiting}
+                  onUpdateText={handleChange}
+                />
+              </span>
+              {onClose && (
+                <span className={styles.hideActionFourth}>
+                  <BackToSideBarButton
+                    disabled={isStreaming}
+                    title="Return to sidebar"
+                    onClick={onClose}
+                  />
+                </span>
               )}
               {config.features?.images !== false &&
                 isMultimodalitySupportedForCurrentModel && (
-                  <AttachImagesButton />
+                  <span className={styles.hideActionFifth}>
+                    <AttachImagesButton />
+                  </span>
                 )}
-              <MicrophoneButton
-                ref={microphoneRef}
-                onTranscript={(text) => {
-                  setValue((prev) => {
-                    if (prev.trim()) {
-                      return `${prev}\n${text}`;
-                    }
-                    return text;
-                  });
-                }}
-                onLiveTranscript={handleLiveTranscript}
-                onRecordingChange={handleRecordingChange}
-                disabled={disableMicrophone}
-              />
+              <span className={styles.hideActionSixth}>
+                <MicrophoneButton
+                  ref={microphoneRef}
+                  onTranscript={(text) => {
+                    setValue((prev) => {
+                      if (prev.trim()) {
+                        return `${prev}\n${text}`;
+                      }
+                      return text;
+                    });
+                  }}
+                  onLiveTranscript={handleLiveTranscript}
+                  onRecordingChange={handleRecordingChange}
+                  disabled={disableMicrophone}
+                />
+              </span>
               <UnifiedSendButton
                 disabled={isVoiceActive || !isOnline || allDisabled}
                 isStreaming={isStreaming || isWaiting}

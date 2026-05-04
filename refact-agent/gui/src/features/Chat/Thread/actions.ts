@@ -1,4 +1,5 @@
 import { createAction, createAsyncThunk } from "@reduxjs/toolkit";
+import { v4 as uuidv4 } from "uuid";
 import {
   type PayloadWithIdAndTitle,
   type ChatThread,
@@ -10,10 +11,10 @@ import {
   LspChatMode,
   PayloadWithChatAndMessageId,
   PayloadWithChatAndBoolean,
-  PayloadWithChatAndNumber,
 } from "./types";
 import type { ToolConfirmationPauseReason } from "../../../services/refact";
 import { type ChatMessages } from "../../../services/refact/types";
+import type { WorktreeMeta } from "../../../services/refact/worktrees";
 import type { AppDispatch, RootState } from "../../../app/store";
 import { type SystemPrompts } from "../../../services/refact/prompts";
 import { ChatHistoryItem } from "../../History/historySlice";
@@ -27,9 +28,21 @@ import {
   sendUserMessage,
   sendChatCommand,
   type MessageContent,
+  updateChatParams,
 } from "../../../services/refact/chatCommands";
 import { selectLspPort, selectApiKey } from "../../Config/configSlice";
-import { selectCurrentThreadId } from "./selectors";
+import { selectCurrentThreadId, selectMessagesById } from "./selectors";
+import { push } from "../../Pages/pagesSlice";
+import type { DiagnosticContext } from "../../Buddy/types";
+import {
+  buildBuddyInvestigationPrompt,
+  buildBuddyInvestigationTitle,
+  type BuddyInvestigationSource,
+} from "../../Buddy/investigation";
+import {
+  createBuddyConversationRequest,
+  fetchBuddyInvestigationContextRequest,
+} from "../../../services/refact/buddy";
 
 function buildThreadParamsPatch(
   thread: ChatThread,
@@ -40,13 +53,11 @@ function buildThreadParamsPatch(
     if (thread.tool_use) patch.tool_use = thread.tool_use;
     if (thread.mode) patch.mode = thread.mode;
   }
-  if ("model" in thread) patch.model = thread.model;
+  if (thread.model.trim()) patch.model = thread.model;
   if ("boost_reasoning" in thread)
     patch.boost_reasoning = thread.boost_reasoning;
   if ("include_project_info" in thread)
     patch.include_project_info = thread.include_project_info;
-  if ("context_tokens_cap" in thread)
-    patch.context_tokens_cap = thread.context_tokens_cap;
   if ("temperature" in thread) patch.temperature = thread.temperature;
   if ("frequency_penalty" in thread)
     patch.frequency_penalty = thread.frequency_penalty;
@@ -57,10 +68,20 @@ function buildThreadParamsPatch(
     patch.thinking_budget = thread.thinking_budget;
   if ("parallel_tool_calls" in thread)
     patch.parallel_tool_calls = thread.parallel_tool_calls;
+  if ("auto_enrichment_enabled" in thread)
+    patch.auto_enrichment_enabled = thread.auto_enrichment_enabled;
+  Object.assign(patch, buildThreadScopePatch(thread));
   return patch;
 }
 
-export { buildThreadParamsPatch };
+function buildThreadScopePatch(thread: ChatThread): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (thread.task_meta) patch.task_meta = thread.task_meta;
+  if (thread.worktree?.id) patch.worktree_id = thread.worktree.id;
+  return patch;
+}
+
+export { buildThreadParamsPatch, buildThreadScopePatch };
 
 function toMessageContent(
   content: import("../../../services/refact/types").UserMessage["content"],
@@ -119,14 +140,12 @@ export const sendIdeMessagesToCurrentChat = createAsyncThunk(
 
     const isNewChat = runtime.thread.messages.length === 0;
 
-    if (isNewChat) {
-      const patch = buildThreadParamsPatch(runtime.thread, isNewChat);
-      if (Object.keys(patch).length > 0) {
-        await sendChatCommand(chatId, port, apiKey, {
-          type: "set_params",
-          patch,
-        });
-      }
+    const patch = buildThreadParamsPatch(runtime.thread, isNewChat);
+    if (Object.keys(patch).length > 0) {
+      await sendChatCommand(chatId, port, apiKey, {
+        type: "set_params",
+        patch,
+      });
     }
 
     for (const m of arg.messages) {
@@ -151,7 +170,41 @@ export const createChatWithId = createAction<{
   model?: string;
   parentId?: string;
   linkType?: string;
+  worktree?: WorktreeMeta | null;
 }>("chatThread/createWithId");
+
+const SETUP_START_MESSAGES: Record<string, string> = {
+  setup: "Start project setup for this repository.",
+  setup_skills: "Help me set up project skills.",
+  setup_agents_md: "Help me create or update AGENTS.md instructions.",
+  setup_mcp: "Help me find and configure MCPs for this project.",
+  setup_commands: "Help me define project commands.",
+  setup_subagents: "Help me define project subagents.",
+};
+
+export const openChatInModeAndStart = createAsyncThunk<
+  undefined,
+  { mode: string; initialMessage?: string },
+  { dispatch: AppDispatch; state: RootState }
+>(
+  "chatThread/openChatInModeAndStart",
+  async ({ mode, initialMessage }, api) => {
+    const chatId = uuidv4();
+    api.dispatch(createChatWithId({ id: chatId, mode }));
+    api.dispatch(push({ name: "chat" }));
+
+    const state = api.getState();
+    const port = selectLspPort(state);
+    if (!port) return undefined;
+
+    const apiKey = selectApiKey(state) ?? undefined;
+    const startMessage =
+      initialMessage ?? (SETUP_START_MESSAGES[mode] || "Start setup.");
+
+    await updateChatParams(chatId, { mode }, port, apiKey);
+    await sendUserMessage(chatId, startMessage, port, apiKey);
+  },
+);
 
 export const newChatWithInitialMessages = createAsyncThunk(
   "chatThread/newChatWithInitialMessages",
@@ -328,6 +381,11 @@ export const setThreadMode = createAction<{
   };
 }>("chatThread/setThreadMode");
 
+export const setThreadWorktree = createAction<{
+  chatId: string;
+  worktree: WorktreeMeta | null;
+}>("chatThread/setThreadWorktree");
+
 export const setEnabledCheckpoints = createAction<boolean>(
   "chat/setEnabledCheckpoints",
 );
@@ -383,10 +441,6 @@ export const setIncreaseMaxTokens = createAction<boolean>(
 
 export const setIncludeProjectInfo = createAction<PayloadWithChatAndBoolean>(
   "chatThread/setIncludeProjectInfo",
-);
-
-export const setContextTokensCap = createAction<PayloadWithChatAndNumber>(
-  "chatThread/setContextTokensCap",
 );
 
 export const setReasoningEffort = createAction<{
@@ -478,6 +532,28 @@ export const requestSseRefresh = createAction<{ chatId: string }>(
   "chatThread/requestSseRefresh",
 );
 
+export const setAutoEnrichmentEnabled = createAction<PayloadWithChatAndBoolean>(
+  "chatThread/setAutoEnrichmentEnabled",
+);
+
+export const markMemoryEnrichmentUserTouched = createAction<{ chatId: string }>(
+  "chatThread/markMemoryEnrichmentUserTouched",
+);
+
+export const setManualPreviewItems = createAction<{
+  chatId: string;
+  items: import("./types").ManualPreviewItem[];
+}>("chatThread/setManualPreviewItems");
+
+export const removeManualPreviewItem = createAction<{
+  chatId: string;
+  index: number;
+}>("chatThread/removeManualPreviewItem");
+
+export const clearManualPreviewItems = createAction<{ chatId: string }>(
+  "chatThread/clearManualPreviewItems",
+);
+
 export const clearSseRefreshRequest = createAction(
   "chatThread/clearSseRefreshRequest",
 );
@@ -486,3 +562,96 @@ export const setTaskWidgetExpanded = createAction<{
   id: string;
   expanded: boolean;
 }>("chatThread/setTaskWidgetExpanded");
+
+export const openBuddyChat = createAction<{ chat_id: string; title?: string }>(
+  "chat/openBuddyChat",
+);
+
+export const newBuddyChatAction = createAction<{ chat_id: string }>(
+  "chat/newBuddyChat",
+);
+
+export const startBuddyInvestigation = createAsyncThunk<
+  { chat_id: string; title: string } | undefined,
+  {
+    triggerText: string;
+    triggerSource: BuddyInvestigationSource;
+    sourceChatId?: string;
+    diagnostic?: DiagnosticContext | null;
+  },
+  { dispatch: AppDispatch; state: RootState }
+>(
+  "chat/startBuddyInvestigation",
+  async ({ triggerText, triggerSource, sourceChatId, diagnostic }, api) => {
+    const state = api.getState();
+    const port = selectLspPort(state);
+    if (!port) return undefined;
+
+    const apiKey = selectApiKey(state) ?? undefined;
+    const messages = sourceChatId
+      ? selectMessagesById(state, sourceChatId)
+      : [];
+    const title = buildBuddyInvestigationTitle(triggerText);
+
+    const [meta, context] = await Promise.all([
+      createBuddyConversationRequest(port, apiKey, { title }),
+      fetchBuddyInvestigationContextRequest(port, apiKey, {
+        error: triggerText,
+        source_file: diagnostic?.source_file ?? undefined,
+        tool_name: diagnostic?.tool_name ?? undefined,
+        chat_id: sourceChatId ?? diagnostic?.chat_id ?? undefined,
+        diagnostic_id: diagnostic?.diagnostic_id,
+        collected_at: diagnostic?.collected_at ?? undefined,
+      }).catch(() => ({
+        logs: "Investigation logs were unavailable.",
+        internal_context: "Internal setup/config context was unavailable.",
+        repo_owner: "smallcloudai",
+        repo_name: "refact",
+      })),
+    ]);
+
+    api.dispatch(newBuddyChatAction({ chat_id: meta.chat_id }));
+    api.dispatch(openBuddyChat({ chat_id: meta.chat_id, title: meta.title }));
+    api.dispatch(push({ name: "chat" }));
+
+    await updateChatParams(
+      meta.chat_id,
+      {
+        title: meta.title,
+        mode: "buddy",
+        buddy_meta: {
+          is_buddy_chat: true,
+          buddy_chat_kind: "conversation",
+          workflow_id: null,
+        },
+        include_project_info: true,
+      },
+      port,
+      apiKey,
+    );
+
+    const prompt = buildBuddyInvestigationPrompt({
+      triggerSource,
+      triggerText,
+      sourceChatId,
+      messages,
+      diagnostic,
+      logs: context.logs,
+      internalContext: context.internal_context,
+      repoOwner: context.repo_owner,
+      repoName: context.repo_name,
+    });
+
+    await sendUserMessage(
+      meta.chat_id,
+      prompt,
+      port,
+      apiKey,
+      undefined,
+      undefined,
+      true,
+    );
+
+    return { chat_id: meta.chat_id, title: meta.title };
+  },
+);

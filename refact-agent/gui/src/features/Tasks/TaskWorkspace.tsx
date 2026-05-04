@@ -7,13 +7,14 @@ import {
   Heading,
   Badge,
   Card,
+  Dialog,
+  Checkbox,
 } from "@radix-ui/themes";
 import {
-  ArrowLeftIcon,
   PlusIcon,
-  PersonIcon,
   Cross2Icon,
   ChevronDownIcon,
+  FileTextIcon,
 } from "@radix-ui/react-icons";
 import { AgentStatusDot } from "./AgentStatusDot";
 import { ScrollArea } from "../../components/ScrollArea";
@@ -28,12 +29,20 @@ import {
   useUpdateTaskMetaMutation,
   useCreatePlannerChatMutation,
   BoardCard,
+  tasksApi,
 } from "../../services/refact/tasks";
 import { ModelPickerPopover } from "../../components/ChatForm/ModelPickerPopover";
+import { Markdown } from "../../components/Markdown";
+import { CollapsePanel } from "../../components/shared/CollapsePanel";
+import { ResizeDivider } from "../Dashboard/components/ResizeDivider/ResizeDivider";
 import styles from "./Tasks.module.css";
 import { Chat } from "../Chat";
 import { selectConfig } from "../Config/configSlice";
-import { createChatWithId, switchToThread } from "../Chat/Thread";
+import {
+  createChatWithId,
+  setThreadWorktree,
+  switchToThread,
+} from "../Chat/Thread";
 import {
   openTask,
   addPlannerChat,
@@ -46,17 +55,118 @@ import {
 import { selectThreadById } from "../Chat/Thread";
 import { InternalLinkProvider } from "../../contexts/InternalLinkContext";
 import { parseRefactLink } from "../../contexts/internalLinkUtils";
+import {
+  useDeleteWorktreeMutation,
+  useListWorktreesQuery,
+  useOpenWorktreeMutation,
+  type MergeWorktreeResponse,
+  type WorktreeMeta,
+  type WorktreeRecordView,
+} from "../../services/refact";
+import {
+  sendUserMessage,
+  updateChatParams,
+} from "../../services/refact/chatCommands";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { useEventsBusForIDE } from "../../hooks/useEventBusForIDE";
+import {
+  BranchIcon,
+  WorktreeDiffPanel,
+  MergeWorktreeModal,
+  WorktreeStatusBadge,
+  buildWorktreeConflictPrompt,
+  worktreeErrorText,
+} from "../Worktrees";
+import {
+  loadTaskWorkspaceLayout,
+  saveTaskWorkspaceLayout,
+} from "../../utils/chatUiPersistence";
 
 type ActiveChat =
   | { type: "planner"; chatId: string }
   | { type: "agent"; cardId: string; chatId: string }
   | null;
 
+type CardWorktreeTarget = {
+  id: string;
+  label: string;
+  record?: WorktreeRecordView;
+  meta?: WorktreeMeta | null;
+  stale: boolean;
+  referenceCount?: number;
+};
+
+function compactPath(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return normalized || path;
+  return parts.slice(-2).join("/");
+}
+
+function worktreeLabel(
+  card: BoardCard,
+  record?: WorktreeRecordView,
+  meta?: WorktreeMeta | null,
+): string | null {
+  return (
+    card.agent_worktree_name ??
+    card.agent_branch ??
+    record?.meta.branch ??
+    meta?.branch ??
+    record?.meta.root ??
+    meta?.root ??
+    card.agent_worktree ??
+    null
+  );
+}
+
+function resolveCardWorktree(
+  taskId: string,
+  card: BoardCard,
+  records: WorktreeRecordView[],
+  threadWorktree?: WorktreeMeta | null,
+): CardWorktreeTarget | null {
+  const byId = card.agent_worktree
+    ? records.find((record) => record.meta.id === card.agent_worktree)
+    : undefined;
+  const byThread = threadWorktree
+    ? records.find((record) => record.meta.id === threadWorktree.id)
+    : undefined;
+  const byCard = records.find(
+    (record) =>
+      record.meta.task_id === taskId && record.meta.card_id === card.id,
+  );
+  const byBranch = card.agent_branch
+    ? records.find(
+        (record) =>
+          record.meta.branch === card.agent_branch &&
+          (!record.meta.task_id || record.meta.task_id === taskId),
+      )
+    : undefined;
+  const record = byId ?? byThread ?? byCard ?? byBranch;
+  const meta = record?.meta ?? threadWorktree ?? null;
+  const id = record?.meta.id ?? threadWorktree?.id ?? card.agent_worktree;
+  const label = worktreeLabel(card, record, meta);
+  if (!id || !label) return null;
+  return {
+    id,
+    label:
+      label.includes("/") || label.includes("\\") ? compactPath(label) : label,
+    record,
+    meta,
+    stale:
+      record?.status.path_exists === false ||
+      record?.meta.lifecycle_state === "deleted" ||
+      meta?.deleted === true ||
+      meta?.stale === true,
+    referenceCount: record?.reference_count ?? meta?.reference_count,
+  };
+}
+
 interface PlannerPanelProps {
   plannerChats: PlannerInfo[];
   activeChat: ActiveChat;
   activePlannerId: string | null;
-  onNewPlanner: () => void;
   onSelectPlanner: (chatId: string) => void;
   onRemovePlanner: (chatId: string) => void;
 }
@@ -84,6 +194,33 @@ function formatPlannerDate(dateStr: string): string {
   }
 }
 
+function formatAgentChatTitle(
+  cardId: string | undefined,
+  cardTitle: string,
+): string {
+  return cardId ? `Agent: ${cardId} ${cardTitle}` : `Agent: ${cardTitle}`;
+}
+
+const DEFAULT_BOARD_HEIGHT_PX = 180;
+const MIN_BOARD_HEIGHT_PX = 80;
+const MAX_BOARD_HEIGHT_RATIO = 0.6;
+
+function clampBoardHeight(value: number, containerHeight?: number): number {
+  const maxHeight =
+    containerHeight && Number.isFinite(containerHeight) && containerHeight > 0
+      ? Math.max(MIN_BOARD_HEIGHT_PX, containerHeight * MAX_BOARD_HEIGHT_RATIO)
+      : 480;
+  return Math.max(MIN_BOARD_HEIGHT_PX, Math.min(maxHeight, value));
+}
+
+function defaultTaskWorkspaceLayout() {
+  return {
+    chatExpanded: false,
+    panelsExpanded: false,
+    boardHeightPx: DEFAULT_BOARD_HEIGHT_PX,
+  };
+}
+
 const PlannerItem: React.FC<PlannerItemProps> = ({
   planner,
   isSelected,
@@ -101,31 +238,26 @@ const PlannerItem: React.FC<PlannerItemProps> = ({
 
   return (
     <Box
-      className={styles.panelItem}
+      className={`${styles.panelItem} ${
+        isSelected ? styles.panelItemSelected : ""
+      }`}
       onClick={onSelect}
-      style={{ background: isSelected ? "var(--accent-4)" : undefined }}
     >
-      <Flex align="center" gap="1">
+      <Flex align="center" gap="1" className={styles.panelItemLead}>
         {isActive && (
           <Badge size="1" color="green" radius="full">
             ●
           </Badge>
         )}
         <Badge size="1" color="violet">
-          📋
+          <FileTextIcon />
         </Badge>
       </Flex>
-      <Text
-        size="1"
-        style={{
-          flex: 1,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {displayTitle}
-      </Text>
+      <Box className={styles.panelItemContent}>
+        <Text size="1" className={styles.panelItemTitle}>
+          {displayTitle}
+        </Text>
+      </Box>
       <Button
         size="1"
         variant="ghost"
@@ -145,20 +277,11 @@ const PlannerPanel: React.FC<PlannerPanelProps> = ({
   plannerChats,
   activeChat,
   activePlannerId,
-  onNewPlanner,
   onSelectPlanner,
   onRemovePlanner,
 }) => {
   return (
-    <Box className={styles.panel}>
-      <Flex className={styles.panelHeader}>
-        <Text size="2" weight="medium">
-          Planners
-        </Text>
-        <Button size="1" variant="ghost" onClick={onNewPlanner}>
-          <PlusIcon />
-        </Button>
-      </Flex>
+    <Box className={styles.panelList}>
       <Box className={styles.panelContent}>
         {plannerChats.length === 0 ? (
           <Flex align="center" justify="center" style={{ flex: 1 }}>
@@ -215,10 +338,6 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
     (c) => c.column === "failed" && c.agent_chat_id,
   );
 
-  const total =
-    completedAgents.length + failedAgents.length + activeAgents.length;
-  const done = completedAgents.length;
-
   const renderAgentItem = (
     card: BoardCard,
     status: "doing" | "done" | "failed",
@@ -228,32 +347,30 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
     return (
       <Box
         key={card.id}
-        className={styles.panelItem}
+        className={`${styles.panelItem} ${
+          isActive ? styles.panelItemSelected : ""
+        }`}
         onClick={() =>
           card.agent_chat_id && onSelectAgent(card.id, card.agent_chat_id)
         }
-        style={{ background: isActive ? "var(--accent-4)" : undefined }}
       >
-        <AgentStatusDot status={status} size="medium" />
-        <Text size="1" style={{ flex: 1 }}>
-          {card.title}
-        </Text>
+        <div className={styles.panelItemLead}>
+          <AgentStatusDot status={status} size="medium" />
+        </div>
+        <Flex align="center" gap="1" className={styles.panelItemContent}>
+          <Badge size="1" color="gray" variant="soft">
+            {card.id}
+          </Badge>
+          <Text size="1" className={styles.panelItemTitle}>
+            {card.title}
+          </Text>
+        </Flex>
       </Box>
     );
   };
 
   return (
-    <Box className={styles.panel}>
-      <Flex className={styles.panelHeader}>
-        <Text size="2" weight="medium">
-          Agents
-        </Text>
-        {total > 0 && (
-          <Badge size="1" color="gray">
-            {done}/{total} done
-          </Badge>
-        )}
-      </Flex>
+    <Box className={styles.panelList}>
       <Box className={styles.panelContent}>
         {activeAgents.length === 0 &&
         completedAgents.length === 0 &&
@@ -274,7 +391,7 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
         )}
       </Box>
       {onModelChange && (
-        <Flex p="2" style={{ borderTop: "1px solid var(--gray-4)" }}>
+        <Flex className={styles.modelPickerRow}>
           <ModelPickerPopover
             value={defaultAgentModel ?? ""}
             onValueChange={onModelChange}
@@ -287,16 +404,40 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({
 
 interface CardDetailProps {
   card: BoardCard;
+  worktree: CardWorktreeTarget | null;
+  worktreeLabel: string | null;
+  isWorktreeLoading: boolean;
   onClose: () => void;
+  onInternalLink?: (url: string) => boolean;
+  onViewDiff: (worktree: CardWorktreeTarget) => void;
+  onMerge: (worktree: CardWorktreeTarget) => void;
+  onOpenWorktree: (worktree: CardWorktreeTarget) => void;
+  onDeleteWorktree: (worktree: CardWorktreeTarget) => void;
 }
 
-const CardDetail: React.FC<CardDetailProps> = ({ card, onClose }) => {
+const CardDetail: React.FC<CardDetailProps> = ({
+  card,
+  worktree,
+  worktreeLabel,
+  isWorktreeLoading,
+  onClose,
+  onInternalLink,
+  onViewDiff,
+  onMerge,
+  onOpenWorktree,
+  onDeleteWorktree,
+}) => {
   return (
     <Box className={styles.cardDetailOverlay} onClick={onClose}>
       <Card className={styles.cardDetail} onClick={(e) => e.stopPropagation()}>
         <Flex direction="column" gap="3">
           <Flex justify="between" align="center">
-            <Heading size="3">{card.title}</Heading>
+            <Heading size="3" className={styles.cardDetailTitle}>
+              <Badge size="1" color="gray" variant="soft" mr="2">
+                {card.id}
+              </Badge>
+              {card.title}
+            </Heading>
             <Badge
               color={
                 card.column === "done"
@@ -325,21 +466,109 @@ const CardDetail: React.FC<CardDetailProps> = ({ card, onClose }) => {
             </Box>
           )}
 
+          {worktreeLabel && (
+            <Box>
+              <Text size="2" weight="medium" color="gray">
+                Worktree
+              </Text>
+              <Flex direction="column" gap="2" mt="1">
+                <Flex gap="2" align="center" wrap="wrap">
+                  <Badge size="1" color="green" variant="soft">
+                    <BranchIcon /> {worktreeLabel}
+                  </Badge>
+                  {worktree?.record ?? worktree?.meta ? (
+                    <WorktreeStatusBadge
+                      worktree={worktree.meta ?? worktree.record?.meta}
+                      record={worktree.record}
+                    />
+                  ) : null}
+                  {worktree?.referenceCount && worktree.referenceCount > 1 ? (
+                    <Badge size="1" color="amber" variant="soft">
+                      shared by {worktree.referenceCount}
+                    </Badge>
+                  ) : null}
+                </Flex>
+                {isWorktreeLoading && (
+                  <Text size="1" color="gray">
+                    Loading worktree metadata...
+                  </Text>
+                )}
+                {!isWorktreeLoading && !worktree && (
+                  <Text size="1" color="gray">
+                    Worktree metadata is unavailable or stale.
+                  </Text>
+                )}
+                {worktree?.stale && (
+                  <Text size="1" color="amber">
+                    This worktree appears stale, missing, or deleted.
+                  </Text>
+                )}
+                <Flex gap="2" wrap="wrap">
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    disabled={!worktree}
+                    onClick={() => worktree && onViewDiff(worktree)}
+                  >
+                    View Diff
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    disabled={!worktree}
+                    onClick={() => worktree && onMerge(worktree)}
+                  >
+                    Merge
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    disabled={!worktree}
+                    onClick={() => worktree && onOpenWorktree(worktree)}
+                  >
+                    Open
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="red"
+                    disabled={!worktree}
+                    onClick={() => worktree && onDeleteWorktree(worktree)}
+                  >
+                    Discard/Delete
+                  </Button>
+                </Flex>
+              </Flex>
+            </Box>
+          )}
+
           {card.instructions && (
             <Box>
               <Text size="2" weight="medium" color="gray">
                 Instructions
               </Text>
-              <Box
-                p="2"
-                mt="1"
-                style={{
-                  background: "var(--gray-2)",
-                  borderRadius: "var(--radius-2)",
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                <Text size="2">{card.instructions}</Text>
+              <Box className={styles.cardDetailSection}>
+                {onInternalLink ? (
+                  <InternalLinkProvider
+                    onInternalLink={(url) => {
+                      onClose();
+                      return onInternalLink(url);
+                    }}
+                  >
+                    <Markdown canHaveInteractiveElements={false}>
+                      {card.instructions}
+                    </Markdown>
+                  </InternalLinkProvider>
+                ) : (
+                  <Markdown canHaveInteractiveElements={false}>
+                    {card.instructions}
+                  </Markdown>
+                )}
               </Box>
             </Box>
           )}
@@ -350,15 +579,12 @@ const CardDetail: React.FC<CardDetailProps> = ({ card, onClose }) => {
                 Final Report
               </Text>
               <Box
-                p="2"
-                mt="1"
-                style={{
-                  background: "var(--green-2)",
-                  borderRadius: "var(--radius-2)",
-                  whiteSpace: "pre-wrap",
-                }}
+                className={styles.cardDetailSection}
+                style={{ background: "var(--green-2)" }}
               >
-                <Text size="2">{card.final_report}</Text>
+                <Markdown canHaveInteractiveElements={false}>
+                  {card.final_report}
+                </Markdown>
               </Box>
             </Box>
           )}
@@ -396,6 +622,7 @@ interface TaskWorkspaceProps {
 
 export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const dispatch = useAppDispatch();
+  const taskWorkspaceRef = React.useRef<HTMLDivElement>(null);
   const config = useAppSelector(selectConfig);
   const { data: task, isLoading: taskLoading } = useGetTaskQuery(taskId, {
     pollingInterval: 0,
@@ -403,6 +630,12 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const { data: board, isLoading: boardLoading } = useGetBoardQuery(taskId, {
     pollingInterval: 0,
   });
+  const { data: worktreesData, isLoading: worktreesLoading } =
+    useListWorktreesQuery(undefined);
+  const [openWorktree] = useOpenWorktreeMutation();
+  const [deleteWorktree, deleteWorktreeState] = useDeleteWorktreeMutation();
+  const copyToClipboard = useCopyToClipboard();
+  const { openFolderInNewWindow } = useEventsBusForIDE();
   const { data: savedPlanners } = useListTaskTrajectoriesQuery({
     taskId,
     role: "planner",
@@ -426,10 +659,49 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     selectTaskActiveChat(state, taskId),
   );
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null);
+  const [diffTarget, setDiffTarget] = useState<CardWorktreeTarget | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<{
+    card: BoardCard;
+    worktree: CardWorktreeTarget;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    card: BoardCard;
+    worktree: CardWorktreeTarget;
+  } | null>(null);
+  const [deleteBranch, setDeleteBranch] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
-  const [chatExpanded, setChatExpanded] = useState(false);
-  const plannersRestoredRef = React.useRef(false);
+  const [layout, setLayout] = useState(() =>
+    loadTaskWorkspaceLayout(taskId, defaultTaskWorkspaceLayout()),
+  );
   const prevTaskStatusRef = React.useRef<string | undefined>(undefined);
+  const chatExpanded = layout.chatExpanded;
+  const panelsExpanded = layout.panelsExpanded;
+  const boardHeightPx = layout.boardHeightPx;
+  const worktreeRecords = useMemo(
+    () => worktreesData?.worktrees ?? [],
+    [worktreesData?.worktrees],
+  );
+  const selectedCardThread = useAppSelector((state) =>
+    selectedCard?.agent_chat_id
+      ? selectThreadById(state, selectedCard.agent_chat_id)
+      : null,
+  );
+  const selectedCardWorktree = useMemo(
+    () =>
+      selectedCard
+        ? resolveCardWorktree(
+            taskId,
+            selectedCard,
+            worktreeRecords,
+            selectedCardThread?.worktree,
+          )
+        : null,
+    [selectedCard, selectedCardThread?.worktree, taskId, worktreeRecords],
+  );
+  const selectedCardWorktreeLabel = selectedCard
+    ? selectedCardWorktree?.label ??
+      worktreeLabel(selectedCard, undefined, selectedCardThread?.worktree)
+    : null;
 
   useEffect(() => {
     if (task) {
@@ -437,12 +709,19 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     }
   }, [dispatch, taskId, task]);
 
+  // Restore saved planner trajectories into Redux once the OpenTask entry
+  // exists. This effect is intentionally idempotent: the per-planner dedup
+  // check below guards against duplicate dispatches, so it can safely re-run
+  // when `savedPlanners` or `currentTaskUI` updates. We must wait for
+  // `currentTaskUI` (created by `openTask` after `task` loads) — without it,
+  // `addPlannerChat`/`setTaskActiveChat` reducers silently no-op and the
+  // restore is permanently lost (race condition: savedPlanners can arrive
+  // before task).
   useEffect(() => {
-    if (!savedPlanners || plannersRestoredRef.current) return;
-    plannersRestoredRef.current = true;
+    if (!savedPlanners || !currentTaskUI) return;
 
     for (const traj of savedPlanners) {
-      if (plannerChats.some((p) => p.id === traj.id)) continue;
+      if (currentTaskUI.plannerChats.some((p) => p.id === traj.id)) continue;
 
       dispatch(
         createChatWithId({
@@ -478,7 +757,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
         }),
       );
     }
-  }, [dispatch, taskId, savedPlanners, plannerChats, activeChat]);
+  }, [dispatch, taskId, savedPlanners, currentTaskUI, activeChat]);
 
   useEffect(() => {
     if (
@@ -621,7 +900,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       dispatch(
         createChatWithId({
           id: chatId,
-          title: `Agent: ${cardTitle}`,
+          title: formatAgentChatTitle(cardId, cardTitle),
           isTaskChat: true,
           mode: "TASK_AGENT",
           taskMeta: { task_id: taskId, role: "agents", card_id: cardId },
@@ -637,6 +916,15 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       );
     },
     [board, taskId, dispatch, task?.default_agent_model],
+  );
+
+  const handleCardAgentClick = useCallback(
+    (card: BoardCard) => {
+      if (!card.agent_chat_id) return;
+      handleSelectAgent(card.id, card.agent_chat_id);
+      setSelectedCard(null);
+    },
+    [handleSelectAgent],
   );
 
   const handleInternalLink = useCallback(
@@ -664,7 +952,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
         dispatch(
           createChatWithId({
             id: chatId,
-            title: `Agent: ${cardTitle}`,
+            title: formatAgentChatTitle(cardId, cardTitle),
             isTaskChat: true,
             mode: "TASK_AGENT",
             taskMeta: { task_id: taskId, role: "agents", card_id: cardId },
@@ -687,14 +975,251 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   );
 
   const handleToggleChatExpanded = useCallback(() => {
-    setChatExpanded((prev) => !prev);
-  }, []);
+    setLayout((prev) => {
+      const next = { ...prev, chatExpanded: !prev.chatExpanded };
+      saveTaskWorkspaceLayout(taskId, next);
+      return next;
+    });
+  }, [taskId]);
+
+  const handleTogglePanelsExpanded = useCallback(() => {
+    setLayout((prev) => {
+      const next = { ...prev, panelsExpanded: !prev.panelsExpanded };
+      saveTaskWorkspaceLayout(taskId, next);
+      return next;
+    });
+  }, [taskId]);
+
+  const handleBoardResizeDrag = useCallback(
+    (clientY: number) => {
+      const container = taskWorkspaceRef.current;
+      const rect = container?.getBoundingClientRect();
+      const nextHeight = clampBoardHeight(
+        rect ? clientY - rect.top : clientY,
+        rect?.height,
+      );
+      setLayout((prev) => {
+        const next = { ...prev, boardHeightPx: nextHeight };
+        saveTaskWorkspaceLayout(taskId, next);
+        return next;
+      });
+    },
+    [taskId],
+  );
+
+  const handleBoardResizeReset = useCallback(() => {
+    setLayout((prev) => {
+      const next = { ...prev, boardHeightPx: DEFAULT_BOARD_HEIGHT_PX };
+      saveTaskWorkspaceLayout(taskId, next);
+      return next;
+    });
+  }, [taskId]);
 
   const handleModelChange = useCallback(
     (model: string) => {
       void updateTaskMeta({ taskId, defaultAgentModel: model });
     },
     [taskId, updateTaskMeta],
+  );
+
+  const showNotification = useCallback((message: string) => {
+    setNotification(message);
+    window.setTimeout(() => setNotification(null), 3000);
+  }, []);
+
+  const invalidateTaskQueries = useCallback(() => {
+    dispatch(
+      tasksApi.util.invalidateTags([
+        { type: "Tasks", id: taskId },
+        { type: "Board", id: taskId },
+        "Tasks",
+      ]),
+    );
+  }, [dispatch, taskId]);
+
+  const handleViewCardDiff = useCallback((worktree: CardWorktreeTarget) => {
+    setDiffTarget(worktree);
+  }, []);
+
+  const handleMergeCardWorktree = useCallback(
+    (worktree: CardWorktreeTarget) => {
+      if (!selectedCard) return;
+      setMergeTarget({ card: selectedCard, worktree });
+    },
+    [selectedCard],
+  );
+
+  const handleOpenCardWorktree = useCallback(
+    async (worktree: CardWorktreeTarget) => {
+      try {
+        const response = await openWorktree({
+          id: worktree.id,
+          source_workspace_root:
+            worktree.record?.meta.source_workspace_root ??
+            worktree.meta?.source_workspace_root,
+        }).unwrap();
+        const hostCanOpenFolder =
+          config.host === "vscode" ||
+          config.host === "jetbrains" ||
+          config.host === "ide";
+        if (response.can_open_folder && hostCanOpenFolder) {
+          openFolderInNewWindow(response.path);
+          showNotification("Opening worktree in a new window.");
+        } else {
+          copyToClipboard(response.path);
+          showNotification("Worktree path copied to clipboard.");
+        }
+      } catch (error) {
+        showNotification(`Open failed: ${worktreeErrorText(error)}`);
+      }
+    },
+    [
+      config.host,
+      copyToClipboard,
+      openFolderInNewWindow,
+      openWorktree,
+      showNotification,
+    ],
+  );
+
+  const handleDeleteCardWorktree = useCallback(
+    (worktree: CardWorktreeTarget) => {
+      if (!selectedCard) return;
+      setDeleteBranch(false);
+      setDeleteTarget({ card: selectedCard, worktree });
+    },
+    [selectedCard],
+  );
+
+  const handleConfirmDeleteCardWorktree = useCallback(async () => {
+    if (!deleteTarget) return;
+    try {
+      await deleteWorktree({
+        id: deleteTarget.worktree.id,
+        source_workspace_root:
+          deleteTarget.worktree.record?.meta.source_workspace_root ??
+          deleteTarget.worktree.meta?.source_workspace_root,
+        delete_branch: deleteBranch,
+      }).unwrap();
+      if (deleteTarget.card.agent_chat_id) {
+        dispatch(
+          setThreadWorktree({
+            chatId: deleteTarget.card.agent_chat_id,
+            worktree: null,
+          }),
+        );
+      }
+      setDeleteTarget(null);
+      invalidateTaskQueries();
+      showNotification("Worktree deleted.");
+    } catch (error) {
+      showNotification(`Delete failed: ${worktreeErrorText(error)}`);
+    }
+  }, [
+    deleteBranch,
+    deleteTarget,
+    deleteWorktree,
+    dispatch,
+    invalidateTaskQueries,
+    showNotification,
+  ]);
+
+  const handleCardMergeCompleted = useCallback(
+    (response: MergeWorktreeResponse) => {
+      if (
+        response.cleanup?.worktree_deleted &&
+        mergeTarget?.card.agent_chat_id
+      ) {
+        dispatch(
+          setThreadWorktree({
+            chatId: mergeTarget.card.agent_chat_id,
+            worktree: null,
+          }),
+        );
+      }
+      invalidateTaskQueries();
+      showNotification("Worktree merge completed.");
+    },
+    [dispatch, invalidateTaskQueries, mergeTarget, showNotification],
+  );
+
+  const handleAskRefactForMerge = useCallback(
+    async (files: string[], response: MergeWorktreeResponse) => {
+      if (!mergeTarget) throw new Error("No task worktree is selected.");
+      const chatId = mergeTarget.card.agent_chat_id ?? activePlannerId;
+      if (!chatId) throw new Error("No agent or planner chat is available.");
+      if (!config.lspPort) throw new Error("LSP port is unavailable.");
+      const apiKey = config.apiKey ?? undefined;
+      const prompt = buildWorktreeConflictPrompt({
+        worktree: mergeTarget.worktree.meta,
+        record: mergeTarget.worktree.record,
+        response,
+        files,
+        taskId,
+        cardId: mergeTarget.card.id,
+      });
+      if (mergeTarget.card.agent_chat_id) {
+        dispatch(
+          createChatWithId({
+            id: chatId,
+            title: formatAgentChatTitle(
+              mergeTarget.card.id,
+              mergeTarget.card.title,
+            ),
+            isTaskChat: true,
+            mode: "TASK_AGENT",
+            taskMeta: {
+              task_id: taskId,
+              role: "agents",
+              card_id: mergeTarget.card.id,
+            },
+            model: task?.default_agent_model,
+            worktree: mergeTarget.worktree.meta ?? null,
+          }),
+        );
+        dispatch(
+          setTaskActiveChat({
+            taskId,
+            activeChat: {
+              type: "agent",
+              cardId: mergeTarget.card.id,
+              chatId,
+            },
+          }),
+        );
+      } else {
+        dispatch(
+          setTaskActiveChat({
+            taskId,
+            activeChat: { type: "planner", chatId },
+          }),
+        );
+      }
+      dispatch(switchToThread({ id: chatId, openTab: false }));
+      if (mergeTarget.worktree.meta) {
+        dispatch(
+          setThreadWorktree({ chatId, worktree: mergeTarget.worktree.meta }),
+        );
+      }
+      await updateChatParams(
+        chatId,
+        { worktree_id: mergeTarget.worktree.id },
+        config.lspPort,
+        apiKey,
+      );
+      await sendUserMessage(chatId, prompt, config.lspPort, apiKey, true);
+      showNotification("Conflict resolution request sent to Refact.");
+    },
+    [
+      activePlannerId,
+      config.apiKey,
+      config.lspPort,
+      dispatch,
+      mergeTarget,
+      showNotification,
+      task?.default_agent_model,
+      taskId,
+    ],
   );
 
   if (taskLoading || boardLoading || !task || !board) {
@@ -705,94 +1230,137 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     ? "No chat selected"
     : activeChat.type === "planner"
       ? `Planner`
-      : `Agent: ${
-          board.cards.find((c) => c.id === activeChat.cardId)?.title ?? ""
-        }`;
-
-  const branchDisplay =
-    activeChat?.type === "agent"
-      ? board.cards.find((c) => c.id === activeChat.cardId)?.agent_branch ??
-        task.base_branch ??
-        "(unknown)"
-      : task.base_branch ?? "(unknown)";
+      : formatAgentChatTitle(
+          activeChat.cardId,
+          board.cards.find((c) => c.id === activeChat.cardId)?.title ?? "",
+        );
+  const agentChats = board.cards.filter((card) => card.agent_chat_id);
+  const doneAgentChats = agentChats.filter((card) => card.column === "done");
+  const chatToggleLabel = chatExpanded ? "Collapse chat" : "Expand chat";
+  const panelsToggleLabel = panelsExpanded
+    ? "Collapse planners and agents"
+    : "Expand planners and agents";
+  const boardSectionStyle: React.CSSProperties = {
+    flex: `0 0 ${boardHeightPx}px`,
+  };
 
   return (
-    <Box
-      className={`${styles.taskWorkspace} ${
-        chatExpanded ? styles.expanded : ""
-      }`}
-    >
-      <Flex className={styles.taskHeader} justify="between" align="center">
-        <Flex align="center" gap="3">
-          <Button variant="ghost" size="1" onClick={handleBack}>
-            <ArrowLeftIcon />
-          </Button>
-          <Heading size="4">{task.name}</Heading>
-          <Badge
-            color={
-              task.status === "active"
-                ? "blue"
-                : task.status === "completed"
-                  ? "green"
-                  : "gray"
-            }
+    <Box ref={taskWorkspaceRef} className={styles.taskWorkspace}>
+      <CollapsePanel
+        collapsed={chatExpanded}
+        className={styles.workspaceChromeCollapse}
+      >
+        <Box className={styles.boardSection} style={boardSectionStyle}>
+          <KanbanBoard
+            board={board}
+            onCardClick={handleCardClick}
+            onAgentClick={handleCardAgentClick}
+          />
+        </Box>
+
+        <ResizeDivider
+          onDrag={handleBoardResizeDrag}
+          onReset={handleBoardResizeReset}
+        />
+
+        <Box className={styles.panelsWrapper}>
+          <div className={styles.panelsHeader}>
+            <button
+              type="button"
+              onClick={handleTogglePanelsExpanded}
+              aria-expanded={panelsExpanded}
+              aria-label={panelsToggleLabel}
+              title={panelsToggleLabel}
+              className={styles.sectionHeaderToggle}
+            >
+              <ChevronDownIcon
+                className={`${styles.chevron} ${
+                  panelsExpanded ? styles.chevronExpanded : ""
+                }`}
+              />
+              <Text
+                size="1"
+                weight="bold"
+                color="gray"
+                className={styles.sectionHeaderLabel}
+              >
+                Planners / Agents
+              </Text>
+            </button>
+            <Flex align="center" gap="2" className={styles.sectionHeaderMeta}>
+              <Badge size="1" color="gray" variant="soft">
+                {plannerChats.length} planner
+                {plannerChats.length === 1 ? "" : "s"}
+              </Badge>
+              {agentChats.length > 0 && (
+                <Badge size="1" color="gray" variant="soft">
+                  {doneAgentChats.length}/{agentChats.length} agents
+                </Badge>
+              )}
+              <button
+                type="button"
+                className={styles.sectionHeaderActionButton}
+                onClick={handleNewPlanner}
+                aria-label="New planner"
+                title="New planner"
+              >
+                <PlusIcon />
+              </button>
+            </Flex>
+          </div>
+
+          <CollapsePanel
+            collapsed={!panelsExpanded}
+            className={styles.panelsCollapse}
           >
-            {task.status}
-          </Badge>
-          <Badge color="gray">🌿 {branchDisplay}</Badge>
-        </Flex>
-        <Text size="1" color="gray">
-          {task.cards_done}/{task.cards_total} done
-          {task.cards_failed > 0 && ` • ${task.cards_failed} failed`}
-        </Text>
-      </Flex>
-
-      {!chatExpanded && (
-        <>
-          <Box className={styles.boardSection}>
-            <KanbanBoard board={board} onCardClick={handleCardClick} />
-          </Box>
-
-          <Flex className={styles.panelsSection}>
-            <PlannerPanel
-              plannerChats={plannerChats}
-              activeChat={activeChat}
-              activePlannerId={activePlannerId}
-              onNewPlanner={handleNewPlanner}
-              onSelectPlanner={handleSelectPlanner}
-              onRemovePlanner={handleRemovePlanner}
-            />
-            <AgentsPanel
-              cards={board.cards}
-              activeChat={activeChat}
-              onSelectAgent={handleSelectAgent}
-              defaultAgentModel={task.default_agent_model}
-              onModelChange={handleModelChange}
-            />
-          </Flex>
-        </>
-      )}
+            <Flex className={styles.panelsSection}>
+              <PlannerPanel
+                plannerChats={plannerChats}
+                activeChat={activeChat}
+                activePlannerId={activePlannerId}
+                onSelectPlanner={handleSelectPlanner}
+                onRemovePlanner={handleRemovePlanner}
+              />
+              <AgentsPanel
+                cards={board.cards}
+                activeChat={activeChat}
+                onSelectAgent={handleSelectAgent}
+                defaultAgentModel={task.default_agent_model}
+                onModelChange={handleModelChange}
+              />
+            </Flex>
+          </CollapsePanel>
+        </Box>
+      </CollapsePanel>
 
       <Box className={styles.chatSection}>
-        <Flex
-          className={styles.chatHeader}
-          align="center"
-          gap="2"
-          px="3"
-          py="2"
-          onClick={handleToggleChatExpanded}
-          style={{ cursor: "pointer" }}
-        >
-          <ChevronDownIcon
-            className={`${styles.chevron} ${
-              chatExpanded ? styles.chevronExpanded : ""
-            }`}
-          />
-          <PersonIcon />
-          <Text size="2" weight="medium">
-            {chatLabel}
-          </Text>
-        </Flex>
+        <div className={styles.chatHeader}>
+          <button
+            type="button"
+            onClick={handleToggleChatExpanded}
+            aria-expanded={chatExpanded}
+            aria-label={chatToggleLabel}
+            title={chatToggleLabel}
+            className={`${styles.sectionHeaderToggle} ${styles.chatHeaderToggle}`}
+          >
+            <ChevronDownIcon
+              className={`${styles.chevron} ${
+                chatExpanded ? styles.chevronExpanded : ""
+              }`}
+            />
+            <Text
+              size="1"
+              weight="bold"
+              color="gray"
+              className={styles.sectionHeaderLabel}
+            >
+              Chat
+            </Text>
+            <Text size="1" color="gray" className={styles.chatHeaderLabel}>
+              {chatLabel}
+            </Text>
+          </button>
+        </div>
         <Box className={styles.chatContent}>
           {activeChat ? (
             <InternalLinkProvider onInternalLink={handleInternalLink}>
@@ -811,8 +1379,106 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       </Box>
 
       {selectedCard && (
-        <CardDetail card={selectedCard} onClose={() => setSelectedCard(null)} />
+        <CardDetail
+          card={selectedCard}
+          worktree={selectedCardWorktree}
+          worktreeLabel={selectedCardWorktreeLabel}
+          isWorktreeLoading={worktreesLoading}
+          onClose={() => setSelectedCard(null)}
+          onInternalLink={handleInternalLink}
+          onViewDiff={handleViewCardDiff}
+          onMerge={handleMergeCardWorktree}
+          onOpenWorktree={(worktree) => void handleOpenCardWorktree(worktree)}
+          onDeleteWorktree={handleDeleteCardWorktree}
+        />
       )}
+
+      <WorktreeDiffPanel
+        open={Boolean(diffTarget)}
+        worktreeId={diffTarget?.id}
+        worktree={diffTarget?.meta}
+        record={diffTarget?.record}
+        onOpenChange={(open) => {
+          if (!open) setDiffTarget(null);
+        }}
+      />
+
+      <MergeWorktreeModal
+        open={Boolean(mergeTarget)}
+        worktreeId={mergeTarget?.worktree.id}
+        worktree={mergeTarget?.worktree.meta}
+        record={mergeTarget?.worktree.record}
+        taskId={taskId}
+        defaultTargetBranch={task.base_branch}
+        onOpenChange={(open) => {
+          if (!open) setMergeTarget(null);
+        }}
+        onMerged={handleCardMergeCompleted}
+        onAskRefact={handleAskRefactForMerge}
+        onOpenWorktree={() =>
+          mergeTarget ? handleOpenCardWorktree(mergeTarget.worktree) : undefined
+        }
+      />
+
+      <Dialog.Root
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <Dialog.Content maxWidth="420px">
+          <Dialog.Title>Delete worktree</Dialog.Title>
+          <Dialog.Description size="2" color="gray">
+            Delete or discard this task agent worktree from disk.
+          </Dialog.Description>
+          <Flex direction="column" gap="3" mt="3">
+            <Text size="2" weight="medium">
+              {deleteTarget?.worktree.label ?? "Worktree"}
+            </Text>
+            {deleteTarget?.worktree.referenceCount !== undefined &&
+              deleteTarget.worktree.referenceCount > 1 && (
+                <Text size="2" color="amber">
+                  This worktree is shared by{" "}
+                  {deleteTarget.worktree.referenceCount} references.
+                </Text>
+              )}
+            <Text as="label" size="2">
+              <Flex align="center" gap="2">
+                <Checkbox
+                  checked={deleteBranch}
+                  onCheckedChange={(checked) =>
+                    setDeleteBranch(checked === true)
+                  }
+                  disabled={deleteWorktreeState.isLoading}
+                />
+                Delete git branch too
+              </Flex>
+            </Text>
+          </Flex>
+          <Flex justify="end" gap="2" mt="4">
+            <Dialog.Close>
+              <Button
+                type="button"
+                variant="soft"
+                color="gray"
+                disabled={deleteWorktreeState.isLoading}
+              >
+                Cancel
+              </Button>
+            </Dialog.Close>
+            <Button
+              type="button"
+              color="red"
+              disabled={!deleteTarget || deleteWorktreeState.isLoading}
+              onClick={() => void handleConfirmDeleteCardWorktree()}
+            >
+              {deleteWorktreeState.isLoading
+                ? "Deleting..."
+                : "Delete worktree"}
+            </Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
 
       {notification && (
         <Box

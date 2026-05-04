@@ -1,260 +1,127 @@
-# Refact Agent
+# Refact Agent Engine (`refact-lsp`)
 
-This is a small executable written in Rust, a part of the Refact Agent project. Its main job is to live
-inside your IDE quietly and keep AST and VecDB indexes up to date. It is well-written: it will not break if
-you edit your files quickly or switch branches, it caches vectorization model responses so you
-don't have to wait for VecDB to complete indexing, AST supports connection graph between definitions
-and usages in many popular programming languages.
+`refact-lsp` is the local Rust engine behind Refact. It runs on the user's machine, exposes HTTP and LSP entry points for IDE clients, maintains workspace indexes, talks to configured model providers, and executes the tools used by chat and autonomous agent workflows.
 
-Yes, it looks like an LSP server to IDE, hence the name. It can also work within a python program,
-check out the [Text UI](#cli) below, you can talk about your project in the command line!
+The engine is designed for local-first/BYOK usage: provider credentials and project state live in local configuration directories, while model calls go only to the providers or local runtimes the user enables.
 
----
+## What the engine provides
 
+- **HTTP API** on localhost for chat commands, SSE subscriptions, code completion, caps, tools, integrations, knowledge, tasks, trajectories, checkpoints, and voice endpoints.
+- **LSP transport** over stdio or TCP for IDE integrations.
+- **Chat and agent runtime** with streaming deltas, tool calls, pause/confirmation handling, subagents, and trajectory persistence.
+- **Code intelligence** with workspace file tracking, AST indexes, semantic search, code lens, and completion context.
+- **Provider registry** that loads BYOK/local provider configs and dynamically refreshes available models.
+- **Tooling layer** for filesystem edits, search, shell/cmdline execution, browser automation, MCP, knowledge, tasks, and VCS workflows.
+- **Integrations** for GitHub, GitLab, Bitbucket, PDB, PostgreSQL, MySQL, command-line tools, long-running services, and MCP transports.
 
-# Table of Contents
+## Build and run
 
-- [Installation](#installation)
-- [Things to Try](#things-to-try)
-- [Telemetry](#telemetry)
-- [Caps File](#caps-file)
-- [AST](#ast)
-- [CLI](#cli)
-- [Progress and Future Plans](#progress-and-future-plans)
-- [Archiecture](#archiecture)
-- [Contributing](#contributing)
-- [Follow Us and FAQ](#follow-us-and-faq)
-- [License](#license)
+```bash
+cd refact-agent/engine
 
+# Fast type/borrow check
+cargo check
 
-# Key Features
-
-* Integrates with the IDE you are already using, like VSCode or JetBrains
-* Offers assistant functionality: code completion and chat
-* Keeps track of your source files, keeps AST and vector database up to date
-* Integrates browser, databases, debuggers for the model to use
-* Ask it anything! It will use the tools available to make changes to your project
-
-
-## Supported Models
-
-Refact Agent supports state-of-the-art models from multiple providers:
-
-### Model Families
-
-- **OpenAI**: GPT-5, GPT-4.1, O-series (o3-mini, o4-mini) - Advanced reasoning and agent capabilities
-- **Anthropic**: Claude 4.5 (Haiku, Sonnet, Opus) - Extended thinking and multimodal support
-- **Google**: Gemini 2.5 & 3.0 Pro - Large context windows up to 1M tokens
-- **DeepSeek**: Chat and Reasoner - High-performance inference
-- **Qwen**: Qwen3-235B - Large-scale reasoning
-
-### Key Capabilities
-
-- ✅ Streaming responses
-- ✅ Prompt caching (OpenAI, Anthropic)
-- ✅ Tool/function calling
-- ✅ Multimodal inputs (images)
-- ✅ Agent mode (autonomous task execution)
-- ✅ Extended reasoning/thinking modes
-- ✅ Web search integration (GPT-5, o4-mini-deep-research)
-- ✅ Autonomous multi-step research (o4-mini-deep-research)
-
-📜 **[View Complete Model List & Pricing](https://docs.refact.ai/supported-models/)**
-
-
-## Installation
-
-Installable by the end user:
-
- * VS Code https://github.com/smallcloudai/refact-vscode/
-
- * JetBrains IDEs https://github.com/smallcloudai/refact-intellij
-
- * VS Classic https://github.com/smallcloudai/refact-vs-classic/
-
- * Sublime Text https://github.com/smallcloudai/refact-sublime/
-
- * Neovim https://github.com/smallcloudai/refact-neovim
-
- * Refact Self-Hosting Server https://github.com/smallcloudai/refact/
-
-
-### Other Important Repos
-
-* [Documentation](https://github.com/smallcloudai/web_docs_refact_ai)
-* [Chat UI](https://github.com/smallcloudai/refact-chat-js)
-
-
-## Progress
-
-- [x] Code completion with RAG
-- [x] Chat with tool usage
-- [x] search_symbol_definition() search_symbol_usages() tools
-- [x] search_semantic() with scope (semantic search)
-- [x] search_pattern() with scope (pattern matching)
-- [x] @file @tree @web @definition @references @search mentions in chat
-- [x] subagent() delegates focused tasks to independent sub-agents
-- [x] OpenAI GPT-4.1, GPT-5, o3-mini, o4-mini models with reasoning support
-- [x] Anthropic Claude 4.5 family (Haiku, Sonnet, Opus) with extended thinking
-- [x] Google Gemini 2.5 & 3.0 Pro models
-- [x] DeepSeek Chat and Reasoner models
-- [x] Qwen3-235B reasoning model
-- [x] Prompt caching support (OpenAI, Anthropic)
-- [x] Web search integration (GPT-5 models)
-- [x] Code interpreter (o4-mini-deep-research)
-- [x] [Bring-your-own-key](https://docs.refact.ai/byok/)
-- [ ] Memory (--experimental)
-- [ ] Docker integration (--experimental)
-- [ ] git integration (--experimental)
-- [x] pdb python debugger integration (--experimental)
-- [ ] More debuggers
-- [x] Github integration (--experimental)
-- [ ] Gitlab integration
-- [ ] Jira integration
-
-
-### Compiling and Running
-
-It will automatically pick up OPENAI_API_KEY, or maybe you have Refact cloud key or Refact Self-Hosting Server:
-
-```
+# Debug build
 cargo build
-target/debug/refact-lsp --http-port 8001 --logs-stderr
-target/debug/refact-lsp --address-url Refact --api-key $REFACT_API_KEY --http-port 8001 --logs-stderr
-target/debug/refact-lsp --address-url http://my-refact-self-hosting/ --api-key $REFACT_API_KEY --http-port 8001 --logs-stderr
-```
 
-Try `--help` for more options.
-
-
-
-## Things to Try
-
-Code completion:
-
-```bash
-curl http://127.0.0.1:8001/v1/code-completion -k \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "inputs": {
-    "sources": {"hello.py": "def hello_world():"},
-    "cursor": {
-      "file": "hello.py",
-      "line": 0,
-      "character": 18
-    },
-    "multiline": true
-  },
-  "stream": false,
-  "parameters": {
-    "temperature": 0.1,
-    "max_new_tokens": 20
-  }
-}'
-```
-
-RAG status:
-
-```bash
-curl http://127.0.0.1:8001/v1/rag-status
-```
-
-Chat, the not-very-standard version, it has deterministic_messages in response for all your @-mentions. The more standard version
-is at /v1/chat/completions.
-
-```bash
-curl http://127.0.0.1:8001/v1/chat -k \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "messages": [
-    {"role": "user", "content": "Who is Bill Clinton? What is his favorite programming language?"}
-  ],
-  "stream": false,
-  "temperature": 0.1,
-  "max_tokens": 20
-}'
-```
-
-
-
-## Telemetry
-
-The flag `--basic-telemetry` means send counters and error messages. It is "compressed"
-into `.cache/refact/telemetry/compressed` folder, then from time to time it's sent and moved
-to `.cache/refact/telemetry/sent` folder.
-
-To be clear: without these flags, no telemetry is sent. At no point it sends your code.
-
-"Compressed" means similar records are joined together, increasing the counter. "Sent" means the rust binary
-communicates with a HTTP endpoint specified in caps (see Caps section below) and sends .json file exactly how
-you see it in `.cache/refact/telemetry`. The files are human-readable.
-
-When using Refact self-hosted server, telemetry goes to the self-hosted server, not to the cloud.
-
-
-
-## Caps File
-
-The capabilities file stores the same things as [bring-your-own-key.yaml](bring_your_own_key), the file describes how to access AI models.
-The `--address-url` parameter controls where to get this file, it defaults to `~/.config/refact/bring-your-own-key.yaml`.
-If it's a URL, the executable fetches `$URL/refact-caps` to know what to do. This is especially useful to connect to Refact Self-Hosting Server,
-because the configuration does not need to be copy-pasted among engineers who use the server.
-
-
-## AST
-
-Supported languages:
-
-- [x] Java
-- [x] JavaScript
-- [x] TypeScript
-- [x] Python
-- [x] Rust
-- [ ] C#
-
-You can still use Refact for other languages, just the AST capabilities will be missing.
-
-
-
-## CLI
-
-You can compile and use Refact Agent from command line with this repo alone, and it's a not an afterthought, it works great!
-
-```
+# Release build with default features
 cargo build --release
-cp target/release/refact-lsp python_binding_and_cmdline/refact/bin/
-pip install -e python_binding_and_cmdline/
+
+# Release build without optional voice dependencies
+cargo build --release --no-default-features
 ```
 
+Run a local HTTP endpoint for development:
 
-___
+```bash
+cargo run -- --http-port 8001 --logs-stderr --workspace-folder /path/to/project --ast --vecdb
+```
+
+Useful flags:
+
+- `--http-port <port>` binds the HTTP API to `127.0.0.1:<port>`.
+- `--lsp-stdin-stdout 1` runs the LSP transport over stdio.
+- `--lsp-port <port>` runs LSP over TCP.
+- `--workspace-folder <path>` seeds workspace indexing before an IDE connects.
+- `--ast` enables AST indexing.
+- `--vecdb` enables vector search indexing when an embedding provider is configured.
+- `--logs-stderr` sends logs to stderr; otherwise logs are stored under `~/.cache/refact/logs/`.
+- `--only-create-yaml-configs` creates default YAML configuration files and exits.
+
+Run `cargo run -- --help` for the full option list.
+
+## Tests
+
+```bash
+cd refact-agent/engine
+cargo check
+cargo test --lib
+cargo test --doc
+```
+
+Python integration tests under `tests/` expect a running `refact-lsp` instance and are not part of the quick local check.
+
+## Configuration
+
+The engine uses these local locations by default:
+
+| Location | Purpose |
+| --- | --- |
+| `~/.config/refact/` | User configuration, provider YAML files, privacy settings, global customization |
+| `~/.config/refact/providers.d/*.yaml` | BYOK/local provider configs loaded by the provider registry |
+| `~/.cache/refact/` | Logs, caches, shadow repositories, integration state |
+| `.refact/` in a workspace | Project trajectories, knowledge, tasks, integrations, and customization overrides |
+
+Provider setup is normally handled from the GUI, but the engine ultimately loads YAML files from `providers.d`. Current provider families include OpenAI-compatible APIs, Anthropic, OpenRouter, Ollama, LM Studio, vLLM, Groq, DeepSeek, Doubao, xAI, Google Gemini, Qwen, Kimi, Zhipu, MiniMax, GitHub Copilot, Claude Code, and custom endpoints. Available models are derived from provider config and provider/runtime catalogs instead of a fixed hard-coded model list.
+
+## API overview
+
+Selected HTTP endpoints under `/v1`:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/ping` | Health check and process identity |
+| `/caps` | Current provider/model/tool capabilities |
+| `/chats/{id}/commands` | Queue chat commands such as user messages, aborts, retries, and tool decisions |
+| `/chats/subscribe` | SSE stream for chat snapshots, deltas, queue changes, and runtime updates |
+| `/code-completion` | Fill-in-middle/code completion requests |
+| `/tools` and `/tools-check-if-confirmation-needed` | Tool metadata and confirmation checks |
+| `/ast-status`, `/ast-file-symbols` | AST index status and symbols |
+| `/rag-status`, `/vecdb-search` | Semantic index status and search |
+| `/integrations`, `/integration-get`, `/integration-save` | Integration configuration |
+| `/knowledge/*`, `/knowledge-graph` | Memory and knowledge graph operations |
+| `/tasks/*` | Task board operations |
+| `/checkpoints-preview`, `/checkpoints-restore` | Workspace rollback preview and restore |
+
+Chat clients use the commands API plus `/v1/chats/subscribe` SSE events rather than the legacy one-shot chat endpoint.
+
+## Source pointers
+
+| Path | Notes |
+| --- | --- |
+| `src/main.rs` | Process startup, HTTP/LSP selection, background tasks |
+| `src/global_context.rs` | Shared state, CLI options, provider loading, workspace initialization |
+| `src/http/routers/v1/` | HTTP route handlers |
+| `src/chat/` | Chat sessions, queues, streaming, tools, trajectories, history limits |
+| `src/llm/` | Provider wire-format adapters and streaming conversions |
+| `src/providers/` | Provider implementations and registry |
+| `src/tools/` | Built-in tools and file-edit/search/task/agent tool implementations |
+| `src/integrations/` | Integration configuration and runtime sessions |
+| `src/ast/` | Tree-sitter parsing and AST index storage |
+| `src/vecdb/` | SQLite/vec0 semantic indexing and search |
+| `src/tasks/` | Task board storage and events |
+| `src/yaml_configs/` | Default modes, toolbox commands, subagents, and provider templates |
+
+## Supported AST languages
+
+AST indexing currently covers C, C++, Python, Java, Kotlin, JavaScript, Rust, and TypeScript. Refact can still work with other languages using file, regex, semantic, and provider context, but language-aware AST features depend on parser support.
 
 ## Contributing
 
-- Contributing [CONTRIBUTING.md](CONTRIBUTING.md)
-- [GitHub issues](https://github.com/smallcloudai/refact/issues) for bugs and errors
-- [Community forum](https://github.com/smallcloudai/refact/discussions) for community support and discussions
-If you wish to contribute to this project, feel free to explore our [current issues](https://github.com/smallcloudai/refact/issues) or open new issues related to (bugs/features) using our [CONTRIBUTING.md](CONTRIBUTING.md).
+- Root repository: <https://github.com/smallcloudai/refact>
+- Docs: <https://docs.refact.ai/>
+- Issues: <https://github.com/smallcloudai/refact/issues>
+- Discussions: <https://github.com/smallcloudai/refact/discussions>
 
-
-## Follow Us and FAQ
-
-- [Contributing](CONTRIBUTING.md)
-- [Refact Docs](https://docs.refact.ai/)
-- [GitHub Issues](https://github.com/smallcloudai/refact/issues) for bugs and errors
-- [Community Forum](https://github.com/smallcloudai/refact/discussions) for community support and discussions
-- [Discord](https://www.smallcloud.ai/discord) for chatting with community members
-- [Twitter](https://twitter.com/refact_ai) for product news and updates
-
-
-## License
-
-Refact is free to use for individuals and small teams under the BSD-3-Clause license. If you wish to use Refact for Enterprise, please [contact us](https://refact.ai/contact/).
-
-
-
-
-
-
-
-
+Run `cargo fmt`, `cargo check`, and the relevant tests before submitting engine changes.

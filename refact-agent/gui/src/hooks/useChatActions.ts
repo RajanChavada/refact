@@ -8,8 +8,14 @@ import {
   selectThreadImages,
   selectSendImmediately,
   selectMessages,
+  selectManualPreviewItems,
+  selectManualPreviewRan,
 } from "../features/Chat/Thread/selectors";
-import { resetThreadImages, setSendImmediately } from "../features/Chat/Thread";
+import {
+  resetThreadImages,
+  setSendImmediately,
+  clearManualPreviewItems,
+} from "../features/Chat/Thread";
 import { buildThreadParamsPatch } from "../features/Chat/Thread/actions";
 import {
   sendUserMessage,
@@ -71,6 +77,8 @@ export function useChatActions() {
   const attachedImages = useAppSelector(selectThreadImages);
   const sendImmediately = useAppSelector(selectSendImmediately);
   const messages = useAppSelector(selectMessages);
+  const manualPreviewItems = useAppSelector(selectManualPreviewItems);
+  const manualPreviewRan = useAppSelector(selectManualPreviewRan);
 
   /**
    * Build message content with attached images if any.
@@ -116,12 +124,21 @@ export function useChatActions() {
           : content.length === 0;
       if (isEmpty) return;
 
-      if (messages.length === 0 && thread) {
-        const patch = buildThreadParamsPatch(thread, true);
+      if (thread) {
+        const patch = buildThreadParamsPatch(thread, messages.length === 0);
         if (Object.keys(patch).length > 0) {
           await updateChatParams(chatId, patch, port, apiKey ?? undefined);
         }
       }
+
+      const contextFiles =
+        manualPreviewItems.length > 0
+          ? manualPreviewItems.map((item) => item.context_file)
+          : undefined;
+      const shouldSuppressAutoEnrichment =
+        manualPreviewRan &&
+        contextFiles !== undefined &&
+        contextFiles.length > 0;
 
       const shouldPrioritize = priority ?? sendImmediately;
       await sendUserMessage(
@@ -130,7 +147,12 @@ export function useChatActions() {
         port,
         apiKey ?? undefined,
         shouldPrioritize,
+        contextFiles,
+        shouldSuppressAutoEnrichment,
       );
+
+      dispatch(clearManualPreviewItems({ chatId }));
+
       dispatch(resetThreadImages({ id: chatId }));
       dispatch(setSendImmediately(false));
     },
@@ -143,6 +165,8 @@ export function useChatActions() {
       sendImmediately,
       messages,
       thread,
+      manualPreviewItems,
+      manualPreviewRan,
     ],
   );
 

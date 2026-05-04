@@ -167,9 +167,15 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
     selectToolResultById(state, toolCall.id),
   );
 
-  const toolDiffs = useAppSelector(
-    selectManyDiffMessageByIds(toolCall.id ? [toolCall.id] : []),
+  const diffIds = useMemo(
+    () => (toolCall.id ? [toolCall.id] : []),
+    [toolCall.id],
   );
+  const selectDiffs = useMemo(
+    () => selectManyDiffMessageByIds(diffIds),
+    [diffIds],
+  );
+  const toolDiffs = useAppSelector(selectDiffs);
 
   const allDiffs = useMemo(() => {
     const fromProps = diffs;
@@ -348,7 +354,14 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
               onClick={handleApplyDiff}
               disabled={dryRunResult.isLoading || !parsedToolCall}
             >
-              {dryRunResult.isLoading ? <Spinner size="1" /> : "➕ Diff"}
+              {dryRunResult.isLoading ? (
+                <Spinner size="1" />
+              ) : (
+                <Flex as="span" align="center" gap="1">
+                  <PlusIcon />
+                  Diff
+                </Flex>
+              )}
             </Button>
             {replaceContent && (
               <Button
@@ -357,7 +370,10 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
                 onClick={handleReplace}
                 disabled={!canPaste}
               >
-                ➕ Replace
+                <Flex as="span" align="center" gap="1">
+                  <PlusIcon />
+                  Replace
+                </Flex>
               </Button>
             )}
           </Flex>

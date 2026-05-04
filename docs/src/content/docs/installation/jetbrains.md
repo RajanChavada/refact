@@ -1,38 +1,35 @@
 ---
-title: Refact for JetBrains IDEs
-description: A page which explains how to install and use Refact for JetBrains IDEs
+title: JetBrains IDEs
+description: Install Refact for JetBrains IDEs and complete local-first setup.
 ---
 
-For JetBrains products, after installing the plugin from the [marketplace](https://plugins.jetbrains.com/plugin/20647-codify), press the Refact logo to open the UI of the plugin.
+## Install
 
-Pick one of the available versions and click the **Next** button.
+Install Refact from the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/20647-codify). You can also install a local plugin build if you are developing Refact from source.
 
-![JetBrains Login](../../../assets/jetbrains-login_start.png)
+## Open Refact
 
-The quickest way to get started is with **Cloud** option. When pressing the **Next** button, you will see an interface similar to the one below:
+After installation, open the Refact tool window. The plugin starts the local `refact-lsp` engine and loads the Refact UI inside your JetBrains IDE.
 
-![Refact Cloud Login](../../../assets/jetbrains_refact_cloud_login.png)
+## Complete First-Run Setup
 
-When pressing the **Login** or **Create Account** button, you will be redirected to the Refact's login page in your browser.
+1. Open **Provider Setup**.
+2. Add a hosted provider, local runtime, or custom endpoint.
+3. Enter the provider key, complete OAuth if required, or confirm the local endpoint URL.
+4. Enable the models you want to use.
+5. Open **Default Models** and choose defaults for chat, agent work, reasoning, completion, and embeddings as needed.
 
-After completing the login process, the interface of the sidebar will change to the following:
+Refact works with BYOK providers such as Anthropic, OpenAI, OpenRouter, Groq, DeepSeek, Gemini, xAI, Qwen, Kimi, Zhipu, MiniMax, GitHub Copilot, Claude Code, and custom OpenAI-compatible endpoints. Local runtimes include Ollama, LM Studio, and vLLM.
 
-![Refact Sidebar](../../../assets/jetbrains_refact_loggedin.png)
+## Start Using Refact In JetBrains IDEs
 
-For the Self-hosted and Enterprise options, follow one of the following guides:
+- Open Chat and ask about the current project.
+- Switch to an agent mode for searches, edits, commands, and integration-backed tasks.
+- Enable inline completion with a completion-capable model source.
+- Add project knowledge, task context, and integration settings as your workflow grows.
 
-- [Self-hosted Login](https://docs.refact.ai/guides/version-specific/self-hosted/#custom-inference-setup)
-- [Enterprise Login](https://docs.refact.ai/guides/version-specific/enterprise/getting-started/#setting-up-the-plugins)
+## Local Engine Notes
 
+The JetBrains plugin communicates with the engine over localhost. Project trajectories, task state, knowledge, and provider settings stay in local Refact directories unless you configure providers or integrations that need network access.
 
-# Early Access Program
-
-If you feel adventurous, add Early Access Program to your Plugins settings over here:
-
-![Early Access Program](../../../assets/jetbrains-early-access-program.jpg)
-
-In a small window called "Custom Plugin Repositories" add "https://plugins.jetbrains.com/plugins/eap/list",
-then update the plugin.
-
-You will have access to the EAP version of the Refact plugin. Not guaranteed to work, but we try not to publish completely
-dysfunctional versions in EAP either. Try new features, report how they work in discord!
+A hosted Refact login, Refact-issued model key, or separate backend deployment is not required.

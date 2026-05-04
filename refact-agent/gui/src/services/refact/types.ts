@@ -6,6 +6,7 @@ import { MCPArgs, MCPEnvs } from "./integrations";
 export type ChatRole =
   | "user"
   | "assistant"
+  | "error"
   | "context_file"
   | "system"
   | "tool"
@@ -73,6 +74,7 @@ export interface BaseToolResult {
   content: ToolContent;
   compression_strength?: CompressionStrength;
   tool_failed?: boolean;
+  extra?: Record<string, unknown>;
 }
 
 export interface SingleModelToolResult extends BaseToolResult {
@@ -180,6 +182,11 @@ export interface AssistantMessage extends BaseMessage, CostInfo {
   extra?: Record<string, unknown>;
 }
 
+export interface ErrorMessage extends BaseMessage {
+  role: "error";
+  content: string;
+}
+
 export interface ToolCallMessage extends AssistantMessage {
   tool_calls: ToolCall[];
 }
@@ -195,6 +202,7 @@ export interface ToolMessage extends BaseMessage {
   tool_call_id: string;
   tool_failed?: boolean;
   compression_strength?: CompressionStrength;
+  extra?: Record<string, unknown>;
 }
 
 export type DiffChunk = {
@@ -258,6 +266,7 @@ export interface CDInstructionMessage extends BaseMessage {
 export type ChatMessage =
   | UserMessage
   | AssistantMessage
+  | ErrorMessage
   | ChatContextFileMessage
   | SystemMessage
   | ToolMessage
@@ -284,6 +293,10 @@ export function isAssistantMessage(
   message: ChatMessage,
 ): message is AssistantMessage {
   return message.role === "assistant";
+}
+
+export function isErrorMessage(message: ChatMessage): message is ErrorMessage {
+  return message.role === "error";
 }
 
 export function isToolMessage(message: ChatMessage): message is ToolMessage {
@@ -590,13 +603,6 @@ type CostInfo = {
   metering_generated_tokens_n?: number;
   metering_cache_creation_tokens_n?: number;
   metering_cache_read_tokens_n?: number;
-
-  metering_balance?: number;
-
-  metering_coins_prompt?: number;
-  metering_coins_generated?: number;
-  metering_coins_cache_creation?: number;
-  metering_coins_cache_read?: number;
 
   metering_usd?: MeteringUsd;
 };

@@ -8,16 +8,15 @@ use tokio::sync::Mutex as AMutex;
 use tokio::time::timeout;
 use tokio::time::Duration;
 use rmcp::serve_client;
-use rmcp::{RoleClient, service::RunningService};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
 use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::{IntegrationTrait, IntegrationCommon};
-use super::session_mcp::add_log_entry;
-use super::integr_mcp_common::{
-    CommonMCPSettings, MCPTransportInitializer, mcp_integr_tools, mcp_session_setup,
-};
+use super::session_mcp::{McpClientHandler, McpRunningService, SessionMCP, add_log_entry};
+use super::mcp_metrics::SharedMetrics;
+use super::mcp_path_resolution;
+use super::integr_mcp_common::{CommonMCPSettings, MCPTransportInitializer, impl_mcp_integration_trait};
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Default, Debug)]
 pub struct SettingsMCPStdio {
@@ -46,7 +45,8 @@ impl MCPTransportInitializer for IntegrationMCPStdio {
         init_timeout: u64,
         _request_timeout: u64,
         session_arc_clone: Arc<AMutex<Box<dyn crate::integrations::sessions::IntegrationSession>>>,
-    ) -> Option<RunningService<RoleClient, ()>> {
+        handler: McpClientHandler,
+    ) -> Option<McpRunningService> {
         let log = async |level: tracing::Level, msg: String| {
             match level {
                 tracing::Level::ERROR => tracing::error!("{msg} for {debug_name}"),
@@ -84,11 +84,33 @@ impl MCPTransportInitializer for IntegrationMCPStdio {
             }
         };
 
-        let mut command = tokio::process::Command::new(&parsed_args[0]);
+        let resolved = match mcp_path_resolution::resolve_command(
+            &parsed_args[0],
+            command,
+            self.cfg.mcp_env.get("PATH").map(|s| s.as_str()),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                log(tracing::Level::ERROR, e.to_user_message()).await;
+                return None;
+            }
+        };
+
+        let mut command = tokio::process::Command::new(&resolved.program);
         command.args(&parsed_args[1..]);
+        command.env("PATH", &resolved.effective_path);
         for (key, value) in &self.cfg.mcp_env {
             command.env(key, value);
         }
+
+        #[cfg(target_os = "linux")]
+        let session_metrics: Option<SharedMetrics> = {
+            let mut session_locked = session_arc_clone.lock().await;
+            session_locked
+                .as_any_mut()
+                .downcast_mut::<SessionMCP>()
+                .map(|s| s.metrics.clone())
+        };
 
         match NamedTempFile::new().map(|f| f.keep()) {
             Ok(Ok((file, path))) => {
@@ -113,16 +135,28 @@ impl MCPTransportInitializer for IntegrationMCPStdio {
             Err(e) => {
                 log(
                     tracing::Level::ERROR,
-                    format!("Failed to init Tokio child process: {}", e),
+                    format!(
+                        "Failed to start MCP server process '{}': {}. Resolved binary: {}",
+                        &parsed_args[0],
+                        e,
+                        resolved.program.display()
+                    ),
                 )
                 .await;
                 return None;
             }
         };
 
+        #[cfg(target_os = "linux")]
+        if let Some(ref metrics) = session_metrics {
+            if let Some(pid) = read_last_child_pid() {
+                metrics.lock().await.set_pid(pid);
+            }
+        }
+
         match timeout(
             Duration::from_secs(init_timeout),
-            serve_client((), transport),
+            serve_client(handler, transport),
         )
         .await
         {
@@ -147,54 +181,53 @@ impl MCPTransportInitializer for IntegrationMCPStdio {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn read_last_child_pid() -> Option<u32> {
+    let self_pid = std::process::id();
+    let path = format!("/proc/{}/task/{}/children", self_pid, self_pid);
+    let content = std::fs::read_to_string(&path).ok()?;
+    content
+        .split_whitespace()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .last()
+}
+
+impl_mcp_integration_trait!(IntegrationMCPStdio, "mcp_stdio_schema.yaml");
+
+#[derive(Default, Clone)]
+pub struct IntegrationMCPUnified {
+    pub inner: IntegrationMCPStdio,
+}
+
 #[async_trait]
-impl IntegrationTrait for IntegrationMCPStdio {
+impl IntegrationTrait for IntegrationMCPUnified {
     async fn integr_settings_apply(
         &mut self,
         gcx: Arc<ARwLock<GlobalContext>>,
         config_path: String,
         value: &serde_json::Value,
     ) -> Result<(), serde_json::Error> {
-        self.gcx_option = Some(Arc::downgrade(&gcx));
-        self.cfg = serde_json::from_value(value.clone())?;
-        self.common = serde_json::from_value(value.clone())?;
-        self.config_path = config_path.clone();
-
-        mcp_session_setup(
-            gcx,
-            config_path,
-            serde_json::to_value(&self.cfg).unwrap_or_default(),
-            self.clone(),
-            self.cfg.common.init_timeout,
-            self.cfg.common.request_timeout,
-        )
-        .await;
-
-        Ok(())
+        self.inner
+            .integr_settings_apply(gcx, config_path, value)
+            .await
     }
 
     fn integr_settings_as_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.cfg).unwrap()
+        self.inner.integr_settings_as_json()
     }
 
-    fn integr_common(&self) -> IntegrationCommon {
-        self.common.clone()
+    fn integr_common(&self) -> crate::integrations::integr_abstract::IntegrationCommon {
+        self.inner.integr_common()
     }
 
     async fn integr_tools(
         &self,
-        _integr_name: &str,
+        integr_name: &str,
     ) -> Vec<Box<dyn crate::tools::tools_description::Tool + Send>> {
-        mcp_integr_tools(
-            self.gcx_option.clone(),
-            &self.config_path,
-            &self.common,
-            self.cfg.common.request_timeout,
-        )
-        .await
+        self.inner.integr_tools(integr_name).await
     }
 
     fn integr_schema(&self) -> &str {
-        include_str!("mcp_stdio_schema.yaml")
+        include_str!("mcp_unified_schema.yaml")
     }
 }

@@ -12,7 +12,8 @@ import {
 import { ChatContextFile } from "../../services/refact";
 import { ShikiCodeBlock } from "../Markdown/ShikiCodeBlock";
 import { filename } from "../../utils";
-import { useEventsBusForIDE } from "../../hooks";
+import { useEventsBusForIDE, useAppDispatch } from "../../hooks";
+import { push } from "../../features/Pages/pagesSlice";
 import { useDelayedUnmount } from "../shared/useDelayedUnmount";
 import styles from "./ContextFiles.module.css";
 
@@ -58,7 +59,6 @@ function isInstructionFile(filePath: string): boolean {
     lower.includes("copilot-instructions") ||
     lower.includes(".github/instructions") ||
     lower.includes(".aider.conf") ||
-    lower.includes(".refact/project_summary") ||
     lower.includes(".refact/instructions")
   );
 }
@@ -366,6 +366,25 @@ const _ContextFiles: React.FC<{
 }> = ({ files, toolCallId, open: controlledOpen, onOpenChange }) => {
   const [internalOpen, setInternalOpen] = useState(false);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
+  const dispatch = useAppDispatch();
+
+  const handleOpenFile = useCallback(
+    async (file: { file_path: string; line?: number }) => {
+      if (file.file_path.startsWith("skill://")) {
+        const skillName = file.file_path.slice("skill://".length);
+        dispatch(
+          push({ name: "extensions", tab: "skills", itemId: skillName }),
+        );
+        return;
+      }
+      if (file.file_path.startsWith("skills://")) {
+        dispatch(push({ name: "extensions", tab: "skills" }));
+        return;
+      }
+      await queryPathThenOpenFile(file);
+    },
+    [dispatch, queryPathThenOpenFile],
+  );
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : internalOpen;
@@ -437,7 +456,7 @@ const _ContextFiles: React.FC<{
             <Box className={styles.content}>
               <FilesContent
                 files={files}
-                onOpenFile={queryPathThenOpenFile}
+                onOpenFile={handleOpenFile}
                 variant={variant}
               />
             </Box>

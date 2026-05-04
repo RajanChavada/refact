@@ -9,8 +9,8 @@ use crate::caps::model_caps::ModelCapabilities;
 use crate::llm::adapter::WireFormat;
 use crate::providers::traits::{
     AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
-    merge_custom_models, normalize_endpoint, derive_endpoint_from_chat_url,
-    parse_enabled_models, parse_custom_models, set_model_enabled_impl,
+    merge_custom_models, normalize_endpoint, derive_endpoint_from_chat_url, parse_enabled_models,
+    parse_custom_models, set_model_enabled_impl,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,6 +18,8 @@ pub struct LMStudioProvider {
     pub endpoint: String,
     pub api_key: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub supports_cache_control: bool,
     #[serde(default)]
     pub enabled_models: Vec<String>,
     #[serde(default)]
@@ -30,6 +32,7 @@ impl Default for LMStudioProvider {
             endpoint: "http://localhost:1234".to_string(),
             api_key: String::new(),
             enabled: false,
+            supports_cache_control: false,
             enabled_models: Vec::new(),
             custom_models: HashMap::new(),
         }
@@ -39,35 +42,76 @@ impl Default for LMStudioProvider {
 impl LMStudioProvider {
     fn parse_openai_model(model: &serde_json::Value, enabled: bool) -> Option<AvailableModel> {
         let id = model.get("id")?.as_str()?.to_string();
+        let n_ctx = model
+            .get("context_length")
+            .or_else(|| model.get("max_context_length"))
+            .or_else(|| model.get("max_model_len"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(32_768);
+        let max_output_tokens = model
+            .get("max_tokens")
+            .or_else(|| model.get("max_completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let supports_tools = model
+            .get("supports_tools")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                model
+                    .get("capabilities")
+                    .and_then(|v| v.as_array())
+                    .map(|caps| caps.iter().any(|c| c.as_str() == Some("tools")))
+            })
+            .unwrap_or(true);
+        let supports_multimodality = model
+            .get("supports_vision")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                model
+                    .get("capabilities")
+                    .and_then(|v| v.as_array())
+                    .map(|caps| {
+                        caps.iter()
+                            .any(|c| matches!(c.as_str(), Some("vision") | Some("image")))
+                    })
+            })
+            .unwrap_or(false);
 
         Some(AvailableModel {
             id,
             display_name: None,
-            n_ctx: 4096,
-            supports_tools: true,
-            supports_multimodality: false,
+            n_ctx,
+            supports_tools,
+            supports_parallel_tools: supports_tools,
+            supports_strict_tools: false,
+            supports_multimodality,
             reasoning_effort_options: None,
             supports_thinking_budget: false,
             supports_adaptive_thinking_budget: false,
+            supports_cache_control: false,
             tokenizer: None,
             enabled,
             is_custom: false,
             pricing: None,
             available_providers: Vec::new(),
             selected_provider: None,
-            max_output_tokens: None,
+            max_output_tokens,
             provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: None,
         })
     }
 }
 
 #[async_trait]
 impl ProviderTrait for LMStudioProvider {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "lmstudio"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "LM Studio"
     }
 
@@ -106,6 +150,12 @@ fields:
     f_placeholder: ""
     f_label: "API Key"
     f_default: ""
+  supports_cache_control:
+    f_type: boolean
+    f_desc: "Send Anthropic-style cache-control fields to the LM Studio server"
+    f_label: "Enable Cache Control"
+    f_default: false
+    f_extra: true
 description: |
   Local LM Studio server for running models.
 available:
@@ -130,6 +180,11 @@ available:
         if let Some(enabled) = yaml.get("enabled").and_then(|v| v.as_bool()) {
             self.enabled = enabled;
         }
+        if let Some(supports_cache_control) =
+            yaml.get("supports_cache_control").and_then(|v| v.as_bool())
+        {
+            self.supports_cache_control = supports_cache_control;
+        }
         parse_enabled_models(&yaml, &mut self.enabled_models);
         parse_custom_models(&yaml, &mut self.custom_models);
         Ok(())
@@ -140,6 +195,7 @@ available:
             "endpoint": self.endpoint,
             "api_key": if self.api_key.is_empty() { "" } else { "***" },
             "enabled": self.enabled,
+            "supports_cache_control": self.supports_cache_control,
             "enabled_models": self.enabled_models,
             "custom_models": self.custom_models
         })
@@ -161,7 +217,7 @@ available:
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
-            support_metadata: false,
+            supports_cache_control: self.supports_cache_control,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
             embedding_model: None,
@@ -196,8 +252,10 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        self.custom_models.get(model_id).and_then(|c| c.pricing.clone())
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+        self.custom_models
+            .get(model_id)
+            .and_then(|c| c.pricing.clone())
     }
 
     async fn fetch_available_models(
@@ -212,7 +270,10 @@ available:
             .get(&models_url)
             .timeout(std::time::Duration::from_secs(5));
         if !self.api_key.is_empty() {
-            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", self.api_key));
+            request = request.header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", self.api_key),
+            );
         }
 
         let response = match request.send().await {
@@ -224,7 +285,10 @@ available:
         };
 
         if !response.status().is_success() {
-            tracing::warn!("LM Studio: /v1/models returned status {}", response.status());
+            tracing::warn!(
+                "LM Studio: /v1/models returned status {}",
+                response.status()
+            );
             return self.get_custom_models_only();
         }
 
@@ -256,5 +320,28 @@ available:
         merge_custom_models(&mut models, &self.custom_models, &enabled_set);
         models.sort_by(|a, b| a.id.cmp(&b.id));
         models
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lmstudio_runtime_disables_cache_control_by_default() {
+        let runtime = LMStudioProvider::default().build_runtime().unwrap();
+
+        assert!(!runtime.supports_cache_control);
+    }
+
+    #[test]
+    fn lmstudio_runtime_can_enable_cache_control() {
+        let mut provider = LMStudioProvider::default();
+        provider
+            .provider_settings_apply(serde_yaml::from_str("supports_cache_control: true").unwrap())
+            .unwrap();
+        let runtime = provider.build_runtime().unwrap();
+
+        assert!(runtime.supports_cache_control);
     }
 }

@@ -1,4 +1,4 @@
-schema_version: 8
+schema_version: 14
 id: task_planner
 title: Task Planner
 description: Task board management mode
@@ -196,13 +196,16 @@ prompt: |
 
   %CD_INSTRUCTIONS%
 
+  %RICH_CONTENT_INSTRUCTIONS%
+
   %SYSTEM_INFO%
 
   %ENVIRONMENT_INFO%
 
   %WORKSPACE_INFO%
 
-  %PROJECT_SUMMARY%
+
+  %SKILLS_INSTRUCTIONS%
 
   %PROJECT_CONFIGS%
 
@@ -221,6 +224,8 @@ tools:
   - search_pattern
   - search_symbol_definition
   - search_semantic
+  - activate_skill
+  - deactivate_skill
   - knowledge
   - search_trajectories
   - get_trajectory_context
@@ -231,6 +236,7 @@ tools:
   - deep_research
   - strategic_planning
   - code_review
+  - apply_patch
   - update_textdoc
   - task_board_get
   - task_board_create_card

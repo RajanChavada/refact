@@ -66,12 +66,6 @@ pub async fn start_background_tasks(
         tokio::spawn(crate::files_in_workspace::files_in_workspace_init_task(
             gcx.clone(),
         )),
-        tokio::spawn(crate::telemetry::basic_transmit::telemetry_background_task(
-            gcx.clone(),
-        )),
-        tokio::spawn(crate::snippets_transmit::tele_snip_background_task(
-            gcx.clone(),
-        )),
         tokio::spawn(crate::vecdb::vdb_highlev::vecdb_background_reload(
             gcx.clone(),
         )),
@@ -88,9 +82,16 @@ pub async fn start_background_tasks(
             gcx.clone(),
         )),
         tokio::spawn(crate::chat::start_agent_monitor(gcx.clone())),
-        tokio::spawn(crate::providers::oauth_refresh::oauth_token_refresh_background_task(gcx.clone())),
-        tokio::spawn(crate::integrations::browser_runtime::browser_monitor_background_task(gcx.clone())),
-        tokio::spawn(crate::stats::writer::stats_writer_task(gcx_for_stats, stats_rx)),
+        tokio::spawn(
+            crate::providers::oauth_refresh::oauth_token_refresh_background_task(gcx.clone()),
+        ),
+        tokio::spawn(
+            crate::integrations::browser_runtime::browser_monitor_background_task(gcx.clone()),
+        ),
+        tokio::spawn(crate::stats::writer::stats_writer_task(
+            gcx_for_stats,
+            stats_rx,
+        )),
         tokio::spawn(async move {
             // Build in-memory knowledge index in background (best-effort).
             let index = build_knowledge_index(gcx_for_knowledge_index.clone()).await;
@@ -102,6 +103,7 @@ pub async fn start_background_tasks(
                 .await = index;
             tracing::info!("knowledge_index: built");
         }),
+        tokio::spawn(crate::buddy::actor::buddy_background_task(gcx.clone())),
     ]);
     let ast = gcx.clone().read().await.ast_service.clone();
     if let Some(ast_service) = ast {

@@ -215,6 +215,14 @@
   word-break: break-word;
 }
 
+.queuedMessageEditable {
+  cursor: pointer;
+}
+
+.queuedMessageEditable:hover {
+  color: var(--gray-12);
+}
+
 .plainTextTrigger {
   cursor: pointer;
   color: var(--gray-10);
@@ -224,9 +232,41 @@
   color: var(--gray-11);
 }
 
+.errorMessageCard {
+  margin: var(--space-2) 0;
+  border-color: var(--red-a6);
+  background: linear-gradient(180deg, var(--red-a2), var(--color-panel-solid));
+}
+
+.errorMessageIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  height: var(--space-5);
+  border-radius: var(--radius-full);
+  color: var(--red-11);
+  background: var(--red-a3);
+}
+
+.errorMessageBody {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-3);
+  background: var(--red-a2);
+  color: var(--red-12);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.errorMessageBody :global(p) {
+  margin: 0;
+}
+
 .virtuosoScroller {
   composes: scrollbarThin from "../shared/scrollbar.module.css";
   height: 100%;
+  overflow-anchor: none;
+  scroll-behavior: auto;
 
   /* Keep gutter stable so content doesn't shift when thumb appears. */
   scrollbar-gutter: stable;

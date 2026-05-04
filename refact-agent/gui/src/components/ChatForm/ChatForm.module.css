@@ -130,3 +130,88 @@
 .data_list__value {
   justify-content: end;
 }
+
+.topControlsRow,
+.bottomControlsRow {
+  container-type: inline-size;
+}
+
+.topStatusControls,
+.bottomActionControls {
+  min-width: 0;
+}
+
+.bottomActionControls {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: max-content;
+}
+
+.topStatusControls > span,
+.bottomActionControls > span,
+.bottomModelControl,
+.bottomModeControl,
+.bottomWorkspaceControl {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.topStatusControls > span,
+.bottomActionControls > span {
+  flex-shrink: 0;
+}
+
+.bottomControlsRow {
+  overflow: hidden;
+}
+
+.bottomModelControl,
+.bottomModeControl,
+.bottomWorkspaceControl {
+  flex: 0 1 auto;
+}
+
+@container (max-width: 520px) {
+  .hideTopTokensFirst,
+  .hideActionFirst {
+    display: none;
+  }
+}
+
+@container (max-width: 480px) {
+  .hideActionSecond {
+    display: none;
+  }
+}
+
+@container (max-width: 440px) {
+  .hideActionThird {
+    display: none;
+  }
+}
+
+@container (max-width: 400px) {
+  .hideActionFourth {
+    display: none;
+  }
+}
+
+@container (max-width: 360px) {
+  .bottomModelControl,
+  .hideActionFifth {
+    display: none;
+  }
+}
+
+@container (max-width: 320px) {
+  .bottomWorkspaceControl,
+  .hideActionSixth {
+    display: none;
+  }
+}
+
+@container (max-width: 260px) {
+  .hideTopCompressLast {
+    display: none;
+  }
+}

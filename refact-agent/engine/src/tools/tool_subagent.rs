@@ -4,9 +4,13 @@ use serde_json::Value;
 use tokio::sync::Mutex as AMutex;
 use async_trait::async_trait;
 
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
+use crate::chat::types::TaskMeta;
 use crate::at_commands::at_commands::AtCommandsContext;
+use crate::worktrees::types::WorktreeMeta;
 use crate::subchat::run_subchat;
 use crate::postprocessing::pp_command_output::OutputFilter;
 use crate::yaml_configs::customization_registry::get_subagent_config;
@@ -28,6 +32,36 @@ fn tools_contain_file_editing(tools: &[String]) -> bool {
     tools
         .iter()
         .any(|t| FILE_EDITING_TOOLS.contains(&t.as_str()))
+}
+
+fn tools_allow_editing_or_shell(tools: &[String]) -> bool {
+    tools.is_empty()
+        || tools
+            .iter()
+            .any(|t| t == "shell" || FILE_EDITING_TOOLS.contains(&t.as_str()))
+}
+
+fn parent_is_task_agent(task_meta: &Option<TaskMeta>) -> bool {
+    task_meta
+        .as_ref()
+        .map(|meta| meta.role == "agent" || meta.role == "agents")
+        .unwrap_or(false)
+}
+
+fn task_agent_scope_guard_error(
+    task_meta: &Option<TaskMeta>,
+    worktree: &Option<WorktreeMeta>,
+    tools: &[String],
+) -> Option<String> {
+    if parent_is_task_agent(task_meta) && worktree.is_none() && tools_allow_editing_or_shell(tools)
+    {
+        Some(
+            "Task-agent subagents with editing or shell tools require an active worktree scope"
+                .to_string(),
+        )
+    } else {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -79,29 +113,9 @@ impl Tool for ToolSubagent {
             experimental: false,
             allow_parallel: true,
             description: "Delegate a specific task to a sub-agent that works independently. Use this when you need to perform a focused task that requires multiple tool calls without cluttering the main conversation. The subagent has its own context and does not see the parent conversation.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "task".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Clear description of what the subagent should do. Be specific about the goal and any constraints.".to_string(),
-                },
-                ToolParam {
-                    name: "expected_result".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Description of what the successful result should look like. This helps the subagent know when it has completed the task.".to_string(),
-                },
-                ToolParam {
-                    name: "tools".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Comma-separated list of tool names the subagent should use (e.g., 'cat,tree,search'). Leave empty to allow all available tools.".to_string(),
-                },
-                ToolParam {
-                    name: "max_steps".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Maximum number of steps (tool calls) the subagent can make. Default is 10. Use lower values for simple tasks, higher for complex ones.".to_string(),
-                },
-            ],
-            parameters_required: vec!["task".to_string(), "expected_result".to_string(), "tools".to_string(), "max_steps".to_string()],
+            input_schema: json_schema_from_params(&[("task", "string", "Clear description of what the subagent should do. Be specific about the goal and any constraints."), ("expected_result", "string", "Description of what the successful result should look like. This helps the subagent know when it has completed the task."), ("tools", "string", "Comma-separated list of tool names the subagent should use (e.g., 'cat,tree,search'). Leave empty to allow all available tools."), ("max_steps", "string", "Maximum number of steps (tool calls) the subagent can make. Default is 10. Use lower values for simple tasks, higher for complex ones.")], &["task", "expected_result", "tools", "max_steps"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -144,7 +158,16 @@ impl Tool for ToolSubagent {
         };
         let max_steps = max_steps.min(50).max(1);
 
-        let (gcx, parent_chat_id, parent_root_chat_id, parent_subchat_tx, parent_abort_flag, current_depth) = {
+        let (
+            gcx,
+            parent_chat_id,
+            parent_root_chat_id,
+            parent_subchat_tx,
+            parent_abort_flag,
+            current_depth,
+            parent_task_meta,
+            parent_worktree,
+        ) = {
             let ccx_lock = ccx.lock().await;
             (
                 ccx_lock.global_context.clone(),
@@ -153,6 +176,8 @@ impl Tool for ToolSubagent {
                 ccx_lock.subchat_tx.clone(),
                 ccx_lock.abort_flag.clone(),
                 ccx_lock.subchat_depth,
+                ccx_lock.task_meta.clone(),
+                ccx_lock.execution_scope_worktree(),
             )
         };
 
@@ -171,6 +196,13 @@ impl Tool for ToolSubagent {
                     ..Default::default()
                 })],
             ));
+        }
+
+        let session_id_hook = parent_chat_id.clone();
+        if let Some(error) =
+            task_agent_scope_guard_error(&parent_task_meta, &parent_worktree, &tools)
+        {
+            return Err(error);
         }
 
         let has_editing_tools = tools_contain_file_editing(&tools);
@@ -210,6 +242,8 @@ impl Tool for ToolSubagent {
             false,
             None,
             "agent".to_string(),
+            parent_task_meta,
+            parent_worktree,
             Some(tool_call_id.clone()),
             Some(parent_subchat_tx),
             Some(parent_abort_flag),
@@ -223,9 +257,16 @@ impl Tool for ToolSubagent {
             .await
             .ok_or_else(|| format!("subagent config '{}' not found", config_name))?;
 
-        let system_prompt = subagent_config.messages.system_prompt
+        let system_prompt = subagent_config
+            .messages
+            .system_prompt
             .as_ref()
-            .ok_or_else(|| format!("messages.system_prompt not defined for subagent '{}'", config_name))?;
+            .ok_or_else(|| {
+                format!(
+                    "messages.system_prompt not defined for subagent '{}'",
+                    config_name
+                )
+            })?;
 
         let messages = vec![
             ChatMessage {
@@ -246,7 +287,42 @@ impl Tool for ToolSubagent {
             config.model
         );
 
-        let result = match run_subchat(gcx, messages, config).await {
+        let gcx_hook = gcx.clone();
+        let project_dir = crate::ext::hooks_runner::get_project_dir_string(gcx_hook.clone()).await;
+        let task_hook = task.clone();
+
+        let subchat_result = run_subchat(gcx, messages, config).await;
+
+        let final_status = match &subchat_result {
+            Ok(_) => "completed",
+            Err(e) if e == "Aborted" || e.starts_with("Aborted") => "aborted",
+            Err(_) => "error",
+        };
+        {
+            let mut extra = std::collections::HashMap::new();
+            extra.insert("agent_name".to_string(), serde_json::json!(task_hook));
+            extra.insert("final_status".to_string(), serde_json::json!(final_status));
+            tokio::spawn(async move {
+                let payload = crate::ext::hooks_runner::HookPayload {
+                    hook_event_name: "SubagentStop".to_string(),
+                    session_id: session_id_hook,
+                    project_dir,
+                    tool_name: None,
+                    tool_input: None,
+                    tool_output: None,
+                    user_prompt: None,
+                    extra,
+                };
+                crate::ext::hooks_runner::run_hooks(
+                    gcx_hook,
+                    crate::ext::hooks::HookEvent::SubagentStop,
+                    payload,
+                )
+                .await;
+            });
+        }
+
+        let result = match subchat_result {
             Ok(r) => r,
             Err(e) if e == "Aborted" || e.starts_with("Aborted") => {
                 return Ok((
@@ -288,8 +364,9 @@ impl Tool for ToolSubagent {
         // - retrieve related cards by filenames from in-memory index
         let related_section = {
             let combined = format!("{}\n{}", task, expected_result);
-            let path_re = Regex::new(r"(?:^|[\s`])((?:[a-zA-Z0-9_-]+/)+[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)")
-                .unwrap();
+            let path_re =
+                Regex::new(r"(?:^|[\s`])((?:[a-zA-Z0-9_-]+/)+[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)")
+                    .unwrap();
             let mut files: Vec<String> = path_re
                 .captures_iter(&combined)
                 .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -304,7 +381,11 @@ impl Tool for ToolSubagent {
             if cards.is_empty() {
                 // Fall back to tag-based lookup if we have no file signals.
                 cards = idx_guard.related_for_tags(
-                    &vec!["subagent".to_string(), "report".to_string(), "task-report".to_string()],
+                    &vec![
+                        "subagent".to_string(),
+                        "report".to_string(),
+                        "task-report".to_string(),
+                    ],
                     5,
                 );
             }
@@ -314,11 +395,7 @@ impl Tool for ToolSubagent {
         let result_message = if related_section.trim().is_empty() {
             result_message
         } else {
-            format!(
-                "{}{}",
-                result_message,
-                related_section
-            )
+            format!("{}{}", result_message, related_section)
         };
 
         Ok((
@@ -338,5 +415,58 @@ impl Tool for ToolSubagent {
 
     fn tool_depends_on(&self) -> Vec<String> {
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn task_meta(role: &str) -> Option<TaskMeta> {
+        Some(TaskMeta {
+            task_id: "task-1".to_string(),
+            role: role.to_string(),
+            agent_id: Some("agent-1".to_string()),
+            card_id: Some("card-1".to_string()),
+        })
+    }
+
+    fn worktree() -> Option<WorktreeMeta> {
+        Some(WorktreeMeta {
+            id: "wt-subagent".to_string(),
+            kind: "task_agent".to_string(),
+            root: PathBuf::from("/tmp/wt"),
+            source_workspace_root: PathBuf::from("/tmp/src"),
+            repo_root: PathBuf::from("/tmp/src"),
+            branch: Some("feature".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: Some("base".to_string()),
+            task_id: Some("task-1".to_string()),
+            card_id: Some("card-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            enforce: true,
+        })
+    }
+
+    #[test]
+    fn subchat_worktree_tool_subagent_requires_scope_for_task_agent_shell() {
+        let tools = vec!["shell".to_string()];
+        let error = task_agent_scope_guard_error(&task_meta("agents"), &None, &tools).unwrap();
+        assert!(error.contains("worktree scope"));
+    }
+
+    #[test]
+    fn subchat_worktree_tool_subagent_inherits_parent_scope_policy() {
+        let tools = vec!["shell".to_string()];
+        assert!(task_agent_scope_guard_error(&task_meta("agents"), &worktree(), &tools).is_none());
+        assert!(task_agent_scope_guard_error(&task_meta("planner"), &None, &tools).is_none());
+        assert!(task_agent_scope_guard_error(
+            &task_meta("agents"),
+            &None,
+            &vec!["cat".to_string()]
+        )
+        .is_none());
+        assert!(task_agent_scope_guard_error(&task_meta("agents"), &None, &Vec::new()).is_some());
     }
 }

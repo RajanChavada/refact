@@ -1,4 +1,11 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::RwLock as ARwLock;
+
 use crate::call_validation::{ChatUsage, MeteringUsd};
+use crate::caps::model_caps::{resolve_model_caps, ModelCapabilities};
+use crate::global_context::GlobalContext;
 use crate::providers::traits::ModelPricing;
 
 pub fn compute_cost(usage: &ChatUsage, pricing: &ModelPricing) -> Option<MeteringUsd> {
@@ -6,20 +13,42 @@ pub fn compute_cost(usage: &ChatUsage, pricing: &ModelPricing) -> Option<Meterin
         return None;
     }
 
-    let prompt_usd = (usage.prompt_tokens as f64) * pricing.prompt / 1_000_000.0;
-    let generated_usd = (usage.completion_tokens as f64) * pricing.generated / 1_000_000.0;
+    let billable_input_tokens = usage
+        .prompt_tokens
+        .saturating_add(usage.cache_read_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_creation_tokens.unwrap_or(0));
+    let long_context_tier = (billable_input_tokens > 200_000)
+        .then(|| pricing.context_over_200k.as_ref())
+        .flatten();
 
-    let cache_read_usd = match (usage.cache_read_tokens, pricing.cache_read) {
+    let prompt_rate = long_context_tier
+        .and_then(|tier| tier.prompt)
+        .unwrap_or(pricing.prompt);
+    let generated_rate = long_context_tier
+        .and_then(|tier| tier.generated)
+        .unwrap_or(pricing.generated);
+    let cache_read_rate = long_context_tier
+        .and_then(|tier| tier.cache_read)
+        .or(pricing.cache_read);
+    let cache_creation_rate = long_context_tier
+        .and_then(|tier| tier.cache_creation)
+        .or(pricing.cache_creation);
+
+    let prompt_usd = (usage.prompt_tokens as f64) * prompt_rate / 1_000_000.0;
+    let generated_usd = (usage.completion_tokens as f64) * generated_rate / 1_000_000.0;
+
+    let cache_read_usd = match (usage.cache_read_tokens, cache_read_rate) {
         (Some(tokens), Some(rate)) => Some((tokens as f64) * rate / 1_000_000.0),
         _ => None,
     };
 
-    let cache_creation_usd = match (usage.cache_creation_tokens, pricing.cache_creation) {
+    let cache_creation_usd = match (usage.cache_creation_tokens, cache_creation_rate) {
         (Some(tokens), Some(rate)) => Some((tokens as f64) * rate / 1_000_000.0),
         _ => None,
     };
 
-    let total_usd = prompt_usd + generated_usd
+    let total_usd = prompt_usd
+        + generated_usd
         + cache_read_usd.unwrap_or(0.0)
         + cache_creation_usd.unwrap_or(0.0);
 
@@ -32,360 +61,246 @@ pub fn compute_cost(usage: &ChatUsage, pricing: &ModelPricing) -> Option<Meterin
     })
 }
 
-
-pub fn openai_pricing(model_id: &str) -> Option<ModelPricing> {
-    let id = model_id.to_lowercase();
-    match id.as_str() {
-        // Codex-mini (standalone model, not gpt-5 family)
-        s if s.contains("codex-mini") => Some(ModelPricing {
-            prompt: 1.50,
-            generated: 6.00,
-            cache_read: Some(0.375),
-            cache_creation: None,
-        }),
-        // GPT-5 family (also covers gpt-5-codex, gpt-5.1-codex, gpt-5.2-codex)
-        s if s.contains("gpt-5") && s.contains("nano") => Some(ModelPricing {
-            prompt: 0.05,
-            generated: 0.40,
-            cache_read: Some(0.005),
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-5") && s.contains("mini") => Some(ModelPricing {
-            prompt: 0.25,
-            generated: 2.00,
-            cache_read: Some(0.025),
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-5") && s.contains("pro") => Some(ModelPricing {
-            prompt: 15.00,
-            generated: 120.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-5") => Some(ModelPricing {
-            prompt: 1.25,
-            generated: 10.00,
-            cache_read: Some(0.125),
-            cache_creation: None,
-        }),
-        // GPT-4.1 family
-        s if s.contains("gpt-4.1-nano") || s.contains("gpt-4.1_nano") => Some(ModelPricing {
-            prompt: 0.10,
-            generated: 0.40,
-            cache_read: Some(0.025),
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-4.1-mini") || s.contains("gpt-4.1_mini") => Some(ModelPricing {
-            prompt: 0.40,
-            generated: 1.60,
-            cache_read: Some(0.10),
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-4.1") => Some(ModelPricing {
-            prompt: 2.00,
-            generated: 8.00,
-            cache_read: Some(0.50),
-            cache_creation: None,
-        }),
-        // GPT-4o family
-        s if s.contains("gpt-4o-mini") => Some(ModelPricing {
-            prompt: 0.15,
-            generated: 0.60,
-            cache_read: Some(0.075),
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-4o") => Some(ModelPricing {
-            prompt: 2.50,
-            generated: 10.00,
-            cache_read: Some(1.25),
-            cache_creation: None,
-        }),
-        // Legacy GPT-4
-        s if s.contains("gpt-4-turbo") => Some(ModelPricing {
-            prompt: 10.00,
-            generated: 30.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-4") && !s.contains("turbo") && !s.contains("4o") && !s.contains("4.1") => Some(ModelPricing {
-            prompt: 30.00,
-            generated: 60.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gpt-3.5-turbo") => Some(ModelPricing {
-            prompt: 0.50,
-            generated: 1.50,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        // o4-mini
-        s if s.contains("o4-mini") => Some(ModelPricing {
-            prompt: 1.10,
-            generated: 4.40,
-            cache_read: Some(0.275),
-            cache_creation: None,
-        }),
-        // o3 family
-        s if s.contains("o3-pro") => Some(ModelPricing {
-            prompt: 20.00,
-            generated: 80.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("o3-mini") => Some(ModelPricing {
-            prompt: 1.10,
-            generated: 4.40,
-            cache_read: Some(0.55),
-            cache_creation: None,
-        }),
-        s if s.contains("o3") => Some(ModelPricing {
-            prompt: 2.00,
-            generated: 8.00,
-            cache_read: Some(0.50),
-            cache_creation: None,
-        }),
-        // o1 family
-        s if s.contains("o1-pro") => Some(ModelPricing {
-            prompt: 150.00,
-            generated: 600.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("o1-mini") => Some(ModelPricing {
-            prompt: 1.10,
-            generated: 4.40,
-            cache_read: Some(0.55),
-            cache_creation: None,
-        }),
-        s if s.contains("o1") => Some(ModelPricing {
-            prompt: 15.00,
-            generated: 60.00,
-            cache_read: Some(7.50),
-            cache_creation: None,
-        }),
-        _ => None,
+pub fn standard_model_pricing_from_caps(
+    model_caps: &HashMap<String, ModelCapabilities>,
+    model_id: &str,
+) -> Option<ModelPricing> {
+    if let Some(pricing) =
+        resolve_model_caps(model_caps, model_id).and_then(|resolved| resolved.caps.pricing)
+    {
+        return Some(pricing);
     }
+
+    let Some((provider_name, bare_model_id)) = model_id.split_once('/') else {
+        return None;
+    };
+    for provider_alias in pricing_provider_aliases(provider_name) {
+        let qualified = format!("{provider_alias}/{bare_model_id}");
+        if let Some(pricing) =
+            resolve_model_caps(model_caps, &qualified).and_then(|resolved| resolved.caps.pricing)
+        {
+            return Some(pricing);
+        }
+    }
+
+    resolve_model_caps(model_caps, bare_model_id).and_then(|resolved| resolved.caps.pricing)
 }
 
-pub fn anthropic_pricing(model_id: &str) -> Option<ModelPricing> {
-    let id = model_id.to_lowercase();
-    match id.as_str() {
-        // Claude Opus 4.5/4.6
-        s if s.contains("claude-opus-4") && (s.contains("4.5") || s.contains("4.6") || s.contains("4-5") || s.contains("4-6")) => Some(ModelPricing {
-            prompt: 5.00,
-            generated: 25.00,
-            cache_read: Some(0.50),
-            cache_creation: Some(6.25),
-        }),
-        // Claude Opus 4/4.1
-        s if s.contains("claude-opus-4") => Some(ModelPricing {
-            prompt: 15.00,
-            generated: 75.00,
-            cache_read: Some(1.50),
-            cache_creation: Some(18.75),
-        }),
-        // Claude 3 Opus (legacy)
-        s if s.contains("claude-3-opus") => Some(ModelPricing {
-            prompt: 15.00,
-            generated: 75.00,
-            cache_read: Some(1.50),
-            cache_creation: Some(18.75),
-        }),
-        // Claude Sonnet 4/4.5
-        s if s.contains("claude-sonnet-4") => Some(ModelPricing {
-            prompt: 3.00,
-            generated: 15.00,
-            cache_read: Some(0.30),
-            cache_creation: Some(3.75),
-        }),
-        // Claude 3.7 Sonnet (deprecated but still used)
-        s if s.contains("claude-3-7-sonnet") || s.contains("claude-3.7-sonnet") => Some(ModelPricing {
-            prompt: 3.00,
-            generated: 15.00,
-            cache_read: Some(0.30),
-            cache_creation: Some(3.75),
-        }),
-        // Claude 3.5 Sonnet
-        s if s.contains("claude-3-5-sonnet") || s.contains("claude-3.5-sonnet") => Some(ModelPricing {
-            prompt: 3.00,
-            generated: 15.00,
-            cache_read: Some(0.30),
-            cache_creation: Some(3.75),
-        }),
-        // Claude Haiku 4.5
-        s if s.contains("claude-haiku-4") && s.contains("4.5") => Some(ModelPricing {
-            prompt: 1.00,
-            generated: 5.00,
-            cache_read: Some(0.10),
-            cache_creation: Some(1.25),
-        }),
-        // Claude 3.5 Haiku
-        s if s.contains("claude-3-5-haiku") || s.contains("claude-3.5-haiku") => Some(ModelPricing {
-            prompt: 0.80,
-            generated: 4.00,
-            cache_read: Some(0.08),
-            cache_creation: Some(1.00),
-        }),
-        // Claude 3 Haiku
-        s if s.contains("claude-3-haiku") => Some(ModelPricing {
-            prompt: 0.25,
-            generated: 1.25,
-            cache_read: Some(0.03),
-            cache_creation: Some(0.30),
-        }),
-        _ => None,
+fn pricing_provider_aliases(provider_name: &str) -> Vec<String> {
+    let mut aliases = vec![provider_name.replace('_', "-")];
+    for suffix in ["_responses", "-responses"] {
+        if let Some(stripped) = provider_name.strip_suffix(suffix) {
+            aliases.push(stripped.to_string());
+            aliases.push(stripped.replace('_', "-"));
+        }
     }
+    if provider_name == "google_gemini" {
+        aliases.push("google".to_string());
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
-pub fn google_gemini_pricing(model_id: &str) -> Option<ModelPricing> {
-    let id = model_id.to_lowercase();
-    match id.as_str() {
-        // Gemini 3 family (preview)
-        s if s.contains("gemini-3") && s.contains("pro") => Some(ModelPricing {
-            prompt: 2.00,
-            generated: 12.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gemini-3") && s.contains("flash") => Some(ModelPricing {
-            prompt: 0.50,
-            generated: 3.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        // Gemini 2.5 family
-        s if s.contains("gemini-2.5-pro") || s.contains("gemini-2-5-pro") => Some(ModelPricing {
-            prompt: 1.25,
-            generated: 10.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gemini-2.5-flash-lite") || s.contains("gemini-2-5-flash-lite") => Some(ModelPricing {
-            prompt: 0.10,
-            generated: 0.40,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gemini-2.5-flash") || s.contains("gemini-2-5-flash") => Some(ModelPricing {
-            prompt: 0.30,
-            generated: 2.50,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        // Gemini 2.0 family
-        s if s.contains("gemini-2.0-flash-lite") || s.contains("gemini-2-0-flash-lite") => Some(ModelPricing {
-            prompt: 0.10,
-            generated: 0.40,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gemini-2.0-flash") || s.contains("gemini-2-flash") => Some(ModelPricing {
-            prompt: 0.10,
-            generated: 0.40,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        // Gemini 1.5 family
-        s if s.contains("gemini-1.5-flash") || s.contains("gemini-flash") => Some(ModelPricing {
-            prompt: 0.075,
-            generated: 0.30,
-            cache_read: Some(0.01875),
-            cache_creation: Some(0.01875),
-        }),
-        s if s.contains("gemini-1.5-pro") || s.contains("gemini-pro") => Some(ModelPricing {
-            prompt: 1.25,
-            generated: 5.00,
-            cache_read: Some(0.3125),
-            cache_creation: Some(0.3125),
-        }),
-        _ => None,
+pub async fn lookup_model_pricing(
+    gcx: &Arc<ARwLock<GlobalContext>>,
+    model_id: &str,
+) -> Option<ModelPricing> {
+    if let Some(custom_pricing) = lookup_provider_custom_pricing(gcx, model_id).await {
+        return Some(custom_pricing);
     }
+
+    if let Some(pricing) = gcx
+        .read()
+        .await
+        .caps
+        .as_ref()
+        .and_then(|caps| standard_model_pricing_from_caps(&caps.model_caps, model_id))
+    {
+        return Some(pricing);
+    }
+
+    let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0)
+        .await
+        .ok()?;
+    standard_model_pricing_from_caps(&caps.model_caps, model_id)
 }
 
-pub fn deepseek_pricing(model_id: &str) -> Option<ModelPricing> {
-    let id = model_id.to_lowercase();
-    match id.as_str() {
-        s if s.contains("deepseek-chat") || s.contains("deepseek-v3") => Some(ModelPricing {
-            prompt: 0.27,
-            generated: 1.10,
-            cache_read: Some(0.07),
-            cache_creation: None,
-        }),
-        s if s.contains("deepseek-reasoner") || s.contains("deepseek-r1") => Some(ModelPricing {
-            prompt: 0.55,
-            generated: 2.19,
-            cache_read: Some(0.14),
-            cache_creation: None,
-        }),
-        s if s.contains("deepseek-coder") => Some(ModelPricing {
-            prompt: 0.14,
-            generated: 0.28,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        _ => None,
-    }
+async fn lookup_provider_custom_pricing(
+    gcx: &Arc<ARwLock<GlobalContext>>,
+    model_id: &str,
+) -> Option<ModelPricing> {
+    let (provider_name, model_name) = model_id.split_once('/')?;
+    let gcx_locked = gcx.read().await;
+    let registry = gcx_locked.providers.read().await;
+    registry
+        .get(provider_name)
+        .and_then(|provider| provider.custom_model_pricing(model_name))
 }
 
-pub fn xai_pricing(model_id: &str) -> Option<ModelPricing> {
-    let id = model_id.to_lowercase();
-    match id.as_str() {
-        s if s.contains("grok-3") => Some(ModelPricing {
-            prompt: 3.00,
-            generated: 15.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("grok-2") => Some(ModelPricing {
-            prompt: 2.00,
-            generated: 10.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("grok-beta") || s.contains("grok") => Some(ModelPricing {
-            prompt: 5.00,
-            generated: 15.00,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        _ => None,
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::caps::model_caps::model_caps_from_models_dev_catalog;
+    use crate::caps::models_dev::load_models_dev_snapshot_catalog;
+    use crate::caps::CodeAssistantCaps;
+    use crate::providers::traits::{CustomModelConfig, ModelPricingTier};
 
-pub fn groq_pricing(model_id: &str) -> Option<ModelPricing> {
-    let id = model_id.to_lowercase();
-    match id.as_str() {
-        s if s.contains("llama-3.3-70b") => Some(ModelPricing {
-            prompt: 0.59,
-            generated: 0.79,
-            cache_read: None,
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn caps_with_model_caps(
+        model_caps: HashMap<String, ModelCapabilities>,
+    ) -> Arc<CodeAssistantCaps> {
+        Arc::new(CodeAssistantCaps {
+            model_caps: Arc::new(model_caps),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn test_models_dev_standard_provider_pricing_resolves_from_caps() {
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        for model in [
+            "openai/gpt-4o",
+            "anthropic/claude-3-5-sonnet-20241022",
+            "deepseek/deepseek-chat",
+        ] {
+            let pricing = standard_model_pricing_from_caps(&caps, model)
+                .unwrap_or_else(|| panic!("missing pricing for {model}"));
+            assert!(pricing.is_valid());
+            assert!(pricing.prompt > 0.0);
+            assert!(pricing.generated > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_models_dev_standard_provider_pricing_uses_provider_aliases() {
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+
+        let openai = standard_model_pricing_from_caps(&caps, "openai/gpt-4o").unwrap();
+        let responses = standard_model_pricing_from_caps(&caps, "openai_responses/gpt-4o").unwrap();
+        let gemini =
+            standard_model_pricing_from_caps(&caps, "google_gemini/gemini-1.5-flash").unwrap();
+
+        assert_eq!(responses.prompt, openai.prompt);
+        assert!(gemini.is_valid());
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_custom_pricing_overrides_caps_pricing() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let model_caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        let mut provider = crate::providers::create_provider("openai").unwrap();
+        provider.add_custom_model(
+            "gpt-4o".to_string(),
+            CustomModelConfig {
+                pricing: Some(ModelPricing {
+                    prompt: 101.0,
+                    generated: 202.0,
+                    cache_read: Some(303.0),
+                    cache_creation: Some(404.0),
+                    context_over_200k: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let providers = { gcx.read().await.providers.clone() };
+        providers.write().await.add(provider);
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(caps_with_model_caps(model_caps));
+            gcx.caps_last_attempted_ts = now_secs();
+        }
+
+        let pricing = lookup_model_pricing(&gcx, "openai/gpt-4o").await.unwrap();
+
+        assert_eq!(pricing.prompt, 101.0);
+        assert_eq!(pricing.generated, 202.0);
+        assert_eq!(pricing.cache_read, Some(303.0));
+        assert_eq!(pricing.cache_creation, Some(404.0));
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_lookup_pricing_falls_back_to_caps() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let catalog = load_models_dev_snapshot_catalog().unwrap();
+        let model_caps = model_caps_from_models_dev_catalog(&catalog).unwrap();
+        {
+            let mut gcx = gcx.write().await;
+            gcx.caps = Some(caps_with_model_caps(model_caps));
+            gcx.caps_last_attempted_ts = now_secs();
+        }
+
+        let pricing = lookup_model_pricing(&gcx, "openai/gpt-4o").await.unwrap();
+
+        assert!(pricing.is_valid());
+        assert!(pricing.prompt > 0.0);
+        assert!(pricing.generated > 0.0);
+    }
+
+    #[test]
+    fn test_compute_cost_uses_long_context_tier_above_200k_input_tokens() {
+        let usage = ChatUsage {
+            prompt_tokens: 199_000,
+            completion_tokens: 1_000,
+            total_tokens: 205_000,
+            cache_read_tokens: Some(6_000),
+            cache_creation_tokens: None,
+            metering_usd: None,
+        };
+        let pricing = ModelPricing {
+            prompt: 2.0,
+            generated: 8.0,
+            cache_read: Some(0.5),
             cache_creation: None,
-        }),
-        s if s.contains("llama-3.1-70b") => Some(ModelPricing {
-            prompt: 0.59,
-            generated: 0.79,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("llama-3.1-8b") || s.contains("llama-3-8b") => Some(ModelPricing {
-            prompt: 0.05,
-            generated: 0.08,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("mixtral-8x7b") => Some(ModelPricing {
-            prompt: 0.24,
-            generated: 0.24,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        s if s.contains("gemma2-9b") || s.contains("gemma-9b") => Some(ModelPricing {
-            prompt: 0.20,
-            generated: 0.20,
-            cache_read: None,
-            cache_creation: None,
-        }),
-        _ => None,
+            context_over_200k: Some(ModelPricingTier {
+                prompt: Some(4.0),
+                generated: Some(16.0),
+                cache_read: Some(1.0),
+                cache_creation: None,
+            }),
+        };
+
+        let metering = compute_cost(&usage, &pricing).unwrap();
+
+        assert_eq!(metering.prompt_usd, 199_000.0 * 4.0 / 1_000_000.0);
+        assert_eq!(metering.generated_usd, 1_000.0 * 16.0 / 1_000_000.0);
+        assert_eq!(metering.cache_read_usd, Some(6_000.0 * 1.0 / 1_000_000.0));
+    }
+
+    #[test]
+    fn test_compute_cost_uses_base_tier_at_200k_input_tokens() {
+        let usage = ChatUsage {
+            prompt_tokens: 200_000,
+            completion_tokens: 1_000,
+            total_tokens: 201_000,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            metering_usd: None,
+        };
+        let pricing = ModelPricing {
+            prompt: 2.0,
+            generated: 8.0,
+            context_over_200k: Some(ModelPricingTier {
+                prompt: Some(4.0),
+                generated: Some(16.0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let metering = compute_cost(&usage, &pricing).unwrap();
+
+        assert_eq!(metering.prompt_usd, 200_000.0 * 2.0 / 1_000_000.0);
+        assert_eq!(metering.generated_usd, 1_000.0 * 8.0 / 1_000_000.0);
     }
 }

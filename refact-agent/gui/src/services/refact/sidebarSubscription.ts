@@ -1,5 +1,6 @@
 import type { TrajectoryMeta, TrajectoryEvent } from "./trajectories";
 import type { TaskMeta, TaskBoard } from "./tasks";
+import type { BuddySnapshot, BuddySSEEvent } from "../../features/Buddy/types";
 
 export type { TrajectoryMeta, TrajectoryEvent };
 
@@ -35,10 +36,13 @@ export type SidebarEvent =
       category: "snapshot";
       trajectories: TrajectoryMeta[];
       tasks: TaskMeta[];
+      workspace_roots?: string[];
+      buddy?: BuddySnapshot | { enabled: false } | null;
     }
   | ({ category: "trajectory" } & TrajectoryEvent)
   | ({ category: "task" } & TaskEvent)
-  | ({ category: "notification" } & NotificationEvent);
+  | ({ category: "notification" } & NotificationEvent)
+  | { category: "buddy"; buddy_event: BuddySSEEvent };
 
 export type SidebarEventEnvelope = {
   seq: number;
@@ -52,7 +56,11 @@ export type SidebarSubscriptionCallbacks = {
 };
 
 function isValidSnapshot(obj: Record<string, unknown>): boolean {
-  return Array.isArray(obj.trajectories) && Array.isArray(obj.tasks);
+  return (
+    Array.isArray(obj.trajectories) &&
+    Array.isArray(obj.tasks) &&
+    (obj.workspace_roots === undefined || Array.isArray(obj.workspace_roots))
+  );
 }
 
 function isValidTrajectoryEvent(obj: Record<string, unknown>): boolean {
@@ -101,6 +109,8 @@ function isValidSidebarEventEnvelope(
       return isValidTaskEvent(obj);
     case "notification":
       return isValidNotificationEvent(obj);
+    case "buddy":
+      return typeof obj.buddy_event === "object" && obj.buddy_event !== null;
     default:
       return false;
   }

@@ -1,53 +1,30 @@
 ---
 title: Context
-description: A reference page about the context.
+description: How Refact builds local project context for chat, agents, and completion.
 ---
 
-Context refers to the surrounding information that Refact.ai uses to provide a better quality of generated code. This can include:
-- **Code Syntax**: By analyzing the current state of the code, Refact.ai can provide syntactically correct code completions.
-- **Developer's Intent**: Interpreting comments, variable names, and function signatures, Refact.ai can provide code suggestions that are more relevant to the developer's intent.
-- **Repo-level awareness**: By analyzing the repository's codebase, Refact.ai can provide code suggestions that are more relevant to the existing codebase.
+Refact uses a local engine to collect the context that helps models understand your project. Context is prepared on your machine and is sent only to the provider or local runtime selected for a specific request.
 
-## RAG 
-Refact.ai uses RAG (Retrieval-Augmented Generation) to fill the 
-context with the information that is needed to provide a better quality of generated code.
+## Local context sources
 
-### Enabling RAG
+Refact can use:
 
-In order to enable RAG, you need to follow the instructions depending on the version of the Refact.ai you are using.
+- Current file, cursor location, selected snippets, and open editors from the IDE.
+- Project tree and file contents allowed by privacy settings.
+- AST indexes for symbol definitions, references, and file symbols.
+- Vector indexes for semantic search over code, markdown, and saved trajectories.
+- Git state, checkpoints, and patch previews when agent workflows are enabled.
+- Chat history, task metadata, saved knowledge, and previous trajectories.
+- Tool results such as shell output, web pages, browser screenshots, database rows, and integration responses.
 
-### Cloud Version
+## Indexing
 
-1. In the settings of the plugin (can be accessed by pressing the cogwheel icon in the sidebar), under the `Refactai: Code Completion Model` section, specify the `starcoder2/3b` model.
-![Refact Settings](../../../assets/refact_settings_rag.png)
-2. To enable RAG for **code completion**, you need to enable the `Enable syntax parsing` checkbox under the `Refactai: Ast` section.
-3. To enable RAG for the **AI chat**, you need to enable the `Enable embedded vecdb for search` checkbox under the `Refactai: Vecdb` section. Read more in the [AI Chat Documentation](https://docs.refact.ai/features/ai-chat/) about available features.
+Syntax parsing and vector search run locally. Syntax parsing builds an AST-backed view of supported languages so Refact can find definitions and symbols. The vector database splits eligible files into chunks and stores embeddings for semantic search. These indexes improve retrieval, but they are optional and can be disabled.
 
-![RAG Settings](../../../assets/ast_vecdb.png)
+## Privacy and control
 
-:::note
-RAG is more useful for the context size **more than 2048 tokens**, which is available for **Pro users**.
+Privacy settings decide which files are allowed as context. Provider settings decide where requests are sent. If you use a local runtime, model inference stays local to that runtime. If you use an external provider, the prepared prompt and selected context are sent to that provider.
 
-Be aware that RAG indexing is a **high resource-consuming process**, so you will experience increased memory consumption of your **GPU, RAM, and CPU**.
-:::
-### Refact Enterprise
+## Context windows and compression
 
-1. In the Web UI of your Refact.ai instance, navigate to the `Model Hosting` page. press the `Add Model` button to switch the model, locate and select one of the `starcoder2/` models.
-![Starcoder2 model](../../../assets/starcoder2.png)
-:::note
-You can use different models from the `starcoder2` family. But be aware that with Stacoder2 models, the results will be more accurate and the code completion will be more accurate.
-:::
-2. To enable RAG for **code completion**, you need to enable the `Enable syntax parsing` checkbox under the `Refactai: Ast` section.
-3. To enable RAG for the **AI chat**, you need to enable the `Enable embedded vecdb for search` checkbox under the `Refactai: Vecdb` section. Read more in the [AI Chat Documentation](https://docs.refact.ai/features/ai-chat/) about available features.
-![RAG Settings](../../../assets/ast_vecdb.png)
-4. If Vecdb checkbox is enabled in your VS Code settings, you need to select the `thenlper/gte-base` model in your Refact.ai instance.
-In the Web UI of your Refact.ai instance, navigate to the `Model Hosting` page. Press the `Add Model` button, locate and select the `thenlper/gte-base` model.
-![thenlper model](../../../assets/thenpler.png)
-
-:::note
-Make sure that you have enough memory available on your GPU for the model to be loaded and served.
-
-Altrnitavely you can use unoccupied GPU to avoid the memory issue and interruption of the code generation.
-
-As an aditional option, you can switch from vLLM model to a regular model.
-:::
+Each model has its own context window and tool capabilities. Refact fits local context into that window by selecting relevant files, compressing older chat history, and summarizing large tool results when needed. If the agent needs more context, ask it to inspect specific files or directories before acting.

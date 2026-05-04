@@ -10,7 +10,12 @@ import classNames from "classnames";
 import { LightningBoltIcon } from "@radix-ui/react-icons";
 
 import { Markdown } from "../../Markdown";
+import { useStreamingMarkdown } from "../../Markdown/useStreamingMarkdown";
 import { useDelayedUnmount } from "../../shared/useDelayedUnmount";
+import {
+  addBuddyCrashBreadcrumb,
+  setBuddyCrashHotSlot,
+} from "../../../features/Buddy/reportBuddyFrontendError";
 
 import { useCollapsibleStore } from "../useStoredOpen";
 import styles from "./ReasoningContent.module.css";
@@ -168,6 +173,21 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
     () => fixReasoningParagraphs(reasoningContent),
     [reasoningContent],
   );
+  const deferredContent = useStreamingMarkdown(
+    formattedContent,
+    isStreaming && isOpen,
+  );
+
+  useEffect(() => {
+    if (isStreaming && isOpen) {
+      const text = deferredContent ?? formattedContent;
+      setBuddyCrashHotSlot("reasoning", text);
+      addBuddyCrashBreadcrumb("reasoning", text);
+      return;
+    }
+
+    setBuddyCrashHotSlot("reasoning", null);
+  }, [deferredContent, formattedContent, isOpen, isStreaming]);
 
   const { shouldRender, isAnimatingOpen } = useDelayedUnmount(isOpen, 200);
 
@@ -207,8 +227,9 @@ export const ReasoningContent: React.FC<ReasoningContentProps> = ({
                 <Markdown
                   canHaveInteractiveElements={true}
                   onCopyClick={onCopyClick}
+                  isStreaming={isStreaming}
                 >
-                  {formattedContent}
+                  {deferredContent ?? formattedContent}
                 </Markdown>
               </Text>
             </div>

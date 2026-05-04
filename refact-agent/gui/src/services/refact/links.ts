@@ -18,7 +18,6 @@ type LinkActions =
   | "follow-up"
   | "commit"
   | "goto"
-  | "summarize-project"
   | "post-chat"
   | "regenerate-with-increased-context-size";
 

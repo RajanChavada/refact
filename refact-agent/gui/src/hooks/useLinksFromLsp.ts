@@ -5,7 +5,7 @@ import {
   isUserMessage,
   linksApi,
   type ChatLink,
-} from "..//services/refact";
+} from "../services/refact";
 import { useAppDispatch } from "./useAppDispatch";
 import { useAppSelector } from "./useAppSelector";
 import { useGetCapsQuery } from "./useGetCapsQuery";
@@ -28,7 +28,6 @@ import { useGoToLink } from "./useGoToLink";
 import { setError } from "../features/Errors/errorsSlice";
 import { setInformation } from "../features/Errors/informationSlice";
 import { debugIntegrations, debugRefact } from "../debugConfig";
-import { telemetryApi } from "../services/refact/telemetry";
 import { isAbsolutePath } from "../utils";
 
 export function useGetLinksFromLsp() {
@@ -111,9 +110,6 @@ export function useLinksFromLsp() {
 
   const [applyCommit, _applyCommitResult] = linksApi.useSendCommitMutation();
 
-  const [sendTelemetryEvent] =
-    telemetryApi.useLazySendTelemetryChatEventQuery();
-
   const isStreaming = useAppSelector(selectIsStreaming);
   const isWaiting = useAppSelector(selectIsWaiting);
   const messages = useAppSelector(selectMessages);
@@ -147,12 +143,6 @@ export function useLinksFromLsp() {
   const handleLinkAction = useCallback(
     (link: ChatLink) => {
       if (!("link_action" in link)) return;
-      void sendTelemetryEvent({
-        scope: `handleLinkAction/${link.link_action}`,
-        success: true,
-        error_message: "",
-      });
-
       if (
         link.link_action === "goto" &&
         "link_goto" in link &&
@@ -203,17 +193,6 @@ export function useLinksFromLsp() {
 
       if (link.link_action === "follow-up") {
         void submit(link.link_text);
-        return;
-      }
-
-      if (link.link_action === "summarize-project") {
-        if ("link_summary_path" in link && link.link_summary_path) {
-          dispatch(setIntegrationData({ path: link.link_summary_path }));
-        }
-        // Set mode then send message
-        void setParams({ mode: "PROJECT_SUMMARY" }).then(() => {
-          void submit(link.link_text);
-        });
         return;
       }
 
@@ -276,7 +255,7 @@ export function useLinksFromLsp() {
       // eslint-disable-next-line no-console
       console.warn(`unknown action: ${JSON.stringify(link)}`);
     },
-    [applyCommit, dispatch, handleGoTo, sendTelemetryEvent, submit, setParams],
+    [applyCommit, dispatch, handleGoTo, submit, setParams],
   );
 
   const linksResult = useGetLinksFromLsp();

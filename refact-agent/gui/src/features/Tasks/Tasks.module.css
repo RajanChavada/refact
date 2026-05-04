@@ -9,10 +9,8 @@
 }
 
 .kanbanColumn {
-  flex: 0 1 auto;
-  min-width: 140px;
-  max-width: 220px;
-  width: fit-content;
+  flex: 0 0 200px;
+  min-width: 160px;
   background: var(--gray-2);
   border-radius: var(--radius-3);
   border-top: 3px solid var(--gray-5);
@@ -34,6 +32,34 @@
   transform: translateY(-1px);
 }
 
+.kanbanCardTopRow {
+  min-width: 0;
+}
+
+.kanbanCardTitle {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.kanbanCardBadges {
+  min-width: 0;
+}
+
+.agentBadgeButton {
+  appearance: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.agentBadgeButton:hover {
+  background: var(--blue-4);
+}
+
 .kanbanColumnHeader {
   padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--gray-4);
@@ -46,53 +72,83 @@
   overflow: hidden;
 }
 
-.taskWorkspace.expanded .boardSection,
-.taskWorkspace.expanded .panelsSection {
-  display: none;
-}
-
-.taskHeader {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--gray-5);
-  flex-shrink: 0;
-}
-
 .boardSection {
   composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
   flex: 0 0 auto;
-  max-height: 30%;
   min-height: 80px;
   overflow: auto;
-  border-bottom: 1px solid var(--gray-5);
+}
+
+.workspaceChromeCollapse {
+  flex-shrink: 0;
+}
+
+.panelsWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+
+.panelsHeader,
+.chatHeader {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  justify-content: space-between;
+  gap: var(--space-2);
+  background: transparent;
+  user-select: none;
+  min-height: 28px;
+  box-sizing: border-box;
+  padding: 0 var(--space-3);
 }
 
 .panelsSection {
   display: flex;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--gray-5);
-  min-height: 180px;
-  max-height: 280px;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  min-height: 120px;
+  max-height: 240px;
   overflow: hidden;
 }
 
-.panel {
+.panelsCollapse {
+  flex-shrink: 0;
+}
+
+.panelList {
   flex: 1;
-  background: var(--gray-2);
-  border-radius: var(--radius-3);
-  padding: var(--space-2);
+  min-width: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
-.panelHeader {
+.sectionHeaderActionButton {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--gray-4);
-  margin-bottom: var(--space-2);
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--gray-a5);
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--gray-11);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sectionHeaderActionButton:hover,
+.sectionHeaderActionButton:focus-visible {
+  background: var(--gray-a3);
+  border-color: var(--gray-a7);
+}
+
+.sectionHeaderActionButton:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: 1px;
 }
 
 .panelContent {
@@ -102,25 +158,17 @@
   flex-direction: column;
 }
 
+.modelPickerRow {
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--gray-a4);
+}
+
 .chatSection {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.chatHeader {
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--gray-4);
-  background: var(--gray-2);
-  user-select: none;
-  transition: background-color 0.2s ease;
-  cursor: pointer;
-}
-
-.chatHeader:hover {
-  background: var(--gray-3);
 }
 
 .chevron {
@@ -134,16 +182,64 @@
   transform: rotate(180deg);
 }
 
+.sectionHeaderToggle {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-2);
+  color: var(--gray-11);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+
+.chatHeaderToggle {
+  align-self: stretch;
+}
+
+.sectionHeaderToggle:focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: 1px;
+}
+
+.sectionHeaderLabel {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sectionHeaderMeta {
+  flex-shrink: 0;
+}
+
+.chatHeaderLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
 .chatContent {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .panelItem {
-  padding: var(--space-1) var(--space-2);
+  padding: 2px 0;
   border-radius: var(--radius-2);
   cursor: pointer;
   display: flex;
@@ -152,7 +248,51 @@
 }
 
 .panelItem:hover {
-  background: var(--gray-4);
+  background: var(--gray-a3);
+}
+
+.panelItemSelected {
+  background: var(--accent-a3);
+}
+
+.panelItemSelected:hover {
+  background: var(--accent-a4);
+}
+
+.panelItemLead {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.panelItemContent {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.panelItemTitle {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardDetailSection {
+  composes: scrollbarThin from "../../components/shared/scrollbar.module.css";
+  background: var(--gray-2);
+  border-radius: var(--radius-2);
+  padding: var(--space-2);
+  margin-top: var(--space-1);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.cardDetailTitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
 .cardDetailOverlay {

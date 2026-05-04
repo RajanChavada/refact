@@ -23,6 +23,18 @@ pub enum RecorderEvent {
         value: String,
         masked: bool,
         timestamp: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placeholder: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aria_label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
     },
     Keypress {
         key: String,
@@ -98,13 +110,30 @@ pub struct MutationSummaryEntry {
 
 pub fn apply_password_masking(event: &RecorderEvent) -> RecorderEvent {
     match event {
-        RecorderEvent::Input { selector, value, masked, timestamp } => {
+        RecorderEvent::Input {
+            selector,
+            value,
+            masked,
+            timestamp,
+            tag,
+            input_type,
+            field_name,
+            placeholder,
+            aria_label,
+            role,
+        } => {
             if *masked {
                 RecorderEvent::Input {
                     selector: selector.clone(),
                     value: "*".repeat(value.len()),
                     masked: true,
                     timestamp: *timestamp,
+                    tag: tag.clone(),
+                    input_type: input_type.clone(),
+                    field_name: field_name.clone(),
+                    placeholder: placeholder.clone(),
+                    aria_label: aria_label.clone(),
+                    role: role.clone(),
                 }
             } else {
                 event.clone()
@@ -123,7 +152,8 @@ pub fn enforce_buffer_limit<T>(buffer: &mut Vec<T>, cursor: &mut usize) {
 }
 
 pub fn flush_buffer_since<T: Clone>(buffer: &[T], cursor: &mut usize) -> Vec<T> {
-    let items = buffer[*cursor..].to_vec();
+    let start = (*cursor).min(buffer.len());
+    let items = buffer[start..].to_vec();
     *cursor = buffer.len();
     items
 }
@@ -136,7 +166,9 @@ mod tests {
     fn test_recorder_event_navigation_parse() {
         let json = r#"{"type":"navigation","url":"https://example.com","title":"Example","timestamp":1000.0}"#;
         let event: RecorderEvent = serde_json::from_str(json).unwrap();
-        assert!(matches!(event, RecorderEvent::Navigation { ref url, .. } if url == "https://example.com"));
+        assert!(
+            matches!(event, RecorderEvent::Navigation { ref url, .. } if url == "https://example.com")
+        );
         assert_eq!(event.timestamp(), 1000.0);
     }
 
@@ -206,10 +238,16 @@ mod tests {
 
     #[test]
     fn test_recorder_event_mutation_summary_parse() {
-        let json = r#"{"type":"mutation_summary","added":3,"removed":1,"changed":2,"timestamp":1007.0}"#;
+        let json =
+            r#"{"type":"mutation_summary","added":3,"removed":1,"changed":2,"timestamp":1007.0}"#;
         let event: RecorderEvent = serde_json::from_str(json).unwrap();
         match event {
-            RecorderEvent::MutationSummary { added, removed, changed, .. } => {
+            RecorderEvent::MutationSummary {
+                added,
+                removed,
+                changed,
+                ..
+            } => {
                 assert_eq!(added, 3);
                 assert_eq!(removed, 1);
                 assert_eq!(changed, 2);
@@ -239,6 +277,12 @@ mod tests {
             value: "secret123".to_string(),
             masked: true,
             timestamp: 1000.0,
+            tag: None,
+            input_type: None,
+            field_name: None,
+            placeholder: None,
+            aria_label: None,
+            role: None,
         };
         let masked = apply_password_masking(&event);
         match masked {
@@ -257,6 +301,12 @@ mod tests {
             value: "user@test.com".to_string(),
             masked: false,
             timestamp: 1000.0,
+            tag: None,
+            input_type: None,
+            field_name: None,
+            placeholder: None,
+            aria_label: None,
+            role: None,
         };
         let result = apply_password_masking(&event);
         match result {
@@ -312,8 +362,16 @@ mod tests {
     #[test]
     fn test_flush_buffer_since_basic() {
         let buffer = vec![
-            ConsoleEntry { timestamp: 1.0, level: "log".to_string(), text: "hello".to_string() },
-            ConsoleEntry { timestamp: 2.0, level: "warn".to_string(), text: "warning".to_string() },
+            ConsoleEntry {
+                timestamp: 1.0,
+                level: "log".to_string(),
+                text: "hello".to_string(),
+            },
+            ConsoleEntry {
+                timestamp: 2.0,
+                level: "warn".to_string(),
+                text: "warning".to_string(),
+            },
         ];
         let mut cursor = 0usize;
         let flushed = flush_buffer_since(&buffer, &mut cursor);
@@ -326,17 +384,45 @@ mod tests {
 
     #[test]
     fn test_flush_buffer_since_incremental() {
-        let mut buffer = vec![
-            NetworkEntry { timestamp: 1.0, method: "GET".to_string(), url: "https://example.com".to_string(), resource_type: "Document".to_string(), status: Some(200) },
-        ];
+        let mut buffer = vec![NetworkEntry {
+            timestamp: 1.0,
+            method: "GET".to_string(),
+            url: "https://example.com".to_string(),
+            resource_type: "Document".to_string(),
+            status: Some(200),
+        }];
         let mut cursor = 0usize;
         let flushed = flush_buffer_since(&buffer, &mut cursor);
         assert_eq!(flushed.len(), 1);
 
-        buffer.push(NetworkEntry { timestamp: 2.0, method: "POST".to_string(), url: "https://api.example.com".to_string(), resource_type: "XHR".to_string(), status: Some(201) });
+        buffer.push(NetworkEntry {
+            timestamp: 2.0,
+            method: "POST".to_string(),
+            url: "https://api.example.com".to_string(),
+            resource_type: "XHR".to_string(),
+            status: Some(201),
+        });
         let flushed2 = flush_buffer_since(&buffer, &mut cursor);
         assert_eq!(flushed2.len(), 1);
         assert_eq!(flushed2[0].method, "POST");
+    }
+
+    #[test]
+    fn test_flush_buffer_since_stale_cursor_does_not_panic() {
+        let buffer: Vec<u32> = vec![1, 2, 3];
+        let mut cursor = 10usize;
+        let flushed = flush_buffer_since(&buffer, &mut cursor);
+        assert_eq!(flushed.len(), 0);
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn test_flush_buffer_since_cursor_exactly_at_len() {
+        let buffer: Vec<u32> = vec![1, 2, 3];
+        let mut cursor = 3usize;
+        let flushed = flush_buffer_since(&buffer, &mut cursor);
+        assert_eq!(flushed.len(), 0);
+        assert_eq!(cursor, 3);
     }
 
     #[test]
@@ -378,6 +464,129 @@ mod tests {
         assert!(json["status"].is_null());
         let parsed: NetworkEntry = serde_json::from_value(json).unwrap();
         assert!(parsed.status.is_none());
+    }
+
+    #[test]
+    fn test_input_enriched_metadata_parse() {
+        let json = r##"{"type":"input","selector":"#email","value":"user@test.com","masked":false,"timestamp":1000.0,"tag":"input","input_type":"email","field_name":"email","placeholder":"Enter email","aria_label":"Email Address","role":"textbox"}"##;
+        let event: RecorderEvent = serde_json::from_str(json).unwrap();
+        match event {
+            RecorderEvent::Input {
+                tag,
+                input_type,
+                field_name,
+                placeholder,
+                aria_label,
+                role,
+                ..
+            } => {
+                assert_eq!(tag.as_deref(), Some("input"));
+                assert_eq!(input_type.as_deref(), Some("email"));
+                assert_eq!(field_name.as_deref(), Some("email"));
+                assert_eq!(placeholder.as_deref(), Some("Enter email"));
+                assert_eq!(aria_label.as_deref(), Some("Email Address"));
+                assert_eq!(role.as_deref(), Some("textbox"));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_input_without_enriched_metadata_backwards_compat() {
+        let json = r##"{"type":"input","selector":"#email","value":"user@test.com","masked":false,"timestamp":1000.0}"##;
+        let event: RecorderEvent = serde_json::from_str(json).unwrap();
+        match event {
+            RecorderEvent::Input {
+                tag,
+                input_type,
+                field_name,
+                placeholder,
+                aria_label,
+                role,
+                ..
+            } => {
+                assert!(tag.is_none());
+                assert!(input_type.is_none());
+                assert!(field_name.is_none());
+                assert!(placeholder.is_none());
+                assert!(aria_label.is_none());
+                assert!(role.is_none());
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_password_masking_preserves_metadata() {
+        let event = RecorderEvent::Input {
+            selector: "#pass".to_string(),
+            value: "secret".to_string(),
+            masked: true,
+            timestamp: 1000.0,
+            tag: Some("input".to_string()),
+            input_type: Some("password".to_string()),
+            field_name: Some("password".to_string()),
+            placeholder: Some("Enter password".to_string()),
+            aria_label: None,
+            role: None,
+        };
+        let masked = apply_password_masking(&event);
+        match masked {
+            RecorderEvent::Input {
+                value,
+                tag,
+                input_type,
+                field_name,
+                placeholder,
+                ..
+            } => {
+                assert_eq!(value, "******");
+                assert_eq!(tag.as_deref(), Some("input"));
+                assert_eq!(input_type.as_deref(), Some("password"));
+                assert_eq!(field_name.as_deref(), Some("password"));
+                assert_eq!(placeholder.as_deref(), Some("Enter password"));
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_input_enriched_metadata_roundtrip() {
+        let event = RecorderEvent::Input {
+            selector: "#search".to_string(),
+            value: "query".to_string(),
+            masked: false,
+            timestamp: 2000.0,
+            tag: Some("input".to_string()),
+            input_type: Some("search".to_string()),
+            field_name: Some("q".to_string()),
+            placeholder: Some("Search...".to_string()),
+            aria_label: Some("Search".to_string()),
+            role: Some("searchbox".to_string()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: RecorderEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_input_enriched_skips_none_in_serialization() {
+        let event = RecorderEvent::Input {
+            selector: "#field".to_string(),
+            value: "val".to_string(),
+            masked: false,
+            timestamp: 1000.0,
+            tag: None,
+            input_type: None,
+            field_name: None,
+            placeholder: None,
+            aria_label: None,
+            role: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("tag"));
+        assert!(!json.contains("input_type"));
+        assert!(!json.contains("field_name"));
     }
 
     #[test]

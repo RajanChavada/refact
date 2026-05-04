@@ -37,6 +37,7 @@ type EnrichedModel = {
   isDefault?: boolean;
   isThinking?: boolean;
   isLight?: boolean;
+  isBuddy?: boolean;
 };
 
 /**
@@ -99,7 +100,7 @@ export const EnhancedModelSelector: React.FC<EnhancedModelSelectorProps> = ({
     const enrichedModels: EnrichedModel[] =
       capsForToolUse.usableModelsForPlan.map((model) => {
         const modelKey = model.value;
-        const displayName = model.textValue.replace(/^refact\//, "");
+        const displayName = model.textValue;
         const capsModel = caps.chat_models[modelKey];
         const nCtx =
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -118,6 +119,7 @@ export const EnhancedModelSelector: React.FC<EnhancedModelSelectorProps> = ({
           isDefault: caps.chat_default_model === modelKey,
           isThinking: caps.chat_thinking_model === modelKey,
           isLight: caps.chat_light_model === modelKey,
+          isBuddy: caps.chat_buddy_model === modelKey,
         };
       });
 
@@ -150,6 +152,9 @@ export const EnhancedModelSelector: React.FC<EnhancedModelSelectorProps> = ({
           // Light third
           if (a.isLight) return -1;
           if (b.isLight) return 1;
+          // Buddy fourth
+          if (a.isBuddy) return -1;
+          if (b.isBuddy) return 1;
           // Otherwise alphabetical
           return a.displayName.localeCompare(b.displayName);
         }),
@@ -171,7 +176,7 @@ export const EnhancedModelSelector: React.FC<EnhancedModelSelectorProps> = ({
       });
   }, [capsForToolUse.usableModelsForPlan, capsForToolUse.data]);
 
-  const currentModelName = capsForToolUse.currentModel.replace(/^refact\//, "");
+  const currentModelName = capsForToolUse.currentModel;
 
   if (!capsForToolUse.data || groupedModels.length === 0) {
     return (
@@ -312,6 +317,11 @@ const ModelCard: React.FC<ModelCardProps> = ({
             {model.isLight && (
               <Badge size="1" color="green">
                 Light
+              </Badge>
+            )}
+            {model.isBuddy && (
+              <Badge size="1" color="orange">
+                Companion
               </Badge>
             )}
           </Flex>

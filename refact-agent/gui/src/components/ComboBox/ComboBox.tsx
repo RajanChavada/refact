@@ -9,6 +9,7 @@ import { TruncateLeft } from "../Text";
 import { type DebouncedState } from "usehooks-ts";
 import { CommandCompletionResponse } from "../../services/refact";
 import { useAppSelector, useEventsBusForIDE } from "../../hooks";
+import { SlashCommandSuggestion } from "../SlashCommands";
 import { selectSubmitOption } from "../../features/Config/configSlice";
 
 export type ComboBoxProps = {
@@ -177,6 +178,12 @@ export const ComboBox: React.FC<ComboBoxProps> = ({
           onHelpClick();
         } else {
           handleReplace(command);
+          if (event.key === "Enter") {
+            const detail = commands.completion_details?.[command];
+            if (detail !== undefined && !detail.argument_hint) {
+              setTimeout(() => onSubmit(event), 0);
+            }
+          }
         }
       }
 
@@ -187,6 +194,8 @@ export const ComboBox: React.FC<ComboBoxProps> = ({
     },
     [
       onHelpClick,
+      onSubmit,
+      commands,
       closeCombobox,
       escapeKeyPressed,
       combobox,
@@ -281,28 +290,26 @@ export const ComboBox: React.FC<ComboBoxProps> = ({
           getAnchorRect={() => {
             const textarea = ref.current;
             if (!textarea) return null;
-            return getAnchorRect(textarea, ["@", " "]);
+            return getAnchorRect(textarea, ["@", "/", " "]);
           }}
           maxWidth={popoverWidth}
         >
-          {matches.map((item, index) => (
-            <Item
-              key={item + "-" + index}
-              value={item}
-              onClick={(e) => onItemClick(item, e)}
-            >
-              <TruncateLeft>{item}</TruncateLeft>
-            </Item>
-          ))}
-          {/* {matches.map((item, index) => (
-            <Item
-              key={item + "-" + index}
-              value={item}
-              onClick={(e) => onItemClick(item, e)}
-            >
-              <TruncateLeft>{item}</TruncateLeft>
-            </Item>
-          ))} */}
+          {matches.map((item, index) => {
+            const detail = commands.completion_details?.[item];
+            return (
+              <Item
+                key={item + "-" + index}
+                value={item}
+                onClick={(e) => onItemClick(item, e)}
+              >
+                {detail ? (
+                  <SlashCommandSuggestion name={item} detail={detail} />
+                ) : (
+                  <TruncateLeft>{item}</TruncateLeft>
+                )}
+              </Item>
+            );
+          })}
         </Popover>
       </Portal>
     </>

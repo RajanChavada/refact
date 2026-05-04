@@ -13,7 +13,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::background_tasks::start_background_tasks;
 use crate::lsp::spawn_lsp_task;
-use crate::telemetry::{basic_transmit, snippets_transmit};
 use crate::yaml_configs::create_configs::yaml_configs_try_create_all;
 use crate::yaml_configs::customization_registry::get_project_registry;
 use sqlite_vec::sqlite3_vec_init;
@@ -22,13 +21,13 @@ use rusqlite::ffi::sqlite3_auto_extension;
 // mods roughly sorted by dependency ↓
 
 mod background_tasks;
+mod buddy;
 mod caps;
 mod custom_error;
 mod global_context;
 mod indexing_utils;
 mod json_utils;
 mod nicer_logs;
-mod telemetry;
 mod version;
 mod yaml_configs;
 
@@ -54,15 +53,16 @@ mod forward_to_openai_endpoint;
 mod llm;
 mod providers;
 mod restream;
+pub mod worktrees;
 
 mod call_validation;
 mod chat;
-mod dashboard;
 mod http;
 mod lsp;
 
 mod agentic;
 pub mod constants;
+mod ext;
 mod files_correction_cache;
 mod git;
 mod integrations;
@@ -168,20 +168,8 @@ async fn main() {
             info!("{:>20} {}", k, v);
         }
         info!("cache dir: {}", cache_dir.display());
-        let mut api_key_at: usize = usize::MAX;
         for (arg_n, arg_v) in env::args().enumerate() {
-            info!(
-                "cmdline[{}]: {:?}",
-                arg_n,
-                if arg_n != api_key_at {
-                    arg_v.as_str()
-                } else {
-                    "***"
-                }
-            );
-            if arg_v == "--api-key" {
-                api_key_at = arg_n + 1;
-            }
+            info!("cmdline[{}]: {:?}", arg_n, arg_v.as_str());
         }
     }
 
@@ -190,6 +178,8 @@ async fn main() {
         println!("{}", byok_config_path);
         std::process::exit(0);
     }
+
+    let _ = crate::privacy::load_privacy_if_needed(gcx.clone()).await;
 
     if cmdline.print_customization {
         if let Some(registry) = get_project_registry(gcx.clone()).await {
@@ -203,6 +193,10 @@ async fn main() {
         std::process::exit(0);
     }
 
+    // Buddy starts in background tasks below, so startup import runtime events are best-effort.
+    // The persisted last_report is picked up by Buddy pulse after initialization.
+    let _ = ext::competitor_import::run_global_import(gcx.clone()).await;
+
     if cmdline.ast {
         let tmp = Some(
             crate::ast::ast_indexer_thread::ast_service_init(
@@ -214,9 +208,6 @@ async fn main() {
         let mut gcx_locked = gcx.write().await;
         gcx_locked.ast_service = tmp;
     }
-
-    // Privacy before we do anything else, the default is to block everything
-    let _ = crate::privacy::load_privacy_if_needed(gcx.clone()).await;
 
     // Start or connect to mcp servers
     let _ = running_integrations::load_integrations(gcx.clone(), &["**/mcp_*".to_string()]).await;
@@ -251,7 +242,5 @@ async fn main() {
     background_tasks.abort().await;
     git::checkpoints::abort_init_shadow_repos(gcx.clone()).await;
     integrations::sessions::stop_sessions(gcx.clone()).await;
-    info!("saving telemetry without sending, so should be quick");
-    basic_transmit::basic_telemetry_compress(gcx.clone()).await;
     info!("bb\n");
 }

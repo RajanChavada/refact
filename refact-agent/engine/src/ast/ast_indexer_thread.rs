@@ -29,6 +29,7 @@ async fn ast_indexer_thread(
     let t0 = tokio::time::Instant::now();
     let mut reported_parse_stats = true;
     let mut reported_connect_stats = true;
+    let mut reported_ast_started = false;
     let mut stats_parsed_cnt = 0;
     let mut stats_symbols_cnt = 0;
     let mut stats_t0 = std::time::Instant::now();
@@ -46,8 +47,16 @@ async fn ast_indexer_thread(
         )
     };
     let ast_max_files = ast_index.ast_max_files; // cannot change
+    let shutdown_flag = match gcx_weak.upgrade() {
+        Some(gcx) => gcx.read().await.shutdown_flag.clone(),
+        None => return,
+    };
 
     loop {
+        if shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            info!("AST indexer: shutdown detected, stopping");
+            return;
+        }
         let (cpath, left_todo_count) = {
             let mut ast_service_locked = ast_service.lock().await;
             let mut cpath;
@@ -76,6 +85,18 @@ async fn ast_indexer_thread(
                     break;
                 }
             };
+            if !reported_ast_started {
+                reported_ast_started = true;
+                let ev = crate::buddy::actor::make_runtime_event(
+                    "ast_parsing",
+                    "Parsing AST symbols...",
+                    "indexer",
+                    "ast",
+                    "started",
+                    None,
+                );
+                crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+            }
             let mut doc = Document {
                 doc_path: cpath.clone().into(),
                 doc_text: None,
@@ -303,14 +324,36 @@ async fn ast_indexer_thread(
             let _ = write!(std::io::stderr(), "{msg}");
             info!("{msg}"); // you can see stderr sometimes faster vs logs
             reported_connect_stats = true;
+            if let Some(gcx) = gcx_weak.upgrade() {
+                let buddy_msg = format!(
+                    "AST complete: {} files, {} symbols in {:.1}s",
+                    counters.counter_docs,
+                    counters.counter_defs,
+                    t0.elapsed().as_secs_f32()
+                );
+                let ev = crate::buddy::actor::make_runtime_event(
+                    "ast_parsing",
+                    &buddy_msg,
+                    "indexer",
+                    "ast",
+                    "completed",
+                    None,
+                );
+                crate::buddy::actor::buddy_enqueue_event(gcx, ev).await;
+            }
         }
 
-        tokio::time::timeout(
-            tokio::time::Duration::from_secs(10),
-            ast_sleeping_point.notified(),
-        )
-        .await
-        .ok();
+        tokio::select! {
+            _ = tokio::time::timeout(tokio::time::Duration::from_secs(10), ast_sleeping_point.notified()) => {}
+            _ = async {
+                while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                }
+            } => {
+                info!("AST indexer: shutdown detected, stopping");
+                return;
+            }
+        }
     }
 }
 

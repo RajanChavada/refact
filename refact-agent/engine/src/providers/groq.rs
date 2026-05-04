@@ -7,8 +7,10 @@ use serde_json::json;
 
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
-use crate::providers::traits::{CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait, parse_enabled_models, parse_custom_models, set_model_enabled_impl};
-use crate::providers::pricing::groq_pricing;
+use crate::providers::traits::{
+    CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
+    parse_enabled_models, parse_custom_models, set_model_enabled_impl,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GroqProvider {
@@ -22,11 +24,11 @@ pub struct GroqProvider {
 
 #[async_trait]
 impl ProviderTrait for GroqProvider {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "groq"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "Groq"
     }
 
@@ -108,7 +110,7 @@ available:
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
-            support_metadata: false,
+            supports_cache_control: true,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
             embedding_model: None,
@@ -121,7 +123,7 @@ available:
     }
 
     fn model_source(&self) -> ModelSource {
-        ModelSource::Api  // Groq has an API for models
+        ModelSource::Api // Groq has an API for models
     }
 
     fn enabled_models(&self) -> &[String] {
@@ -144,12 +146,9 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        groq_pricing(model_id)
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 }

@@ -15,9 +15,8 @@ use uuid::Uuid;
 use crate::chat::types::WindowBounds;
 use crate::global_context::GlobalContext;
 use crate::integrations::browser_types::{
-    RecorderEvent, ConsoleEntry, NetworkEntry, MutationSummaryEntry,
-    MAX_BUFFER_SIZE, SCROLL_DEBOUNCE_MS,
-    apply_password_masking, enforce_buffer_limit, flush_buffer_since,
+    RecorderEvent, ConsoleEntry, NetworkEntry, MutationSummaryEntry, MAX_BUFFER_SIZE,
+    SCROLL_DEBOUNCE_MS, apply_password_masking, enforce_buffer_limit, flush_buffer_since,
 };
 
 const FRAME_RATE_LIMIT_MS: u128 = 500;
@@ -29,6 +28,35 @@ const MAX_RAW_EVENT_BYTES: usize = 64 * 1024;
 const RECORDER_SCRIPT_TEMPLATE: &str = include_str!("browser_recorder.js");
 const TOOLBAR_SCRIPT: &str = include_str!("browser_toolbar.js");
 
+const STEALTH_SCRIPT: &str = r#"(function() {
+    if (window.__refact_stealth_installed) return;
+    window.__refact_stealth_installed = true;
+    try {
+        Object.defineProperty(navigator, 'webdriver', {
+            get: function() { return undefined; },
+            configurable: true,
+        });
+    } catch(e) {}
+    try {
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) {
+            window.chrome.runtime = {
+                connect: function() {},
+                sendMessage: function() {},
+            };
+        }
+    } catch(e) {}
+    try {
+        var origQuery = Permissions.prototype.query;
+        Permissions.prototype.query = function(params) {
+            if (params.name === 'notifications') {
+                return Promise.resolve({ state: Notification.permission });
+            }
+            return origQuery.call(this, params);
+        };
+    } catch(e) {}
+})();"#;
+
 pub fn build_recorder_script(mask_passwords: bool) -> String {
     RECORDER_SCRIPT_TEMPLATE.replace(
         "__REFACT_MASK_PASSWORDS__",
@@ -36,14 +64,32 @@ pub fn build_recorder_script(mask_passwords: bool) -> String {
     )
 }
 
-fn normalize_timestamp_ms(ts: f64) -> f64 {
-    // CDP timestamps are often seconds (e.g. ~1.7e9), while recorder timestamps
-    // come from Date.now() in milliseconds (~1.7e12).
+pub fn normalize_timestamp_ms(ts: f64) -> f64 {
+    if !ts.is_finite() || ts < 0.0 {
+        return 0.0;
+    }
     if ts < 10_000_000_000.0 {
         ts * 1000.0
     } else {
         ts
     }
+}
+
+pub fn normalize_timestamp_ms_opt(ts: f64) -> Option<f64> {
+    if !ts.is_finite() || ts < 0.0 {
+        None
+    } else if ts < 10_000_000_000.0 {
+        Some(ts * 1000.0)
+    } else {
+        Some(ts)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentActionEntry {
+    pub timestamp_ms: f64,
+    pub action_type: String,
+    pub summary: String,
 }
 
 pub struct BrowserBuffers {
@@ -52,6 +98,7 @@ pub struct BrowserBuffers {
     pub network_buffer: Vec<NetworkEntry>,
     pub mutation_summary: Vec<MutationSummaryEntry>,
     pub toolbar_action_queue: Vec<String>,
+    pub agent_action_buffer: Vec<AgentActionEntry>,
     pub last_send_action_cursor: usize,
     pub last_send_console_cursor: usize,
     pub last_send_network_cursor: usize,
@@ -77,6 +124,7 @@ impl BrowserBuffers {
             network_buffer: Vec::new(),
             mutation_summary: Vec::new(),
             toolbar_action_queue: Vec::new(),
+            agent_action_buffer: Vec::new(),
             last_send_action_cursor: 0,
             last_send_console_cursor: 0,
             last_send_network_cursor: 0,
@@ -134,7 +182,12 @@ impl BrowserBuffers {
                 }
 
                 match &event {
-                    RecorderEvent::MutationSummary { added, removed, changed, timestamp } => {
+                    RecorderEvent::MutationSummary {
+                        added,
+                        removed,
+                        changed,
+                        timestamp,
+                    } => {
                         self.mutation_summary.push(MutationSummaryEntry {
                             timestamp: *timestamp,
                             added: *added,
@@ -142,7 +195,10 @@ impl BrowserBuffers {
                             changed: *changed,
                             descriptions: Vec::new(),
                         });
-                        enforce_buffer_limit(&mut self.mutation_summary, &mut self.last_send_mutation_cursor);
+                        enforce_buffer_limit(
+                            &mut self.mutation_summary,
+                            &mut self.last_send_mutation_cursor,
+                        );
                     }
                     RecorderEvent::ToolbarAction { action, .. } => {
                         if self.toolbar_action_queue.len() < 50 {
@@ -151,7 +207,10 @@ impl BrowserBuffers {
                     }
                     _ => {
                         self.action_buffer.push(event);
-                        enforce_buffer_limit(&mut self.action_buffer, &mut self.last_send_action_cursor);
+                        enforce_buffer_limit(
+                            &mut self.action_buffer,
+                            &mut self.last_send_action_cursor,
+                        );
                     }
                 }
             }
@@ -181,16 +240,45 @@ impl BrowserBuffers {
         std::mem::take(&mut self.toolbar_action_queue)
     }
 
-    pub fn flush_timeline_events(&mut self) -> (Vec<RecorderEvent>, Vec<ConsoleEntry>, Vec<NetworkEntry>) {
-        let action_start = self.last_timeline_action_cursor.min(self.action_buffer.len());
+    pub fn drain_agent_actions(&mut self) -> Vec<AgentActionEntry> {
+        std::mem::take(&mut self.agent_action_buffer)
+    }
+
+    pub fn push_agent_action(&mut self, action_type: &str, summary: &str) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        self.agent_action_buffer.push(AgentActionEntry {
+            timestamp_ms: now_ms,
+            action_type: action_type.to_string(),
+            summary: summary.to_string(),
+        });
+        // Cap buffer to prevent unbounded growth in tool-only sessions
+        if self.agent_action_buffer.len() > MAX_BUFFER_SIZE {
+            let excess = self.agent_action_buffer.len() - MAX_BUFFER_SIZE;
+            self.agent_action_buffer.drain(..excess);
+        }
+    }
+
+    pub fn flush_timeline_events(
+        &mut self,
+    ) -> (Vec<RecorderEvent>, Vec<ConsoleEntry>, Vec<NetworkEntry>) {
+        let action_start = self
+            .last_timeline_action_cursor
+            .min(self.action_buffer.len());
         let new_actions = self.action_buffer[action_start..].to_vec();
         self.last_timeline_action_cursor = self.action_buffer.len();
 
-        let console_start = self.last_timeline_console_cursor.min(self.console_buffer.len());
+        let console_start = self
+            .last_timeline_console_cursor
+            .min(self.console_buffer.len());
         let new_console = self.console_buffer[console_start..].to_vec();
         self.last_timeline_console_cursor = self.console_buffer.len();
 
-        let network_start = self.last_timeline_network_cursor.min(self.network_buffer.len());
+        let network_start = self
+            .last_timeline_network_cursor
+            .min(self.network_buffer.len());
         let new_network = self.network_buffer[network_start..].to_vec();
         self.last_timeline_network_cursor = self.network_buffer.len();
 
@@ -238,6 +326,7 @@ pub struct BrowserRuntime {
     pub runtime_id: String,
     pub attached_chat_id: Option<String>,
     pub browser: Browser,
+    pub active_tab_target_id: Option<String>,
     pub recording_tab_target_id: Option<String>,
     pub profile_dir: PathBuf,
     pub window_bounds: Option<WindowBounds>,
@@ -245,6 +334,9 @@ pub struct BrowserRuntime {
     pub idle_timeout: Duration,
     pub is_connected: bool,
     pub last_activity: Instant,
+    pub frame_emitter_active: bool,
+    pub headless: bool,
+    pub chrome_path: Option<PathBuf>,
 }
 
 impl std::ops::Deref for BrowserRuntime {
@@ -267,6 +359,7 @@ impl BrowserRuntime {
         chrome_path: Option<PathBuf>,
         idle_timeout: Option<Duration>,
         mask_passwords: bool,
+        headless: bool,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(&profile_dir)
             .map_err(|e| format!("Failed to create profile dir {:?}: {}", profile_dir, e))?;
@@ -275,17 +368,15 @@ impl BrowserRuntime {
         let idle_timeout = idle_timeout.unwrap_or(Duration::from_secs(600));
 
         let mut launch_options = headless_chrome::LaunchOptions {
-            headless: false,
+            headless,
             window_size,
             idle_browser_timeout: idle_timeout,
             user_data_dir: Some(profile_dir.clone()),
             args: vec![
                 std::ffi::OsStr::new("--no-restore-last-session"),
                 std::ffi::OsStr::new("--no-first-run"),
-                // Prevent Chrome from auto-opening the NTP window on startup.
-                // headless_chrome creates the only tab via Target.createTarget,
-                // so the user ends up with exactly one tab.
                 std::ffi::OsStr::new("--no-startup-window"),
+                std::ffi::OsStr::new("--disable-blink-features=AutomationControlled"),
             ],
             ..Default::default()
         };
@@ -296,12 +387,16 @@ impl BrowserRuntime {
         let browser = Browser::new(launch_options).map_err(|e| e.to_string())?;
         let runtime_id = Uuid::new_v4().to_string();
 
-        info!("BrowserRuntime {} launched with profile {:?}", runtime_id, profile_dir);
+        info!(
+            "BrowserRuntime {} launched with profile {:?}",
+            runtime_id, profile_dir
+        );
 
         Ok(Self {
             runtime_id,
             attached_chat_id: None,
             browser,
+            active_tab_target_id: None,
             recording_tab_target_id: None,
             profile_dir,
             window_bounds,
@@ -309,6 +404,42 @@ impl BrowserRuntime {
             idle_timeout,
             is_connected: true,
             last_activity: Instant::now(),
+            frame_emitter_active: false,
+            headless,
+            chrome_path,
+        })
+    }
+
+    pub fn connect(
+        ws_url: String,
+        idle_timeout: Option<Duration>,
+        mask_passwords: bool,
+    ) -> Result<Self, String> {
+        let idle_timeout = idle_timeout.unwrap_or(Duration::from_secs(600));
+        let browser = Browser::connect_with_timeout(ws_url.clone(), idle_timeout)
+            .map_err(|e| format!("Failed to connect to browser at {}: {}", ws_url, e))?;
+        let runtime_id = Uuid::new_v4().to_string();
+
+        info!(
+            "BrowserRuntime {} connected via WebSocket to {}",
+            runtime_id, ws_url
+        );
+
+        Ok(Self {
+            runtime_id,
+            attached_chat_id: None,
+            browser,
+            active_tab_target_id: None,
+            recording_tab_target_id: None,
+            profile_dir: PathBuf::new(),
+            window_bounds: None,
+            buffers: BrowserBuffers::new(mask_passwords),
+            idle_timeout,
+            is_connected: true,
+            last_activity: Instant::now(),
+            frame_emitter_active: false,
+            headless: false,
+            chrome_path: None,
         })
     }
 
@@ -336,7 +467,10 @@ impl BrowserRuntime {
     pub fn check_connection(&mut self) -> bool {
         let connected = self.browser.get_version().is_ok();
         if self.is_connected && !connected {
-            warn!("BrowserRuntime {} detected browser disconnect", self.runtime_id);
+            warn!(
+                "BrowserRuntime {} detected browser disconnect",
+                self.runtime_id
+            );
         }
         self.is_connected = connected;
         connected
@@ -350,13 +484,54 @@ impl BrowserRuntime {
         self.last_activity = Instant::now();
     }
 
+    pub fn set_active_tab_target_id(&mut self, target_id: impl Into<String>) {
+        self.active_tab_target_id = Some(target_id.into());
+    }
+
+    pub fn active_tab_target_id(&self) -> Option<&str> {
+        self.active_tab_target_id.as_deref()
+    }
+
+    pub fn list_tab_infos(&self) -> Vec<crate::integrations::browser_models::TabInfo> {
+        let active_id = self.active_tab_target_id();
+        self.browser
+            .get_tabs()
+            .lock()
+            .map(|tabs| {
+                tabs.iter()
+                    .map(|tab| {
+                        let target_id = tab.get_target_id().to_string();
+                        crate::integrations::browser_models::TabInfo {
+                            tab_id: target_id.clone(),
+                            target_id: target_id.clone(),
+                            url: tab.get_url(),
+                            title: tab.get_title().unwrap_or_default(),
+                            is_active: active_id == Some(target_id.as_str()),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn get_active_tab(&self) -> Option<Arc<headless_chrome::Tab>> {
         let tabs_guard = self.browser.get_tabs().lock().ok()?;
         if tabs_guard.is_empty() {
             return None;
         }
+        if let Some(target_id) = &self.active_tab_target_id {
+            if let Some(tab) = tabs_guard
+                .iter()
+                .find(|tab| tab.get_target_id() == target_id)
+            {
+                return Some(tab.clone());
+            }
+        }
         if let Some(target_id) = &self.recording_tab_target_id {
-            if let Some(tab) = tabs_guard.iter().find(|tab| tab.get_target_id() == target_id) {
+            if let Some(tab) = tabs_guard
+                .iter()
+                .find(|tab| tab.get_target_id() == target_id)
+            {
                 return Some(tab.clone());
             }
         }
@@ -381,11 +556,7 @@ pub fn inject_recorder_into_tab(
 ) -> Result<(), String> {
     let script = build_recorder_script(mask_passwords);
 
-    // 1. Set up the __refact_event binding FIRST so scripts can call it immediately.
-    //    Runtime.addBinding makes window.__refact_event available on all contexts.
     let binding_buffer = action_buffer.clone();
-    // Binding registration can fail if the binding already exists.
-    // We treat that case as non-fatal, because the existing binding is fine.
     if let Err(e) = tab.expose_function(
         "__refact_event",
         Arc::new(move |payload: serde_json::Value| {
@@ -408,7 +579,15 @@ pub fn inject_recorder_into_tab(
         warn!("Failed to expose __refact_event binding (non-fatal): {}", e);
     }
 
-    // 2. Register scripts for future navigations (fires on every new document load).
+    if let Err(e) = tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: STEALTH_SCRIPT.to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    }) {
+        warn!("Failed to add stealth script (non-fatal): {}", e);
+    }
+
     if let Err(e) = tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
         source: script.clone(),
         world_name: None,
@@ -427,9 +606,9 @@ pub fn inject_recorder_into_tab(
         warn!("Failed to add toolbar script (non-fatal): {}", e);
     }
 
-    // 3. Evaluate scripts immediately on the current page. AddScriptToEvaluateOnNewDocument
-    //    only fires on future navigations — the initial about:blank page already loaded.
-    //    Both scripts have idempotency guards (__refact_recorder_installed / __refact_toolbar_installed).
+    if let Err(e) = tab.evaluate(STEALTH_SCRIPT, false) {
+        warn!("Stealth immediate evaluate failed (non-fatal): {}", e);
+    }
     if let Err(e) = tab.evaluate(&script, false) {
         warn!("Recorder immediate evaluate failed (non-fatal): {}", e);
     }
@@ -445,15 +624,12 @@ pub fn ensure_injection_into_tab(
     mask_passwords: bool,
     action_buffer: Arc<Mutex<Vec<String>>>,
 ) {
-    // If a navigation causes the CDP binding to disappear, re-register it.
-    // This is best-effort; injection is idempotent.
     let needs = tab
         .evaluate(
             r#"(function(){
                 try {
                     if (typeof window.__refact_event !== 'function') return true;
-                    if (!window.__refact_recorder_installed || !window.__refact_toolbar_installed) return true;
-                    // Detect a broken wrapper after reload (native binding missing / captured undefined).
+                    if (!window.__refact_stealth_installed || !window.__refact_recorder_installed || !window.__refact_toolbar_installed) return true;
                     try { window.__refact_event(''); } catch(e) { return true; }
                     return false;
                 } catch(e) { return true; }
@@ -541,7 +717,8 @@ pub fn setup_console_capture(
     tab: &headless_chrome::Tab,
     console_buffer: Arc<Mutex<Vec<ConsoleEntry>>>,
 ) -> Result<(), String> {
-    tab.enable_log().map_err(|e| format!("Failed to enable log: {}", e))?;
+    tab.enable_log()
+        .map_err(|e| format!("Failed to enable log: {}", e))?;
 
     tab.add_event_listener(Arc::new(move |event: &Event| {
         if let Event::LogEntryAdded(e) = event {
@@ -558,7 +735,8 @@ pub fn setup_console_capture(
                 }
             }
         }
-    })).map_err(|e| format!("Failed to add console listener: {}", e))?;
+    }))
+    .map_err(|e| format!("Failed to add console listener: {}", e))?;
 
     Ok(())
 }
@@ -594,14 +772,33 @@ pub fn setup_network_capture(
                 }
             }
         }),
-    ).map_err(|e| format!("Failed to setup network capture: {}", e))?;
+    )
+    .map_err(|e| format!("Failed to setup network capture: {}", e))?;
 
     Ok(())
 }
 
+pub fn setup_recording_for_tab(
+    runtime: &mut BrowserRuntime,
+    tab: &headless_chrome::Tab,
+) -> Result<(), String> {
+    inject_recorder_into_tab(
+        tab,
+        runtime.buffers.mask_passwords,
+        runtime.buffers.raw_recorder_events.clone(),
+    )?;
+    setup_console_capture(tab, runtime.buffers.raw_console_entries.clone())?;
+    setup_network_capture(tab, runtime.buffers.raw_network_entries.clone())?;
+    let target_id = tab.get_target_id().to_string();
+    runtime.recording_tab_target_id = Some(target_id.clone());
+    runtime.active_tab_target_id = Some(target_id);
+    Ok(())
+}
+
 pub fn setup_recording_for_runtime(runtime: &mut BrowserRuntime) -> Result<(), String> {
-    // Collect startup tabs and prefer the user-visible non-about:blank tab.
-    let startup_tabs: Vec<Arc<headless_chrome::Tab>> = runtime.browser.get_tabs()
+    let startup_tabs: Vec<Arc<headless_chrome::Tab>> = runtime
+        .browser
+        .get_tabs()
         .lock()
         .map(|tabs| tabs.iter().cloned().collect())
         .unwrap_or_default();
@@ -614,64 +811,42 @@ pub fn setup_recording_for_runtime(runtime: &mut BrowserRuntime) -> Result<(), S
         .or_else(|| runtime.browser.new_tab().ok())
         .ok_or_else(|| "Failed to select recording tab".to_string())?;
 
-    // `chrome://newtab` and other internal pages can block injection/evaluate.
-    // Keep one tab, but navigate it to an injectable blank page.
     let url = primary_tab.get_url();
     if url.starts_with("chrome://") {
         if let Err(e) = primary_tab.navigate_to("about:blank") {
-            tracing::debug!("Could not navigate chrome:// tab to about:blank (non-fatal): {}", e);
+            tracing::debug!(
+                "Could not navigate chrome:// tab to about:blank (non-fatal): {}",
+                e
+            );
         } else {
             let _ = primary_tab.wait_until_navigated();
         }
     }
 
-    inject_recorder_into_tab(
-        &primary_tab,
-        runtime.buffers.mask_passwords,
-        runtime.buffers.raw_recorder_events.clone(),
-    )?;
-    setup_console_capture(&primary_tab, runtime.buffers.raw_console_entries.clone())?;
-    setup_network_capture(&primary_tab, runtime.buffers.raw_network_entries.clone())?;
+    setup_recording_for_tab(runtime, &primary_tab)?;
 
-    runtime.recording_tab_target_id = Some(primary_tab.get_target_id().clone());
+    let tabs_now: Vec<Arc<headless_chrome::Tab>> = runtime
+        .browser
+        .get_tabs()
+        .lock()
+        .map(|tabs| tabs.iter().cloned().collect())
+        .unwrap_or_default();
 
-    // Keep only the selected tab to avoid NTP/about:blank duplicates.
-    for _attempt in 0..10 {
-        let tabs_now: Vec<Arc<headless_chrome::Tab>> = runtime
-            .browser
-            .get_tabs()
-            .lock()
-            .map(|tabs| tabs.iter().cloned().collect())
-            .unwrap_or_default();
-
-        let mut any_extra = false;
-        for tab in tabs_now {
-            if tab.get_target_id() == primary_tab.get_target_id() {
-                continue;
-            }
-            any_extra = true;
-            if let Err(e) = tab.close(false) {
-                tracing::debug!("Could not close extra tab (non-fatal): {}", e);
-            }
+    for tab in tabs_now {
+        if tab.get_target_id() == primary_tab.get_target_id() {
+            continue;
         }
-
-        if !any_extra {
-            break;
+        let url = tab.get_url();
+        if url.starts_with("chrome://") || url == "about:blank" {
+            let _ = tab.close(false);
         }
-
-        std::thread::sleep(Duration::from_millis(100));
     }
 
     Ok(())
 }
 
-pub fn get_browser_profile_dir(
-    gcx_cache_dir: &PathBuf,
-    thread_id: &str,
-) -> PathBuf {
-    gcx_cache_dir
-        .join("browser_profiles")
-        .join(thread_id)
+pub fn get_browser_profile_dir(gcx_cache_dir: &PathBuf, thread_id: &str) -> PathBuf {
+    gcx_cache_dir.join("browser_profiles").join(thread_id)
 }
 
 pub async fn register_browser_runtime(
@@ -680,7 +855,10 @@ pub async fn register_browser_runtime(
 ) -> String {
     let runtime_id = runtime.runtime_id.clone();
     let arc = Arc::new(AMutex::new(runtime));
-    gcx.write().await.browser_runtimes.insert(runtime_id.clone(), arc);
+    gcx.write()
+        .await
+        .browser_runtimes
+        .insert(runtime_id.clone(), arc);
     runtime_id
 }
 
@@ -697,7 +875,9 @@ pub async fn find_runtime_by_chat_id(
 ) -> Option<(String, Arc<AMutex<BrowserRuntime>>)> {
     let runtime_arcs: Vec<(String, Arc<AMutex<BrowserRuntime>>)> = {
         let gcx_locked = gcx.read().await;
-        gcx_locked.browser_runtimes.iter()
+        gcx_locked
+            .browser_runtimes
+            .iter()
             .map(|(rid, arc)| (rid.clone(), arc.clone()))
             .collect()
     };
@@ -712,7 +892,17 @@ pub async fn find_runtime_by_chat_id(
 
 pub async fn browser_monitor_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
     loop {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        let shutdown_flag = gcx.read().await.shutdown_flag.clone();
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+            _ = async {
+                while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            } => {
+                return;
+            }
+        }
 
         let runtime_ids: Vec<String> = {
             let gcx_locked = gcx.read().await;
@@ -814,9 +1004,15 @@ mod tests {
     #[test]
     fn test_handle_recorder_event_scroll_debounce() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"scroll","scroll_x":0,"scroll_y":100,"timestamp":1000.0}"#);
-        buf.handle_recorder_event(r#"{"type":"scroll","scroll_x":0,"scroll_y":200,"timestamp":1100.0}"#);
-        buf.handle_recorder_event(r#"{"type":"scroll","scroll_x":0,"scroll_y":300,"timestamp":1150.0}"#);
+        buf.handle_recorder_event(
+            r#"{"type":"scroll","scroll_x":0,"scroll_y":100,"timestamp":1000.0}"#,
+        );
+        buf.handle_recorder_event(
+            r#"{"type":"scroll","scroll_x":0,"scroll_y":200,"timestamp":1100.0}"#,
+        );
+        buf.handle_recorder_event(
+            r#"{"type":"scroll","scroll_x":0,"scroll_y":300,"timestamp":1150.0}"#,
+        );
         assert_eq!(buf.action_buffer.len(), 1);
         match &buf.action_buffer[0] {
             RecorderEvent::Scroll { scroll_y, .. } => assert_eq!(*scroll_y, 300.0),
@@ -827,8 +1023,12 @@ mod tests {
     #[test]
     fn test_handle_recorder_event_scroll_no_debounce_when_separated() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"scroll","scroll_x":0,"scroll_y":100,"timestamp":1000.0}"#);
-        buf.handle_recorder_event(r#"{"type":"scroll","scroll_x":0,"scroll_y":200,"timestamp":1500.0}"#);
+        buf.handle_recorder_event(
+            r#"{"type":"scroll","scroll_x":0,"scroll_y":100,"timestamp":1000.0}"#,
+        );
+        buf.handle_recorder_event(
+            r#"{"type":"scroll","scroll_x":0,"scroll_y":200,"timestamp":1500.0}"#,
+        );
         assert_eq!(buf.action_buffer.len(), 2);
     }
 
@@ -862,7 +1062,9 @@ mod tests {
     #[test]
     fn test_handle_recorder_event_mutation_goes_to_mutation_buffer() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"mutation_summary","added":3,"removed":1,"changed":2,"timestamp":1000.0}"#);
+        buf.handle_recorder_event(
+            r#"{"type":"mutation_summary","added":3,"removed":1,"changed":2,"timestamp":1000.0}"#,
+        );
         assert!(buf.action_buffer.is_empty());
         assert_eq!(buf.mutation_summary.len(), 1);
         assert_eq!(buf.mutation_summary[0].added, 3);
@@ -871,8 +1073,13 @@ mod tests {
     #[test]
     fn test_toolbar_action_routes_to_toolbar_queue() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"toolbar_action","action":"screenshot","timestamp":1000.0}"#);
-        assert!(buf.action_buffer.is_empty(), "toolbar actions should not go to action_buffer");
+        buf.handle_recorder_event(
+            r#"{"type":"toolbar_action","action":"screenshot","timestamp":1000.0}"#,
+        );
+        assert!(
+            buf.action_buffer.is_empty(),
+            "toolbar actions should not go to action_buffer"
+        );
         assert_eq!(buf.toolbar_action_queue.len(), 1);
         assert_eq!(buf.toolbar_action_queue[0], "screenshot");
     }
@@ -880,11 +1087,18 @@ mod tests {
     #[test]
     fn test_toolbar_action_queue_multiple() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"toolbar_action","action":"screenshot","timestamp":1.0}"#);
-        buf.handle_recorder_event(r#"{"type":"toolbar_action","action":"summarize","timestamp":2.0}"#);
+        buf.handle_recorder_event(
+            r#"{"type":"toolbar_action","action":"screenshot","timestamp":1.0}"#,
+        );
+        buf.handle_recorder_event(
+            r#"{"type":"toolbar_action","action":"summarize","timestamp":2.0}"#,
+        );
         buf.handle_recorder_event(r#"{"type":"toolbar_action","action":"curl","timestamp":3.0}"#);
         assert_eq!(buf.toolbar_action_queue.len(), 3);
-        assert_eq!(buf.toolbar_action_queue, vec!["screenshot", "summarize", "curl"]);
+        assert_eq!(
+            buf.toolbar_action_queue,
+            vec!["screenshot", "summarize", "curl"]
+        );
     }
 
     #[test]
@@ -892,7 +1106,8 @@ mod tests {
         let mut buf = make_test_buffers();
         for i in 0..60 {
             buf.handle_recorder_event(&format!(
-                r#"{{"type":"toolbar_action","action":"action_{}","timestamp":{}.0}}"#, i, i
+                r#"{{"type":"toolbar_action","action":"action_{}","timestamp":{}.0}}"#,
+                i, i
             ));
         }
         assert_eq!(buf.toolbar_action_queue.len(), 50);
@@ -903,8 +1118,12 @@ mod tests {
     #[test]
     fn test_drain_toolbar_actions_returns_and_clears() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"toolbar_action","action":"screenshot","timestamp":1.0}"#);
-        buf.handle_recorder_event(r#"{"type":"toolbar_action","action":"summarize","timestamp":2.0}"#);
+        buf.handle_recorder_event(
+            r#"{"type":"toolbar_action","action":"screenshot","timestamp":1.0}"#,
+        );
+        buf.handle_recorder_event(
+            r#"{"type":"toolbar_action","action":"summarize","timestamp":2.0}"#,
+        );
         let drained = buf.drain_toolbar_actions();
         assert_eq!(drained, vec!["screenshot", "summarize"]);
         assert!(buf.toolbar_action_queue.is_empty());
@@ -934,8 +1153,12 @@ mod tests {
     #[test]
     fn test_flush_action_buffer() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r##"{"type":"click","selector":"#a","text":"A","x":0,"y":0,"timestamp":1.0}"##);
-        buf.handle_recorder_event(r##"{"type":"click","selector":"#b","text":"B","x":0,"y":0,"timestamp":2.0}"##);
+        buf.handle_recorder_event(
+            r##"{"type":"click","selector":"#a","text":"A","x":0,"y":0,"timestamp":1.0}"##,
+        );
+        buf.handle_recorder_event(
+            r##"{"type":"click","selector":"#b","text":"B","x":0,"y":0,"timestamp":2.0}"##,
+        );
         let flushed = buf.flush_action_buffer();
         assert_eq!(flushed.len(), 2);
         let flushed2 = buf.flush_action_buffer();
@@ -945,9 +1168,12 @@ mod tests {
     #[test]
     fn test_flush_console_buffer() {
         let mut buf = make_test_buffers();
-        buf.console_buffer.push(crate::integrations::browser_types::ConsoleEntry {
-            timestamp: 1.0, level: "log".to_string(), text: "hello".to_string(),
-        });
+        buf.console_buffer
+            .push(crate::integrations::browser_types::ConsoleEntry {
+                timestamp: 1.0,
+                level: "log".to_string(),
+                text: "hello".to_string(),
+            });
         let flushed = buf.flush_console_buffer();
         assert_eq!(flushed.len(), 1);
         let flushed2 = buf.flush_console_buffer();
@@ -957,10 +1183,14 @@ mod tests {
     #[test]
     fn test_flush_network_buffer() {
         let mut buf = make_test_buffers();
-        buf.network_buffer.push(crate::integrations::browser_types::NetworkEntry {
-            timestamp: 1.0, method: "GET".to_string(), url: "https://example.com".to_string(),
-            resource_type: "Document".to_string(), status: None,
-        });
+        buf.network_buffer
+            .push(crate::integrations::browser_types::NetworkEntry {
+                timestamp: 1.0,
+                method: "GET".to_string(),
+                url: "https://example.com".to_string(),
+                resource_type: "Document".to_string(),
+                status: None,
+            });
         let flushed = buf.flush_network_buffer();
         assert_eq!(flushed.len(), 1);
         let flushed2 = buf.flush_network_buffer();
@@ -970,7 +1200,9 @@ mod tests {
     #[test]
     fn test_flush_mutation_summary() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r#"{"type":"mutation_summary","added":1,"removed":0,"changed":0,"timestamp":1.0}"#);
+        buf.handle_recorder_event(
+            r#"{"type":"mutation_summary","added":1,"removed":0,"changed":0,"timestamp":1.0}"#,
+        );
         let flushed = buf.flush_mutation_summary();
         assert_eq!(flushed.len(), 1);
         let flushed2 = buf.flush_mutation_summary();
@@ -1044,8 +1276,6 @@ mod tests {
         assert!(buf.last_frame_time.is_some());
     }
 
-
-
     #[test]
     fn test_is_frame_rate_limited_no_previous() {
         let buf = make_test_buffers();
@@ -1069,10 +1299,15 @@ mod tests {
     #[test]
     fn test_detach_then_reattach_preserves_buffers() {
         let mut buf = make_test_buffers();
-        buf.handle_recorder_event(r##"{"type":"click","selector":"#btn","text":"OK","x":0,"y":0,"timestamp":1.0}"##);
-        buf.console_buffer.push(crate::integrations::browser_types::ConsoleEntry {
-            timestamp: 1.0, level: "log".to_string(), text: "test".to_string(),
-        });
+        buf.handle_recorder_event(
+            r##"{"type":"click","selector":"#btn","text":"OK","x":0,"y":0,"timestamp":1.0}"##,
+        );
+        buf.console_buffer
+            .push(crate::integrations::browser_types::ConsoleEntry {
+                timestamp: 1.0,
+                level: "log".to_string(),
+                text: "test".to_string(),
+            });
         assert_eq!(buf.action_buffer.len(), 1);
         assert_eq!(buf.console_buffer.len(), 1);
     }

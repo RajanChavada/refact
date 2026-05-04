@@ -1,33 +1,55 @@
 ---
 title: Quickstart
-description: Learn how to get started with Refact
+description: Install Refact, configure a provider, and start chat, agent, and completion workflows.
 ---
 
-## Available Versions
+Refact runs a local engine in your IDE and sends model requests only to providers or runtimes that you configure. A hosted Refact account, plan, or model credit wallet is not required.
 
-Refact is available in several versions designed for different needs:
+## 1. Install The IDE Extension
 
-- **Cloud Version**: For individual developers who prefer not to manage infrastructure. Just sign up, install, and start using. Navigate to the [Installation Hub](https://docs.refact.ai/installation/installation-hub/) to get started.
-- **Cloud for Teams**: Offers team-specific features for the **Cloud Version**:
-   - Stats Dashboard
-   - Access Control
-   
-   Read more in the [Refact.ai Teams Guide](https://docs.refact.ai/guides/version-specific/teams/)
-- **Self-Hosted Version**: For individual developers that need to keep their data localized for security or privacy reasons. Additionally, following features are available: 
-   - using your own GPU 
-   - fine-tuning LLMs
-   
-   Read more in the [Self-hosted Guide](https://docs.refact.ai/guides/version-specific/self-hosted/)
-- **Enterprise**: For large organizations needing advanced security, compliance, and scalability options. Includes premium support and customization. Read more in the [Refact.ai Enterprise Guide](https://docs.refact.ai/guides/version-specific/enterprise/getting-started/)
+Choose the IDE you use most:
 
-## Key Features
+- [VS Code](/installation/vs-code/)
+- [JetBrains IDEs](/installation/jetbrains/)
 
-### Code Completion
-Get accurate code suggestions as you type, tailored to both the syntax and context of your project. Read more in the [Code Completion Section](https://docs.refact.ai/features/code-completion/).
+After installation, open the Refact sidebar or tool window. The extension starts the local `refact-lsp` engine automatically.
 
-### AI Chat
-Use AI Chat within your IDE to get coding assistance, explanations, and documentation lookup without leaving your coding environment.
+## 2. Add A Provider Or Local Runtime
 
-### AI Toolbox
-Access a suite of pre-built AI commands, such as `/gen` and `/naming`. You can find the full list of available commands and customization options in the [AI Toolbox Section](https://docs.refact.ai/features/ai-toolbox/) 
+Open **Provider Setup** and add at least one model source:
 
+- Hosted BYOK providers: Anthropic, OpenAI, OpenAI Responses, OpenAI Codex, OpenRouter, Groq, DeepSeek, Doubao, xAI, Gemini, Qwen, Kimi, Zhipu, MiniMax, GitHub Copilot, Claude Code, or a custom OpenAI-compatible endpoint.
+- Local or self-managed runtimes: Ollama, LM Studio, vLLM, or a compatible endpoint you run yourself.
+
+Provider keys, OAuth tokens, endpoints, and enabled models are stored in your local Refact configuration. Billing, quotas, model availability, and data retention are controlled by the provider or runtime you choose.
+
+## 3. Choose Default Models
+
+Open **Default Models** and select the models Refact should use for common roles:
+
+- Chat and agent work.
+- Fast or light chat.
+- Reasoning or thinking workflows, when your model supports them.
+- Buddy/background suggestions, if enabled.
+- Code completion, if your provider or local runtime supports completion.
+- Embeddings, when you use semantic search or knowledge features.
+
+You can change these defaults later without reinstalling Refact.
+
+## 4. Start A Chat
+
+Open Refact Chat in your IDE and ask a question about the current project. Attach files or selected code when useful. Refact can combine your message with local project context and enabled tools.
+
+## 5. Try Agent Mode
+
+Switch to an agent-capable mode when you want Refact to search, edit, run commands, inspect integrations, or iterate on a task. Tool confirmations and rollback features are available for workflows that change files.
+
+## 6. Enable Code Completion
+
+Use a completion-capable provider or local runtime for inline suggestions. Local runtimes usually need the model downloaded and reachable before Refact can use it.
+
+## 7. Review Privacy Expectations
+
+Project trajectories, task data, knowledge, provider settings, and usage summaries are stored locally. Network requests go only to configured providers, local endpoints that you point Refact at, and integrations you enable.
+
+Next: read [Configure Providers](/byok/) and [Supported Models](/supported-models/) for provider-specific setup details.

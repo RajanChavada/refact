@@ -7,6 +7,12 @@ import type { Element } from "hast";
 import { trimIndent } from "../../utils";
 import { useShiki } from "../../hooks/useShiki";
 import { useAppearance } from "../../hooks/useAppearance";
+import { MermaidBlock } from "./MermaidBlock";
+import { SvgBlock } from "./SvgBlock";
+import { ArtifactBlock } from "./ArtifactBlock";
+
+const DIAGRAM_LANGUAGES = new Set(["mermaid", "svg"]);
+const ARTIFACT_LANGUAGES = new Set(["html"]);
 
 export type MarkdownControls = {
   onCopyClick: (str: string) => void;
@@ -22,6 +28,7 @@ export type ShikiCodeBlockProps = React.JSX.IntrinsicElements["code"] & {
   };
   color?: CodeProps["color"];
   showLineNumbers?: boolean;
+  isStreaming?: boolean;
 } & Partial<MarkdownControls>;
 
 const MAX_HIGHLIGHT_CHARS = 50000;
@@ -34,6 +41,7 @@ const _ShikiCodeBlock: React.FC<ShikiCodeBlockProps> = ({
   preOptions = { widthMaxContent: false, noMargin: false },
   color = undefined,
   showLineNumbers = false,
+  isStreaming,
 }) => {
   const codeRef = React.useRef<HTMLElement | null>(null);
   const { highlight, isReady } = useShiki();
@@ -49,8 +57,14 @@ const _ShikiCodeBlock: React.FC<ShikiCodeBlockProps> = ({
   const language: string = match?.[1] ?? "text";
   const isDark = appearance === "dark";
 
+  const isSpecialBlock =
+    isBlock &&
+    (DIAGRAM_LANGUAGES.has(language) || ARTIFACT_LANGUAGES.has(language));
+
   const shouldHighlight =
     isBlock &&
+    !isSpecialBlock &&
+    !isStreaming &&
     isReady &&
     textWithOutIndent &&
     textWithOutIndent.length <= MAX_HIGHLIGHT_CHARS;
@@ -95,6 +109,27 @@ const _ShikiCodeBlock: React.FC<ShikiCodeBlockProps> = ({
     return {};
   }, [onCopyClick, textWithOutIndent]);
 
+  if (isBlock && DIAGRAM_LANGUAGES.has(language)) {
+    const diagramCode = textWithOutIndent ?? String(children);
+    if (language === "mermaid") {
+      return <MermaidBlock code={diagramCode} onCopyClick={onCopyClick} />;
+    }
+    if (language === "svg") {
+      return <SvgBlock code={diagramCode} onCopyClick={onCopyClick} />;
+    }
+  }
+
+  if (isBlock && ARTIFACT_LANGUAGES.has(language)) {
+    const artifactCode = textWithOutIndent ?? String(children);
+    return (
+      <ArtifactBlock
+        code={artifactCode}
+        isStreaming={isStreaming}
+        onCopyClick={onCopyClick}
+      />
+    );
+  }
+
   if (!isBlock) {
     return (
       <Code
@@ -117,19 +152,19 @@ const _ShikiCodeBlock: React.FC<ShikiCodeBlockProps> = ({
         })}
         {...preTagProps}
       >
-        {highlightedHtml ? (
-          <div
-            className={classNames(styles.shiki_code, wrap && styles.code_wrap)}
-          >
-            {showLineNumbers && (
-              <div className={styles.line_numbers}>
-                {textWithOutIndent?.split("\n").map((_, i) => (
-                  <span key={i} className={styles.line_number}>
-                    {i + 1}
-                  </span>
-                ))}
-              </div>
-            )}
+        <div
+          className={classNames(styles.shiki_code, wrap && styles.code_wrap)}
+        >
+          {showLineNumbers && highlightedHtml && (
+            <div className={styles.line_numbers}>
+              {textWithOutIndent?.split("\n").map((_, i) => (
+                <span key={i} className={styles.line_number}>
+                  {i + 1}
+                </span>
+              ))}
+            </div>
+          )}
+          {highlightedHtml ? (
             <code
               ref={codeRef}
               className={classNames(styles.code, styles.code_block)}
@@ -139,19 +174,20 @@ const _ShikiCodeBlock: React.FC<ShikiCodeBlockProps> = ({
                 ),
               }}
             />
-          </div>
-        ) : (
-          <code
-            className={classNames(
-              styles.code,
-              styles.code_block,
-              wrap && styles.code_wrap,
-            )}
-            ref={codeRef}
-          >
-            {textWithOutIndent}
-          </code>
-        )}
+          ) : (
+            <code
+              className={classNames(
+                styles.code,
+                styles.code_block,
+                wrap && styles.code_wrap,
+              )}
+              ref={codeRef}
+              style={!wrap ? { whiteSpace: "pre" } : undefined}
+            >
+              {textWithOutIndent}
+            </code>
+          )}
+        </div>
       </PreTag>
     </Box>
   );

@@ -8,7 +8,9 @@ use chrono::Utc;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::tasks::storage;
 use crate::tasks::types::BoardCard;
 use crate::tasks::events::{TaskEvent, emit_task_event};
@@ -35,11 +37,49 @@ fn parse_depends_on(value: Option<&Value>) -> Vec<String> {
     }
 }
 
+fn parse_target_files(value: Option<&Value>, instructions: &str) -> Vec<String> {
+    let mut files: Vec<String> = match value {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::trim))
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(s)) => s
+            .split([',', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => vec![],
+    };
+    if files.is_empty() {
+        for token in instructions.split_whitespace() {
+            let t = token.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '`' | ',' | '.' | ':' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+            });
+            if t.contains('/') && t.contains('.') && !files.iter().any(|f| f == t) {
+                files.push(t.to_string());
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
 async fn get_task_id(
     ccx: &Arc<AMutex<AtCommandsContext>>,
     args: &HashMap<String, Value>,
 ) -> Result<String, String> {
-    if let Some(id) = args.get("task_id").and_then(|v| v.as_str()) {
+    if let Some(id) = args
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         return Ok(id.to_string());
     }
     let ccx_lock = ccx.lock().await;
@@ -89,7 +129,10 @@ impl Tool for ToolTaskBoardGet {
         let task_id = get_task_id(&ccx, args).await?;
         let gcx = ccx.lock().await.global_context.clone();
         let board = storage::load_board(gcx, &task_id).await?;
-        let card_id = args.get("card_id").and_then(|v| v.as_str());
+        let card_id = args
+            .get("card_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
 
         let result = if let Some(cid) = card_id {
             let card = board
@@ -138,11 +181,9 @@ impl Tool for ToolTaskBoardGet {
             experimental: false,
             allow_parallel: true,
             description: "Get task board state. Without card_id returns summary (id, title, column, priority, depends_on). With card_id returns full card details including instructions, status_updates, final_report.".to_string(),
-            parameters: vec![
-                ToolParam { name: "task_id".to_string(), param_type: "string".to_string(), description: "Task UUID (optional if in task context)".to_string() },
-                ToolParam { name: "card_id".to_string(), param_type: "string".to_string(), description: "Card ID to get full details for (optional)".to_string() },
-            ],
-            parameters_required: vec![],
+            input_schema: json_schema_from_params(&[("task_id", "string", "Task UUID (optional if in task context)"), ("card_id", "string", "Card ID to get full details for (optional)")], &[]),
+            output_schema: None,
+            annotations: None,
         }
     }
 }
@@ -198,6 +239,7 @@ impl Tool for ToolTaskBoardCreateCard {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let depends_on: Vec<String> = parse_depends_on(args.get("depends_on"));
+        let target_files = parse_target_files(args.get("target_files"), instructions);
         let mut board = storage::load_board(gcx.clone(), &task_id).await?;
 
         if board.cards.iter().any(|c| c.id == card_id) {
@@ -217,19 +259,25 @@ impl Tool for ToolTaskBoardCreateCard {
             final_report: None,
             created_at: Utc::now().to_rfc3339(),
             started_at: None,
+            last_heartbeat_at: None,
             completed_at: None,
             agent_branch: None,
             agent_worktree: None,
             agent_worktree_name: None,
+            target_files,
         });
         board.rev += 1;
 
         storage::save_board(gcx.clone(), &task_id, &board).await?;
-        emit_task_event(gcx.clone(), TaskEvent::BoardChanged {
-            task_id: task_id.to_string(),
-            rev: board.rev,
-            board: board.clone(),
-        }).await;
+        emit_task_event(
+            gcx.clone(),
+            TaskEvent::BoardChanged {
+                task_id: task_id.to_string(),
+                rev: board.rev,
+                board: board.clone(),
+            },
+        )
+        .await;
         storage::update_task_stats(gcx, &task_id).await?;
 
         let result = format!("Created card {} in Planned column", card_id);
@@ -257,36 +305,9 @@ impl Tool for ToolTaskBoardCreateCard {
             experimental: false,
             allow_parallel: false,
             description: "Create a new card on the task board.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "card_id".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Card ID (e.g., T-1, T-2)".to_string(),
-                },
-                ToolParam {
-                    name: "title".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Card title".to_string(),
-                },
-                ToolParam {
-                    name: "priority".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Priority: P0, P1, or P2".to_string(),
-                },
-                ToolParam {
-                    name: "instructions".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Detailed instructions for the agent".to_string(),
-                },
-                ToolParam {
-                    name: "depends_on".to_string(),
-                    param_type: "string".to_string(),
-                    description:
-                        "Comma-separated list of card IDs this card depends on (e.g., \"T-1, T-2\")"
-                            .to_string(),
-                },
-            ],
-            parameters_required: vec!["card_id".to_string(), "title".to_string()],
+            input_schema: json_schema_from_params(&[("card_id", "string", "Card ID (e.g., T-1, T-2)"), ("title", "string", "Card title"), ("priority", "string", "Priority: P0, P1, or P2"), ("instructions", "string", "Detailed instructions for the agent"), ("depends_on", "string", "Comma-separated list of card IDs this card depends on (e.g., \"T-1, T-2\")"), ("target_files", "string", "Comma-separated target file paths this card is expected to touch")], &["card_id", "title"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 }
@@ -347,14 +368,21 @@ impl Tool for ToolTaskBoardUpdateCard {
         if args.contains_key("depends_on") {
             card.depends_on = parse_depends_on(args.get("depends_on"));
         }
+        if args.contains_key("target_files") {
+            card.target_files = parse_target_files(args.get("target_files"), &card.instructions);
+        }
 
         board.rev += 1;
         storage::save_board(gcx.clone(), &task_id, &board).await?;
-        emit_task_event(gcx, TaskEvent::BoardChanged {
-            task_id: task_id.to_string(),
-            rev: board.rev,
-            board: board.clone(),
-        }).await;
+        emit_task_event(
+            gcx,
+            TaskEvent::BoardChanged {
+                task_id: task_id.to_string(),
+                rev: board.rev,
+                board: board.clone(),
+            },
+        )
+        .await;
 
         let result = format!("Updated card {}", card_id);
         Ok((
@@ -381,35 +409,22 @@ impl Tool for ToolTaskBoardUpdateCard {
             experimental: false,
             allow_parallel: false,
             description: "Update an existing card's fields.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "card_id".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Card ID to update".to_string(),
-                },
-                ToolParam {
-                    name: "title".to_string(),
-                    param_type: "string".to_string(),
-                    description: "New title".to_string(),
-                },
-                ToolParam {
-                    name: "priority".to_string(),
-                    param_type: "string".to_string(),
-                    description: "New priority".to_string(),
-                },
-                ToolParam {
-                    name: "instructions".to_string(),
-                    param_type: "string".to_string(),
-                    description: "New instructions".to_string(),
-                },
-                ToolParam {
-                    name: "depends_on".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Comma-separated list of new dependencies (e.g., \"T-1, T-2\")"
-                        .to_string(),
-                },
-            ],
-            parameters_required: vec!["card_id".to_string()],
+            input_schema: json_schema_from_params(
+                &[
+                    ("card_id", "string", "Card ID to update"),
+                    ("title", "string", "New title"),
+                    ("priority", "string", "New priority"),
+                    ("instructions", "string", "New instructions"),
+                    (
+                        "depends_on",
+                        "string",
+                        "Comma-separated list of new dependencies (e.g., \"T-1, T-2\")",
+                    ),
+                ],
+                &["card_id"],
+            ),
+            output_schema: None,
+            annotations: None,
         }
     }
 }
@@ -482,11 +497,15 @@ impl Tool for ToolTaskBoardMoveCard {
         board.rev += 1;
 
         storage::save_board(gcx.clone(), &task_id, &board).await?;
-        emit_task_event(gcx.clone(), TaskEvent::BoardChanged {
-            task_id: task_id.to_string(),
-            rev: board.rev,
-            board: board.clone(),
-        }).await;
+        emit_task_event(
+            gcx.clone(),
+            TaskEvent::BoardChanged {
+                task_id: task_id.to_string(),
+                rev: board.rev,
+                board: board.clone(),
+            },
+        )
+        .await;
         storage::update_task_stats(gcx, &task_id).await?;
 
         let result = format!("Moved card {} from {} to {}", card_id, old_column, column);
@@ -514,19 +533,19 @@ impl Tool for ToolTaskBoardMoveCard {
             experimental: false,
             allow_parallel: false,
             description: "Move a card to a different column.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "card_id".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Card ID to move".to_string(),
-                },
-                ToolParam {
-                    name: "column".to_string(),
-                    param_type: "string".to_string(),
-                    description: "Target column: planned, doing, done, or failed".to_string(),
-                },
-            ],
-            parameters_required: vec!["card_id".to_string(), "column".to_string()],
+            input_schema: json_schema_from_params(
+                &[
+                    ("card_id", "string", "Card ID to move"),
+                    (
+                        "column",
+                        "string",
+                        "Target column: planned, doing, done, or failed",
+                    ),
+                ],
+                &["card_id", "column"],
+            ),
+            output_schema: None,
+            annotations: None,
         }
     }
 }
@@ -580,11 +599,15 @@ impl Tool for ToolTaskBoardDeleteCard {
         board.rev += 1;
 
         storage::save_board(gcx.clone(), &task_id, &board).await?;
-        emit_task_event(gcx.clone(), TaskEvent::BoardChanged {
-            task_id: task_id.to_string(),
-            rev: board.rev,
-            board: board.clone(),
-        }).await;
+        emit_task_event(
+            gcx.clone(),
+            TaskEvent::BoardChanged {
+                task_id: task_id.to_string(),
+                rev: board.rev,
+                board: board.clone(),
+            },
+        )
+        .await;
         storage::update_task_stats(gcx, &task_id).await?;
 
         let result = format!("Deleted card {}", card_id);
@@ -612,12 +635,12 @@ impl Tool for ToolTaskBoardDeleteCard {
             experimental: false,
             allow_parallel: false,
             description: "Delete a card from the board.".to_string(),
-            parameters: vec![ToolParam {
-                name: "card_id".to_string(),
-                param_type: "string".to_string(),
-                description: "Card ID to delete".to_string(),
-            }],
-            parameters_required: vec!["card_id".to_string()],
+            input_schema: json_schema_from_params(
+                &[("card_id", "string", "Card ID to delete")],
+                &["card_id"],
+            ),
+            output_schema: None,
+            annotations: None,
         }
     }
 }
@@ -672,8 +695,9 @@ impl Tool for ToolTaskReadyCards {
             allow_parallel: true,
             description: "Get cards that are ready to be worked on (all dependencies satisfied)."
                 .to_string(),
-            parameters: vec![],
-            parameters_required: vec![],
+            input_schema: json_schema_from_params(&[], &[]),
+            output_schema: None,
+            annotations: None,
         }
     }
 }

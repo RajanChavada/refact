@@ -1,43 +1,63 @@
 ---
 title: Refact Documentation
-description: Refact is an open-source AI coding assistant for VS Code and JetBrains.
-next:
-  link: /introduction/quickstart/
-  label: Quickstart
+description: Documentation for the local-first Refact coding assistant.
 ---
 
-Refact is an open-source AI coding assistant for VS Code and JetBrains. 
+Refact is a local-first coding assistant for VS Code and JetBrains IDEs. The IDE extension starts the local `refact-lsp` engine, connects it to the model providers or local runtimes you configure, and gives you chat, agent workflows, code completion, project context, and integrations from inside your editor.
 
-It allows you to use various open-source (like **Code Llama**) and closed-source (like **GPT-4**) Large Language Models (**LLMs**) for code completion, code refactoring and chat. 
+Refact does not require a hosted Refact account or bundled model service. You bring your own provider keys, OAuth-capable provider account, or local model runtime.
 
-Self-hosted Refact allows you to personalize code LLMs for code completion with an intuitive Web UI. 
+## Start In Five Minutes
 
-## Guides
-To get started, follow the guides:
-- [QuickStart](https://docs.refact.ai/introduction/quickstart/)
-- [Self-hosted Refact](https://docs.refact.ai/guides/version-specific/self-hosted/)
-- [Enterprise Refact Edition](https://docs.refact.ai/guides/version-specific/enterprise/getting-started/)
+1. Install Refact for [VS Code](/installation/vs-code/) or [JetBrains IDEs](/installation/jetbrains/).
+2. Open the Refact sidebar or tool window in your IDE.
+3. Add at least one [provider or local runtime](/byok/).
+4. Choose default chat, reasoning, and completion models.
+5. Start a chat, ask the agent to work on a task, or use inline code completion.
 
-## Privacy
-Refact allows you to restrict access to particular files or projects, ensuring that your private code or confidential files are protected. 
+For a guided first-run path, follow the [Quickstart](/introduction/quickstart/).
 
-We never store your code on the server side.
+## Core Pillars
 
-Read more about privacy settings in the [Privacy Documentation](https://docs.refact.ai/features/code-completion/#privacy).
+### Local Engine
 
+The Refact engine runs on your machine and communicates with the IDE over localhost. It manages chat sessions, tools, code completion, local indexes, trajectories, tasks, and knowledge.
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+### IDE Chat And Agent Workflows
 
-## More Resources
+Use Refact chat to ask questions about your codebase, attach context, and switch into autonomous agent modes for multi-step edits, searches, tests, and integration-backed workflows.
 
-<CardGrid>
-	<Card title="Discord server" icon="pencil">
-		To get assistance from the Refact community and team members, join the [Discord server](https://smallcloud.ai/discord).
-	</Card>
-	<Card title="FAQ" icon="magnifier">
-		[FAQ segment](https://docs.refact.ai/faq/) covers the most popular questions about Refact.
-	</Card>
-	<Card title="Contributing" icon="rocket">
-		To set up Refact for development, follow the [Contributing Guide](https://docs.refact.ai/contributing/) and check the available issues on [GitHub](https://github.com/smallcloudai/refact).
-	</Card>
-</CardGrid>
+### Code Completion
+
+Configure a completion-capable provider or local runtime to get fill-in-the-middle suggestions directly in your editor.
+
+### Providers And Local Runtimes
+
+Refact supports BYOK providers such as Anthropic, OpenAI, OpenRouter, Groq, DeepSeek, Gemini, xAI, Qwen, Kimi, Zhipu, MiniMax, GitHub Copilot, Claude Code, and custom OpenAI-compatible endpoints. It also supports local runtimes such as Ollama, LM Studio, and vLLM.
+
+### Integrations
+
+Enable the tools you need: shell commands, long-running command services, Chrome, GitHub, GitLab, Docker, PostgreSQL, MySQL, PDB, MCP, and other configured integrations.
+
+### Local Context, Knowledge, And Tasks
+
+Refact stores project trajectories, knowledge, task boards, and usage summaries locally. Requests leave your machine only for providers and integrations you configure.
+
+## Recommended Next Pages
+
+- [Quickstart](/introduction/quickstart/)
+- [Installation Overview](/installation/installation-hub/)
+- [Configure Providers](/byok/)
+- [Supported Models](/supported-models/)
+- [Privacy](/privacy/)
+- [Worktrees](/features/autonomous-agent/worktrees/)
+
+## Key Features
+
+- AI chat and autonomous agent workflows.
+- Code completion.
+- Local project trajectories, tasks, knowledge, and worktree isolation.
+- BYOK and local provider setup.
+- Local token/provider-cost usage summaries.
+
+Refact does not require a hosted account or managed Refact inference service.

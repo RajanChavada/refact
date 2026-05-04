@@ -5,11 +5,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::caps::model_caps::ModelCapabilities;
+use crate::caps::model_caps::{resolve_model_caps, ModelCapabilities, ResolvedCaps};
 use crate::llm::adapter::WireFormat;
 use crate::providers::config::resolve_env_var;
-use crate::providers::traits::{AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait, merge_custom_models, parse_enabled_models, parse_custom_models, set_model_enabled_impl};
-use crate::providers::pricing::google_gemini_pricing;
+use crate::providers::traits::{
+    AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
+    merge_custom_models, parse_enabled_models, parse_custom_models, set_model_enabled_impl,
+};
 
 const GEMINI_MODELS_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -30,7 +32,12 @@ pub struct GoogleGeminiHealthInfo {
 }
 
 impl GoogleGeminiProvider {
-    fn parse_gemini_model(model: &serde_json::Value, enabled: bool) -> Option<AvailableModel> {
+    fn parse_gemini_model(
+        model: &serde_json::Value,
+        enabled: bool,
+        caps: &ModelCapabilities,
+        pricing: Option<ModelPricing>,
+    ) -> Option<AvailableModel> {
         let name = model.get("name")?.as_str()?;
         let id = name.strip_prefix("models/").unwrap_or(name).to_string();
 
@@ -44,42 +51,56 @@ impl GoogleGeminiProvider {
             return None;
         }
 
-        let display_name = model.get("displayName").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let n_ctx = model.get("inputTokenLimit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(128_000);
-        let max_output_tokens = model.get("outputTokenLimit").and_then(|v| v.as_u64()).map(|v| v as usize);
-        let supports_thinking = model.get("thinking").and_then(|v| v.as_bool()).unwrap_or(false);
-
-        let pricing = google_gemini_pricing(&id);
-
-        Some(AvailableModel {
-            id,
-            display_name,
-            n_ctx,
-            supports_tools: true,
-            supports_multimodality: true,
-            reasoning_effort_options: None,
-            supports_thinking_budget: supports_thinking,
-            supports_adaptive_thinking_budget: supports_thinking,
-            tokenizer: None,
-            enabled,
-            is_custom: false,
-            pricing,
-            available_providers: Vec::new(),
-            selected_provider: None,
-            max_output_tokens,
-            provider_variants: Vec::new(),
-        })
+        let display_name = model
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut available = AvailableModel::from_caps(&id, caps, enabled, pricing);
+        available.display_name = display_name;
+        Some(available)
     }
 
-    pub async fn check_api_key_health(&self, http_client: &reqwest::Client) -> Result<GoogleGeminiHealthInfo, String> {
+    fn resolve_models_dev_caps(
+        model_caps: &HashMap<String, ModelCapabilities>,
+        id: &str,
+    ) -> Option<ResolvedCaps> {
+        resolve_model_caps(model_caps, &format!("google/{id}"))
+            .or_else(|| resolve_model_caps(model_caps, id))
+    }
+
+    fn models_url(
+        api_key: &str,
+        page_size: usize,
+        page_token: Option<&str>,
+    ) -> Result<reqwest::Url, String> {
+        let page_size = page_size.to_string();
+        let mut params = vec![("key", api_key), ("pageSize", page_size.as_str())];
+        if let Some(page_token) = page_token {
+            params.push(("pageToken", page_token));
+        }
+        reqwest::Url::parse_with_params(GEMINI_MODELS_URL, params)
+            .map_err(|e| format!("Failed to build Google Gemini models URL: {e}"))
+    }
+
+    fn models_request(
+        http_client: &reqwest::Client,
+        api_key: &str,
+        page_size: usize,
+        page_token: Option<&str>,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        Ok(http_client.get(Self::models_url(api_key, page_size, page_token)?))
+    }
+
+    pub async fn check_api_key_health(
+        &self,
+        http_client: &reqwest::Client,
+    ) -> Result<GoogleGeminiHealthInfo, String> {
         let api_key = resolve_env_var(&self.api_key, "", "google_gemini api_key");
         if api_key.is_empty() {
             return Err("Google Gemini API key is not configured".to_string());
         }
 
-        let url = format!("{}?key={}&pageSize=1", GEMINI_MODELS_URL, api_key);
-        let response = http_client
-            .get(&url)
+        let response = Self::models_request(http_client, &api_key, 1, None)?
             .send()
             .await
             .map_err(|e| format!("Google Gemini models request failed: {e}"))?;
@@ -89,9 +110,16 @@ impl GoogleGeminiProvider {
             let body = response.text().await.unwrap_or_default();
             let detail = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).map(|s| s.to_string()))
+                .and_then(|v| {
+                    v.get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string())
+                })
                 .unwrap_or_else(|| body.chars().take(200).collect());
-            return Err(format!("Google Gemini API returned status {status}: {detail}"));
+            return Err(format!(
+                "Google Gemini API returned status {status}: {detail}"
+            ));
         }
 
         let json: serde_json::Value = response
@@ -114,11 +142,11 @@ impl GoogleGeminiProvider {
 
 #[async_trait]
 impl ProviderTrait for GoogleGeminiProvider {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "google_gemini"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "Google Gemini"
     }
 
@@ -193,14 +221,17 @@ available:
             enabled: self.enabled && !api_key.is_empty() && !self.enabled_models.is_empty(),
             readonly: false,
             wire_format: self.default_wire_format(),
-            chat_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string(),
+            chat_endpoint:
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                    .to_string(),
             completion_endpoint: String::new(),
-            embedding_endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/embeddings".to_string(),
+            embedding_endpoint:
+                "https://generativelanguage.googleapis.com/v1beta/openai/embeddings".to_string(),
             api_key,
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
-            support_metadata: false,
+            supports_cache_control: true,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
             embedding_model: None,
@@ -236,19 +267,16 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        if let Some(config) = self.custom_models.get(model_id) {
-            if config.pricing.is_some() {
-                return config.pricing.clone();
-            }
-        }
-        google_gemini_pricing(model_id)
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+        self.custom_models
+            .get(model_id)
+            .and_then(|config| config.pricing.clone())
     }
 
     async fn fetch_available_models(
         &self,
         http_client: &reqwest::Client,
-        _model_caps: &HashMap<String, ModelCapabilities>,
+        model_caps: &HashMap<String, ModelCapabilities>,
     ) -> Vec<AvailableModel> {
         let api_key = resolve_env_var(&self.api_key, "", "google_gemini api_key");
         if api_key.is_empty() {
@@ -262,12 +290,15 @@ available:
         let mut page_token: Option<String> = None;
 
         loop {
-            let mut url = format!("{}?key={}&pageSize=1000", GEMINI_MODELS_URL, api_key);
-            if let Some(ref token) = page_token {
-                url.push_str(&format!("&pageToken={}", token));
-            }
-
-            let response = match http_client.get(&url).send().await {
+            let request =
+                match Self::models_request(http_client, &api_key, 1000, page_token.as_deref()) {
+                    Ok(request) => request,
+                    Err(e) => {
+                        tracing::warn!("Google Gemini: failed to build models request: {}", e);
+                        return self.get_custom_models_only();
+                    }
+                };
+            let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!("Google Gemini: failed to fetch models: {}", e);
@@ -276,7 +307,10 @@ available:
             };
 
             if !response.status().is_success() {
-                tracing::warn!("Google Gemini: models endpoint returned status {}", response.status());
+                tracing::warn!(
+                    "Google Gemini: models endpoint returned status {}",
+                    response.status()
+                );
                 return self.get_custom_models_only();
             }
 
@@ -290,20 +324,33 @@ available:
 
             if let Some(models) = json.get("models").and_then(|v| v.as_array()) {
                 for m in models {
-                    let model_id = m.get("name")
+                    let model_id = m
+                        .get("name")
                         .and_then(|v| v.as_str())
                         .map(|name| name.strip_prefix("models/").unwrap_or(name));
 
                     if let Some(id) = model_id {
                         let enabled = enabled_set.contains(id);
-                        if let Some(model) = Self::parse_gemini_model(m, enabled) {
+                        let Some(resolved_caps) = Self::resolve_models_dev_caps(model_caps, id)
+                        else {
+                            continue;
+                        };
+                        let pricing = self
+                            .custom_model_pricing(id)
+                            .or_else(|| resolved_caps.caps.pricing.clone());
+                        if let Some(model) =
+                            Self::parse_gemini_model(m, enabled, &resolved_caps.caps, pricing)
+                        {
                             all_models.push(model);
                         }
                     }
                 }
             }
 
-            page_token = json.get("nextPageToken").and_then(|v| v.as_str()).map(|s| s.to_string());
+            page_token = json
+                .get("nextPageToken")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             if page_token.is_none() {
                 break;
             }
@@ -312,5 +359,119 @@ available:
         merge_custom_models(&mut all_models, &self.custom_models, &enabled_set);
         all_models.sort_by(|a, b| a.id.cmp(&b.id));
         all_models
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_models_dev_gemini_parse_uses_resolved_caps() {
+        let live_model = json!({
+            "name": "models/gemini-test",
+            "displayName": "Gemini Test",
+            "supportedGenerationMethods": ["generateContent"],
+            "inputTokenLimit": 999_999,
+            "outputTokenLimit": 99_999,
+            "thinking": true
+        });
+        let caps = ModelCapabilities {
+            n_ctx: 12_345,
+            max_output_tokens: 678,
+            supports_tools: false,
+            supports_parallel_tools: false,
+            supports_strict_tools: false,
+            supports_vision: false,
+            supports_pdf: false,
+            supports_thinking_budget: false,
+            supports_adaptive_thinking_budget: false,
+            tokenizer: "fake-gemini".to_string(),
+            pricing: Some(ModelPricing {
+                prompt: 1.0,
+                generated: 2.0,
+                cache_read: None,
+                cache_creation: None,
+                context_over_200k: None,
+            }),
+            ..Default::default()
+        };
+
+        let model =
+            GoogleGeminiProvider::parse_gemini_model(&live_model, true, &caps, None).unwrap();
+
+        assert_eq!(model.id, "gemini-test");
+        assert_eq!(model.n_ctx, 12_345);
+        assert_eq!(model.max_output_tokens, Some(678));
+        assert!(!model.supports_tools);
+        assert!(!model.supports_parallel_tools);
+        assert!(!model.supports_strict_tools);
+        assert!(!model.supports_multimodality);
+        assert!(!model.supports_thinking_budget);
+        assert!(!model.supports_adaptive_thinking_budget);
+        assert_eq!(model.tokenizer.as_deref(), Some("fake-gemini"));
+        assert_eq!(model.pricing.unwrap().prompt, 1.0);
+    }
+
+    #[test]
+    fn test_models_dev_gemini_parse_uses_multimodality_from_resolved_caps() {
+        let live_model = json!({
+            "name": "models/gemini-vision-test",
+            "supportedGenerationMethods": ["generateContent"]
+        });
+        let caps = ModelCapabilities {
+            n_ctx: 128_000,
+            max_output_tokens: 8_192,
+            supports_tools: true,
+            supports_parallel_tools: true,
+            supports_vision: true,
+            supports_pdf: true,
+            ..Default::default()
+        };
+
+        let model =
+            GoogleGeminiProvider::parse_gemini_model(&live_model, false, &caps, None).unwrap();
+
+        assert!(model.supports_tools);
+        assert!(model.supports_parallel_tools);
+        assert!(model.supports_multimodality);
+    }
+
+    #[test]
+    fn test_models_dev_gemini_unknown_live_models_are_hidden() {
+        let empty_caps = HashMap::new();
+        assert!(
+            GoogleGeminiProvider::resolve_models_dev_caps(&empty_caps, "gemini-uncataloged")
+                .is_none()
+        );
+
+        let mut model_caps = HashMap::new();
+        model_caps.insert(
+            "google/gemini-cataloged".to_string(),
+            ModelCapabilities {
+                n_ctx: 128_000,
+                ..Default::default()
+            },
+        );
+        assert!(
+            GoogleGeminiProvider::resolve_models_dev_caps(&model_caps, "gemini-cataloged")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_models_dev_gemini_request_uses_query_encoding() {
+        let url = GoogleGeminiProvider::models_url(
+            "key with spaces&symbols",
+            1000,
+            Some("token/with spaces&symbols"),
+        )
+        .unwrap();
+        let query = url.query().unwrap();
+
+        assert!(query.contains("key=key+with+spaces%26symbols"));
+        assert!(query.contains("pageSize=1000"));
+        assert!(query.contains("pageToken=token%2Fwith+spaces%26symbols"));
     }
 }

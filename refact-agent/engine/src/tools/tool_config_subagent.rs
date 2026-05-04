@@ -4,7 +4,10 @@ use serde_json::Value;
 use tokio::sync::Mutex as AMutex;
 use async_trait::async_trait;
 
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
+use serde_json::json;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::subchat::run_subchat;
@@ -20,31 +23,25 @@ impl ToolConfigSubagent {
         Self { config }
     }
 
-    fn build_tool_params(&self) -> Vec<ToolParam> {
+    fn build_input_schema(&self) -> serde_json::Value {
         if let Some(ref tool_schema) = self.config.tool {
-            tool_schema.parameters.iter().map(|p| {
-                ToolParam {
-                    name: p.name.clone(),
-                    param_type: p.param_type.clone(),
-                    description: p.description.clone(),
-                }
-            }).collect()
+            let mut properties = serde_json::Map::new();
+            for p in &tool_schema.parameters {
+                properties.insert(
+                    p.name.clone(),
+                    json!({
+                        "type": p.param_type,
+                        "description": p.description
+                    }),
+                );
+            }
+            json!({
+                "type": "object",
+                "properties": properties,
+                "required": tool_schema.required
+            })
         } else {
-            vec![
-                ToolParam {
-                    name: "task".to_string(),
-                    param_type: "string".to_string(),
-                    description: "The task to execute".to_string(),
-                },
-            ]
-        }
-    }
-
-    fn build_required_params(&self) -> Vec<String> {
-        if let Some(ref tool_schema) = self.config.tool {
-            tool_schema.required.clone()
-        } else {
-            vec!["task".to_string()]
+            json_schema_from_params(&[("task", "string", "The task to execute")], &["task"])
         }
     }
 
@@ -73,7 +70,12 @@ impl Tool for ToolConfigSubagent {
             self.config.description.clone()
         };
 
-        let allow_parallel = self.config.tool.as_ref().map(|t| t.allow_parallel).unwrap_or(false);
+        let allow_parallel = self
+            .config
+            .tool
+            .as_ref()
+            .map(|t| t.allow_parallel)
+            .unwrap_or(false);
 
         ToolDesc {
             name: self.config.id.clone(),
@@ -85,8 +87,9 @@ impl Tool for ToolConfigSubagent {
             experimental: false,
             allow_parallel,
             description,
-            parameters: self.build_tool_params(),
-            parameters_required: self.build_required_params(),
+            input_schema: self.build_input_schema(),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -98,7 +101,16 @@ impl Tool for ToolConfigSubagent {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         use crate::at_commands::at_commands::MAX_SUBCHAT_DEPTH;
 
-        let (gcx, parent_chat_id, parent_root_chat_id, parent_subchat_tx, parent_abort_flag, current_depth) = {
+        let (
+            gcx,
+            parent_chat_id,
+            parent_root_chat_id,
+            parent_subchat_tx,
+            parent_abort_flag,
+            current_depth,
+            parent_task_meta,
+            parent_worktree,
+        ) = {
             let ccx_lock = ccx.lock().await;
             (
                 ccx_lock.global_context.clone(),
@@ -107,6 +119,8 @@ impl Tool for ToolConfigSubagent {
                 ccx_lock.subchat_tx.clone(),
                 ccx_lock.abort_flag.clone(),
                 ccx_lock.subchat_depth,
+                ccx_lock.task_meta.clone(),
+                ccx_lock.execution_scope_worktree(),
             )
         };
 
@@ -151,6 +165,8 @@ impl Tool for ToolConfigSubagent {
             false,
             None,
             "agent".to_string(),
+            parent_task_meta,
+            parent_worktree,
             Some(tool_call_id.clone()),
             Some(parent_subchat_tx),
             Some(parent_abort_flag),
@@ -183,7 +199,8 @@ impl Tool for ToolConfigSubagent {
                 ..Default::default()
             });
         } else {
-            let task = args.get("task")
+            let task = args
+                .get("task")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Execute the task");
             messages.push(ChatMessage {
@@ -214,7 +231,10 @@ impl Tool for ToolConfigSubagent {
                     false,
                     vec![ContextEnum::ChatMessage(ChatMessage {
                         role: "tool".to_string(),
-                        content: ChatContent::SimpleText(format!("{} aborted by user.", self.config.title)),
+                        content: ChatContent::SimpleText(format!(
+                            "{} aborted by user.",
+                            self.config.title
+                        )),
                         tool_calls: None,
                         tool_call_id: tool_call_id.clone(),
                         tool_failed: Some(true),
@@ -229,12 +249,11 @@ impl Tool for ToolConfigSubagent {
         let last_assistant = result.messages.iter().rev().find(|m| m.role == "assistant");
         let result_content = last_assistant
             .map(|m| m.content.content_text_only())
-            .unwrap_or_else(|| format!("{} completed but produced no response.", self.config.title));
+            .unwrap_or_else(|| {
+                format!("{} completed but produced no response.", self.config.title)
+            });
 
-        let result_message = format!(
-            "# {} Result\n\n{}",
-            self.config.title, result_content
-        );
+        let result_message = format!("# {} Result\n\n{}", self.config.title, result_content);
 
         Ok((
             false,

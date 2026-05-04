@@ -6,6 +6,7 @@ import {
   isToolMessage,
   isUserMessage,
   ChatMessages,
+  DiffMessage,
   ToolResult,
   ToolMessage,
 } from "../../../services/refact/types";
@@ -19,11 +20,15 @@ import {
   TodoStatus,
 } from "./types";
 import type { SessionState } from "../../../utils/sessionStatus";
+import type { WorktreeMeta } from "../../../services/refact/worktrees";
 
 const EMPTY_MESSAGES: ChatMessages = [];
 const EMPTY_QUEUED: QueuedItem[] = [];
 const EMPTY_PAUSE_REASONS: ThreadConfirmation["pause_reasons"] = [];
 const EMPTY_IMAGES: ImageFile[] = [];
+const EMPTY_TOOL_RESULTS: ToolResult[] = [];
+const EMPTY_DIFF_MESSAGES: DiffMessage[] = [];
+const EMPTY_TASKS: TodoItem[] = [];
 const DEFAULT_NEW_CHAT_SUGGESTED = { wasSuggested: false } as const;
 const DEFAULT_CONFIRMATION: ThreadConfirmation = {
   pause: false,
@@ -34,6 +39,41 @@ const DEFAULT_CONFIRMATION_STATUS = {
   wasInteracted: false,
   confirmationStatus: true,
 } as const;
+
+function sameRefArray<T>(left: T[], right: T[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function sameTodoItems(left: TodoItem[], right: TodoItem[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] === right[i]) continue;
+    if (
+      left[i].id !== right[i].id ||
+      left[i].content !== right[i].content ||
+      left[i].status !== right[i].status
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+type TaskProgress = { done: number; total: number; activeTitle?: string };
+
+function sameTaskProgress(left: TaskProgress, right: TaskProgress): boolean {
+  return (
+    left.done === right.done &&
+    left.total === right.total &&
+    left.activeTitle === right.activeTitle
+  );
+}
 
 function deriveSessionStateFromRuntime(
   rt: ChatThreadRuntime | undefined,
@@ -64,6 +104,7 @@ export type TabDisplayData = {
   title: string;
   session_state?: string;
   mode?: string;
+  is_buddy_chat?: boolean;
 };
 
 export const selectTabsDisplayData = createSelector(
@@ -73,18 +114,22 @@ export const selectTabsDisplayData = createSelector(
     (state: RootState) => state.history.chats,
   ],
   (openIds, threads, historyChats): TabDisplayData[] =>
-    openIds.map((id) => {
+    openIds.flatMap((id) => {
       const runtime = threads[id];
+      if (runtime?.thread.buddy_meta?.is_buddy_chat) return [];
       const historyItem = historyChats[id] as
         | (typeof historyChats)[string]
         | undefined;
       const liveSessionState = deriveSessionStateFromRuntime(runtime);
-      return {
-        id,
-        title: runtime?.thread.title ?? historyItem?.title ?? "New Chat",
-        session_state: liveSessionState ?? historyItem?.session_state,
-        mode: runtime?.thread.mode ?? historyItem?.mode,
-      };
+      return [
+        {
+          id,
+          title: runtime?.thread.title ?? historyItem?.title ?? "New Chat",
+          session_state: liveSessionState ?? historyItem?.session_state,
+          mode: runtime?.thread.mode ?? historyItem?.mode,
+          is_buddy_chat: false,
+        },
+      ];
     }),
 );
 
@@ -251,29 +296,36 @@ export const selectToolResultById = createSelector(
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.tool_call_id === id) {
-        return {
-          tool_call_id: m.tool_call_id,
-          content: m.content,
-          tool_failed: m.tool_failed,
-        } as ToolResult;
+        return m as unknown as ToolResult;
       }
     }
     return undefined;
   },
 );
-export const selectManyToolResultsByIds = (ids: string[]) =>
-  createSelector(toolMessagesSelector, (messages) =>
-    messages
-      .filter((message) => ids.includes(message.tool_call_id))
-      .map(
-        (msg) =>
-          ({
-            tool_call_id: msg.tool_call_id,
-            content: msg.content,
-            tool_failed: msg.tool_failed,
-          }) as ToolResult,
-      ),
-  );
+export const selectManyToolResultsByIds = (ids: string[]) => {
+  let prev = EMPTY_TOOL_RESULTS;
+
+  return createSelector(toolMessagesSelector, (messages) => {
+    if (ids.length === 0 || messages.length === 0) {
+      prev = EMPTY_TOOL_RESULTS;
+      return prev;
+    }
+
+    const wanted = new Set(ids);
+    const next: ToolResult[] = [];
+    for (const msg of messages) {
+      if (!wanted.has(msg.tool_call_id)) continue;
+      next.push(msg as unknown as ToolResult);
+    }
+
+    if (sameRefArray(prev, next)) {
+      return prev;
+    }
+
+    prev = next;
+    return next;
+  });
+};
 
 const selectDiffMessages = createSelector(selectMessages, (messages) =>
   messages.filter(isDiffMessage),
@@ -284,10 +336,25 @@ export const selectDiffMessageById = createSelector(
   (messages, id) => messages.find((message) => message.tool_call_id === id),
 );
 
-export const selectManyDiffMessageByIds = (ids: string[]) =>
-  createSelector(selectDiffMessages, (diffs) =>
-    diffs.filter((message) => ids.includes(message.tool_call_id)),
-  );
+export const selectManyDiffMessageByIds = (ids: string[]) => {
+  let prev = EMPTY_DIFF_MESSAGES;
+
+  return createSelector(selectDiffMessages, (diffs) => {
+    if (ids.length === 0 || diffs.length === 0) {
+      prev = EMPTY_DIFF_MESSAGES;
+      return prev;
+    }
+
+    const wanted = new Set(ids);
+    const next = diffs.filter((message) => wanted.has(message.tool_call_id));
+    if (sameRefArray(prev, next)) {
+      return prev;
+    }
+
+    prev = next;
+    return next;
+  });
+};
 
 export const getSelectedToolUse = (state: RootState) =>
   state.chat.threads[state.chat.current_thread_id]?.thread.tool_use;
@@ -517,11 +584,22 @@ export function deriveTasksFromMessages(
   return [];
 }
 
-export const selectCurrentTasks = createSelector(
-  [selectMessages, toolMessagesSelector],
-  (messages, toolMessages): TodoItem[] =>
-    deriveTasksFromMessages(messages, toolMessages),
-);
+export const selectCurrentTasks = (() => {
+  let prev = EMPTY_TASKS;
+
+  return createSelector(
+    [selectMessages, toolMessagesSelector],
+    (messages, toolMessages): TodoItem[] => {
+      const next = deriveTasksFromMessages(messages, toolMessages);
+      if (sameTodoItems(prev, next)) {
+        return prev;
+      }
+
+      prev = next;
+      return next;
+    },
+  );
+})();
 
 export const selectCurrentTasksById = (state: RootState, chatId: string) => {
   const messages = selectMessagesById(state, chatId);
@@ -557,18 +635,26 @@ export const selectTasksEverUsed = createSelector(
   },
 );
 
-export const selectTaskProgress = createSelector(
-  [selectCurrentTasks],
-  (tasks): { done: number; total: number; activeTitle?: string } => {
+export const selectTaskProgress = (() => {
+  let prev: TaskProgress = { done: 0, total: 0, activeTitle: undefined };
+
+  return createSelector([selectCurrentTasks], (tasks): TaskProgress => {
     const done = tasks.filter((t) => t.status === "completed").length;
     const active = tasks.find((t) => t.status === "in_progress");
-    return {
+    const next = {
       done,
       total: tasks.length,
       activeTitle: active?.content,
     };
-  },
-);
+
+    if (sameTaskProgress(prev, next)) {
+      return prev;
+    }
+
+    prev = next;
+    return next;
+  });
+})();
 
 export type TaskProgressInfo = {
   done: number;
@@ -594,3 +680,38 @@ export function getTaskProgressFromMessages(
     failed: tasks.filter((t) => t.status === "failed").length,
   };
 }
+
+export const selectAutoEnrichmentEnabled = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.thread
+    .auto_enrichment_enabled ?? false;
+
+export const selectAutoEnrichmentEnabledById = (
+  state: RootState,
+  chatId: string,
+) => state.chat.threads[chatId]?.thread.auto_enrichment_enabled ?? false;
+
+export const selectMemoryEnrichmentUserTouched = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]
+    ?.memory_enrichment_user_touched ?? false;
+
+export const selectManualPreviewItems = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.manual_preview_items ?? [];
+
+export const selectManualPreviewItemsById = (
+  state: RootState,
+  chatId: string,
+) => state.chat.threads[chatId]?.manual_preview_items ?? [];
+
+export const selectManualPreviewRan = (state: RootState) =>
+  state.chat.threads[state.chat.current_thread_id]?.manual_preview_ran ?? false;
+
+export const selectThreadWorktree = (state: RootState): WorktreeMeta | null =>
+  state.chat.threads[state.chat.current_thread_id]?.thread.worktree ?? null;
+
+export const selectThreadWorktreeById = (
+  state: RootState,
+  chatId: string,
+): WorktreeMeta | null => state.chat.threads[chatId]?.thread.worktree ?? null;
+
+export const selectIsBuddyChat = (state: RootState, chatId: string): boolean =>
+  !!state.chat.threads[chatId]?.thread.buddy_meta?.is_buddy_chat;

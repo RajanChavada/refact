@@ -1,51 +1,49 @@
-# Starlight Starter Kit: Basics
+# Refact docs site
 
-```
-npm create astro@latest -- --template starlight
-```
+This folder contains the public Refact documentation site built with Astro and Starlight. The site explains how to install Refact, configure BYOK/local providers, use IDE chat and agent workflows, and develop against the current monorepo.
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/withastro/starlight/tree/main/examples/basics)
-[![Open with CodeSandbox](https://assets.codesandbox.io/github/button-edit-lime.svg)](https://codesandbox.io/p/sandbox/github/withastro/starlight/tree/main/examples/basics)
+## Project layout
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+| Path | Purpose |
+| --- | --- |
+| `src/content/docs/` | Markdown documentation pages routed by Astro content collections |
+| `src/assets/` | Images and SVG assets used by docs pages and the theme |
+| `src/components/` | Starlight/Astro component overrides such as search and head metadata |
+| `src/styles/` | Custom CSS loaded by `astro.config.mjs` |
+| `astro.config.mjs` | Site metadata, sidebar navigation, social links, and edit-link configuration |
+| `public/` | Static assets copied directly into the built site |
 
-## 🚀 Project Structure
+## Install
 
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   ├── docs/
-│   │   └── config.ts
-│   └── env.d.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```bash
+cd docs
+npm install
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+Use `npm ci` instead when you want a lockfile-reproducible install in CI.
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+## Commands
 
-Static assets, like favicons, can be placed in the `public/` directory.
+These commands come from `docs/package.json`:
 
-## 🧞 Commands
+| Command | Action |
+| --- | --- |
+| `npm run dev` | Start the local Astro development server |
+| `npm run start` | Alias for `npm run dev` |
+| `npm run build` | Build the production site into `dist/` |
+| `npm run preview` | Preview the built site locally |
+| `npm run astro -- --help` | Run Astro CLI commands with telemetry disabled |
 
-All commands are run from the root of the project, from a terminal:
+## Authoring notes
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+- Add or update pages under `src/content/docs/` with frontmatter that includes at least `title` and `description`.
+- Keep sidebar entries in `astro.config.mjs` in sync with new or renamed pages.
+- Prefer relative links between docs pages and keep external links stable.
+- Store reusable images in `src/assets/`; use `public/` only for files that must be served at a fixed URL.
+- Run `npm run build` before submitting docs changes.
 
-## 👀 Want to learn more?
+## Useful links
 
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+- [Refact documentation](https://docs.refact.ai/)
+- [Astro docs](https://docs.astro.build/)
+- [Starlight docs](https://starlight.astro.build/)

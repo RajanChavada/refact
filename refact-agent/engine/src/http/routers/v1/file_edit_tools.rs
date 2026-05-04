@@ -56,27 +56,36 @@ pub async fn handle_v1_file_edit_tool_dry_run(
             global_context.clone(),
             &post.tool_args,
             true,
+            None,
         )
         .await
         .map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?;
 
-        let files: Vec<FileEditResult> = result.file_results.iter().map(|r| FileEditResult {
-            path: r.path.to_string_lossy().to_string(),
-            action: r.action.to_string(),
-            file_before: r.before.clone(),
-            file_after: r.after.clone(),
-            chunks: r.chunks.clone(),
-        }).collect();
+        let files: Vec<FileEditResult> = result
+            .file_results
+            .iter()
+            .map(|r| FileEditResult {
+                path: r.path.to_string_lossy().to_string(),
+                action: r.action.to_string(),
+                file_before: r.before.clone(),
+                file_after: r.after.clone(),
+                chunks: r.chunks.clone(),
+            })
+            .collect();
 
         let (file_before, file_after) = if result.file_results.len() == 1 {
             let first = &result.file_results[0];
             (first.before.clone(), first.after.clone())
         } else {
-            let before = result.file_results.iter()
+            let before = result
+                .file_results
+                .iter()
                 .map(|r| format!("=== {} ===\n{}", r.path.display(), r.before))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let after = result.file_results.iter()
+            let after = result
+                .file_results
+                .iter()
                 .map(|r| format!("=== {} ===\n{}", r.path.display(), r.after))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -94,31 +103,36 @@ pub async fn handle_v1_file_edit_tool_dry_run(
     let (file_before, file_after, chunks, _) = match post.tool_name.as_str() {
         "create_textdoc" => {
             crate::tools::file_edit::tool_create_textdoc::tool_create_text_doc_exec(
-                global_context.clone(), &post.tool_args, true, &None,
+                global_context.clone(), &post.tool_args, true, None,
             ).await.map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
         }
         "update_textdoc" => {
             crate::tools::file_edit::tool_update_textdoc::tool_update_text_doc_exec(
-                global_context.clone(), &post.tool_args, true, &None,
+                global_context.clone(), &post.tool_args, true, None,
             ).await.map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
         }
         "update_textdoc_regex" => {
             crate::tools::file_edit::tool_update_textdoc_regex::tool_update_text_doc_regex_exec(
-                global_context.clone(), &post.tool_args, true, &None,
+                global_context.clone(), &post.tool_args, true, None,
             ).await.map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
         }
         "update_textdoc_by_lines" => {
             crate::tools::file_edit::tool_update_textdoc_by_lines::tool_update_text_doc_by_lines_exec(
-                global_context.clone(), &post.tool_args, true, &None,
+                global_context.clone(), &post.tool_args, true, None,
             ).await.map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
         }
         "update_textdoc_anchored" => {
             crate::tools::file_edit::tool_update_textdoc_anchored::tool_update_text_doc_anchored_exec(
-                global_context.clone(), &post.tool_args, true, &None,
+                global_context.clone(), &post.tool_args, true, None,
             ).await.map_err(|x| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, x))?
         }
         _ => return Err(ScratchError::new(StatusCode::BAD_REQUEST, format!("Unknown tool: {}", post.tool_name))),
     };
 
-    build_response(FileEditDryRunResponse { file_before, file_after, chunks, files: None })
+    build_response(FileEditDryRunResponse {
+        file_before,
+        file_after,
+        chunks,
+        files: None,
+    })
 }

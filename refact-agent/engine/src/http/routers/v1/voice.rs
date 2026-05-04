@@ -9,8 +9,9 @@ use tokio::sync::{broadcast, RwLock as ARwLock};
 
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
-use crate::voice::types::*;
+#[cfg(feature = "voice")]
 use crate::voice::models::WhisperModel;
+use crate::voice::types::*;
 
 pub async fn handle_v1_voice_transcribe(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
@@ -27,6 +28,30 @@ pub async fn handle_v1_voice_transcribe(
         .transcribe(req)
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if result.duration_ms >= 1000 && result.text.len() >= 5 {
+        let duration_secs = result.duration_ms / 1000;
+        crate::buddy::actor::buddy_apply(
+            gcx.clone(),
+            crate::buddy::actor::BuddyMutation {
+                xp: 2,
+                activity: Some(crate::buddy::types::BuddyActivity {
+                    icon: "🎤".to_string(),
+                    title: "Voice input transcribed".to_string(),
+                    description: format!(
+                        "{}s of audio → {} chars",
+                        duration_secs,
+                        result.text.len()
+                    ),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    activity_type: "voice_transcribed".to_string(),
+                    chat_id: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
 
     let response = TranscribeResponse {
         text: result.text,
@@ -49,29 +74,44 @@ pub async fn handle_v1_voice_download(
         model: "base.en".to_string(),
     });
 
-    WhisperModel::from_name(&req.model)
-        .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
+    #[cfg(not(feature = "voice"))]
+    {
+        let _ = gcx;
+        Err(ScratchError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Voice feature not enabled. Cannot download model: {}",
+                req.model
+            ),
+        ))
+    }
 
-    let gcx_locked = gcx.read().await;
-    let voice_service = gcx_locked.voice_service.clone();
-    drop(gcx_locked);
+    #[cfg(feature = "voice")]
+    {
+        WhisperModel::from_name(&req.model)
+            .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
 
-    let voice_service_clone = voice_service.clone();
-    let model_name = req.model.clone();
-    tokio::spawn(async move {
-        let _ = voice_service_clone.download_model(&model_name).await;
-    });
+        let gcx_locked = gcx.read().await;
+        let voice_service = gcx_locked.voice_service.clone();
+        drop(gcx_locked);
 
-    let response = DownloadModelResponse {
-        success: true,
-        message: format!("Download started for model: {}", req.model),
-    };
+        let voice_service_clone = voice_service.clone();
+        let model_name = req.model.clone();
+        tokio::spawn(async move {
+            let _ = voice_service_clone.download_model(&model_name).await;
+        });
 
-    Ok(Response::builder()
-        .status(StatusCode::ACCEPTED)
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_string(&response).unwrap()))
-        .unwrap())
+        let response = DownloadModelResponse {
+            success: true,
+            message: format!("Download started for model: {}", req.model),
+        };
+
+        Ok(Response::builder()
+            .status(StatusCode::ACCEPTED)
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_string(&response).unwrap()))
+            .unwrap())
+    }
 }
 
 pub async fn handle_v1_voice_status(

@@ -4,14 +4,16 @@ use serde_json::Value;
 use tokio::sync::Mutex as AMutex;
 use async_trait::async_trait;
 
-use crate::subchat::run_subchat_once_with_parent;
+use crate::subchat::{run_subchat, resolve_subchat_config_with_parent};
 use crate::tools::tools_description::{
-    Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType, MatchConfirmDeny, MatchConfirmDenyResult,
+    Tool, ToolDesc, ToolSource, ToolSourceType, MatchConfirmDeny, MatchConfirmDenyResult,
+    json_schema_from_params,
 };
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::global_context::GlobalContext;
 use crate::yaml_configs::customization_registry::get_subagent_config;
+use crate::yaml_configs::customization_types::SubagentConfig;
 use crate::knowledge_index::format_related_memories_section;
 use tokio::sync::RwLock as ARwLock;
 use crate::integrations::integr_abstract::IntegrationConfirmation;
@@ -24,6 +26,65 @@ pub struct ToolDeepResearch {
     pub config_path: String,
 }
 
+fn render_research_template(template: &str, research_query: &str) -> String {
+    template
+        .replace("{{research_query}}", research_query)
+        .replace("{{query}}", research_query)
+        .replace("{{task}}", research_query)
+}
+
+fn template_includes_research_query(template: &str) -> bool {
+    template.contains("{{research_query}}")
+        || template.contains("{{query}}")
+        || template.contains("{{task}}")
+}
+
+fn build_deep_research_messages(
+    subagent_config: &SubagentConfig,
+    research_query: &str,
+) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+
+    if let Some(system_prompt) = subagent_config.messages.system_prompt.as_ref() {
+        messages.push(ChatMessage::new(
+            "system".to_string(),
+            system_prompt.clone(),
+        ));
+    }
+
+    for pre_msg in &subagent_config.messages.pre_messages {
+        messages.push(ChatMessage::new(
+            pre_msg.role.clone(),
+            render_research_template(&pre_msg.content, research_query),
+        ));
+    }
+
+    let mut query_was_rendered = false;
+    if let Some(researcher_prompt) = subagent_config.messages.user_template.as_ref() {
+        query_was_rendered = template_includes_research_query(researcher_prompt);
+        messages.push(ChatMessage::new(
+            "user".to_string(),
+            render_research_template(researcher_prompt, research_query),
+        ));
+    }
+
+    if !query_was_rendered {
+        messages.push(ChatMessage::new(
+            "user".to_string(),
+            format!("# Research Query\n\n{}", research_query),
+        ));
+    }
+
+    for post_msg in &subagent_config.messages.post_messages {
+        messages.push(ChatMessage::new(
+            post_msg.role.clone(),
+            render_research_template(&post_msg.content, research_query),
+        ));
+    }
+
+    messages
+}
+
 async fn execute_deep_research(
     gcx: Arc<ARwLock<GlobalContext>>,
     subchat_tx: Arc<AMutex<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>>,
@@ -31,36 +92,50 @@ async fn execute_deep_research(
     tool_call_id: String,
     abort_flag: Arc<std::sync::atomic::AtomicBool>,
     parent_depth: usize,
-) -> Result<
-    (
-        ChatMessage,
-        serde_json::Map<String, serde_json::Value>,
-    ),
-    String,
-> {
+    parent_task_meta: Option<crate::chat::types::TaskMeta>,
+    parent_worktree: Option<crate::worktrees::types::WorktreeMeta>,
+) -> Result<(ChatMessage, serde_json::Map<String, serde_json::Value>), String> {
     let subagent_config = get_subagent_config(gcx.clone(), SUBAGENT_ID, None)
         .await
         .ok_or_else(|| format!("subagent config '{}' not found", SUBAGENT_ID))?;
 
-    let researcher_prompt = subagent_config.messages.user_template
-        .as_ref()
-        .ok_or_else(|| format!("messages.user_template not defined for subagent '{}'", SUBAGENT_ID))?;
+    let messages = build_deep_research_messages(&subagent_config, &research_query);
+    let tools = if subagent_config.tools.is_empty() {
+        None
+    } else {
+        Some(subagent_config.tools.clone())
+    };
+    let max_steps = subagent_config
+        .subchat
+        .max_steps
+        .unwrap_or(20)
+        .min(50)
+        .max(1);
 
-    let messages = vec![
-        ChatMessage::new("user".to_string(), researcher_prompt.clone()),
-        ChatMessage::new("user".to_string(), research_query),
-    ];
-
-    let subchat_result = run_subchat_once_with_parent(
-        gcx,
+    let config = resolve_subchat_config_with_parent(
+        gcx.clone(),
         SUBAGENT_ID,
-        messages,
-        tool_call_id.clone(),
-        subchat_tx,
-        abort_flag,
-        parent_depth,
+        subagent_config.subchat.stateful,
+        None,
+        Some("Deep Research".to_string()),
+        None,
+        None,
+        None,
+        tools,
+        max_steps,
+        false,
+        None,
+        "agent".to_string(),
+        parent_task_meta,
+        parent_worktree,
+        Some(tool_call_id.clone()),
+        Some(subchat_tx),
+        Some(abort_flag),
+        parent_depth + 1,
     )
     .await?;
+
+    let subchat_result = run_subchat(gcx, messages, config).await?;
     let reply = subchat_result
         .messages
         .last()
@@ -83,14 +158,9 @@ impl Tool for ToolDeepResearch {
             experimental: false,
             allow_parallel: true,
             description: "Conduct comprehensive web research on a topic. Use this tool when you need up-to-date information from the internet, market analysis, technical documentation research, or synthesis of information from multiple web sources. The research takes several minutes and produces a detailed, citation-rich report. Do NOT use for questions about the current codebase - use code exploration tools instead.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "research_query".to_string(),
-                    param_type: "string".to_string(),
-                    description: "A detailed research question or topic. Be specific: include the scope, what comparisons or metrics you need, any preferred sources, and the desired output format. Example: 'Research the current best practices for Rust async error handling in 2024, comparing tokio vs async-std approaches, with code examples and performance considerations.'".to_string(),
-                }
-            ],
-            parameters_required: vec!["research_query".to_string()],
+            input_schema: json_schema_from_params(&[("research_query", "string", "A detailed research question or topic. Be specific: include the scope, what comparisons or metrics you need, any preferred sources, and the desired output format. Example: 'Research the current best practices for Rust async error handling in 2024, comparing tokio vs async-std approaches, with code examples and performance considerations.'")], &["research_query"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -116,9 +186,14 @@ impl Tool for ToolDeepResearch {
             (ccx_lock.global_context.clone(), ccx_lock.subchat_tx.clone())
         };
 
-        let (abort_flag, parent_depth) = {
+        let (abort_flag, parent_depth, parent_task_meta, parent_worktree) = {
             let ccx_lock = ccx.lock().await;
-            (ccx_lock.abort_flag.clone(), ccx_lock.subchat_depth)
+            (
+                ccx_lock.abort_flag.clone(),
+                ccx_lock.subchat_depth,
+                ccx_lock.task_meta.clone(),
+                ccx_lock.execution_scope_worktree(),
+            )
         };
 
         tracing::info!("Starting deep research for query: {}", research_query);
@@ -130,6 +205,8 @@ impl Tool for ToolDeepResearch {
             tool_call_id.clone(),
             abort_flag,
             parent_depth,
+            parent_task_meta,
+            parent_worktree,
         )
         .await?;
 
@@ -151,21 +228,26 @@ impl Tool for ToolDeepResearch {
             base_title: Some(title),
             source_chat_id: (!root_chat_id.is_empty()).then_some(root_chat_id),
         };
-        let memory_note =
-            match memories_add_enriched(ccx.clone(), &research_content, enrichment_params).await {
-                Ok(path) => {
-                    tracing::info!("Created enriched memory from deep research: {:?}", path);
-                    format!(
+        let memory_note = match memories_add_enriched(
+            ccx.clone(),
+            &research_content,
+            enrichment_params,
+        )
+        .await
+        {
+            Ok(path) => {
+                tracing::info!("Created enriched memory from deep research: {:?}", path);
+                format!(
                         "\n\n---\n📝 **This report has been saved to the knowledge base:** `{}`\n\nRelated memories may be shown elsewhere in short form. To load full content of a memory, call `cat(paths=\"{}\")`.",
                         path.display(),
                         path.display()
                     )
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create enriched memory from deep research: {}", e);
-                    String::new()
-                }
-            };
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create enriched memory from deep research: {}", e);
+                String::new()
+            }
+        };
         let related_memories_note = {
             let gcx = ccx.lock().await.global_context.clone();
             let gcx_read = gcx.read().await;
@@ -177,7 +259,10 @@ impl Tool for ToolDeepResearch {
             format_related_memories_section(&cards, None)
         };
 
-        let final_message = format!("{}{}{}", research_content, memory_note, related_memories_note);
+        let final_message = format!(
+            "{}{}{}",
+            research_content, memory_note, related_memories_note
+        );
 
         Ok((
             false,

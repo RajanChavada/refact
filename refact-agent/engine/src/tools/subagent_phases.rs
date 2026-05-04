@@ -39,7 +39,10 @@ pub async fn send_files_gathered_message(
     tool_call_id: &str,
     files: &[PathBuf],
 ) {
-    let file_names: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let file_names: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
     let files_preview = if file_names.len() <= 3 {
         file_names.join(", ")
     } else {
@@ -70,7 +73,11 @@ pub fn parse_relevant_files(response: &str, max_files: usize) -> Vec<String> {
         if trimmed == "END_FILES" {
             break;
         }
-        if in_files_block && !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("//") {
+        if in_files_block
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && !trimmed.starts_with("//")
+        {
             files.push(trimmed.to_string());
         }
     }
@@ -103,7 +110,15 @@ pub async fn gather_files_phase(
     main_config: &CodeSubagentConfig,
     params: &GatherFilesParams<'_>,
 ) -> Result<Vec<PathBuf>, String> {
-    let (parent_chat_id, parent_root_chat_id, parent_subchat_tx, parent_abort_flag, current_depth) = {
+    let (
+        parent_chat_id,
+        parent_root_chat_id,
+        parent_subchat_tx,
+        parent_abort_flag,
+        current_depth,
+        parent_task_meta,
+        parent_worktree,
+    ) = {
         let ccx_lock = ccx.lock().await;
         (
             ccx_lock.chat_id.clone(),
@@ -111,28 +126,54 @@ pub async fn gather_files_phase(
             ccx_lock.subchat_tx.clone(),
             ccx_lock.abort_flag.clone(),
             ccx_lock.subchat_depth,
+            ccx_lock.task_meta.clone(),
+            ccx_lock.execution_scope_worktree(),
         )
     };
 
-    let gather_subagent_id = main_config.gather_subagent.as_deref()
+    let gather_subagent_id = main_config
+        .gather_subagent
+        .as_deref()
         .unwrap_or(params.default_subagent_id);
 
-    let gather_config = load_code_subagent_config(gcx.clone(), gather_subagent_id, None).await.ok();
+    let gather_config = load_code_subagent_config(gcx.clone(), gather_subagent_id, None)
+        .await
+        .ok();
 
-    let tools: Vec<String> = gather_config.as_ref()
+    let tools: Vec<String> = gather_config
+        .as_ref()
         .and_then(|c| c.gather_tools.clone())
-        .unwrap_or_else(|| DEFAULT_GATHER_FILES_TOOLS.iter().map(|s| s.to_string()).collect());
+        .unwrap_or_else(|| {
+            DEFAULT_GATHER_FILES_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
 
-    let system_prompt = gather_config.as_ref()
+    let system_prompt = gather_config
+        .as_ref()
         .and_then(|c| c.gather_system_prompt.clone())
-        .or_else(|| if params.default_system_prompt.is_empty() { None } else { Some(params.default_system_prompt.to_string()) })
-        .ok_or_else(|| format!("gather_system_prompt not configured for {}", gather_subagent_id))?;
+        .or_else(|| {
+            if params.default_system_prompt.is_empty() {
+                None
+            } else {
+                Some(params.default_system_prompt.to_string())
+            }
+        })
+        .ok_or_else(|| {
+            format!(
+                "gather_system_prompt not configured for {}",
+                gather_subagent_id
+            )
+        })?;
 
-    let retry_prompt = gather_config.as_ref()
+    let retry_prompt = gather_config
+        .as_ref()
         .and_then(|c| c.gather_retry_prompt.clone())
         .unwrap_or_else(|| DEFAULT_GATHER_RETRY_PROMPT.to_string());
 
-    let max_steps = main_config.gather_max_steps
+    let max_steps = main_config
+        .gather_max_steps
         .or_else(|| gather_config.as_ref().and_then(|c| c.max_steps))
         .unwrap_or(DEFAULT_GATHER_MAX_STEPS);
 
@@ -152,6 +193,8 @@ pub async fn gather_files_phase(
         false,
         None,
         "agent".to_string(),
+        parent_task_meta.clone(),
+        parent_worktree.clone(),
         Some(tool_call_id.clone()),
         Some(parent_subchat_tx.clone()),
         Some(parent_abort_flag.clone()),
@@ -159,13 +202,11 @@ pub async fn gather_files_phase(
     )
     .await?;
 
-    let mut messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: ChatContent::SimpleText(system_prompt),
-            ..Default::default()
-        },
-    ];
+    let mut messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: ChatContent::SimpleText(system_prompt),
+        ..Default::default()
+    }];
 
     for msg in external_messages.iter() {
         if msg.role == "user" || msg.role == "assistant" || msg.role == "tool" {
@@ -186,7 +227,10 @@ pub async fn gather_files_phase(
     let mut files = parse_relevant_files(&response, max_files);
 
     if files.is_empty() {
-        tracing::info!("{}: file list not properly formatted, requesting retry", gather_subagent_id);
+        tracing::info!(
+            "{}: file list not properly formatted, requesting retry",
+            gather_subagent_id
+        );
         let mut retry_messages = result.messages.clone();
         retry_messages.push(ChatMessage {
             role: "user".to_string(),
@@ -202,6 +246,8 @@ pub async fn gather_files_phase(
             parent_subchat_tx.clone(),
             parent_abort_flag.clone(),
             current_depth,
+            parent_task_meta.clone(),
+            parent_worktree.clone(),
         )
         .await?;
         let retry_response = get_last_assistant_content(&retry_result.messages);
@@ -225,7 +271,11 @@ pub async fn gather_files_phase(
                 valid_paths.push(path);
             }
         } else {
-            tracing::warn!("{}: skipping invalid path: {}", gather_subagent_id, file_str);
+            tracing::warn!(
+                "{}: skipping invalid path: {}",
+                gather_subagent_id,
+                file_str
+            );
         }
     }
 

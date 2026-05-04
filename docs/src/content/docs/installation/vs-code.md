@@ -1,25 +1,35 @@
 ---
-title: Refact for VS Code
-description: A page which explains how to install and use Refact for VS Code
+title: VS Code
+description: Install Refact for VS Code and complete local-first setup.
 ---
 
-After installing the plugin from the [marketplace](https://marketplace.visualstudio.com/items?itemName=smallcloud.codify), press the Refact logo to open the UI of the plugin.
+## Install
 
-Pick one of the available versions and click the **Next** button.
+Install Refact from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=smallcloud.codify). You can also install a local extension build if you are developing Refact from source.
 
-![Refact Login page](../../../assets/login_start.png)
+## Open Refact
 
-The quickest way to get started is with **Cloud** option. When pressing the **Next** button, you will see an interface similar to the one below:
+After installation, open the Refact activity bar view or command palette entry. The extension starts the local `refact-lsp` engine and opens the Refact UI inside VS Code.
 
-![Refact Cloud Login](../../../assets/refact_cloud_login.png)
+## Complete First-Run Setup
 
-When pressing the **Login** or **Create Account** button, you will be redirected to the Refact's login page in your browser.
+1. Open **Provider Setup**.
+2. Add a hosted provider, local runtime, or custom endpoint.
+3. Enter the provider key, complete OAuth if required, or confirm the local endpoint URL.
+4. Enable the models you want to use.
+5. Open **Default Models** and choose defaults for chat, agent work, reasoning, completion, and embeddings as needed.
 
-After completing the login process, the interface of the sidebar will change to the following:
+Refact works with BYOK providers such as Anthropic, OpenAI, OpenRouter, Groq, DeepSeek, Gemini, xAI, Qwen, Kimi, Zhipu, MiniMax, GitHub Copilot, Claude Code, and custom OpenAI-compatible endpoints. Local runtimes include Ollama, LM Studio, and vLLM.
 
-![Refact Sidebar](../../../assets/refact_loggedin.png)
+## Start Using Refact In VS Code
 
-For the Self-hosted and Enterprise options, follow one of the following guides:
+- Open Chat and ask about the current workspace.
+- Switch to an agent mode for multi-step tasks that can search, edit, run commands, and use integrations.
+- Enable inline completion with a completion-capable model source.
+- Add project knowledge, task context, and integration settings as your workflow grows.
 
-- [Self-hosted Login](https://docs.refact.ai/guides/version-specific/self-hosted/#custom-inference-setup)
-- [Enterprise Login](https://docs.refact.ai/guides/version-specific/enterprise/getting-started/#setting-up-the-plugins)
+## Local Engine Notes
+
+The VS Code extension communicates with the engine over localhost. Project trajectories, task state, knowledge, and provider settings stay in local Refact directories unless you configure providers or integrations that need network access.
+
+A hosted Refact login, Refact-issued model key, or separate backend deployment is not required.

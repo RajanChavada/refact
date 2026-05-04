@@ -18,8 +18,19 @@
   margin: 0 var(--space-1);
 }
 
+.projectInfoControl {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 .selectedLinesGroup {
   height: 24px;
+}
+
+@container (max-width: 340px) {
+  .projectInfoControl {
+    display: none;
+  }
 }
 
 .lockButton,

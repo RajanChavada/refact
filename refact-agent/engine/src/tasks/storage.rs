@@ -98,8 +98,13 @@ pub fn validate_task_id(task_id: &str) -> Result<(), String> {
     if task_id.len() > 128 {
         return Err("Task ID too long".into());
     }
-    if !task_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("Task ID must contain only alphanumeric characters, hyphens, or underscores".into());
+    if !task_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(
+            "Task ID must contain only alphanumeric characters, hyphens, or underscores".into(),
+        );
     }
     Ok(())
 }
@@ -261,12 +266,10 @@ fn detect_git_branch_and_commit(workspace_root: &Path) -> (Option<String>, Optio
     };
 
     let commit = match repo.head() {
-        Ok(head) => {
-            match head.peel_to_commit() {
-                Ok(c) => Some(c.id().to_string()),
-                Err(_) => None,
-            }
-        }
+        Ok(head) => match head.peel_to_commit() {
+            Ok(c) => Some(c.id().to_string()),
+            Err(_) => None,
+        },
         Err(_) => None,
     };
 
@@ -289,7 +292,8 @@ pub async fn create_task(gcx: Arc<ARwLock<GlobalContext>>, name: &str) -> Result
         .map_err(|e| e.to_string())?;
 
     let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
-    let (base_branch, base_commit) = project_dirs.first()
+    let (base_branch, base_commit) = project_dirs
+        .first()
         .map(|p| detect_git_branch_and_commit(p))
         .unwrap_or((None, None));
 
@@ -331,13 +335,24 @@ pub async fn create_task(gcx: Arc<ARwLock<GlobalContext>>, name: &str) -> Result
     .await?;
 
     emit_task_event(
-        gcx,
+        gcx.clone(),
         TaskEvent::TaskCreated {
             task_id: task_id.clone(),
             meta: meta.clone(),
         },
     )
     .await;
+    {
+        let ev = crate::buddy::actor::make_runtime_event(
+            "task_created",
+            &format!("Task created: {}", meta.name),
+            "task",
+            &format!("task_{}", task_id),
+            "completed",
+            None,
+        );
+        crate::buddy::actor::buddy_enqueue_event(gcx, ev).await;
+    }
 
     Ok(meta)
 }
@@ -415,6 +430,37 @@ pub fn get_task_trajectory_dir(task_dir: &PathBuf, role: &str, agent_id: Option<
     }
 }
 
+fn should_list_task_trajectory(role: &str, data: &serde_json::Value) -> bool {
+    if role != "planner" {
+        return true;
+    }
+    match data.get("link_type").and_then(|v| v.as_str()) {
+        Some("handoff" | "mode_transition" | "branch") | None => true,
+        Some(_) => false,
+    }
+}
+
+/// Compute the next planner chat id in the standard `planner-{task_id}-{n}` format.
+///
+/// NOTE: this is not strictly atomic — concurrent callers can pick the same
+/// number. Callers that care about uniqueness must serialize themselves.
+pub async fn next_planner_chat_id(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    task_id: &str,
+) -> Result<String, String> {
+    let existing = list_task_trajectories(gcx, task_id, "planner", None).await?;
+    let prefix = format!("planner-{}-", task_id);
+    let max_num = existing
+        .iter()
+        .filter_map(|t| {
+            t.id.strip_prefix(&prefix)
+                .and_then(|s| s.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+    Ok(format!("planner-{}-{}", task_id, max_num + 1))
+}
+
 pub async fn list_task_trajectories(
     gcx: Arc<ARwLock<GlobalContext>>,
     task_id: &str,
@@ -437,6 +483,9 @@ pub async fn list_task_trajectories(
                 let id = stem.to_string_lossy().to_string();
                 if let Ok(content) = fs::read_to_string(&path).await {
                     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if !should_list_task_trajectory(role, &data) {
+                            continue;
+                        }
                         let title = data
                             .get("title")
                             .and_then(|v| v.as_str())
@@ -513,4 +562,43 @@ pub async fn get_planner_chat_id(
         .map(|t| t.id.clone())
         .ok_or_else(|| format!("plan-{}", task_id))
         .or_else(|default| Ok(default))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_list_task_trajectory;
+    use serde_json::json;
+
+    #[test]
+    fn planner_listing_hides_subagentic_child_links() {
+        assert!(!should_list_task_trajectory(
+            "planner",
+            &json!({"link_type": "gather_files"})
+        ));
+        assert!(!should_list_task_trajectory(
+            "planner",
+            &json!({"link_type": "subagent"})
+        ));
+    }
+
+    #[test]
+    fn planner_listing_keeps_real_planner_chats() {
+        assert!(should_list_task_trajectory("planner", &json!({})));
+        assert!(should_list_task_trajectory(
+            "planner",
+            &json!({"link_type": "handoff"})
+        ));
+        assert!(should_list_task_trajectory(
+            "planner",
+            &json!({"link_type": "mode_transition"})
+        ));
+    }
+
+    #[test]
+    fn non_planner_listing_keeps_child_links() {
+        assert!(should_list_task_trajectory(
+            "subchats",
+            &json!({"link_type": "gather_files"})
+        ));
+    }
 }

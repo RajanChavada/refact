@@ -17,8 +17,12 @@ use crate::postprocessing::pp_command_output::OutputFilter;
 use crate::files_correction::shortify_paths;
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::GlobalContext;
-use crate::tools::scope_utils::{resolve_scope, validate_scope_files};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::scope_utils::{
+    format_scope_notices, resolve_scope_with_execution_scope, validate_scope_files,
+};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::knowledge_index::format_related_memories_section;
 
 pub struct ToolRegexSearch {
@@ -33,8 +37,8 @@ const DEFAULT_MAX_TOTAL_MATCHES: usize = 200;
 #[derive(Clone, Debug)]
 struct RegexMatch {
     file_name: String,
-    match_line: usize,         // 1-based
-    context_start: usize,      // 1-based
+    match_line: usize,    // 1-based
+    context_start: usize, // 1-based
     context_end_inclusive: usize,
     preview: String,
 }
@@ -103,21 +107,26 @@ async fn search_files_with_regex(
     let regex_arc = Arc::new(regex);
 
     // Use bounded concurrency to avoid overwhelming I/O with thousands of files
-    let results: Vec<Vec<RegexMatch>> = stream::iter(files_to_search.iter().cloned())
-        .map(|file_path| {
-            let gcx_clone = gcx.clone();
-            let regex_clone = regex_arc.clone();
-            let context_lines = context_lines;
-            async move {
-                search_single_file(gcx_clone, file_path, &regex_clone, context_lines).await
-            }
-        })
-        .buffer_unordered(MAX_CONCURRENT_FILE_READS)
-        .collect()
-        .await;
+    let results: Vec<Vec<RegexMatch>> =
+        stream::iter(files_to_search.iter().cloned())
+            .map(|file_path| {
+                let gcx_clone = gcx.clone();
+                let regex_clone = regex_arc.clone();
+                let context_lines = context_lines;
+                async move {
+                    search_single_file(gcx_clone, file_path, &regex_clone, context_lines).await
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_FILE_READS)
+            .collect()
+            .await;
 
     let mut flat_results: Vec<RegexMatch> = results.into_iter().flatten().collect();
-    flat_results.sort_by(|a, b| a.file_name.cmp(&b.file_name).then(a.match_line.cmp(&b.match_line)));
+    flat_results.sort_by(|a, b| {
+        a.file_name
+            .cmp(&b.file_name)
+            .then(a.match_line.cmp(&b.match_line))
+    });
     Ok(flat_results)
 }
 
@@ -248,39 +257,9 @@ impl Tool for ToolRegexSearch {
             experimental: false,
             allow_parallel: true,
             description: "Search for files and folders whose names or paths match the given regular expression pattern, and also search for text matches inside files using the same pattern. Reports both path matches and text matches in separate sections.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "pattern".to_string(),
-                    description: "The pattern is used to search for matching file/folder names/paths, and also for matching text inside files. Use (?i) at the start for case-insensitive search.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "scope".to_string(),
-                    description: "'workspace' to search all files in workspace, 'dir/subdir/' to search in files within a directory, 'dir/file.ext' to search in a single file.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "context_lines".to_string(),
-                    description: "Lines of context before/after each match (default: 5).".to_string(),
-                    param_type: "integer".to_string(),
-                },
-                ToolParam {
-                    name: "max_files".to_string(),
-                    description: "Max files to attach as context (default: 50).".to_string(),
-                    param_type: "integer".to_string(),
-                },
-                ToolParam {
-                    name: "max_matches_per_file".to_string(),
-                    description: "Max matches per file to include (default: 25).".to_string(),
-                    param_type: "integer".to_string(),
-                },
-                ToolParam {
-                    name: "max_total_matches".to_string(),
-                    description: "Max total matches to attach as context (default: 200).".to_string(),
-                    param_type: "integer".to_string(),
-                }
-            ],
-            parameters_required: vec!["pattern".to_string(), "scope".to_string()],
+            input_schema: json_schema_from_params(&[("pattern", "string", "The pattern is used to search for matching file/folder names/paths, and also for matching text inside files. Use (?i) at the start for case-insensitive search."), ("scope", "string", "'workspace' to search all files in workspace, 'dir/subdir/' to search in files within a directory, 'dir/file.ext' to search in a single file."), ("context_lines", "integer", "Lines of context before/after each match (default: 5)."), ("max_files", "integer", "Max files to attach as context (default: 50)."), ("max_matches_per_file", "integer", "Max matches per file to include (default: 25)."), ("max_total_matches", "integer", "Max total matches to attach as context (default: 200).")], &["pattern", "scope"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -306,20 +285,28 @@ impl Tool for ToolRegexSearch {
             }
         };
 
-        let context_lines = parse_usize_arg(args, "context_lines")?.unwrap_or(DEFAULT_CONTEXT_LINES);
+        let context_lines =
+            parse_usize_arg(args, "context_lines")?.unwrap_or(DEFAULT_CONTEXT_LINES);
         let max_files = parse_usize_arg(args, "max_files")?.unwrap_or(DEFAULT_MAX_FILES);
         let max_matches_per_file =
             parse_usize_arg(args, "max_matches_per_file")?.unwrap_or(DEFAULT_MAX_MATCHES_PER_FILE);
         let max_total_matches =
             parse_usize_arg(args, "max_total_matches")?.unwrap_or(DEFAULT_MAX_TOTAL_MATCHES);
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let (gcx, execution_scope) = {
+            let ccx_locked = ccx.lock().await;
+            (
+                ccx_locked.global_context.clone(),
+                ccx_locked.execution_scope.clone(),
+            )
+        };
 
-        let files_in_scope = resolve_scope(gcx.clone(), &scope)
-            .await
-            .and_then(|files| validate_scope_files(files, &scope))?;
+        let scoped_files =
+            resolve_scope_with_execution_scope(gcx.clone(), execution_scope.as_ref(), &scope)
+                .await?;
+        let files_in_scope = validate_scope_files(scoped_files.files, &scope)?;
 
-        let mut all_content = String::new();
+        let mut all_content = format_scope_notices(&scoped_files.notices);
         let mut all_search_results = Vec::new();
 
         // 1. Path matches
@@ -368,13 +355,8 @@ impl Tool for ToolRegexSearch {
             all_search_results.push(cf);
         }
 
-        let search_results = search_files_with_regex(
-            gcx.clone(),
-            &pattern,
-            &files_in_scope,
-            context_lines,
-        )
-        .await?;
+        let search_results =
+            search_files_with_regex(gcx.clone(), &pattern, &files_in_scope, context_lines).await?;
         all_content.push_str("\nText matches inside files:\n");
         if search_results.is_empty() {
             all_content.push_str("  No text matches found in any file.\n");

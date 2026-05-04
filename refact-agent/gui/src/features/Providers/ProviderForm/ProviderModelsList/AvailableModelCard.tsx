@@ -1,4 +1,11 @@
-import { type FC, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type FC,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import classNames from "classnames";
 import {
   Badge,
@@ -10,8 +17,18 @@ import {
   Text,
   Tooltip,
 } from "@radix-ui/themes";
-import { TrashIcon } from "@radix-ui/react-icons";
+import { Pencil1Icon, TrashIcon } from "@radix-ui/react-icons";
 import * as RadixCollapsible from "@radix-ui/react-collapsible";
+
+import {
+  ContextWindowIcon,
+  MaxOutputIcon,
+  ModelDetailIcon,
+  PricingIcon,
+  ReasoningIcon,
+  ToolsIcon,
+  VisionIcon,
+} from "./components/CapabilityIcons";
 
 import type { AvailableModel } from "../../../../services/refact";
 import {
@@ -26,7 +43,9 @@ import styles from "./ModelCard.module.css";
 export type AvailableModelCardProps = {
   model: AvailableModel;
   providerName: string;
+  baseProvider: string;
   isReadonlyProvider: boolean;
+  onEditModel?: (model: AvailableModel) => void;
 };
 
 /**
@@ -35,7 +54,9 @@ export type AvailableModelCardProps = {
 export const AvailableModelCard: FC<AvailableModelCardProps> = ({
   model,
   providerName,
+  baseProvider,
   isReadonlyProvider,
+  onEditModel,
 }) => {
   const [toggleModel, { isLoading: isToggling }] = useToggleModelMutation();
   const [setModelProvider, { isLoading: isSettingProvider }] =
@@ -71,13 +92,13 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
   }, [model.available_providers]);
 
   const shouldFetchEndpoints =
-    providerName === "openrouter" &&
+    baseProvider === "openrouter" &&
     detailsOpen &&
     providerVariants.length === 0 &&
     availableProviders.length === 0;
 
   const { data: endpointsData } = useGetOpenRouterModelEndpointsQuery(
-    { providerName, modelId: model.id },
+    { providerName, modelId: model.id, useInstanceRoute: true },
     { skip: !shouldFetchEndpoints },
   );
 
@@ -91,7 +112,7 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
       : endpointsData?.available_providers ?? [];
 
   const hasProviderRouting =
-    providerName === "openrouter" ||
+    baseProvider === "openrouter" ||
     resolvedProviderVariants.length > 0 ||
     resolvedAvailableProviders.length > 0 ||
     Boolean(model.selected_provider);
@@ -125,6 +146,14 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
       console.error("Failed to remove custom model:", e);
     }
   }, [removeCustomModel, providerName, model.id, model.is_custom]);
+
+  const handleEdit = useCallback(
+    (event: MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      onEditModel?.(model);
+    },
+    [model, onEditModel],
+  );
 
   const handleProviderSelect = useCallback(
     async (provider: string) => {
@@ -275,31 +304,25 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
             <Tooltip
               content={`Context window: ${model.n_ctx.toLocaleString()} tokens`}
             >
-              <Text as="span" size="1" color="gray">
-                📏 {formatContextSize(model.n_ctx)}
-              </Text>
+              <ModelDetailIcon icon={<ContextWindowIcon />}>
+                {formatContextSize(model.n_ctx)}
+              </ModelDetailIcon>
             </Tooltip>
             {model.supports_tools && (
               <Tooltip content="Supports tool/function calling">
-                <Text as="span" size="1" color="gray">
-                  🔧
-                </Text>
+                <ModelDetailIcon icon={<ToolsIcon />} />
               </Tooltip>
             )}
             {model.supports_multimodality && (
               <Tooltip content="Supports images/vision">
-                <Text as="span" size="1" color="gray">
-                  👁️
-                </Text>
+                <ModelDetailIcon icon={<VisionIcon />} />
               </Tooltip>
             )}
             {(!!model.reasoning_effort_options?.length ||
               !!model.supports_thinking_budget ||
               !!model.supports_adaptive_thinking_budget) && (
               <Tooltip content="Supports reasoning">
-                <Text as="span" size="1" color="gray">
-                  🧠
-                </Text>
+                <ModelDetailIcon icon={<ReasoningIcon />} tone="accent" />
               </Tooltip>
             )}
             {typeof model.max_output_tokens === "number" &&
@@ -307,17 +330,17 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
                 <Tooltip
                   content={`Max output tokens: ${model.max_output_tokens.toLocaleString()}`}
                 >
-                  <Text as="span" size="1" color="gray">
-                    ✂️ {formatContextSize(model.max_output_tokens)} out
-                  </Text>
+                  <ModelDetailIcon icon={<MaxOutputIcon />}>
+                    {formatContextSize(model.max_output_tokens)} out
+                  </ModelDetailIcon>
                 </Tooltip>
               )}
             {model.pricing && (
               <Tooltip content="Pricing per 1M tokens (input/output)">
-                <Text as="span" size="1" color="gray">
-                  💲 ${model.pricing.prompt.toFixed(2)}/$
+                <ModelDetailIcon icon={<PricingIcon />}>
+                  ${model.pricing.prompt.toFixed(2)}/$
                   {model.pricing.generated.toFixed(2)}
-                </Text>
+                </ModelDetailIcon>
               </Tooltip>
             )}
           </Flex>
@@ -459,6 +482,25 @@ export const AvailableModelCard: FC<AvailableModelCardProps> = ({
         </Flex>
 
         <Flex align="center" gap="2">
+          {!isReadonlyProvider && (
+            <Tooltip
+              content={
+                model.is_custom
+                  ? "Edit custom model"
+                  : "Edit model capabilities"
+              }
+            >
+              <IconButton
+                size="1"
+                variant="ghost"
+                color="gray"
+                onClick={handleEdit}
+                disabled={isLoading}
+              >
+                <Pencil1Icon />
+              </IconButton>
+            </Tooltip>
+          )}
           {model.is_custom && !isReadonlyProvider && (
             <Tooltip content="Remove custom model">
               <IconButton

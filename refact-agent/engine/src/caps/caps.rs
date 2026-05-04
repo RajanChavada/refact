@@ -5,23 +5,19 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock as ARwLock;
-use url::Url;
 use tracing::{info, warn};
 
-use crate::custom_error::MapErrToString;
-use crate::global_context::CommandLine;
 use crate::global_context::GlobalContext;
 use crate::caps::providers::{
-    add_models_to_caps, read_providers_d, resolve_provider_api_key, post_process_provider,
+    add_models_to_caps, post_process_provider, read_providers_d, resolve_provider_api_key,
     CapsProvider,
 };
-use crate::providers::config::ProviderDefaults;
-use crate::caps::model_caps::{ModelCapabilities, get_model_caps, resolve_model_caps};
+use crate::providers::config::{ModelTypeDefaults, ProviderDefaults, is_legacy_refact_model};
+use crate::caps::model_caps::{
+    get_model_caps, model_caps_pricing_metadata, resolve_model_caps, ModelCapabilities,
+};
 use crate::llm::WireFormat;
 use crate::providers::traits::AvailableModel;
-
-pub const CAPS_FILENAME: &str = "refact-caps";
-pub const CAPS_FILENAME_FALLBACK: &str = "coding_assistant_caps.json";
 
 #[derive(Debug, Serialize, Clone, Deserialize, Default, PartialEq)]
 pub struct BaseModelRecord {
@@ -47,9 +43,6 @@ pub struct BaseModelRecord {
     pub auth_token: String,
     #[serde(default, skip_serializing)]
     pub tokenizer_api_key: String,
-
-    #[serde(default, skip_serializing)]
-    pub support_metadata: bool,
     #[serde(default, skip_serializing)]
     pub extra_headers: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing)]
@@ -73,6 +66,11 @@ pub struct BaseModelRecord {
     /// Enable Anthropic's server-side web_search tool
     #[serde(default)]
     pub supports_web_search: bool,
+
+    /// Whether this provider supports Anthropic-style prompt cache_control.
+    /// False for providers like vLLM that reject unknown message fields.
+    #[serde(default = "default_true")]
+    pub supports_cache_control: bool,
 
     // Fields used for Config/UI management
     #[serde(skip_deserializing)]
@@ -127,6 +125,8 @@ pub struct ChatModelRecord {
     #[serde(default)]
     pub max_output_tokens: Option<usize>,
     #[serde(default)]
+    pub supports_parallel_tools: bool,
+    #[serde(default)]
     pub supports_strict_tools: bool,
     #[serde(default = "default_true")]
     pub supports_temperature: bool,
@@ -152,6 +152,8 @@ impl ChatModelRecord {
             Some("anthropic_effort".to_string())
         } else if self.supports_thinking_budget {
             Some("anthropic_budget".to_string())
+        } else if self.reasoning_effort_options.is_some() {
+            Some("effort".to_string())
         } else {
             None
         }
@@ -265,16 +267,8 @@ impl Default for CapsMetadata {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CodeAssistantCaps {
-    #[serde(deserialize_with = "normalize_string")]
-    pub cloud_name: String,
-
-    #[serde(default = "default_telemetry_basic_dest")]
-    pub telemetry_basic_dest: String,
-    #[serde(default = "default_telemetry_retrieve_my_own")]
-    pub telemetry_basic_retrieve_my_own: String,
-
     #[serde(skip_deserializing)]
     pub completion_models: IndexMap<String, Arc<CompletionModelRecord>>,
     #[serde(skip_deserializing)]
@@ -302,18 +296,31 @@ pub struct CodeAssistantCaps {
 
     #[serde(skip)]
     pub user_defaults: ProviderDefaults,
+
+    #[serde(skip)]
+    pub provider_base_names: HashMap<String, Vec<String>>,
 }
 
-fn default_telemetry_retrieve_my_own() -> String {
-    "https://www.smallcloud.ai/v1/telemetry-retrieve-my-own-stats".to_string()
+impl Default for CodeAssistantCaps {
+    fn default() -> Self {
+        Self {
+            completion_models: IndexMap::new(),
+            chat_models: IndexMap::new(),
+            embedding_model: EmbeddingModelRecord::default(),
+            defaults: DefaultModels::default(),
+            caps_version: 0,
+            customization: String::new(),
+            hf_tokenizer_template: default_hf_tokenizer_template(),
+            metadata: CapsMetadata::default(),
+            model_caps: Arc::new(std::collections::HashMap::new()),
+            user_defaults: crate::providers::config::ProviderDefaults::default(),
+            provider_base_names: HashMap::new(),
+        }
+    }
 }
 
 pub fn default_hf_tokenizer_template() -> String {
     "https://huggingface.co/$HF_MODEL/resolve/main/tokenizer.json".to_string()
-}
-
-fn default_telemetry_basic_dest() -> String {
-    "https://www.smallcloud.ai/v1/telemetry-basic".to_string()
 }
 
 pub fn normalize_string<'de, D: serde::Deserializer<'de>>(
@@ -345,11 +352,15 @@ pub struct DefaultModels {
     pub chat_thinking_model: String,
     #[serde(default)]
     pub chat_light_model: String,
+    #[serde(default)]
+    pub chat_buddy_model: String,
 }
 
 impl DefaultModels {
     fn qualify_model(model: &str, provider_name: Option<&str>) -> String {
-        let Some(provider) = provider_name else { return model.to_string() };
+        let Some(provider) = provider_name else {
+            return model.to_string();
+        };
         if model.is_empty() {
             return String::new();
         }
@@ -362,96 +373,82 @@ impl DefaultModels {
 
     pub fn apply_override(&mut self, other: &DefaultModels, provider_name: Option<&str>) {
         if !other.completion_default_model.is_empty() {
-            self.completion_default_model = Self::qualify_model(&other.completion_default_model, provider_name);
+            self.completion_default_model =
+                Self::qualify_model(&other.completion_default_model, provider_name);
         }
         if !other.chat_default_model.is_empty() {
             self.chat_default_model = Self::qualify_model(&other.chat_default_model, provider_name);
         }
         if !other.chat_thinking_model.is_empty() {
-            self.chat_thinking_model = Self::qualify_model(&other.chat_thinking_model, provider_name);
+            self.chat_thinking_model =
+                Self::qualify_model(&other.chat_thinking_model, provider_name);
         }
         if !other.chat_light_model.is_empty() {
             self.chat_light_model = Self::qualify_model(&other.chat_light_model, provider_name);
         }
+        if !other.chat_buddy_model.is_empty() {
+            self.chat_buddy_model = Self::qualify_model(&other.chat_buddy_model, provider_name);
+        }
     }
 }
 
-pub async fn load_caps_value_from_url(
-    cmdline: CommandLine,
-    gcx: Arc<ARwLock<GlobalContext>>,
-) -> Result<(serde_json::Value, String), String> {
-    let caps_urls = if cmdline.address_url.to_lowercase() == "refact" {
-        vec!["https://inference.smallcloud.ai/coding_assistant_caps.json".to_string()]
-    } else {
-        let base_url = Url::parse(&cmdline.address_url)
-            .map_err(|_| "failed to parse address url".to_string())?;
+fn resolve_model_caps_for_provider_model(
+    model_caps: &HashMap<String, ModelCapabilities>,
+    model_id: &str,
+) -> Option<crate::caps::model_caps::ResolvedCaps> {
+    resolve_model_caps_for_provider_model_with_bases(model_caps, model_id, &[])
+}
 
-        vec![
-            base_url
-                .join(&CAPS_FILENAME)
-                .map_err(|_| "failed to join caps URL".to_string())?
-                .to_string(),
-            base_url
-                .join(&CAPS_FILENAME_FALLBACK)
-                .map_err(|_| "failed to join fallback caps URL".to_string())?
-                .to_string(),
-        ]
+fn resolve_model_caps_for_provider_model_with_bases(
+    model_caps: &HashMap<String, ModelCapabilities>,
+    model_id: &str,
+    base_provider_names: &[String],
+) -> Option<crate::caps::model_caps::ResolvedCaps> {
+    if let Some(resolved) = resolve_model_caps(model_caps, model_id) {
+        return Some(resolved);
+    }
+
+    let Some((provider_name, bare_model_id)) = model_id.split_once('/') else {
+        return None;
     };
 
-    let http_client = gcx.read().await.http_client.clone();
-    let mut headers = reqwest::header::HeaderMap::new();
-
-    if !cmdline.api_key.is_empty() {
-        let auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", cmdline.api_key))
-            .map_err(|e| format!("Invalid API key format: {}", e))?;
-        headers.insert(reqwest::header::AUTHORIZATION, auth_value);
-
-        let user_agent = reqwest::header::HeaderValue::from_str(&format!(
-            "refact-lsp {}",
-            crate::version::build::PKG_VERSION
-        ))
-        .map_err(|e| format!("Invalid user agent format: {}", e))?;
-        headers.insert(reqwest::header::USER_AGENT, user_agent);
+    let mut aliases = model_caps_provider_aliases(provider_name);
+    for base_provider_name in base_provider_names {
+        aliases.extend(model_caps_provider_aliases(base_provider_name));
     }
+    aliases.sort();
+    aliases.dedup();
 
-    let mut last_status = 0;
-    let mut last_response_json: Option<serde_json::Value> = None;
-
-    for url in &caps_urls {
-        info!("fetching caps from {}", url);
-        let response = http_client
-            .get(url)
-            .headers(headers.clone())
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        last_status = response.status().as_u16();
-
-        if let Ok(json_value) = response.json::<serde_json::Value>().await {
-            if last_status == 200 {
-                return Ok((json_value, url.clone()));
-            }
-            last_response_json = Some(json_value.clone());
-            warn!(
-                "status={}; server responded with:\n{}",
-                last_status, json_value
-            );
+    for provider_alias in aliases {
+        let qualified = format!("{provider_alias}/{bare_model_id}");
+        if let Some(resolved) = resolve_model_caps(model_caps, &qualified) {
+            return Some(resolved);
         }
     }
 
-    if let Some(json_value) = last_response_json {
-        if let Some(detail) = json_value.get("detail").and_then(|d| d.as_str()) {
-            return Err(detail.to_string());
+    None
+}
+
+fn model_caps_provider_aliases(provider_name: &str) -> Vec<String> {
+    let mut aliases = vec![provider_name.replace('_', "-")];
+    for suffix in ["_responses", "-responses"] {
+        if let Some(stripped) = provider_name.strip_suffix(suffix) {
+            aliases.push(stripped.to_string());
+            aliases.push(stripped.replace('_', "-"));
         }
     }
-
-    Err(format!("cannot fetch caps, status={}", last_status))
+    if provider_name == "google_gemini" {
+        aliases.push("google".to_string());
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 /// Build ChatModelRecord from an AvailableModel and provider runtime info
 fn build_chat_model_record(
     provider_name: &str,
+    base_provider_names: &[String],
     model: &AvailableModel,
     model_caps: &HashMap<String, ModelCapabilities>,
     runtime_wire_format: WireFormat,
@@ -459,8 +456,8 @@ fn build_chat_model_record(
     runtime_api_key: &str,
     runtime_auth_token: &str,
     runtime_tokenizer_api_key: &str,
-    runtime_support_metadata: bool,
     runtime_extra_headers: &HashMap<String, String>,
+    runtime_supports_cache_control: bool,
 ) -> ChatModelRecord {
     let prefix = format!("{}/", provider_name);
     let model_id = if model.id.starts_with(&prefix) {
@@ -469,14 +466,26 @@ fn build_chat_model_record(
         format!("{}/{}", provider_name, model.id)
     };
 
-    let resolved_caps = resolve_model_caps(model_caps, &model_id)
-        .or_else(|| {
-            if model_id.starts_with("openrouter/") {
-                None
-            } else {
-                resolve_model_caps(model_caps, &model.id)
-            }
-        });
+    let resolved_caps = if provider_name == "vllm" {
+        model
+            .base_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|base_model| !base_model.is_empty())
+            .and_then(|base_model| resolve_model_caps(model_caps, base_model))
+    } else {
+        None
+    }
+    .or_else(|| {
+        resolve_model_caps_for_provider_model_with_bases(model_caps, &model_id, base_provider_names)
+    })
+    .or_else(|| {
+        if model_id.starts_with("openrouter/") {
+            None
+        } else {
+            resolve_model_caps(model_caps, &model.id)
+        }
+    });
 
     let (
         n_ctx,
@@ -488,14 +497,27 @@ fn build_chat_model_record(
         tokenizer,
         supports_clicks,
         max_output_tokens,
+        supports_parallel_tools,
+        supports_strict_tools,
     ) = if let Some(ref resolved) = resolved_caps {
         let caps = &resolved.caps;
         if model.is_custom {
-            let clamped_n_ctx = if caps.n_ctx > 0 { model.n_ctx.min(caps.n_ctx) } else { model.n_ctx };
+            let clamped_n_ctx = if caps.n_ctx > 0 {
+                model.n_ctx.min(caps.n_ctx)
+            } else {
+                model.n_ctx
+            };
             let clamped_max_output = model.max_output_tokens.map(|v| {
-                if caps.max_output_tokens > 0 { v.min(caps.max_output_tokens) } else { v }
+                if caps.max_output_tokens > 0 {
+                    v.min(caps.max_output_tokens)
+                } else {
+                    v
+                }
             });
-            let tok = model.tokenizer.clone().unwrap_or_else(|| caps.tokenizer.clone());
+            let tok = model
+                .tokenizer
+                .clone()
+                .unwrap_or_else(|| caps.tokenizer.clone());
             (
                 clamped_n_ctx,
                 model.supports_tools,
@@ -506,6 +528,8 @@ fn build_chat_model_record(
                 tok,
                 caps.supports_clicks,
                 clamped_max_output,
+                model.supports_parallel_tools,
+                model.supports_strict_tools,
             )
         } else {
             let effective_n_ctx = if model.n_ctx > 0 && caps.n_ctx > 0 {
@@ -516,7 +540,8 @@ fn build_chat_model_record(
                 model.n_ctx
             };
             let effective_max_output = if caps.max_output_tokens > 0 {
-                model.max_output_tokens
+                model
+                    .max_output_tokens
                     .map(|v| v.min(caps.max_output_tokens))
                     .or(Some(caps.max_output_tokens))
             } else {
@@ -525,16 +550,24 @@ fn build_chat_model_record(
             (
                 effective_n_ctx,
                 caps.supports_tools,
-                caps.supports_vision,
+                caps.supports_vision
+                    || caps.supports_video
+                    || caps.supports_audio
+                    || caps.supports_pdf,
                 caps.reasoning_effort_options.clone(),
                 caps.supports_thinking_budget,
                 caps.supports_adaptive_thinking_budget,
                 caps.tokenizer.clone(),
                 caps.supports_clicks,
                 effective_max_output,
+                caps.supports_parallel_tools,
+                caps.supports_strict_tools,
             )
         }
     } else {
+        // No registry entry for this model: trust whatever the provider reported.
+        // supports_clicks defaults to false because click support is a UI-level
+        // capability that no local provider currently reports.
         (
             model.n_ctx,
             model.supports_tools,
@@ -542,16 +575,26 @@ fn build_chat_model_record(
             model.reasoning_effort_options.clone(),
             model.supports_thinking_budget,
             model.supports_adaptive_thinking_budget,
-            model.tokenizer.clone().unwrap_or_else(|| "fake".to_string()),
+            model
+                .tokenizer
+                .clone()
+                .unwrap_or_else(|| "fake".to_string()),
             false,
             model.max_output_tokens,
+            model.supports_parallel_tools,
+            model.supports_strict_tools,
         )
     };
 
     let supports_agent = supports_tools;
-    let endpoint = runtime_endpoint.replace("$MODEL", &model.id);
+    let effective_wire_format = model.wire_format_override.unwrap_or(runtime_wire_format);
+    let effective_endpoint = model
+        .endpoint_override
+        .as_deref()
+        .unwrap_or(runtime_endpoint);
+    let endpoint = effective_endpoint.replace("$MODEL", &model.id);
 
-    let endpoint_style = match runtime_wire_format {
+    let endpoint_style = match effective_wire_format {
         WireFormat::AnthropicMessages => "anthropic",
         _ => "openai",
     }
@@ -564,11 +607,10 @@ fn build_chat_model_record(
             id: model_id,
             endpoint,
             endpoint_style,
-            wire_format: runtime_wire_format,
+            wire_format: effective_wire_format,
             api_key: runtime_api_key.to_string(),
             auth_token: runtime_auth_token.to_string(),
             tokenizer_api_key: runtime_tokenizer_api_key.to_string(),
-            support_metadata: runtime_support_metadata,
             extra_headers: runtime_extra_headers.clone(),
             similar_models: Vec::new(),
             tokenizer,
@@ -583,6 +625,7 @@ fn build_chat_model_record(
                 .as_ref()
                 .map(|r| r.caps.supports_web_search)
                 .unwrap_or(false),
+            supports_cache_control: runtime_supports_cache_control && model.supports_cache_control,
             removable: model.is_custom,
             user_configured: model.is_custom,
         },
@@ -606,17 +649,23 @@ fn build_chat_model_record(
             .as_ref()
             .and_then(|r| r.caps.default_max_tokens),
         max_output_tokens,
+        supports_parallel_tools,
         supports_strict_tools: resolved_caps
             .as_ref()
-            .map(|r| r.caps.supports_strict_tools)
-            .unwrap_or(false),
+            .map(|r| {
+                if model.is_custom {
+                    supports_strict_tools
+                } else {
+                    r.caps.supports_strict_tools
+                }
+            })
+            .unwrap_or(supports_strict_tools),
         supports_temperature: resolved_caps
             .as_ref()
             .map(|r| r.caps.supports_temperature)
             .unwrap_or(true),
         available_providers: model.available_providers.clone(),
         selected_provider: model.selected_provider.clone(),
-        
     }
 }
 
@@ -653,7 +702,16 @@ pub async fn populate_chat_models_from_providers(
             continue;
         }
 
-        let available_models = provider.fetch_available_models(&http_client, model_caps).await;
+        let mut base_provider_names = vec![provider.base_provider_name().to_string()];
+        if runtime.name != provider.name() {
+            base_provider_names.push(provider.name().to_string());
+        }
+        base_provider_names.sort();
+        base_provider_names.dedup();
+
+        let available_models = provider
+            .fetch_available_models(&http_client, model_caps)
+            .await;
 
         for model in available_models {
             if !model.enabled {
@@ -662,6 +720,7 @@ pub async fn populate_chat_models_from_providers(
 
             let chat_record = build_chat_model_record(
                 &runtime.name,
+                &base_provider_names,
                 &model,
                 model_caps,
                 runtime.wire_format,
@@ -669,8 +728,8 @@ pub async fn populate_chat_models_from_providers(
                 &runtime.api_key,
                 &runtime.auth_token,
                 &runtime.tokenizer_api_key,
-                runtime.support_metadata,
                 &runtime.extra_headers,
+                runtime.supports_cache_control,
             );
 
             let model_id = chat_record.base.id.clone();
@@ -686,49 +745,21 @@ pub async fn populate_chat_models_from_providers(
                 }
             }
 
+            let map = caps
+                .provider_base_names
+                .entry(runtime.name.clone())
+                .or_default();
+            map.extend(base_provider_names.iter().cloned());
+            map.sort();
+            map.dedup();
+
             caps.chat_models.insert(model_id, Arc::new(chat_record));
         }
     }
 
-    if !caps.chat_models.is_empty() {
-        let need_new_default = caps.defaults.chat_default_model.is_empty()
-            || !caps
-                .chat_models
-                .contains_key(&caps.defaults.chat_default_model);
-
-        if need_new_default {
-            let mut sorted_model_ids: Vec<&String> = caps.chat_models.keys().collect();
-            sorted_model_ids.sort();
-            if let Some(first_model_id) = sorted_model_ids.first() {
-                info!("Auto-selecting default chat model: {}", first_model_id);
-                caps.defaults.chat_default_model = (*first_model_id).clone();
-            }
-        }
-
-        let need_new_light = caps.defaults.chat_light_model.is_empty()
-            || !caps
-                .chat_models
-                .contains_key(&caps.defaults.chat_light_model);
-        if need_new_light && !caps.defaults.chat_default_model.is_empty() {
-            info!(
-                "Light model '{}' not available, falling back to default '{}'",
-                caps.defaults.chat_light_model, caps.defaults.chat_default_model
-            );
-            caps.defaults.chat_light_model = caps.defaults.chat_default_model.clone();
-        }
-
-        let need_new_thinking = caps.defaults.chat_thinking_model.is_empty()
-            || !caps
-                .chat_models
-                .contains_key(&caps.defaults.chat_thinking_model);
-        if need_new_thinking && !caps.defaults.chat_default_model.is_empty() {
-            info!(
-                "Thinking model '{}' not available, falling back to default '{}'",
-                caps.defaults.chat_thinking_model, caps.defaults.chat_default_model
-            );
-            caps.defaults.chat_thinking_model = caps.defaults.chat_default_model.clone();
-        }
-    }
+    // Chat default model slots are intentionally not auto-filled. The Default Models UI can
+    // leave each slot unset, and tools that require a model type report a setup error instead
+    // of silently falling back to another model type.
 
     if !caps.completion_models.is_empty() {
         let need_new_default = caps.defaults.completion_default_model.is_empty()
@@ -738,261 +769,181 @@ pub async fn populate_chat_models_from_providers(
 
         if need_new_default {
             let mut candidates: Vec<&String> = caps.completion_models.keys().collect();
-            // In cloud mode, prefer cloud completion models over local ones
-            if !caps.cloud_name.is_empty() {
-                let cloud_prefix = format!("{}/", caps.cloud_name);
-                let cloud_candidates: Vec<&String> = candidates.iter()
-                    .filter(|id| id.starts_with(&cloud_prefix))
-                    .cloned()
-                    .collect();
-                if !cloud_candidates.is_empty() {
-                    candidates = cloud_candidates;
-                }
-            }
             candidates.sort();
             if let Some(first_model_id) = candidates.first() {
-                info!("Auto-selecting default completion model: {}", first_model_id);
+                info!(
+                    "Auto-selecting default completion model: {}",
+                    first_model_id
+                );
                 caps.defaults.completion_default_model = (*first_model_id).clone();
             }
         }
     }
 }
 
-pub(crate) fn convert_self_hosted_caps_if_needed(
-    caps_value: serde_json::Value,
-    caps_url: &str,
-    cmdline_api_key: &str,
-) -> Result<serde_json::Value, String> {
-    let obj = match caps_value.as_object() {
-        Some(o) => o,
-        None => return Ok(caps_value),
+fn resolve_user_default_chat_model(
+    model: &str,
+    chat_models: &IndexMap<String, Arc<ChatModelRecord>>,
+) -> Option<String> {
+    if model.is_empty() {
+        return None;
+    }
+    if chat_models.contains_key(model) {
+        return Some(model.to_string());
+    }
+    if !model.contains('/') {
+        for key in chat_models.keys() {
+            if let Some(name) = key.split('/').last() {
+                if name == model {
+                    return Some(key.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn apply_user_default_chat_model(
+    target: &mut String,
+    defaults: &ModelTypeDefaults,
+    label: &str,
+    chat_models: &IndexMap<String, Arc<ChatModelRecord>>,
+) {
+    let Some(model) = defaults.model.as_deref() else {
+        return;
     };
 
-    let is_nested_format = ["chat", "completion", "embedding"].iter()
-        .any(|key| obj.get(*key).and_then(|v| v.get("models")).is_some());
-    if !is_nested_format {
-        return Ok(caps_value);
+    let model = model.trim();
+    if model.is_empty() {
+        target.clear();
+        return;
     }
 
-    let support_metadata = obj.get("support_metadata")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let tokenizer_endpoints = obj.get("tokenizer_endpoints")
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut chat_models = serde_json::Map::new();
-    if let Some(chat) = obj.get("chat").and_then(|v| v.as_object()) {
-        let endpoint = chat.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(models) = chat.get("models").and_then(|v| v.as_object()) {
-            for (model_name, model_val) in models {
-                let mut record = model_val.clone();
-                if let Some(rec) = record.as_object_mut() {
-                    rec.insert("name".to_string(), serde_json::json!(model_name));
-                    let model_endpoint = endpoint.replace("$MODEL", model_name);
-                    let full_endpoint = relative_to_full_url(caps_url, &model_endpoint)
-                        .unwrap_or(model_endpoint);
-                    rec.insert("endpoint".to_string(), serde_json::json!(full_endpoint));
-                    rec.insert("endpoint_style".to_string(), serde_json::json!("openai"));
-                    rec.insert("enabled".to_string(), serde_json::json!(true));
-                    rec.insert("support_metadata".to_string(), serde_json::json!(support_metadata));
-                    if !cmdline_api_key.is_empty() {
-                        rec.insert("api_key".to_string(), serde_json::json!(cmdline_api_key));
-                    }
-                    if let Some(tok_url) = tokenizer_endpoints.get(model_name) {
-                        if let Some(tok_str) = tok_url.as_str() {
-                            let full_tok = relative_to_full_url(caps_url, tok_str)
-                                .unwrap_or(tok_str.to_string());
-                            rec.insert("tokenizer".to_string(), serde_json::json!(full_tok));
-                        }
-                    }
-                    chat_models.insert(model_name.clone(), record);
-                }
-            }
-        }
+    if is_legacy_refact_model(model) {
+        warn!(
+            "Legacy Refact Cloud {} default '{}' was reset to none",
+            label, model
+        );
+        target.clear();
+        return;
     }
 
-    let mut completion_models = serde_json::Map::new();
-    if let Some(completion) = obj.get("completion").and_then(|v| v.as_object()) {
-        let endpoint = completion.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-        if let Some(models) = completion.get("models").and_then(|v| v.as_object()) {
-            for (model_name, model_val) in models {
-                let mut record = model_val.clone();
-                if let Some(rec) = record.as_object_mut() {
-                    rec.insert("name".to_string(), serde_json::json!(model_name));
-                    let model_endpoint = endpoint.replace("$MODEL", model_name);
-                    let full_endpoint = relative_to_full_url(caps_url, &model_endpoint)
-                        .unwrap_or(model_endpoint);
-                    rec.insert("endpoint".to_string(), serde_json::json!(full_endpoint));
-                    rec.insert("endpoint_style".to_string(), serde_json::json!("openai"));
-                    rec.insert("enabled".to_string(), serde_json::json!(true));
-                    if !cmdline_api_key.is_empty() {
-                        rec.insert("api_key".to_string(), serde_json::json!(cmdline_api_key));
-                    }
-                    if let Some(tok_url) = tokenizer_endpoints.get(model_name) {
-                        if let Some(tok_str) = tok_url.as_str() {
-                            let full_tok = relative_to_full_url(caps_url, tok_str)
-                                .unwrap_or(tok_str.to_string());
-                            rec.insert("tokenizer".to_string(), serde_json::json!(full_tok));
-                        }
-                    }
-                    completion_models.insert(model_name.clone(), record);
-                }
-            }
+    match resolve_user_default_chat_model(model, chat_models) {
+        Some(resolved) => *target = resolved,
+        None => {
+            warn!(
+                "User default {} model '{}' not found in available models; keeping configured value for setup diagnostics",
+                label, model
+            );
+            *target = model.to_string();
         }
     }
+}
 
-    let mut result = caps_value.clone();
-    if let Some(result_obj) = result.as_object_mut() {
-        result_obj.insert("chat_models".to_string(), serde_json::Value::Object(chat_models));
-        result_obj.insert("completion_models".to_string(), serde_json::Value::Object(completion_models));
+fn clear_legacy_refact_chat_defaults(caps: &mut CodeAssistantCaps) {
+    let defaults = &mut caps.defaults;
+    clear_legacy_refact_chat_default("chat", &mut defaults.chat_default_model);
+    clear_legacy_refact_chat_default("light", &mut defaults.chat_light_model);
+    clear_legacy_refact_chat_default("thinking", &mut defaults.chat_thinking_model);
+    clear_legacy_refact_chat_default("buddy", &mut defaults.chat_buddy_model);
+}
 
-        if let Some(chat) = obj.get("chat").and_then(|v| v.as_object()) {
-            let chat_endpoint = chat.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-            let full_chat_endpoint = relative_to_full_url(caps_url, chat_endpoint)
-                .unwrap_or(chat_endpoint.to_string());
-            result_obj.insert("chat_endpoint".to_string(), serde_json::json!(full_chat_endpoint));
+fn clear_legacy_refact_chat_default(label: &str, value: &mut String) {
+    if is_legacy_refact_model(value) {
+        warn!(
+            "Legacy Refact Cloud {} default '{}' was reset to none",
+            label, value
+        );
+        value.clear();
+    }
+}
 
-            if let Some(dm) = chat.get("default_model").and_then(|v| v.as_str()) {
-                if !dm.is_empty() {
-                    result_obj.insert("chat_default_model".to_string(), serde_json::json!(dm));
-                }
-            }
-            if let Some(dm) = chat.get("default_light_model").and_then(|v| v.as_str()) {
-                if !dm.is_empty() {
-                    result_obj.insert("chat_light_model".to_string(), serde_json::json!(dm));
-                }
-            }
-            if let Some(dm) = chat.get("default_thinking_model").and_then(|v| v.as_str()) {
-                if !dm.is_empty() {
-                    result_obj.insert("chat_thinking_model".to_string(), serde_json::json!(dm));
-                }
-            }
+fn remove_legacy_refact_models_from_caps(caps: &mut CodeAssistantCaps) {
+    caps.chat_models.retain(|model_id, _| {
+        let keep = !is_legacy_refact_model(model_id);
+        if !keep {
+            warn!(
+                "Legacy Refact Cloud chat model '{}' was removed from caps",
+                model_id
+            );
         }
+        keep
+    });
 
-        if let Some(completion) = obj.get("completion").and_then(|v| v.as_object()) {
-            let comp_endpoint = completion.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-            let full_comp_endpoint = relative_to_full_url(caps_url, comp_endpoint)
-                .unwrap_or(comp_endpoint.to_string());
-            result_obj.insert("completion_endpoint".to_string(), serde_json::json!(full_comp_endpoint));
+    caps.completion_models.retain(|model_id, _| {
+        let keep = !is_legacy_refact_model(model_id);
+        if !keep {
+            warn!(
+                "Legacy Refact Cloud completion model '{}' was removed from caps",
+                model_id
+            );
         }
+        keep
+    });
 
-        if let Some(embedding) = obj.get("embedding").and_then(|v| v.as_object()) {
-            let emb_endpoint = embedding.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
-            if !emb_endpoint.is_empty() {
-                let full_emb_endpoint = relative_to_full_url(caps_url, emb_endpoint)
-                    .unwrap_or(emb_endpoint.to_string());
-                result_obj.insert("embedding_endpoint".to_string(), serde_json::json!(full_emb_endpoint));
-            }
-
-            let emb_models = embedding.get("models").and_then(|v| v.as_object());
-
-            // Resolve default model: explicit default_model, or fall back to first in models
-            let default_model_name = embedding.get("default_model")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| emb_models.and_then(|m| m.keys().next().map(|s| s.as_str())));
-
-            if let Some(dm) = default_model_name {
-                // Build a full embedding_model object with n_ctx/embedding_size from models section
-                let mut emb_record = serde_json::json!({"name": dm, "enabled": true});
-                if let Some(model_info) = emb_models.and_then(|m| m.get(dm)).and_then(|v| v.as_object()) {
-                    if let Some(n_ctx) = model_info.get("n_ctx").and_then(|v| v.as_u64()) {
-                        emb_record["n_ctx"] = serde_json::json!(n_ctx);
-                    }
-                    if let Some(size) = model_info.get("size").and_then(|v| v.as_u64()) {
-                        emb_record["embedding_size"] = serde_json::json!(size);
-                    }
-                }
-                if let Some(tok_url) = tokenizer_endpoints.get(dm) {
-                    if let Some(tok_str) = tok_url.as_str() {
-                        let full_tok = relative_to_full_url(caps_url, tok_str)
-                            .unwrap_or(tok_str.to_string());
-                        emb_record["tokenizer"] = serde_json::json!(full_tok);
-                    }
-                }
-                result_obj.insert("default_embeddings_model".to_string(), emb_record);
-            }
-        }
-
-        if let Some(telem) = obj.get("telemetry_endpoints").and_then(|v| v.as_object()) {
-            if let Some(basic) = telem.get("telemetry_basic_endpoint").and_then(|v| v.as_str()) {
-                result_obj.insert("telemetry_basic_dest".to_string(), serde_json::json!(basic));
-            }
-            if let Some(own) = telem.get("telemetry_basic_retrieve_my_own_endpoint").and_then(|v| v.as_str()) {
-                result_obj.insert("telemetry_basic_retrieve_my_own".to_string(), serde_json::json!(own));
-            }
-        }
+    if is_legacy_refact_model(&caps.embedding_model.base.id)
+        || is_legacy_refact_model(&caps.embedding_model.base.name)
+    {
+        warn!(
+            "Legacy Refact Cloud embedding model '{}' was reset to none",
+            caps.embedding_model.base.id
+        );
+        caps.embedding_model = EmbeddingModelRecord::default();
     }
 
-    Ok(result)
+    clear_legacy_refact_chat_defaults(caps);
+
+    if is_legacy_refact_model(&caps.defaults.completion_default_model)
+        || (!caps.defaults.completion_default_model.is_empty()
+            && !caps
+                .completion_models
+                .contains_key(&caps.defaults.completion_default_model))
+    {
+        warn!(
+            "Completion default model '{}' was reset to none because it is no longer available",
+            caps.defaults.completion_default_model
+        );
+        caps.defaults.completion_default_model.clear();
+    }
+
+    if caps.defaults.completion_default_model.is_empty() && !caps.completion_models.is_empty() {
+        let mut candidates: Vec<&String> = caps.completion_models.keys().collect();
+        candidates.sort();
+        if let Some(first_model_id) = candidates.first() {
+            info!(
+                "Auto-selecting default completion model after legacy cleanup: {}",
+                first_model_id
+            );
+            caps.defaults.completion_default_model = (*first_model_id).clone();
+        }
+    }
+}
+
+async fn take_models_dev_startup_refresh_flag(gcx: Arc<ARwLock<GlobalContext>>) -> bool {
+    let mut gcx_locked = gcx.write().await;
+    if gcx_locked.models_dev_startup_refresh_attempted {
+        false
+    } else {
+        gcx_locked.models_dev_startup_refresh_attempted = true;
+        true
+    }
 }
 
 pub async fn load_caps(
-    cmdline: crate::global_context::CommandLine,
+    _cmdline: crate::global_context::CommandLine,
     gcx: Arc<ARwLock<GlobalContext>>,
 ) -> Result<Arc<CodeAssistantCaps>, String> {
     let (config_dir, cmdline_api_key, experimental) = {
         let gcx_locked = gcx.read().await;
         (
             gcx_locked.config_dir.clone(),
-            gcx_locked.cmdline.api_key.clone(),
+            String::new(),
             gcx_locked.cmdline.experimental,
         )
     };
 
-    let addr = cmdline.address_url.trim().to_string();
-    let is_refact = addr.eq_ignore_ascii_case("refact");
-    let has_cloud_key = !cmdline_api_key.trim().is_empty();
-    let skip_cloud = addr.is_empty() || (is_refact && !has_cloud_key);
-
-    let (mut caps, server_providers) = if skip_cloud {
-        info!("Running in BYOK mode (local providers only), address_url={:?} has_key={}", addr, has_cloud_key);
-        (CodeAssistantCaps::default(), vec![])
-    } else {
-        match load_caps_value_from_url(cmdline, gcx.clone()).await {
-            Ok((caps_value, caps_url)) => {
-                let caps_value = convert_self_hosted_caps_if_needed(caps_value, &caps_url, &cmdline_api_key)?;
-
-                let mut caps = serde_json::from_value::<CodeAssistantCaps>(caps_value.clone())
-                    .map_err_with_prefix("Failed to parse caps:")?;
-                let mut server_provider = serde_json::from_value::<CapsProvider>(caps_value.clone())
-                    .map_err_with_prefix("Failed to parse caps provider:")?;
-
-                resolve_relative_urls(&mut server_provider, &caps_url)?;
-                if caps.cloud_name == "refact" {
-                    server_provider.wire_format = WireFormat::Refact;
-                    server_provider.support_metadata = true;
-                    if let Some(pricing_obj) = caps.metadata.pricing.as_object() {
-                        for model_name in pricing_obj.keys() {
-                            if !server_provider.running_models.contains(model_name) {
-                                server_provider.running_models.push(model_name.clone());
-                            }
-                        }
-                    }
-                }
-
-                info!(
-                    "server_provider running_models({})={:?}, completion_endpoint={:?}, completion_default_model={:?}",
-                    server_provider.running_models.len(),
-                    server_provider.running_models.iter().take(10).collect::<Vec<_>>(),
-                    server_provider.completion_endpoint,
-                    server_provider.completion_default_model,
-                );
-
-                caps.telemetry_basic_dest = relative_to_full_url(&caps_url, &caps.telemetry_basic_dest)?;
-                caps.telemetry_basic_retrieve_my_own =
-                    relative_to_full_url(&caps_url, &caps.telemetry_basic_retrieve_my_own)?;
-
-                (caps, vec![server_provider])
-            }
-            Err(e) => {
-                warn!("Cloud caps fetch failed ({}), falling back to local providers only", e);
-                (CodeAssistantCaps::default(), vec![])
-            }
-        }
-    };
+    let mut caps = CodeAssistantCaps::default();
+    let server_providers = Vec::new();
 
     let (mut providers, error_log): (Vec<CapsProvider>, Vec<_>) =
         read_providers_d(server_providers, &config_dir, experimental).await;
@@ -1003,33 +954,26 @@ pub async fn load_caps(
     for provider in &mut providers {
         post_process_provider(provider, false, experimental);
         provider.api_key = resolve_provider_api_key(&provider, &cmdline_api_key);
+        if !provider.base_provider.is_empty() && provider.base_provider != provider.name {
+            caps.provider_base_names
+                .entry(provider.name.clone())
+                .or_default()
+                .push(provider.base_provider.clone());
+        }
     }
 
-    let address_url = gcx.read().await.cmdline.address_url.clone();
-    let model_caps_map = match get_model_caps(gcx.clone(), &address_url, false).await {
-        Ok(map) => map,
-        Err(e) => {
-            warn!("Failed to fetch model capabilities: {}, using empty map", e);
-            HashMap::new()
-        }
-    };
-    caps.model_caps = Arc::new(model_caps_map);
-    if caps.cloud_name == "refact" {
-        let running_models = if let Some(pricing_obj) = caps.metadata.pricing.as_object() {
-            pricing_obj.keys().cloned().collect::<Vec<String>>()
-        } else {
-            Vec::new()
-        };
-        if !running_models.is_empty() {
-            let gcx_locked = gcx.write().await;
-            let mut registry = gcx_locked.providers.write().await;
-            if let Some(provider) = registry.get_mut("refact") {
-                provider.set_running_models(running_models);
-            }
-            drop(registry);
-            drop(gcx_locked);
-        }
+    let force_models_dev_refresh = take_models_dev_startup_refresh_flag(gcx.clone()).await;
+    if force_models_dev_refresh {
+        info!("Refreshing models.dev catalog on engine startup");
     }
+    let model_caps_map = get_model_caps(gcx.clone(), force_models_dev_refresh).await.map_err(|e| {
+        format!("Failed to load models.dev capabilities. Check the bundled snapshot or runtime cache: {e}")
+    })?;
+    caps.metadata.pricing = model_caps_pricing_metadata(&model_caps_map);
+    caps.metadata
+        .features
+        .push("models_dev_base_text_pricing".to_string());
+    caps.model_caps = Arc::new(model_caps_map);
 
     // Clear chat models from legacy CapsProviders that have a new ProviderTrait implementation.
     // The new system (populate_chat_models_from_providers) is the sole source of truth for
@@ -1041,12 +985,7 @@ pub async fn load_caps(
         let gcx_locked = gcx.read().await;
         let registry = gcx_locked.providers.read().await;
         for p in &mut providers {
-            if registry.get(&p.name).is_some() && !p.chat_models.is_empty() {
-                info!(
-                    "Clearing {} legacy chat models for provider '{}' — handled by new provider system",
-                    p.chat_models.len(),
-                    p.name
-                );
+            if registry.get(&p.name).is_some() {
                 p.chat_models.clear();
             }
         }
@@ -1055,55 +994,35 @@ pub async fn load_caps(
     add_models_to_caps(&mut caps, providers);
     populate_chat_models_from_providers(&mut caps, gcx.clone()).await;
     apply_model_caps_to_all_chat_models(&mut caps);
+    remove_legacy_refact_models_from_caps(&mut caps);
 
     match ProviderDefaults::load(&config_dir).await {
         Ok(user_defaults) => {
-            let resolve_user_model = |model: &str, chat_models: &IndexMap<String, Arc<ChatModelRecord>>| -> Option<String> {
-                if model.is_empty() {
-                    return None;
-                }
-                if chat_models.contains_key(model) {
-                    return Some(model.to_string());
-                }
-                if !model.contains('/') {
-                    for key in chat_models.keys() {
-                        if let Some(name) = key.split('/').last() {
-                            if name == model {
-                                return Some(key.clone());
-                            }
-                        }
-                    }
-                }
-                None
-            };
-
-            if let Some(model) = &user_defaults.chat.model {
-                match resolve_user_model(model, &caps.chat_models) {
-                    Some(resolved) => caps.defaults.chat_default_model = resolved,
-                    None if !model.is_empty() => warn!(
-                        "User default chat model '{}' not found in available models, ignoring", model
-                    ),
-                    _ => {}
-                }
-            }
-            if let Some(model) = &user_defaults.chat_light.model {
-                match resolve_user_model(model, &caps.chat_models) {
-                    Some(resolved) => caps.defaults.chat_light_model = resolved,
-                    None if !model.is_empty() => warn!(
-                        "User default light model '{}' not found in available models, ignoring", model
-                    ),
-                    _ => {}
-                }
-            }
-            if let Some(model) = &user_defaults.chat_thinking.model {
-                match resolve_user_model(model, &caps.chat_models) {
-                    Some(resolved) => caps.defaults.chat_thinking_model = resolved,
-                    None if !model.is_empty() => warn!(
-                        "User default thinking model '{}' not found in available models, ignoring", model
-                    ),
-                    _ => {}
-                }
-            }
+            apply_user_default_chat_model(
+                &mut caps.defaults.chat_default_model,
+                &user_defaults.chat,
+                "chat",
+                &caps.chat_models,
+            );
+            apply_user_default_chat_model(
+                &mut caps.defaults.chat_light_model,
+                &user_defaults.chat_light,
+                "light",
+                &caps.chat_models,
+            );
+            apply_user_default_chat_model(
+                &mut caps.defaults.chat_buddy_model,
+                &user_defaults.chat_buddy,
+                "buddy",
+                &caps.chat_models,
+            );
+            apply_user_default_chat_model(
+                &mut caps.defaults.chat_thinking_model,
+                &user_defaults.chat_thinking,
+                "thinking",
+                &caps.chat_models,
+            );
+            remove_legacy_refact_models_from_caps(&mut caps);
             caps.user_defaults = user_defaults;
         }
         Err(e) => {
@@ -1125,7 +1044,12 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_default_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_default_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_default_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default chat model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_default_model
@@ -1138,10 +1062,33 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_thinking_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_thinking_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_thinking_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default thinking model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_thinking_model
+                );
+            }
+        }
+    }
+    if !caps.defaults.chat_buddy_model.is_empty() {
+        if !caps
+            .chat_models
+            .contains_key(&caps.defaults.chat_buddy_model)
+        {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_buddy_model,
+            )
+            .is_none()
+            {
+                warn!(
+                    "Default buddy model '{}' is not in chat_models and not found in model capabilities registry",
+                    caps.defaults.chat_buddy_model
                 );
             }
         }
@@ -1151,7 +1098,12 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
             .chat_models
             .contains_key(&caps.defaults.chat_light_model)
         {
-            if resolve_model_caps(&caps.model_caps, &caps.defaults.chat_light_model).is_none() {
+            if resolve_model_caps_for_provider_model(
+                &caps.model_caps,
+                &caps.defaults.chat_light_model,
+            )
+            .is_none()
+            {
                 warn!(
                     "Default light model '{}' is not in chat_models and not found in model capabilities registry",
                     caps.defaults.chat_light_model
@@ -1162,30 +1114,8 @@ fn validate_default_models(caps: &CodeAssistantCaps) -> Result<(), String> {
     Ok(())
 }
 
-pub fn resolve_relative_urls(provider: &mut CapsProvider, caps_url: &str) -> Result<(), String> {
-    provider.chat_endpoint = relative_to_full_url(caps_url, &provider.chat_endpoint)?;
-    provider.completion_endpoint = relative_to_full_url(caps_url, &provider.completion_endpoint)?;
-    provider.embedding_endpoint = relative_to_full_url(caps_url, &provider.embedding_endpoint)?;
-    Ok(())
-}
-
 pub fn strip_model_from_finetune(model: &str) -> String {
     model.split(":").next().unwrap().to_string()
-}
-
-pub fn relative_to_full_url(caps_url: &str, maybe_relative_url: &str) -> Result<String, String> {
-    if maybe_relative_url.starts_with("http") {
-        Ok(maybe_relative_url.to_string())
-    } else if maybe_relative_url.is_empty() {
-        Ok("".to_string())
-    } else {
-        let base_url =
-            Url::parse(caps_url).map_err(|_| format!("failed to parse caps url: {}", caps_url))?;
-        let joined_url = base_url
-            .join(maybe_relative_url)
-            .map_err(|_| format!("failed to join url: {}", maybe_relative_url))?;
-        Ok(joined_url.to_string())
-    }
 }
 
 pub fn resolve_model<'a, T>(
@@ -1215,7 +1145,16 @@ pub fn resolve_chat_model(
 
     let base_record = resolve_model(&caps.chat_models, model_id)?;
 
-    let resolved = resolve_model_caps(&caps.model_caps, model_id);
+    let base_provider_names = model_id
+        .split_once('/')
+        .and_then(|(provider_name, _)| caps.provider_base_names.get(provider_name))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let resolved = resolve_model_caps_for_provider_model_with_bases(
+        &caps.model_caps,
+        model_id,
+        base_provider_names,
+    );
 
     match resolved {
         Some(resolved_caps) => {
@@ -1244,7 +1183,16 @@ pub fn resolve_chat_model(
 fn apply_model_caps_to_all_chat_models(caps: &mut CodeAssistantCaps) {
     let model_ids: Vec<String> = caps.chat_models.keys().cloned().collect();
     for model_id in model_ids {
-        if let Some(resolved) = resolve_model_caps(&caps.model_caps, &model_id) {
+        let base_provider_names = model_id
+            .split_once('/')
+            .and_then(|(provider_name, _)| caps.provider_base_names.get(provider_name))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if let Some(resolved) = resolve_model_caps_for_provider_model_with_bases(
+            &caps.model_caps,
+            &model_id,
+            base_provider_names,
+        ) {
             if let Some(record) = caps.chat_models.get(&model_id) {
                 let mut updated = (**record).clone();
                 apply_registry_caps_to_chat_model(&mut updated, &resolved.caps);
@@ -1260,7 +1208,8 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
             record.base.n_ctx = record.base.n_ctx.min(caps.n_ctx);
         }
         if caps.max_output_tokens > 0 {
-            record.max_output_tokens = record.max_output_tokens
+            record.max_output_tokens = record
+                .max_output_tokens
                 .map(|v| v.min(caps.max_output_tokens))
                 .or(Some(caps.max_output_tokens));
         }
@@ -1286,14 +1235,25 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     }
     record.base.supports_max_completion_tokens = caps.supports_max_completion_tokens;
 
-    record.supports_tools = caps.supports_tools;
-    record.supports_strict_tools = caps.supports_strict_tools;
-    record.supports_multimodality = caps.supports_vision;
-    record.supports_clicks = caps.supports_clicks;
+    // For live provider-discovered models (ollama, vllm, lmstudio), the provider
+    // already reported these booleans accurately. The registry should only add
+    // capability knowledge the provider omitted, never remove what the provider reported.
+    // For cloud/catalog models the registry is authoritative, and build_chat_model_record
+    // already set these from registry caps before this point — so ||= is safe for both.
+    record.supports_tools = record.supports_tools || caps.supports_tools;
+    record.supports_parallel_tools = record.supports_parallel_tools || caps.supports_parallel_tools;
+    record.supports_strict_tools = record.supports_strict_tools || caps.supports_strict_tools;
+    record.supports_multimodality = record.supports_multimodality
+        || caps.supports_vision
+        || caps.supports_video
+        || caps.supports_audio
+        || caps.supports_pdf;
+    record.supports_clicks = record.supports_clicks || caps.supports_clicks;
     record.default_temperature = caps.default_temperature;
     record.default_max_tokens = caps.default_max_tokens;
     if caps.max_output_tokens > 0 {
-        record.max_output_tokens = record.max_output_tokens
+        record.max_output_tokens = record
+            .max_output_tokens
             .map(|v| v.min(caps.max_output_tokens))
             .or(Some(caps.max_output_tokens));
     }
@@ -1305,7 +1265,9 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
     record.reasoning_effort_options = caps.reasoning_effort_options.clone();
     record.supports_thinking_budget = caps.supports_thinking_budget;
     record.supports_adaptive_thinking_budget = caps.supports_adaptive_thinking_budget;
-    record.supports_agent = caps.supports_tools;
+    record.base.supports_cache_control =
+        record.base.supports_cache_control && caps.supports_cache_control;
+    record.supports_agent = record.supports_tools;
     record.supports_temperature = caps.supports_temperature;
     record.base.supports_web_search = caps.supports_web_search;
 }
@@ -1313,7 +1275,6 @@ fn apply_registry_caps_to_chat_model(record: &mut ChatModelRecord, caps: &ModelC
 pub fn resolve_completion_model<'a>(
     caps: Arc<CodeAssistantCaps>,
     requested_model_id: &str,
-    try_refact_fallbacks: bool,
 ) -> Result<Arc<CompletionModelRecord>, String> {
     let model_id = if !requested_model_id.is_empty() {
         requested_model_id
@@ -1321,22 +1282,7 @@ pub fn resolve_completion_model<'a>(
         &caps.defaults.completion_default_model
     };
 
-    match resolve_model(&caps.completion_models, model_id) {
-        Ok(model) => Ok(model),
-        Err(first_err) if try_refact_fallbacks => {
-            if let Ok(model) = resolve_model(&caps.completion_models, &format!("refact/{model_id}"))
-            {
-                return Ok(model);
-            }
-            Err(first_err)
-        }
-        Err(err) => Err(err),
-    }
-}
-
-#[allow(dead_code)]
-pub fn is_cloud_model(model_id: &str) -> bool {
-    model_id.starts_with("refact/")
+    resolve_model(&caps.completion_models, model_id)
 }
 
 #[cfg(test)]
@@ -1346,7 +1292,7 @@ mod tests {
 
     fn create_test_caps() -> CodeAssistantCaps {
         let mut caps = CodeAssistantCaps::default();
-        
+
         let test_model = ChatModelRecord {
             base: BaseModelRecord {
                 id: "test-provider/test-model".to_string(),
@@ -1355,14 +1301,12 @@ mod tests {
             },
             ..Default::default()
         };
-        
-        caps.chat_models.insert(
-            "test-provider/test-model".to_string(),
-            Arc::new(test_model),
-        );
-        
+
+        caps.chat_models
+            .insert("test-provider/test-model".to_string(), Arc::new(test_model));
+
         caps.defaults.chat_default_model = "test-provider/test-model".to_string();
-        
+
         caps
     }
 
@@ -1370,7 +1314,7 @@ mod tests {
     fn test_resolve_chat_model_with_explicit_model() {
         let caps = Arc::new(create_test_caps());
         let result = resolve_chat_model(caps, "test-provider/test-model");
-        
+
         assert!(result.is_ok());
         let model = result.unwrap();
         assert_eq!(model.base.id, "test-provider/test-model");
@@ -1380,7 +1324,7 @@ mod tests {
     fn test_resolve_chat_model_with_empty_string_uses_default() {
         let caps = Arc::new(create_test_caps());
         let result = resolve_chat_model(caps, "");
-        
+
         assert!(result.is_ok());
         let model = result.unwrap();
         assert_eq!(model.base.id, "test-provider/test-model");
@@ -1390,7 +1334,7 @@ mod tests {
     fn test_resolve_chat_model_with_nonexistent_model() {
         let caps = Arc::new(create_test_caps());
         let result = resolve_chat_model(caps, "nonexistent-provider/nonexistent-model");
-        
+
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Model"));
     }
@@ -1398,7 +1342,7 @@ mod tests {
     #[test]
     fn test_sorted_model_selection_is_deterministic() {
         let mut caps = CodeAssistantCaps::default();
-        
+
         let model_z = ChatModelRecord {
             base: BaseModelRecord {
                 id: "provider/zzz-model".to_string(),
@@ -1406,7 +1350,7 @@ mod tests {
             },
             ..Default::default()
         };
-        
+
         let model_a = ChatModelRecord {
             base: BaseModelRecord {
                 id: "provider/aaa-model".to_string(),
@@ -1414,13 +1358,15 @@ mod tests {
             },
             ..Default::default()
         };
-        
-        caps.chat_models.insert("provider/zzz-model".to_string(), Arc::new(model_z));
-        caps.chat_models.insert("provider/aaa-model".to_string(), Arc::new(model_a));
-        
+
+        caps.chat_models
+            .insert("provider/zzz-model".to_string(), Arc::new(model_z));
+        caps.chat_models
+            .insert("provider/aaa-model".to_string(), Arc::new(model_a));
+
         let mut sorted_model_ids: Vec<&String> = caps.chat_models.keys().collect();
         sorted_model_ids.sort();
-        
+
         assert_eq!(sorted_model_ids[0], "provider/aaa-model");
         assert_eq!(sorted_model_ids[1], "provider/zzz-model");
     }
@@ -1436,12 +1382,189 @@ mod tests {
             ..Default::default()
         };
         models.insert("test/model".to_string(), Arc::new(test_model));
-        
+
         let result = resolve_model(&models, "test/model");
         assert!(result.is_ok());
         assert_eq!(result.unwrap().base.id, "test/model");
-        
+
         let result = resolve_model(&models, "nonexistent");
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_models_dev_startup_refresh_flag_is_consumed_once() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        gcx.write().await.models_dev_startup_refresh_attempted = false;
+
+        assert!(take_models_dev_startup_refresh_flag(gcx.clone()).await);
+        assert!(!take_models_dev_startup_refresh_flag(gcx).await);
+    }
+
+    #[test]
+    fn test_instance_prefixed_model_cap_resolution_uses_base_provider() {
+        let mut model_caps = HashMap::new();
+        model_caps.insert(
+            "openai/gpt-4.1".to_string(),
+            ModelCapabilities {
+                n_ctx: 128_000,
+                supports_tools: true,
+                supports_strict_tools: true,
+                tokenizer: "openai-tokenizer".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let model = AvailableModel {
+            id: "gpt-4.1".to_string(),
+            display_name: None,
+            n_ctx: 0,
+            supports_tools: false,
+            supports_parallel_tools: false,
+            supports_strict_tools: false,
+            supports_multimodality: false,
+            reasoning_effort_options: None,
+            supports_thinking_budget: false,
+            supports_adaptive_thinking_budget: false,
+            supports_cache_control: true,
+            tokenizer: None,
+            enabled: true,
+            is_custom: false,
+            pricing: None,
+            available_providers: Vec::new(),
+            selected_provider: None,
+            max_output_tokens: None,
+            provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: None,
+        };
+
+        let record = build_chat_model_record(
+            "openai_2",
+            &["openai".to_string()],
+            &model,
+            &model_caps,
+            WireFormat::OpenaiChatCompletions,
+            "https://api.openai.com/v1/chat/completions",
+            "sk-test",
+            "",
+            "",
+            &HashMap::new(),
+            true,
+        );
+
+        assert_eq!(record.base.id, "openai_2/gpt-4.1");
+        assert_eq!(record.base.n_ctx, 128_000);
+        assert_eq!(record.base.tokenizer, "openai-tokenizer");
+        assert!(record.supports_tools);
+        assert!(record.supports_strict_tools);
+    }
+
+    #[test]
+    fn test_vllm_caps_resolution_prefers_base_model_root() {
+        let mut model_caps = HashMap::new();
+        model_caps.insert(
+            "served-alias".to_string(),
+            ModelCapabilities {
+                n_ctx: 1024,
+                supports_tools: false,
+                tokenizer: "alias-tokenizer".to_string(),
+                ..Default::default()
+            },
+        );
+        model_caps.insert(
+            "Qwen/Qwen3.6-27B-FP8".to_string(),
+            ModelCapabilities {
+                n_ctx: 200_000,
+                supports_tools: true,
+                tokenizer: "root-tokenizer".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let model = AvailableModel {
+            id: "served-alias".to_string(),
+            display_name: Some("Served Alias".to_string()),
+            n_ctx: 131_072,
+            supports_tools: false,
+            supports_parallel_tools: false,
+            supports_strict_tools: false,
+            supports_multimodality: false,
+            reasoning_effort_options: None,
+            supports_thinking_budget: false,
+            supports_adaptive_thinking_budget: false,
+            supports_cache_control: true,
+            tokenizer: None,
+            enabled: true,
+            is_custom: false,
+            pricing: None,
+            available_providers: Vec::new(),
+            selected_provider: None,
+            max_output_tokens: None,
+            provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: Some("Qwen/Qwen3.6-27B-FP8".to_string()),
+        };
+
+        let record = build_chat_model_record(
+            "vllm",
+            &[],
+            &model,
+            &model_caps,
+            WireFormat::OpenaiChatCompletions,
+            "http://localhost:8000/v1/chat/completions",
+            "",
+            "",
+            "",
+            &HashMap::new(),
+            false,
+        );
+
+        assert_eq!(record.base.id, "vllm/served-alias");
+        assert_eq!(record.base.name, "served-alias");
+        assert_eq!(record.base.tokenizer, "root-tokenizer");
+        assert_eq!(record.base.n_ctx, 131_072);
+        assert!(record.supports_tools);
+    }
+
+    #[test]
+    fn test_build_chat_model_record_uses_models_dev_available_model_runtime_overrides() {
+        let mut model = AvailableModel::from_caps(
+            "qwen-override",
+            &ModelCapabilities {
+                n_ctx: 128_000,
+                supports_tools: true,
+                tokenizer: "fake".to_string(),
+                ..Default::default()
+            },
+            true,
+            None,
+        );
+        model.wire_format_override = Some(WireFormat::OpenaiResponses);
+        model.endpoint_override =
+            Some("https://dashscope.aliyuncs.com/model-specific/v1/responses".to_string());
+
+        let record = build_chat_model_record(
+            "qwen",
+            &[],
+            &model,
+            &HashMap::new(),
+            WireFormat::OpenaiChatCompletions,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "test-key",
+            "",
+            "",
+            &HashMap::new(),
+            true,
+        );
+
+        assert_eq!(record.base.id, "qwen/qwen-override");
+        assert_eq!(record.base.wire_format, WireFormat::OpenaiResponses);
+        assert_eq!(
+            record.base.endpoint,
+            "https://dashscope.aliyuncs.com/model-specific/v1/responses"
+        );
+        assert_eq!(record.base.api_key, "test-key");
     }
 }

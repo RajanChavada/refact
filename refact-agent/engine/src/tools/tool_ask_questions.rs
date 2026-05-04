@@ -8,7 +8,7 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 use crate::http::routers::v1::sidebar::{NotificationEvent, NotificationQuestion};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,14 +38,42 @@ impl Tool for ToolAskQuestions {
             experimental: false,
             allow_parallel: false,
             description: "Present questions to the user and wait for answers. Stops generation until user responds. Question types: yes_no, single_select, multi_select, free_text.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "questions".to_string(),
-                    param_type: "string".to_string(),
-                    description: "JSON array of question objects with fields: id (unique identifier), type (yes_no|single_select|multi_select|free_text), text (the question), options (array of choices for select types). Example: [{\"id\":\"q1\",\"type\":\"yes_no\",\"text\":\"Continue?\"}]".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "description": "List of questions to present to the user.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique identifier for the question."
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "description": "Question type: yes_no, single_select, multi_select, or free_text.",
+                                    "enum": ["yes_no", "single_select", "multi_select", "free_text"]
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "The question text to display to the user."
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "description": "Options for single_select or multi_select questions.",
+                                    "items": { "type": "string" }
+                                }
+                            },
+                            "required": ["id", "type", "text"]
+                        }
+                    }
                 },
-            ],
-            parameters_required: vec!["questions".to_string()],
+                "required": ["questions"]
+            }),
+            output_schema: None,
+            annotations: None,
         }
     }
 

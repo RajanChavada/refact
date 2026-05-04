@@ -7,17 +7,20 @@ import styles from "./TrajectoryButton.module.css";
 type TrajectoryButtonProps = {
   forceOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  disabled?: boolean;
 };
 
 export const TrajectoryButton: React.FC<TrajectoryButtonProps> = ({
   forceOpen,
   onOpenChange,
+  disabled,
 }) => {
   const [internalOpen, setInternalOpen] = useState(false);
   const isControlled = forceOpen !== undefined;
   const open = isControlled ? forceOpen : internalOpen;
 
   const handleOpenChange = (newOpen: boolean) => {
+    if (disabled && newOpen) return;
     if (!isControlled) {
       setInternalOpen(newOpen);
     }
@@ -34,6 +37,7 @@ export const TrajectoryButton: React.FC<TrajectoryButtonProps> = ({
               className={styles.iconButton}
               data-testid="trajectory-button"
               aria-label="Compress or Handoff"
+              disabled={disabled}
             >
               <ArchiveIcon />
             </button>

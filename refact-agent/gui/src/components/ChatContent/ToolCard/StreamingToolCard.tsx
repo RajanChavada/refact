@@ -8,6 +8,11 @@ import { ToolCall } from "../../../services/refact/types";
 import { Markdown, ShikiCodeBlock } from "../../Markdown";
 import { useDelayedUnmount } from "../../shared/useDelayedUnmount";
 import { ToolCallTooltip } from "./ToolCallTooltip";
+import { useStreamingMarkdown } from "../../Markdown/useStreamingMarkdown";
+import {
+  addBuddyCrashBreadcrumb,
+  setBuddyCrashHotSlot,
+} from "../../../features/Buddy/reportBuddyFrontendError";
 import styles from "./StreamingToolCard.module.css";
 
 const MAX_MD_RENDER_CHARS = 50_000;
@@ -81,6 +86,15 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
     return { step: null, text: last };
   }, [status, toolCall.subchat_log]);
 
+  const entertainmentText = entertainmentMessage?.step
+    ? `${entertainmentMessage.step}: ${entertainmentMessage.text}`
+    : entertainmentMessage?.text ?? null;
+  const deferredEntertainmentText = useStreamingMarkdown(
+    entertainmentText,
+    status === "running",
+  );
+  const deferredContent = useStreamingMarkdown(content, status === "running");
+
   const entertainmentRef = useRef<HTMLDivElement | null>(null);
   const userScrolledRef = useRef(false);
 
@@ -99,7 +113,22 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
     if (el.scrollTop + el.clientHeight + 20 < el.scrollHeight) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [status, entertainmentMessage?.text]);
+  }, [status, deferredEntertainmentText]);
+
+  useEffect(() => {
+    if (status === "running") {
+      setBuddyCrashHotSlot(
+        "tool",
+        deferredEntertainmentText ?? summary?.toString() ?? null,
+      );
+      if (deferredEntertainmentText) {
+        addBuddyCrashBreadcrumb("tool_progress", deferredEntertainmentText);
+      }
+      return;
+    }
+
+    setBuddyCrashHotSlot("tool", null);
+  }, [deferredEntertainmentText, status, summary]);
 
   const header = (
     <Flex
@@ -137,21 +166,21 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
     <div className={styles.card}>
       <ToolCallTooltip toolCall={toolCall}>{header}</ToolCallTooltip>
 
-      {entertainmentMessage && (
+      {deferredEntertainmentText && (
         <div
           className={styles.entertainmentContent}
           ref={entertainmentRef}
           onScroll={handleEntertainmentScroll}
         >
           <div className={styles.entertainmentMarkdown}>
-            <Markdown canHaveInteractiveElements={false}>
-              {entertainmentMessage.text}
+            <Markdown canHaveInteractiveElements={false} isStreaming={true}>
+              {deferredEntertainmentText}
             </Markdown>
           </div>
         </div>
       )}
 
-      {shouldRender && content && (
+      {shouldRender && deferredContent && (
         <div
           className={classNames(
             styles.contentWrapper,
@@ -163,11 +192,11 @@ export const StreamingToolCard: React.FC<StreamingToolCardProps> = ({
             <Box className={styles.content}>
               {shouldRenderMarkdown ? (
                 <Text size="2">
-                  <Markdown>{content}</Markdown>
+                  <Markdown>{deferredContent}</Markdown>
                 </Text>
               ) : (
                 <ShikiCodeBlock showLineNumbers={false}>
-                  {content}
+                  {deferredContent}
                 </ShikiCodeBlock>
               )}
             </Box>

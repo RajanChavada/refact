@@ -8,24 +8,19 @@ export * from "./useMutationObserver";
 export * from "./useEventBusForFIMDebug";
 export * from "./useEventBusForIDE";
 export * from "./useDiffFileReload";
-export * from "./useGetUser";
-export * from "./useLogin";
-export * from "./useLogout";
 export * from "./useGetCapsQuery";
 export * from "./useHasCaps";
 export * from "./useGetPromptsQuery";
-export * from "./useGetStatisticDataQuery";
 export * from "./useGetToolGroupsQuery";
 export * from "./useAppearance";
 export * from "./useConfig";
 export * from "./useAppDispatch";
 export * from "./useAppSelector";
 export * from "./useChatActions";
-export * from "./useGetUserSurvey";
+export * from "./useFirstSendAutoFlip";
 export * from "./useLinksFromLsp";
 export * from "./useGoToLink";
 export * from "./useSmartLinks";
-export * from "./useStartPollingForUser";
 export * from "./useOpenUrl";
 export * from "./useCapsForToolUse";
 export * from "./useCanUseTools";
@@ -34,7 +29,10 @@ export * from "./useResizeObserver";
 export * from "./useAutoFocusOnce";
 export * from "./useHideScroll";
 export * from "./useEventBusForApp";
-export * from "./useTotalCostForChat";
+export {
+  useTotalTokenMeteringForChat,
+  useTotalUsdForChat,
+} from "./useTotalCostForChat";
 export * from "./useCheckpoints";
 export * from "./useSidebarSubscription";
 export * from "./useChatSubscription";

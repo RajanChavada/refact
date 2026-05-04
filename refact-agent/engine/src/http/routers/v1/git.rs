@@ -16,9 +16,11 @@ use crate::custom_error::ScratchError;
 use crate::git::{CommitInfo, FileChange};
 use crate::git::operations::{get_configured_author_email_and_name, stage_changes};
 use crate::git::checkpoints::{
-    preview_changes_for_workspace_checkpoint, restore_workspace_checkpoint, Checkpoint,
+    preview_changes_for_workspace_checkpoint, preview_changes_for_workspace_checkpoint_for_root,
+    restore_workspace_checkpoint, restore_workspace_checkpoint_for_root, Checkpoint,
 };
 use crate::global_context::GlobalContext;
+use crate::worktrees::types::WorktreeMeta;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GitCommitPost {
@@ -60,6 +62,31 @@ fn serialize_datetime_utc<S: serde::Serializer>(
     serializer.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
+async fn checkpoint_worktree_for_meta(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    meta: &ChatMeta,
+) -> Option<WorktreeMeta> {
+    if let Some(worktree) = &meta.worktree {
+        return Some(worktree.clone());
+    }
+    if meta.chat_id.is_empty() {
+        return None;
+    }
+    let sessions = {
+        let gcx_locked = gcx.read().await;
+        gcx_locked.chat_sessions.clone()
+    };
+    let session_arc = {
+        let sessions_read = sessions.read().await;
+        sessions_read.get(&meta.chat_id).cloned()
+    };
+    if let Some(session_arc) = session_arc {
+        let session = session_arc.lock().await;
+        return session.thread.worktree.clone();
+    }
+    None
+}
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct WorkspaceChanges {
     #[serde(
@@ -86,84 +113,83 @@ pub async fn handle_v1_git_commit(
 
     let abort_flag: Arc<AtomicBool> = gcx.read().await.git_operations_abort_flag.clone();
     for commit in post.commits {
-        let repo_path = crate::files_correction::canonical_path(
-            &commit
-                .project_path
-                .to_file_path()
-                .unwrap_or_default()
-                .display()
-                .to_string(),
-        );
-
+        let project_path_str = commit.project_path.to_string();
         let project_name = commit
             .project_path
             .to_file_path()
             .ok()
-            .and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-            .unwrap_or_else(|| "".to_string());
+            .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_default();
 
-        let git_error = |msg: String| -> GitError {
-            GitError {
-                error_message: msg,
-                project_name: project_name.clone(),
-                project_path: commit.project_path.clone(),
-            }
-        };
+        let git_result: Result<(String, String, String), String> = (|| {
+            let repo_path = crate::files_correction::canonical_path(
+                &commit
+                    .project_path
+                    .to_file_path()
+                    .unwrap_or_default()
+                    .display()
+                    .to_string(),
+            );
+            let repository =
+                Repository::open(&repo_path).map_err(|e| format!("Failed to open repo: {}", e))?;
+            stage_changes(&repository, &commit.unstaged_changes, &abort_flag)?;
+            let (author_email, author_name) = get_configured_author_email_and_name(&repository)?;
+            let branch = repository
+                .head()
+                .map(|reference| git2::Branch::wrap(reference))
+                .map_err(|e| format!("Failed to get current branch: {}", e))?;
+            let commit_oid = crate::git::operations::commit(
+                &repository,
+                &branch,
+                &commit.commit_message,
+                &author_name,
+                &author_email,
+            )?;
+            let buddy_desc: String = commit.commit_message.chars().take(80).collect();
+            Ok((commit_oid.to_string(), project_name.clone(), buddy_desc))
+        })();
 
-        let repository = match Repository::open(&repo_path) {
-            Ok(repo) => repo,
+        match git_result {
             Err(e) => {
-                error_log.push(git_error(format!("Failed to open repo: {}", e)));
-                continue;
+                error_log.push(GitError {
+                    error_message: e,
+                    project_name,
+                    project_path: commit.project_path,
+                });
             }
-        };
-
-        if let Err(stage_err) = stage_changes(&repository, &commit.unstaged_changes, &abort_flag) {
-            error_log.push(git_error(stage_err));
-            continue;
+            Ok((oid_str, pname, desc)) => {
+                commits_applied.push(serde_json::json!({
+                    "project_name": pname,
+                    "project_path": project_path_str,
+                    "commit_oid": oid_str,
+                }));
+                let buddy_title = format!("Committed: {}", pname);
+                crate::buddy::actor::buddy_apply(
+                    gcx.clone(),
+                    crate::buddy::actor::BuddyMutation {
+                        runtime_event: Some(crate::buddy::actor::make_runtime_event(
+                            "git_commit",
+                            &buddy_title,
+                            "git",
+                            &format!("git_commit_{}", oid_str),
+                            "completed",
+                            None,
+                        )),
+                        xp: 20,
+                        activity: Some(crate::buddy::types::BuddyActivity {
+                            icon: "🔀".to_string(),
+                            title: buddy_title,
+                            description: desc,
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            activity_type: "git_commit".to_string(),
+                            chat_id: None,
+                        }),
+                        mood: Some("proud".to_string()),
+                    },
+                )
+                .await;
+            }
         }
-
-        let (author_email, author_name) = match get_configured_author_email_and_name(&repository) {
-            Ok(email_and_name) => email_and_name,
-            Err(err) => {
-                error_log.push(git_error(err));
-                continue;
-            }
-        };
-
-        let branch = match repository
-            .head()
-            .map(|reference| git2::Branch::wrap(reference))
-        {
-            Ok(branch) => branch,
-            Err(e) => {
-                error_log.push(git_error(format!("Failed to get current branch: {}", e)));
-                continue;
-            }
-        };
-
-        let commit_oid = match crate::git::operations::commit(
-            &repository,
-            &branch,
-            &commit.commit_message,
-            &author_name,
-            &author_email,
-        ) {
-            Ok(oid) => oid,
-            Err(e) => {
-                error_log.push(git_error(e));
-                continue;
-            }
-        };
-
-        commits_applied.push(serde_json::json!({
-            "project_name": project_name,
-            "project_path": commit.project_path.to_string(),
-            "commit_oid": commit_oid.to_string(),
-        }));
     }
 
     Ok(Response::builder()
@@ -203,16 +229,24 @@ pub async fn handle_v1_checkpoints_preview(
         ));
     }
 
-    let response = match preview_changes_for_workspace_checkpoint(
-        gcx.clone(),
-        &post.checkpoints.first().unwrap(),
-        &post.meta.chat_id,
-    )
-    .await
-    {
+    let checkpoint = post.checkpoints.first().unwrap();
+    let worktree = checkpoint_worktree_for_meta(gcx.clone(), &post.meta).await;
+    let preview_result = if let Some(worktree) = worktree.as_ref() {
+        preview_changes_for_workspace_checkpoint_for_root(
+            gcx.clone(),
+            &worktree.root,
+            checkpoint,
+            &post.meta.chat_id,
+        )
+        .await
+    } else {
+        preview_changes_for_workspace_checkpoint(gcx.clone(), checkpoint, &post.meta.chat_id).await
+    };
+
+    let response = match preview_result {
         Ok((files_changed, reverted_to, checkpoint_for_undo)) => CheckpointsPreviewResponse {
             reverted_changes: vec![WorkspaceChanges {
-                workspace_folder: post.checkpoints.first().unwrap().workspace_folder.clone(),
+                workspace_folder: checkpoint.workspace_folder.clone(),
                 files_changed,
             }],
             checkpoints_for_undo: vec![checkpoint_for_undo],
@@ -256,13 +290,21 @@ pub async fn handle_v1_checkpoints_restore(
         ));
     }
 
-    let response = match restore_workspace_checkpoint(
-        gcx.clone(),
-        &post.checkpoints.first().unwrap(),
-        &post.meta.chat_id,
-    )
-    .await
-    {
+    let checkpoint = post.checkpoints.first().unwrap();
+    let worktree = checkpoint_worktree_for_meta(gcx.clone(), &post.meta).await;
+    let restore_result = if let Some(worktree) = worktree.as_ref() {
+        restore_workspace_checkpoint_for_root(
+            gcx.clone(),
+            &worktree.root,
+            checkpoint,
+            &post.meta.chat_id,
+        )
+        .await
+    } else {
+        restore_workspace_checkpoint(gcx.clone(), checkpoint, &post.meta.chat_id).await
+    };
+
+    let response = match restore_result {
         Ok(_) => CheckpointsRestoreResponse {
             success: true,
             error_log: vec![],

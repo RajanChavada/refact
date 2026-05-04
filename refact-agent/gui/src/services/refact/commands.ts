@@ -146,8 +146,16 @@ export const commandsApi = createApi({
   refetchOnMountOrArgChange: true,
 });
 
+export type CompletionDetail = {
+  description?: string;
+  argument_hint?: string;
+  source?: string;
+  kind?: string;
+};
+
 export type CommandCompletionResponse = {
   completions: string[];
+  completion_details?: Record<string, CompletionDetail>;
   replace: [number, number];
   is_cmd_executable: boolean;
 };

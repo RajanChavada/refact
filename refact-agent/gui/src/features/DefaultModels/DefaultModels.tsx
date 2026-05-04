@@ -1,6 +1,11 @@
 import React, { useState, useCallback, useEffect, useMemo } from "react";
 import { Flex, Button, Text, Card, Heading, Callout } from "@radix-ui/themes";
-import { ArrowLeftIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import {
+  ArrowLeftIcon,
+  ExclamationTriangleIcon,
+  InfoCircledIcon,
+} from "@radix-ui/react-icons";
+import { skipToken } from "@reduxjs/toolkit/query";
 
 import { ScrollArea } from "../../components/ScrollArea";
 import { PageWrapper } from "../../components/PageWrapper";
@@ -18,8 +23,10 @@ import {
   type ProviderDefaults,
 } from "../../services/refact/providers";
 import { useGetCapsQuery } from "../../services/refact/caps";
+import { useGetDraftQuery } from "../../services/refact/buddy";
 
 import type { Config } from "../Config/configSlice";
+import { BuddyDraftPreview } from "../Buddy/BuddyDraftPreview";
 
 import styles from "./DefaultModels.module.css";
 
@@ -27,9 +34,10 @@ type DefaultModelsProps = {
   backFromDefaultModels: () => void;
   host: Config["host"];
   tabbed: Config["tabbed"];
+  draftId?: string;
 };
 
-type ModelTypeKey = "chat" | "chat_light" | "chat_thinking";
+type ModelTypeKey = "chat" | "chat_light" | "chat_thinking" | "chat_buddy";
 
 const MODEL_TYPE_LABELS: Record<
   ModelTypeKey,
@@ -46,6 +54,11 @@ const MODEL_TYPE_LABELS: Record<
   chat_thinking: {
     title: "Thinking Model",
     description: "Reasoning-focused model for complex analysis tasks",
+  },
+  chat_buddy: {
+    title: "Companion Model",
+    description:
+      "Model used by your companion for background tasks and suggestions",
   },
 };
 
@@ -93,15 +106,29 @@ const ModelTypeSection: React.FC<{
             defaultValue={capsDefault}
             showLabel={false}
             compact={false}
+            allowUnset
+            unsetLabel="None"
           />
         </Flex>
 
-        <ModelSamplingParams
-          model={effectiveModel}
-          values={config}
-          onChange={handleSamplingChange}
-          size="2"
-        />
+        {effectiveModel ? (
+          <ModelSamplingParams
+            model={effectiveModel}
+            values={config}
+            onChange={handleSamplingChange}
+            size="2"
+          />
+        ) : (
+          <Callout.Root color="gray">
+            <Callout.Icon>
+              <InfoCircledIcon />
+            </Callout.Icon>
+            <Callout.Text>
+              No model selected. Features that require this model type will ask
+              you to configure it.
+            </Callout.Text>
+          </Callout.Root>
+        )}
       </Flex>
     </Card>
   );
@@ -111,6 +138,7 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
   backFromDefaultModels,
   host,
   tabbed,
+  draftId,
 }) => {
   const {
     data: defaults,
@@ -119,7 +147,12 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
     isError,
     refetch,
   } = useGetDefaultsQuery(undefined);
-  const { data: capsData } = useGetCapsQuery(undefined);
+  const { data: capsData, refetch: refetchCaps } = useGetCapsQuery(undefined);
+  const {
+    data: draft,
+    isLoading: draftLoading,
+    error: draftError,
+  } = useGetDraftQuery(draftId ?? skipToken);
   const [updateDefaults, { isLoading: isSaving }] = useUpdateDefaultsMutation();
 
   const capsDefaults = useMemo(
@@ -127,6 +160,7 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
       chat: capsData?.chat_default_model ?? "",
       chat_light: capsData?.chat_light_model ?? "",
       chat_thinking: capsData?.chat_thinking_model ?? "",
+      chat_buddy: capsData?.chat_buddy_model ?? "",
     }),
     [capsData],
   );
@@ -135,17 +169,57 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
     chat: {},
     chat_light: {},
     chat_thinking: {},
+    chat_buddy: {},
   });
 
   const [hasChanges, setHasChanges] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [draftExpired, setDraftExpired] = useState(false);
+
+  useEffect(() => {
+    if (draftError) {
+      setDraftExpired(true);
+    }
+  }, [draftError]);
 
   useEffect(() => {
     if (defaults) {
-      setLocalDefaults(defaults);
-      setHasChanges(false);
+      const base: ProviderDefaults = {
+        chat: defaults.chat,
+        chat_light: defaults.chat_light,
+        chat_thinking: defaults.chat_thinking,
+        chat_buddy: defaults.chat_buddy ?? {},
+        completion_model: defaults.completion_model,
+        embedding_model: defaults.embedding_model,
+      };
+      let appliedDraft = false;
+      if (draft && draft.kind === "defaults_model") {
+        try {
+          const patch = JSON.parse(draft.yaml_or_json) as Partial<
+            Record<ModelTypeKey, Partial<ModelTypeDefaults>>
+          >;
+          const merged: ProviderDefaults = { ...base };
+          for (const key of [
+            "chat",
+            "chat_light",
+            "chat_thinking",
+            "chat_buddy",
+          ] as ModelTypeKey[]) {
+            if (patch[key]) {
+              merged[key] = { ...(base[key] ?? {}), ...patch[key] };
+              appliedDraft = true;
+            }
+          }
+          setLocalDefaults(merged);
+        } catch {
+          setLocalDefaults(base);
+        }
+      } else {
+        setLocalDefaults(base);
+      }
+      setHasChanges(appliedDraft);
     }
-  }, [defaults]);
+  }, [defaults, draft]);
 
   const handleModelTypeChange = useCallback(
     (key: ModelTypeKey, config: ModelTypeDefaults) => {
@@ -161,15 +235,19 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
 
   const handleSave = useCallback(async () => {
     try {
-      await updateDefaults(localDefaults).unwrap();
+      const payload = draftId
+        ? { ...localDefaults, draft_id: draftId }
+        : localDefaults;
+      await updateDefaults(payload).unwrap();
+      void refetchCaps();
       setHasChanges(false);
       setSaveError(null);
     } catch {
       setSaveError("Failed to save defaults. Please try again.");
     }
-  }, [localDefaults, updateDefaults]);
+  }, [draftId, localDefaults, refetchCaps, updateDefaults]);
 
-  if (isLoading) {
+  if (isLoading || draftLoading) {
     return <Spinner spinning />;
   }
 
@@ -224,6 +302,17 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
           </Button>
         </Flex>
 
+        {draftExpired && (
+          <Callout.Root color="orange">
+            <Callout.Icon>
+              <InfoCircledIcon />
+            </Callout.Icon>
+            <Callout.Text>Draft expired</Callout.Text>
+          </Callout.Root>
+        )}
+
+        {draft && <BuddyDraftPreview draft={draft} />}
+
         {saveError && (
           <Callout.Root color="red">
             <Callout.Icon>
@@ -247,7 +336,7 @@ export const DefaultModels: React.FC<DefaultModelsProps> = ({
               <ModelTypeSection
                 key={key}
                 typeKey={key}
-                config={localDefaults[key]}
+                config={localDefaults[key] ?? {}}
                 capsDefault={capsDefaults[key]}
                 onChange={handleModelTypeChange}
               />

@@ -9,7 +9,9 @@ import {
   selectIsStreaming,
   selectPreventSend,
   selectChatId,
+  selectIsBuddyChat,
 } from "../../features/Chat/Thread";
+import { BuddyChatCompanion } from "../../features/Buddy";
 import { DropzoneProvider } from "../Dropzone";
 import { useCheckpoints } from "../../hooks/useCheckpoints";
 import { Checkpoints } from "../../features/Checkpoints";
@@ -20,6 +22,7 @@ import {
   selectBrowserContextOversize,
   selectBrowserUiOpen,
 } from "../../features/Browser/browserSlice";
+import { SkillsIndicator } from "../ChatContent/SkillsIndicator";
 
 export type ChatProps = {
   host: Config["host"];
@@ -41,6 +44,9 @@ export const Chat: React.FC<ChatProps> = ({
   const isStreaming = useAppSelector(selectIsStreaming);
 
   const chatId = useAppSelector(selectChatId);
+  const isBuddyChat = useAppSelector((state) =>
+    selectIsBuddyChat(state, chatId),
+  );
   const isBrowserOpen = useAppSelector((state) =>
     selectBrowserUiOpen(state, chatId),
   );
@@ -96,10 +102,14 @@ export const Chat: React.FC<ChatProps> = ({
 
         <Flex direction="column" style={{ flex: "0 0 auto" }}>
           <Container>
+            <SkillsIndicator chatId={chatId} />
+          </Container>
+
+          <Container>
             <TaskProgressWidget />
           </Container>
 
-          {shouldCheckpointsPopupBeShown && <Checkpoints />}
+          {!isBuddyChat && shouldCheckpointsPopupBeShown && <Checkpoints />}
 
           {browserOversizeInfo && (
             <Container>
@@ -118,7 +128,8 @@ export const Chat: React.FC<ChatProps> = ({
             </Flex>
           )}
 
-          <Container>
+          <Container style={{ position: "relative" }}>
+            {!isBuddyChat && <BuddyChatCompanion chatId={chatId} />}
             <ChatForm
               key={chatId}
               onSubmit={handleSubmit}

@@ -9,8 +9,8 @@ use crate::caps::model_caps::ModelCapabilities;
 use crate::llm::adapter::WireFormat;
 use crate::providers::traits::{
     AvailableModel, CustomModelConfig, ModelPricing, ModelSource, ProviderRuntime, ProviderTrait,
-    merge_custom_models, normalize_endpoint, derive_endpoint_from_chat_url,
-    parse_enabled_models, parse_custom_models, set_model_enabled_impl,
+    merge_custom_models, normalize_endpoint, derive_endpoint_from_chat_url, parse_enabled_models,
+    parse_custom_models, set_model_enabled_impl,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,37 +42,124 @@ impl VLLMProvider {
 
         let max_model_len = model
             .get("max_model_len")
+            .or_else(|| model.get("context_length"))
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
+        let max_output_tokens = model
+            .get("max_tokens")
+            .or_else(|| model.get("max_completion_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let supports_tools = model
+            .get("supports_tools")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                model
+                    .get("supported_parameters")
+                    .and_then(|v| v.as_array())
+                    .map(|params| {
+                        params.iter().any(|p| {
+                            matches!(
+                                p.as_str(),
+                                Some("tools") | Some("tool_choice") | Some("functions")
+                            )
+                        })
+                    })
+            })
+            .unwrap_or(true);
+        let supports_multimodality = model
+            .get("supports_vision")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                model
+                    .get("supported_parameters")
+                    .and_then(|v| v.as_array())
+                    .map(|params| {
+                        params.iter().any(|p| {
+                            matches!(p.as_str(), Some("vision") | Some("image") | Some("images"))
+                        })
+                    })
+            })
+            .unwrap_or(false);
+
+        let display_name = model
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != id)
+            .map(String::from);
+        let root = model
+            .get("root")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
 
         Some(AvailableModel {
             id,
-            display_name: None,
-            n_ctx: max_model_len.unwrap_or(4096),
-            supports_tools: true,
-            supports_multimodality: false,
+            display_name,
+            n_ctx: max_model_len.unwrap_or(32_768),
+            supports_tools,
+            supports_parallel_tools: supports_tools,
+            supports_strict_tools: false,
+            supports_multimodality,
             reasoning_effort_options: None,
             supports_thinking_budget: false,
             supports_adaptive_thinking_budget: false,
+            supports_cache_control: false,
             tokenizer: None,
             enabled,
             is_custom: false,
             pricing: None,
             available_providers: Vec::new(),
             selected_provider: None,
-            max_output_tokens: None,
+            max_output_tokens,
             provider_variants: Vec::new(),
+            wire_format_override: None,
+            endpoint_override: None,
+            base_model: root,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_openai_model_keeps_root_only_as_base_model() {
+        let model = VLLMProvider::parse_openai_model(
+            &json!({
+                "id": "served-alias",
+                "name": "Served Alias",
+                "root": "Qwen/Qwen3.6-27B-FP8"
+            }),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(model.id, "served-alias");
+        assert_eq!(model.display_name.as_deref(), Some("Served Alias"));
+        assert_eq!(model.base_model.as_deref(), Some("Qwen/Qwen3.6-27B-FP8"));
+    }
+
+    #[test]
+    fn vllm_runtime_disables_cache_control() {
+        let runtime = VLLMProvider::default().build_runtime().unwrap();
+
+        assert!(!runtime.supports_cache_control);
     }
 }
 
 #[async_trait]
 impl ProviderTrait for VLLMProvider {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "vllm"
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "vLLM"
     }
 
@@ -166,7 +253,7 @@ available:
             auth_token: String::new(),
             tokenizer_api_key: String::new(),
             extra_headers: HashMap::new(),
-            support_metadata: false,
+            supports_cache_control: false,
             chat_models: Vec::new(),
             completion_models: Vec::new(),
             embedding_model: None,
@@ -201,8 +288,10 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
-    fn model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
-        self.custom_models.get(model_id).and_then(|c| c.pricing.clone())
+    fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
+        self.custom_models
+            .get(model_id)
+            .and_then(|c| c.pricing.clone())
     }
 
     async fn fetch_available_models(
@@ -217,7 +306,10 @@ available:
             .get(&models_url)
             .timeout(std::time::Duration::from_secs(5));
         if !self.api_key.is_empty() {
-            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", self.api_key));
+            request = request.header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", self.api_key),
+            );
         }
 
         let response = match request.send().await {

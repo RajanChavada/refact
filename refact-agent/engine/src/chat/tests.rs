@@ -68,7 +68,6 @@ mod tests {
             extra: {
                 let mut m = serde_json::Map::new();
                 m.insert("custom_field".to_string(), json!("custom_value"));
-                m.insert("metering_balance".to_string(), json!(100));
                 m
             },
             checkpoints: vec![],
@@ -100,10 +99,7 @@ mod tests {
 
         assert_eq!(deserialized.citations.len(), 1);
 
-        assert!(
-            deserialized.extra.contains_key("custom_field")
-                || deserialized.extra.contains_key("metering_balance")
-        );
+        assert!(deserialized.extra.contains_key("custom_field"));
     }
 
     #[test]
@@ -196,7 +192,6 @@ mod tests {
     #[test]
     fn test_extract_extra_metering_fields() {
         let json = json!({
-            "metering_balance": 100,
             "metering_prompt_tokens_n": 50,
             "metering_generated_tokens_n": 25,
             "other_field": "ignored"
@@ -204,7 +199,6 @@ mod tests {
 
         let extra = extract_extra_fields(&json);
 
-        assert_eq!(extra.get("metering_balance"), Some(&json!(100)));
         assert_eq!(extra.get("metering_prompt_tokens_n"), Some(&json!(50)));
         assert_eq!(extra.get("metering_generated_tokens_n"), Some(&json!(25)));
         assert!(extra.get("other_field").is_none());
@@ -269,13 +263,11 @@ mod tests {
     #[test]
     fn test_extract_extra_null_values_ignored() {
         let json = json!({
-            "metering_balance": null,
             "metering_tokens": 100
         });
 
         let extra = extract_extra_fields(&json);
 
-        assert!(extra.get("metering_balance").is_none());
         assert_eq!(extra.get("metering_tokens"), Some(&json!(100)));
     }
 
@@ -289,7 +281,6 @@ mod tests {
     #[test]
     fn test_extract_extra_combined() {
         let json = json!({
-            "metering_balance": 100,
             "billing_amount": 5.0,
             "cost_total": 0.05,
             "cache_status": "hit",
@@ -301,8 +292,7 @@ mod tests {
 
         let extra = extract_extra_fields(&json);
 
-        assert_eq!(extra.len(), 6);
-        assert!(extra.contains_key("metering_balance"));
+        assert_eq!(extra.len(), 5);
         assert!(extra.contains_key("billing_amount"));
         assert!(extra.contains_key("cost_total"));
         assert!(extra.contains_key("cache_status"));
@@ -678,14 +668,13 @@ mod tests {
     fn test_chat_event_serialization_queue_updated() {
         let event = ChatEvent::QueueUpdated {
             queue_size: 2,
-            queued_items: vec![
-                QueuedItem {
-                    client_request_id: "req-1".to_string(),
-                    priority: false,
-                    command_type: "user_message".to_string(),
-                    preview: "Hello".to_string(),
-                },
-            ],
+            queued_items: vec![QueuedItem {
+                client_request_id: "req-1".to_string(),
+                priority: false,
+                command_type: "user_message".to_string(),
+                preview: "Hello".to_string(),
+                content: "Hello".to_string(),
+            }],
         };
 
         let json = serde_json::to_value(&event).expect("serialize");
@@ -1435,9 +1424,11 @@ mod tests {
         assert_eq!(canonical_mode_id("task_planner").unwrap(), "task_planner");
         assert_eq!(canonical_mode_id("TASK_AGENT").unwrap(), "task_agent");
         assert_eq!(canonical_mode_id("task_agent").unwrap(), "task_agent");
-        assert_eq!(canonical_mode_id("PROJECT_SUMMARY").unwrap(), "project_summary");
         assert_eq!(canonical_mode_id("PLAN").unwrap(), "plan");
-        assert_eq!(canonical_mode_id("my_custom_mode").unwrap(), "my_custom_mode");
+        assert_eq!(
+            canonical_mode_id("my_custom_mode").unwrap(),
+            "my_custom_mode"
+        );
         assert_eq!(canonical_mode_id("").unwrap(), "agent");
         assert_eq!(canonical_mode_id("  ").unwrap(), "agent");
         assert!(canonical_mode_id("invalid!mode").is_err());

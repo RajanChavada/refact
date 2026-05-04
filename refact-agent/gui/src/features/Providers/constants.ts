@@ -1,6 +1,4 @@
 export const BEAUTIFUL_PROVIDER_NAMES: Record<string, string> = {
-  refact: "Refact Cloud",
-  refact_self_hosted: "Refact Self-Hosted",
   openai: "OpenAI",
   openai_responses: "OpenAI (Responses API)",
   openai_codex: "OpenAI Codex",
@@ -15,5 +13,16 @@ export const BEAUTIFUL_PROVIDER_NAMES: Record<string, string> = {
   vllm: "vLLM",
   xai: "xAI",
   xai_responses: "xAI (Responses API)",
+  qwen: "Qwen",
+  kimi: "Kimi / Moonshot AI",
+  zhipu: "Z.AI / Zhipu",
+  minimax: "MiniMax",
+  doubao: "Doubao / Volcengine",
+  github_copilot: "GitHub Copilot",
   custom: "Custom Provider",
 };
+
+export const HIDDEN_PROVIDER_BASES = [
+  "openai_responses",
+  "xai_responses",
+] as const;

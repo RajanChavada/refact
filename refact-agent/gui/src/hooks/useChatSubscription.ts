@@ -18,6 +18,28 @@ const DEBUG =
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
+type FlushHandle =
+  | { type: "timeout"; id: ReturnType<typeof setTimeout> }
+  | { type: "raf"; id: number };
+
+function requestNextFrame(cb: () => void): FlushHandle | null {
+  if (typeof globalThis.requestAnimationFrame !== "function") return null;
+  return {
+    type: "raf",
+    id: globalThis.requestAnimationFrame(() => cb()),
+  };
+}
+
+function cancelScheduledFlush(handle: FlushHandle) {
+  if (handle.type === "raf") {
+    if (typeof globalThis.cancelAnimationFrame === "function") {
+      globalThis.cancelAnimationFrame(handle.id);
+    }
+    return;
+  }
+  clearTimeout(handle.id);
+}
+
 export type UseChatSubscriptionOptions = {
   /** Enable subscription (default: true) */
   enabled?: boolean;
@@ -79,32 +101,46 @@ export function useChatSubscription(
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const streamDeltaFlushRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const streamDeltaFlushRef = useRef<FlushHandle | null>(null);
   const pendingStreamDeltaRef = useRef<Extract<
     ChatEventEnvelope,
     { type: "stream_delta" }
   > | null>(null);
+  const subchatFlushRef = useRef<FlushHandle | null>(null);
+  const pendingSubchatUpdateRef = useRef<Extract<
+    ChatEventEnvelope,
+    { type: "subchat_update" }
+  > | null>(null);
   const streamedBytesRef = useRef(0);
+  const pendingBytesRef = useRef(0);
   const connectingRef = useRef(false);
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   const connectRef = useRef<() => void>(() => {});
 
   const MAX_MERGED_DELTA_OPS = 256;
 
-  // Adaptive flush thresholds (bytes of accumulated content)
+  // Adaptive flush thresholds (JS string length units, i.e. UTF-16 code units)
   const FLUSH_TIER_FAST_BYTES = 8_192;
   const FLUSH_TIER_MEDIUM_BYTES = 200_000;
+  const FLUSH_MS_FAST = 0;
   const FLUSH_MS_MEDIUM = 150;
   const FLUSH_MS_SLOW = 500;
+  // Hard cap: force flush if buffered char-count (UTF-16 units) exceeds this
   const MAX_BUFFERED_BYTES = 2_000_000;
 
   const clearStreamDeltaFlush = useCallback(() => {
-    const timerId = streamDeltaFlushRef.current;
-    if (timerId != null) {
-      clearTimeout(timerId);
+    const handle = streamDeltaFlushRef.current;
+    if (handle != null) {
+      cancelScheduledFlush(handle);
       streamDeltaFlushRef.current = null;
+    }
+  }, []);
+
+  const clearSubchatFlush = useCallback(() => {
+    const handle = subchatFlushRef.current;
+    if (handle != null) {
+      cancelScheduledFlush(handle);
+      subchatFlushRef.current = null;
     }
   }, []);
 
@@ -112,6 +148,15 @@ export function useChatSubscription(
     const pending = pendingStreamDeltaRef.current;
     if (!pending) return;
     pendingStreamDeltaRef.current = null;
+    pendingBytesRef.current = 0;
+    dispatch(applyChatEvent(pending));
+    callbacksRef.current.onEvent?.(pending);
+  }, [dispatch]);
+
+  const flushPendingSubchatUpdate = useCallback(() => {
+    const pending = pendingSubchatUpdateRef.current;
+    if (!pending) return;
+    pendingSubchatUpdateRef.current = null;
     dispatch(applyChatEvent(pending));
     callbacksRef.current.onEvent?.(pending);
   }, [dispatch]);
@@ -122,7 +167,7 @@ export function useChatSubscription(
     const bytes = streamedBytesRef.current;
     let delayMs: number;
     if (bytes < FLUSH_TIER_FAST_BYTES) {
-      delayMs = 0;
+      delayMs = FLUSH_MS_FAST;
     } else if (bytes < FLUSH_TIER_MEDIUM_BYTES) {
       delayMs = FLUSH_MS_MEDIUM;
     } else {
@@ -134,33 +179,77 @@ export function useChatSubscription(
       flushPendingStreamDelta();
     };
 
-    streamDeltaFlushRef.current = setTimeout(flush, Math.max(delayMs, 0));
+    if (delayMs <= 0) {
+      const frameHandle = requestNextFrame(flush);
+      if (frameHandle) {
+        streamDeltaFlushRef.current = frameHandle;
+        return;
+      }
+    }
+
+    streamDeltaFlushRef.current = {
+      type: "timeout",
+      id: setTimeout(flush, Math.max(delayMs, 0)),
+    };
   }, [flushPendingStreamDelta]);
+
+  const scheduleSubchatFlush = useCallback(() => {
+    if (subchatFlushRef.current != null) return;
+
+    const flush = () => {
+      subchatFlushRef.current = null;
+      flushPendingSubchatUpdate();
+    };
+
+    const frameHandle = requestNextFrame(flush);
+    if (frameHandle) {
+      subchatFlushRef.current = frameHandle;
+      return;
+    }
+
+    subchatFlushRef.current = {
+      type: "timeout",
+      id: setTimeout(flush, 16),
+    };
+  }, [flushPendingSubchatUpdate]);
 
   const enqueueStreamDelta = useCallback(
     (envelope: Extract<ChatEventEnvelope, { type: "stream_delta" }>) => {
+      // streamedBytesRef: total chars seen this stream (never decrements),
+      // drives flush-tier selection.
+      // pendingBytesRef: chars currently buffered, updated precisely after
+      // merge/replace decision — drives the force-flush cap.
+      let deltaTextLen = 0;
       for (const op of envelope.ops) {
         if (op.op === "append_content" || op.op === "append_reasoning") {
-          streamedBytesRef.current += op.text.length;
+          deltaTextLen += op.text.length;
         }
       }
+      streamedBytesRef.current += deltaTextLen;
 
       const pending = pendingStreamDeltaRef.current;
       if (pending && pending.message_id === envelope.message_id) {
         const mergedOpsLen = pending.ops.length + envelope.ops.length;
         if (mergedOpsLen <= MAX_MERGED_DELTA_OPS) {
+          // Merging: add incoming chars to existing pending buffer
           pending.seq = envelope.seq;
           pending.ops.push(...envelope.ops);
+          pendingBytesRef.current += deltaTextLen;
         } else {
-          flushPendingStreamDelta();
+          // Too many ops: flush existing, start fresh with incoming envelope
+          flushPendingStreamDelta(); // resets pendingBytesRef to 0
           pendingStreamDeltaRef.current = envelope;
+          pendingBytesRef.current = deltaTextLen;
         }
       } else {
-        flushPendingStreamDelta();
+        // Different message or no pending: flush existing, start with incoming
+        flushPendingStreamDelta(); // resets pendingBytesRef to 0
         pendingStreamDeltaRef.current = envelope;
+        pendingBytesRef.current = deltaTextLen;
       }
 
-      if (streamedBytesRef.current > MAX_BUFFERED_BYTES) {
+      // Force immediate flush if *buffered* (not total) chars exceed the cap
+      if (pendingBytesRef.current > MAX_BUFFERED_BYTES) {
         clearStreamDeltaFlush();
         flushPendingStreamDelta();
         return;
@@ -171,20 +260,47 @@ export function useChatSubscription(
     [flushPendingStreamDelta, scheduleStreamDeltaFlush, clearStreamDeltaFlush],
   );
 
+  const enqueueSubchatUpdate = useCallback(
+    (envelope: Extract<ChatEventEnvelope, { type: "subchat_update" }>) => {
+      const pending = pendingSubchatUpdateRef.current;
+      if (
+        pending &&
+        pending.tool_call_id === envelope.tool_call_id &&
+        pending.chat_id === envelope.chat_id
+      ) {
+        pendingSubchatUpdateRef.current = {
+          ...pending,
+          seq: envelope.seq,
+          subchat_id: envelope.subchat_id,
+          attached_files: envelope.attached_files ?? pending.attached_files,
+        };
+      } else {
+        flushPendingSubchatUpdate();
+        pendingSubchatUpdateRef.current = envelope;
+      }
+
+      scheduleSubchatFlush();
+    },
+    [flushPendingSubchatUpdate, scheduleSubchatFlush],
+  );
+
   const cleanup = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
     clearStreamDeltaFlush();
+    clearSubchatFlush();
     pendingStreamDeltaRef.current = null;
+    pendingSubchatUpdateRef.current = null;
     streamedBytesRef.current = 0;
+    pendingBytesRef.current = 0;
     if (unsubscribeRef.current) {
       unsubscribeRef.current();
       unsubscribeRef.current = null;
     }
     connectingRef.current = false;
-  }, [clearStreamDeltaFlush]);
+  }, [clearStreamDeltaFlush, clearSubchatFlush]);
 
   const scheduleReconnect = useCallback(
     (delayMs: number) => {
@@ -230,6 +346,7 @@ export function useChatSubscription(
                 );
               }
               streamedBytesRef.current = 0;
+              pendingBytesRef.current = 0;
               lastSeqRef.current = seq;
             } else {
               if (seq <= lastSeqRef.current) {
@@ -246,6 +363,7 @@ export function useChatSubscription(
                   );
                 }
                 flushPendingStreamDelta();
+                flushPendingSubchatUpdate();
                 cleanup();
                 setStatus("disconnected");
                 scheduleReconnect(0);
@@ -256,10 +374,16 @@ export function useChatSubscription(
             lastActivityAtRef.current = Date.now();
             if (envelope.type === "stream_delta") {
               enqueueStreamDelta(envelope);
+            } else if (envelope.type === "subchat_update") {
+              flushPendingStreamDelta();
+              enqueueSubchatUpdate(envelope);
             } else {
+              clearSubchatFlush();
+              flushPendingSubchatUpdate();
               flushPendingStreamDelta();
               if (envelope.type === "stream_finished") {
                 streamedBytesRef.current = 0;
+                pendingBytesRef.current = 0;
               }
               dispatch(applyChatEvent(envelope));
               callbacksRef.current.onEvent?.(envelope);
@@ -279,6 +403,8 @@ export function useChatSubscription(
         },
         onDisconnected: () => {
           flushPendingStreamDelta();
+          clearSubchatFlush();
+          flushPendingSubchatUpdate();
           connectingRef.current = false;
           setStatus("disconnected");
           callbacksRef.current.onDisconnected?.();
@@ -286,6 +412,8 @@ export function useChatSubscription(
         },
         onError: (err) => {
           flushPendingStreamDelta();
+          clearSubchatFlush();
+          flushPendingSubchatUpdate();
           connectingRef.current = false;
           setStatus("disconnected");
           setError(err);
@@ -302,7 +430,10 @@ export function useChatSubscription(
     apiKey,
     enabled,
     cleanup,
+    clearSubchatFlush,
+    enqueueSubchatUpdate,
     enqueueStreamDelta,
+    flushPendingSubchatUpdate,
     flushPendingStreamDelta,
     dispatch,
     scheduleReconnect,

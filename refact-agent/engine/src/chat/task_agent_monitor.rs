@@ -19,6 +19,7 @@ use crate::tasks::types::StatusUpdate;
 use crate::chat::types::{SessionState, TaskMeta};
 use crate::chat::{get_or_create_session_with_trajectory, process_command_queue};
 use crate::chat::types::{CommandRequest, ChatCommand};
+use crate::worktrees::service::WorktreeService;
 
 /// Timeout for agent inactivity before considering it stuck (20 minutes)
 const AGENT_STUCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
@@ -64,11 +65,15 @@ async fn mark_agent_as_failed(
     expected_agent_id: Option<&str>,
     reason: &str,
 ) -> Result<(), String> {
+    let _ = update_card_heartbeat(gcx.clone(), task_id, card_id).await;
+
     let card_id_owned = card_id.to_string();
     let reason_clone = reason.to_string();
     let expected_agent_id_owned = expected_agent_id.map(|s| s.to_string());
 
-    let (board, (_card_title, all_finished)) =
+    // The closure returns (card_title, actually_failed, all_finished).
+    // actually_failed is true only when the card transitioned from "doing" to "failed".
+    let (board, (card_title, actually_failed, all_finished)) =
         storage::update_board_atomic(gcx.clone(), task_id, move |board| {
             let card = board
                 .get_card_mut(&card_id_owned)
@@ -76,12 +81,12 @@ async fn mark_agent_as_failed(
 
             if card.column == "done" || card.column == "failed" {
                 let card_title = card.title.clone();
-                return Ok((card_title, false));
+                return Ok((card_title, false, false));
             }
 
             if card.column != "doing" {
                 let card_title = card.title.clone();
-                return Ok((card_title, false));
+                return Ok((card_title, false, false));
             }
 
             if let Some(ref expected_id) = expected_agent_id_owned {
@@ -93,7 +98,7 @@ async fn mark_agent_as_failed(
                         card.assignee
                     );
                     let card_title = card.title.clone();
-                    return Ok((card_title, false));
+                    return Ok((card_title, false, false));
                 }
             }
 
@@ -116,19 +121,39 @@ async fn mark_agent_as_failed(
                 .count();
             let all_finished = agents_active_after == 0;
 
-            Ok((card_title, all_finished))
+            Ok((card_title, true, all_finished))
         })
         .await?;
+
+    if !actually_failed {
+        return Ok(());
+    }
 
     storage::update_task_stats(gcx.clone(), task_id).await?;
 
     tracing::info!("Marked agent for card {} as failed: {}", card_id, reason);
 
+    {
+        let ev = crate::buddy::actor::make_runtime_event(
+            "task_failed",
+            &format!("Agent failed: {}", card_title),
+            "task_agent",
+            &format!("task_agent_{}", card_id),
+            "failed",
+            Some("high"),
+        );
+        crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+    }
+
     if let Some(card) = board.get_card(card_id) {
         if let (Some(ref wt), Some(ref branch)) = (&card.agent_worktree, &card.agent_branch) {
             let diff_report = cleanup_failed_agent_worktree(
-                gcx.clone(), wt, branch, card.agent_worktree_name.as_deref()
-            ).await;
+                gcx.clone(),
+                wt,
+                branch,
+                card.agent_worktree_name.as_deref(),
+            )
+            .await;
             let card_id_for_cleanup = card_id.to_string();
             let _ = storage::update_board_atomic(gcx.clone(), task_id, move |board| {
                 if let Some(c) = board.get_card_mut(&card_id_for_cleanup) {
@@ -139,24 +164,25 @@ async fn mark_agent_as_failed(
                     }
                     c.agent_worktree = None;
                     c.agent_branch = None;
+                    c.agent_worktree_name = None;
                 }
                 Ok(())
-            }).await;
+            })
+            .await;
         }
     }
 
-    if all_finished {
-        notify_planner_all_agents_done(gcx, task_id, &board).await?;
-    }
+    notify_planner_agents_finished(gcx, task_id, &board, all_finished).await?;
 
     Ok(())
 }
 
-/// Notify planner that all agents have completed (same logic as task_agent_finish)
-async fn notify_planner_all_agents_done(
+/// Notify planner about newly finished agents without waiting for the full batch to end.
+pub(crate) async fn notify_planner_agents_finished(
     gcx: Arc<ARwLock<GlobalContext>>,
     task_id: &str,
     board: &crate::tasks::types::TaskBoard,
+    all_finished: bool,
 ) -> Result<(), String> {
     let since = match storage::load_task_meta(gcx.clone(), task_id).await {
         Ok(meta) => meta
@@ -205,8 +231,20 @@ async fn notify_planner_all_agents_done(
         ));
     }
 
+    let heading = if all_finished {
+        "**All agents have completed.**"
+    } else {
+        "**Task agent finished.**"
+    };
+    let footer = if all_finished {
+        "Run `task_board_get(card_id)` to see full details for any card."
+    } else {
+        "Other agents may still be running. Run `task_check_agents` to see live status or `task_board_get(card_id)` for full details."
+    };
+
     let planner_message = format!(
-        "**All agents have completed.**\n\n{}\n\nRun `task_board_get(card_id)` to see full details for any card.",
+        "{}\n\n{}\n\n{}",
+        heading,
         if results.is_empty() {
             let note = since
                 .as_ref()
@@ -215,7 +253,8 @@ async fn notify_planner_all_agents_done(
             format!("_(No newly-finished cards detected since {}.)_", note)
         } else {
             results.join("\n\n")
-        }
+        },
+        footer
     );
 
     let sessions = {
@@ -228,11 +267,13 @@ async fn notify_planner_all_agents_done(
         get_or_create_session_with_trajectory(gcx.clone(), &sessions, &planner_chat_id).await;
 
     let request = CommandRequest {
-        client_request_id: format!("task-all-finished-{}", uuid::Uuid::new_v4()),
+        client_request_id: format!("task-agent-finished-{}", uuid::Uuid::new_v4()),
         priority: true,
         command: ChatCommand::UserMessage {
             content: serde_json::Value::String(planner_message),
             attachments: vec![],
+            context_files: vec![],
+            suppress_auto_enrichment: false,
         },
     };
 
@@ -259,6 +300,58 @@ async fn notify_planner_all_agents_done(
     }
 
     Ok(())
+}
+
+pub(crate) async fn remove_agent_worktree_and_branch(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    agent_worktree: &str,
+    agent_branch: &str,
+    agent_worktree_name: Option<&str>,
+) -> (bool, bool) {
+    if let Some(worktree_id) = agent_worktree_name {
+        let cache_dir = gcx.read().await.cache_dir.clone();
+        let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+        if let Some(source_root) = project_dirs.first() {
+            if let Ok(service) = WorktreeService::new(cache_dir, source_root.clone()) {
+                match service.delete_worktree(worktree_id, true).await {
+                    Ok(deleted) => {
+                        return (
+                            deleted.deleted && !Path::new(agent_worktree).exists(),
+                            deleted.branch_deleted,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to delete registered worktree '{}': {}",
+                            worktree_id,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let project_dirs = crate::files_correction::get_project_dirs(gcx).await;
+    if let Some(workspace_root) = project_dirs.first() {
+        let worktree_removed = Command::new("git")
+            .args(["worktree", "remove", agent_worktree, "--force"])
+            .current_dir(workspace_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let branch_deleted = Command::new("git")
+            .args(["branch", "-D", agent_branch])
+            .current_dir(workspace_root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        (worktree_removed, branch_deleted)
+    } else {
+        (false, false)
+    }
 }
 
 pub(crate) async fn cleanup_failed_agent_worktree(
@@ -325,24 +418,21 @@ pub(crate) async fn cleanup_failed_agent_worktree(
         }
     }
 
-    crate::files_in_workspace::remove_folder(gcx.clone(), &std::path::PathBuf::from(agent_worktree)).await;
-
-    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
-    if let Some(workspace_root) = project_dirs.first() {
-        let _ = Command::new("git")
-            .args(["worktree", "remove", agent_worktree, "--force"])
-            .current_dir(workspace_root)
-            .output();
-
-        let _ = Command::new("git")
-            .args(["branch", "-D", agent_branch])
-            .current_dir(workspace_root)
-            .output();
-    }
+    let _ = remove_agent_worktree_and_branch(
+        gcx.clone(),
+        agent_worktree,
+        agent_branch,
+        _agent_worktree_name,
+    )
+    .await;
 
     let parent = Path::new(agent_worktree).parent();
     if let Some(p) = parent {
-        if p.exists() && p.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false) {
+        if p.exists()
+            && p.read_dir()
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(false)
+        {
             let _ = std::fs::remove_dir(p);
         }
     }
@@ -350,12 +440,110 @@ pub(crate) async fn cleanup_failed_agent_worktree(
     diff_report
 }
 
+pub async fn update_card_heartbeat(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    task_id: &str,
+    card_id: &str,
+) -> Result<(), String> {
+    let card_id_owned = card_id.to_string();
+    let heartbeat = Utc::now().to_rfc3339();
+    storage::update_board_atomic(gcx, task_id, move |board| {
+        let card = board
+            .get_card_mut(&card_id_owned)
+            .ok_or_else(|| format!("Card {} not found", card_id_owned))?;
+        card.last_heartbeat_at = Some(heartbeat.clone());
+        Ok(())
+    })
+    .await
+    .map(|_| ())
+}
+
+pub fn git_diff_name_only(worktree_path: &Path, base_ref: &str, head_ref: &str) -> Vec<String> {
+    let range = format!("{}..{}", base_ref, head_ref);
+    let output = Command::new("git")
+        .args(["diff", "--name-only", &range])
+        .current_dir(worktree_path)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Ok(output) => {
+            tracing::warn!(
+                "git diff --name-only failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            vec![]
+        }
+        Err(err) => {
+            tracing::warn!("git diff --name-only failed: {}", err);
+            vec![]
+        }
+    }
+}
+
+pub async fn append_card_target_files(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    task_id: &str,
+    card_id: &str,
+    files: Vec<String>,
+) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let card_id_owned = card_id.to_string();
+    storage::update_board_atomic(gcx, task_id, move |board| {
+        let card = board
+            .get_card_mut(&card_id_owned)
+            .ok_or_else(|| format!("Card {} not found", card_id_owned))?;
+        for file in &files {
+            if !card.target_files.contains(file) {
+                card.target_files.push(file.clone());
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map(|_| ())
+}
+
+/// Return the wall-clock timestamp of the last recorded activity for the
+/// given agent chat session. Returns `None` when the session no longer exists.
+pub async fn get_last_agent_heartbeat(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    agent_chat_id: &str,
+) -> Option<chrono::DateTime<Utc>> {
+    let sessions = gcx.read().await.chat_sessions.clone();
+    let sessions_read = sessions.read().await;
+    let session_arc = sessions_read.get(agent_chat_id)?.clone();
+    drop(sessions_read);
+    let session = session_arc.lock().await;
+    let elapsed = session.last_activity.elapsed();
+    drop(session);
+    let heartbeat = Utc::now() - chrono::Duration::from_std(elapsed).ok()?;
+    Some(heartbeat)
+}
+
 /// Background task that monitors for stuck agents
 pub async fn start_agent_monitor(gcx: Arc<ARwLock<GlobalContext>>) {
     tracing::info!("Starting task agent monitor");
 
     loop {
-        sleep(MONITOR_INTERVAL).await;
+        let shutdown_flag = gcx.read().await.shutdown_flag.clone();
+        tokio::select! {
+            _ = sleep(MONITOR_INTERVAL) => {}
+            _ = async {
+                while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                }
+            } => {
+                tracing::info!("Task agent monitor: shutdown detected, stopping");
+                return;
+            }
+        }
 
         if let Err(e) = check_for_stuck_agents(gcx.clone()).await {
             tracing::error!("Agent monitor error: {}", e);
@@ -542,10 +730,12 @@ mod tests {
             final_report: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             started_at: Some(chrono::Utc::now().to_rfc3339()),
+            last_heartbeat_at: None,
             completed_at: None,
             agent_branch: None,
             agent_worktree: None,
             agent_worktree_name: None,
+            target_files: vec![],
         }
     }
 

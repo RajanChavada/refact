@@ -22,6 +22,7 @@ import {
   TrajectoryMeta,
   trajectoryDataToChatThread,
 } from "../../services/refact";
+import type { WorktreeMeta } from "../../services/refact/worktrees";
 import { AppDispatch, RootState } from "../../app/store";
 import { ideToolCallResponse } from "../../hooks/useEventBusForIDE";
 
@@ -37,6 +38,7 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
   task_role?: string;
   agent_id?: string;
   card_id?: string;
+  worktree?: WorktreeMeta | null;
   session_state?:
     | "idle"
     | "generating"
@@ -48,7 +50,6 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
     | "error";
   message_count?: number;
   root_chat_id?: string;
-  total_coins?: number;
   total_lines_added?: number;
   total_lines_removed?: number;
   tasks_total?: number;
@@ -57,9 +58,31 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
 };
 
 export function isTaskChatLike(
-  x: Partial<Pick<ChatHistoryItem, "task_id" | "task_meta" | "is_task_chat">>,
+  x: Partial<
+    Pick<ChatHistoryItem, "task_id" | "task_meta" | "is_task_chat" | "mode">
+  >,
 ): boolean {
-  return Boolean(x.task_id ?? x.task_meta?.task_id ?? x.is_task_chat);
+  return (
+    Boolean(x.task_id ?? x.task_meta?.task_id ?? x.is_task_chat) ||
+    x.mode === "task_agent" ||
+    x.mode === "task_planner"
+  );
+}
+
+export function isBuddyChatLike(
+  x: Partial<Pick<ChatHistoryItem, "buddy_meta">>,
+): boolean {
+  return Boolean(x.buddy_meta?.is_buddy_chat);
+}
+
+const MAIN_CHAT_LINK_TYPES = new Set(["handoff", "mode_transition", "branch"]);
+
+export function isSubagenticChatLike(
+  x: Partial<Pick<ChatHistoryItem, "parent_id" | "link_type">>,
+): boolean {
+  return Boolean(
+    x.parent_id && x.link_type && !MAIN_CHAT_LINK_TYPES.has(x.link_type),
+  );
 }
 
 export type HistoryMeta = Pick<
@@ -88,17 +111,23 @@ export type TrajectoryWithMeta = TrajectoryData & {
 
 export type HistoryTreeNode = ChatHistoryItem & {
   children: HistoryTreeNode[];
+  bubbleChildren: HistoryTreeNode[];
 };
 
 export function buildHistoryTree(
   chats: Record<string, ChatHistoryItem>,
 ): HistoryTreeNode[] {
   const nodes = Object.values(chats)
-    .filter((x) => !isTaskChatLike(x))
-    .map((x) => ({ ...x, children: [] as HistoryTreeNode[] }));
+    .filter((x) => !isTaskChatLike(x) && !isBuddyChatLike(x))
+    .map((x) => ({
+      ...x,
+      children: [] as HistoryTreeNode[],
+      bubbleChildren: [] as HistoryTreeNode[],
+    }));
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const parentByChild = new Map<string, string>();
+  const bubbleParentByChild = new Map<string, string>();
 
   const ordered = [...nodes].sort((a, b) =>
     b.updatedAt.localeCompare(a.updatedAt),
@@ -123,10 +152,21 @@ export function buildHistoryTree(
     parent.children.push(child);
   };
 
+  const attachBubble = (parentId: string, childId: string) => {
+    if (bubbleParentByChild.has(childId)) return;
+    const parent = byId.get(parentId);
+    const child = byId.get(childId);
+    if (!parent || !child || parent.id === child.id) return;
+    bubbleParentByChild.set(childId, parentId);
+    parent.bubbleChildren.push(child);
+  };
+
   for (const node of ordered) {
     const pid = node.parent_id;
     if (!pid || !byId.has(pid)) continue;
-    if (node.link_type === "handoff" || node.link_type === "mode_transition") {
+    if (isSubagenticChatLike(node)) {
+      attachBubble(pid, node.id);
+    } else if (MAIN_CHAT_LINK_TYPES.has(node.link_type ?? "")) {
       attach(node.id, pid);
     } else {
       attach(pid, node.id);
@@ -135,10 +175,15 @@ export function buildHistoryTree(
 
   const sortTree = (xs: HistoryTreeNode[]) => {
     xs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    for (const x of xs) sortTree(x.children);
+    for (const x of xs) {
+      sortTree(x.children);
+      sortTree(x.bubbleChildren);
+    }
   };
 
-  const roots = nodes.filter((n) => !parentByChild.has(n.id));
+  const roots = nodes.filter(
+    (n) => !parentByChild.has(n.id) && !isSubagenticChatLike(n),
+  );
   sortTree(roots);
   return roots;
 }
@@ -253,12 +298,12 @@ function trajectoryMetaToHistoryItem(meta: TrajectoryMeta): ChatHistoryItem {
     session_state: meta.session_state,
     message_count: meta.message_count,
     root_chat_id: meta.root_chat_id,
-    total_coins: meta.total_coins,
     total_lines_added: meta.total_lines_added,
     total_lines_removed: meta.total_lines_removed,
     tasks_total: meta.tasks_total,
     tasks_done: meta.tasks_done,
     tasks_failed: meta.tasks_failed,
+    worktree: meta.worktree,
   };
 }
 
@@ -281,6 +326,7 @@ export const historySlice = createSlice({
     saveChat: (state, action: PayloadAction<ChatThread>) => {
       if (action.payload.messages.length === 0) return;
       if (isTaskChatLike(action.payload)) return;
+      if (isBuddyChatLike(action.payload)) return;
       const chat = chatThreadToHistoryItem(action.payload);
       chat.message_count = action.payload.messages.length;
       chat.messages = [];
@@ -335,10 +381,10 @@ export const historySlice = createSlice({
           existing.task_role = meta.task_role;
           existing.agent_id = meta.agent_id;
           existing.card_id = meta.card_id;
+          existing.worktree = meta.worktree;
           existing.session_state = meta.session_state;
           existing.message_count = meta.message_count;
           existing.root_chat_id = meta.root_chat_id;
-          existing.total_coins = meta.total_coins;
           existing.total_lines_added = meta.total_lines_added;
           existing.total_lines_removed = meta.total_lines_removed;
           existing.tasks_total = meta.tasks_total;
@@ -346,6 +392,43 @@ export const historySlice = createSlice({
           existing.tasks_failed = meta.tasks_failed;
         }
       }
+    },
+
+    replaceSnapshotHistory: (
+      state,
+      action: PayloadAction<TrajectoryMeta[]>,
+    ) => {
+      const snapshotIds = new Set(action.payload.map((m) => m.id));
+      state.chats = Object.fromEntries(
+        Object.entries(state.chats).filter(([id]) => snapshotIds.has(id)),
+      );
+      for (const meta of action.payload) {
+        if (!(meta.id in state.chats)) {
+          state.chats[meta.id] = trajectoryMetaToHistoryItem(meta);
+        } else {
+          const existing = state.chats[meta.id];
+          existing.title = meta.title;
+          existing.updatedAt = meta.updated_at;
+          existing.model = meta.model;
+          existing.mode = meta.mode as ChatHistoryItem["mode"];
+          existing.parent_id = meta.parent_id;
+          existing.link_type = meta.link_type;
+          existing.task_id = meta.task_id;
+          existing.task_role = meta.task_role;
+          existing.agent_id = meta.agent_id;
+          existing.card_id = meta.card_id;
+          existing.worktree = meta.worktree;
+          existing.session_state = meta.session_state;
+          existing.message_count = meta.message_count;
+          existing.root_chat_id = meta.root_chat_id;
+          existing.total_lines_added = meta.total_lines_added;
+          existing.total_lines_removed = meta.total_lines_removed;
+          existing.tasks_total = meta.tasks_total;
+          existing.tasks_done = meta.tasks_done;
+          existing.tasks_failed = meta.tasks_failed;
+        }
+      }
+      state.pagination = { cursor: null, hasMore: false };
     },
 
     setPagination: (
@@ -427,9 +510,9 @@ export const historySlice = createSlice({
         parent_id?: string;
         link_type?: string;
         root_chat_id?: string;
-        total_coins?: number;
         total_lines_added?: number;
         total_lines_removed?: number;
+        worktree?: WorktreeMeta | null;
         model?: string;
         mode?: string;
         tasks_total?: number;
@@ -463,14 +546,14 @@ export const historySlice = createSlice({
       if (action.payload.root_chat_id !== undefined) {
         chat.root_chat_id = action.payload.root_chat_id;
       }
-      if (action.payload.total_coins !== undefined) {
-        chat.total_coins = action.payload.total_coins;
-      }
       if (action.payload.total_lines_added !== undefined) {
         chat.total_lines_added = action.payload.total_lines_added;
       }
       if (action.payload.total_lines_removed !== undefined) {
         chat.total_lines_removed = action.payload.total_lines_removed;
+      }
+      if (action.payload.worktree !== undefined) {
+        chat.worktree = action.payload.worktree;
       }
       if (action.payload.model !== undefined) {
         chat.model = action.payload.model;
@@ -525,7 +608,7 @@ export const historySlice = createSlice({
 
     getHistory: (state): ChatHistoryItem[] =>
       Object.values(state.chats)
-        .filter((item) => !isTaskChatLike(item))
+        .filter((item) => !isTaskChatLike(item) && !isBuddyChatLike(item))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
 
     getHistoryTree: (state): HistoryTreeNode[] => buildHistoryTree(state.chats),
@@ -538,6 +621,7 @@ export const {
   saveChat,
   hydrateHistory,
   hydrateHistoryFromMeta,
+  replaceSnapshotHistory,
   setPagination,
   deleteChatById,
   upsertChatStub,
@@ -624,6 +708,7 @@ startHistoryListening({
     const runtime = state.chat.threads[id];
     if (!runtime) return;
     if (isTaskChatLike(runtime.thread)) return;
+    if (isBuddyChatLike(runtime.thread)) return;
     listenerApi.dispatch(
       upsertChatStub({
         id,
@@ -655,6 +740,7 @@ startHistoryListening({
   actionCreator: restoreChat,
   effect: (action, listenerApi) => {
     if (isTaskChatLike(action.payload)) return;
+    if (isBuddyChatLike(action.payload)) return;
     listenerApi.dispatch(
       upsertChatStub({
         id: action.payload.id,
@@ -672,6 +758,7 @@ startHistoryListening({
     const runtime = state.chat.threads[action.payload.id];
     if (!runtime) return;
     if (isTaskChatLike(runtime.thread)) return;
+    if (isBuddyChatLike(runtime.thread)) return;
     listenerApi.dispatch(
       upsertChatStub({
         id: action.payload.id,

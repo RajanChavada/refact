@@ -8,7 +8,6 @@ use crate::files_correction::get_project_dirs;
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::global_context::GlobalContext;
 use crate::knowledge_graph::kg_structs::KnowledgeFrontmatter;
-use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 
 #[derive(Debug, Clone)]
 pub struct KnowledgeCard {
@@ -64,10 +63,7 @@ fn kind_priority(kind: Option<&str>) -> i32 {
 
 fn recency_key(created_at: Option<&str>, created: Option<&str>) -> String {
     // Lexicographic sort works for RFC3339 and YYYY-MM-DD.
-    created_at
-        .or(created)
-        .unwrap_or("")
-        .to_string()
+    created_at.or(created).unwrap_or("").to_string()
 }
 
 fn rank_cards(mut cards: Vec<KnowledgeCard>, max_items: usize) -> Vec<KnowledgeCard> {
@@ -97,9 +93,24 @@ fn first_nonempty_line(text: &str) -> Option<String> {
     None
 }
 
+fn retain_cards_not_at_path(index: &mut HashMap<String, Vec<KnowledgeCard>>, file_path: &Path) {
+    index.retain(|_, cards| {
+        cards.retain(|card| card.file_path != file_path);
+        !cards.is_empty()
+    });
+}
+
 impl KnowledgeIndex {
     pub fn empty() -> Self {
         Self::default()
+    }
+
+    pub fn remove_path(&mut self, file_path: &Path) {
+        retain_cards_not_at_path(&mut self.by_filename, file_path);
+        retain_cards_not_at_path(&mut self.by_tag, file_path);
+        retain_cards_not_at_path(&mut self.by_entity, file_path);
+        retain_cards_not_at_path(&mut self.by_related_filename, file_path);
+        retain_cards_not_at_path(&mut self.by_related_entity, file_path);
     }
 
     pub fn add_card(&mut self, card: KnowledgeCard) {
@@ -195,7 +206,11 @@ impl KnowledgeIndex {
         rank_cards(out, max_items)
     }
 
-    pub fn related_for_related_files(&self, filenames: &[String], max_items: usize) -> Vec<KnowledgeCard> {
+    pub fn related_for_related_files(
+        &self,
+        filenames: &[String],
+        max_items: usize,
+    ) -> Vec<KnowledgeCard> {
         let mut seen = HashSet::<String>::new();
         let mut out = Vec::new();
         for f in filenames {
@@ -210,7 +225,11 @@ impl KnowledgeIndex {
         rank_cards(out, max_items)
     }
 
-    pub fn related_for_entities(&self, entities: &[String], max_items: usize) -> Vec<KnowledgeCard> {
+    pub fn related_for_entities(
+        &self,
+        entities: &[String],
+        max_items: usize,
+    ) -> Vec<KnowledgeCard> {
         let mut seen = HashSet::<String>::new();
         let mut out = Vec::new();
         for e in entities {
@@ -225,7 +244,11 @@ impl KnowledgeIndex {
         rank_cards(out, max_items)
     }
 
-    pub fn related_for_related_entities(&self, entities: &[String], max_items: usize) -> Vec<KnowledgeCard> {
+    pub fn related_for_related_entities(
+        &self,
+        entities: &[String],
+        max_items: usize,
+    ) -> Vec<KnowledgeCard> {
         let mut seen = HashSet::<String>::new();
         let mut out = Vec::new();
         for e in entities {
@@ -257,7 +280,10 @@ impl KnowledgeIndex {
     }
 }
 
-pub fn format_related_memories_section(cards: &[KnowledgeCard], exclude_path: Option<&Path>) -> String {
+pub fn format_related_memories_section(
+    cards: &[KnowledgeCard],
+    exclude_path: Option<&Path>,
+) -> String {
     let mut shown = Vec::new();
     for c in cards {
         if let Some(ex) = exclude_path {
@@ -300,9 +326,6 @@ pub async fn build_knowledge_index(gcx: Arc<ARwLock<GlobalContext>>) -> Knowledg
     let mut index = KnowledgeIndex::empty();
 
     let project_dirs = get_project_dirs(gcx.clone()).await;
-    if project_dirs.is_empty() {
-        return index;
-    }
 
     // Local + global knowledge dirs.
     let mut knowledge_dirs: Vec<PathBuf> = project_dirs
@@ -319,20 +342,24 @@ pub async fn build_knowledge_index(gcx: Arc<ARwLock<GlobalContext>>) -> Knowledg
     }
 
     for dir in knowledge_dirs {
-        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if !path.is_file() {
-                continue;
-            }
-            if path_has_component(path, "archive") {
                 continue;
             }
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext != "md" && ext != "mdx" {
                 continue;
             }
+            if path_has_component(path, "archive") {
+                continue;
+            }
 
-            let text = match get_file_text_from_memory_or_disk(gcx.clone(), &path.to_path_buf()).await {
+            let path_buf = path.to_path_buf();
+            let text = match tokio::fs::read_to_string(&path_buf).await {
                 Ok(t) => t,
                 Err(_) => continue,
             };
@@ -342,10 +369,58 @@ pub async fn build_knowledge_index(gcx: Arc<ARwLock<GlobalContext>>) -> Knowledg
             }
 
             let content_slice = text.get(content_start..).unwrap_or("");
-            index.add_from_frontmatter(path.to_path_buf(), &fm, Some(content_slice));
+            index.add_from_frontmatter(path_buf, &fm, Some(content_slice));
         }
     }
 
     index
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn build_index_skips_archived_and_deprecated_memories() {
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+
+        let archived_path = knowledge_dir.join("archived.md");
+        let deprecated_path = knowledge_dir.join("deprecated.md");
+        let active_path = knowledge_dir.join("active.md");
+
+        tokio::fs::write(
+            &archived_path,
+            "---\nstatus: archived\ntags: [old]\n---\n\nArchived memory",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &deprecated_path,
+            "---\nstatus: deprecated\ntags: [old]\n---\n\nDeprecated memory",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            &active_path,
+            "---\nstatus: active\ntags: [new]\n---\n\nActive memory",
+        )
+        .await
+        .unwrap();
+
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+
+        let index = build_knowledge_index(gcx).await;
+
+        assert!(archived_path.exists());
+        assert!(deprecated_path.exists());
+        assert!(active_path.exists());
+        assert_eq!(index.related_for_tags(&vec!["new".to_string()], 5).len(), 1);
+    }
+}

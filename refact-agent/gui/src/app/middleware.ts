@@ -1,3 +1,11 @@
+// Buddy queue imports — keep at top to avoid circular deps
+import {
+  enqueueRuntimeEvent,
+  clearNowPlaying,
+  setBuddySnapshot,
+  dequeueRuntimeEvent,
+} from "../features/Buddy/buddySlice";
+import { registerBuddySpeechTtlListener } from "../features/Buddy/buddySpeechTtl";
 import type { RootState, AppDispatch } from "./store";
 import {
   createListenerMiddleware,
@@ -16,10 +24,10 @@ import {
   switchToThread,
   selectCurrentThreadId,
   ideToolRequired,
+  setIsWaitingForResponse,
   saveTitle,
   setBoostReasoning,
   setIncludeProjectInfo,
-  setContextTokensCap,
   setEnabledCheckpoints,
   setToolUse,
   setChatMode,
@@ -34,10 +42,14 @@ import {
   setThinkingBudget,
   setTemperature,
   setMaxTokens,
+  updateChatRuntimeFromSessionState,
+  openBuddyChat,
+  newBuddyChatAction,
   buildThreadParamsPatch,
+  buildThreadScopePatch,
 } from "../features/Chat/Thread";
 import { saveLastThreadParams } from "../utils/threadStorage";
-import { statisticsApi } from "../services/refact/statistics";
+import { savePersistedChatTabs } from "../utils/chatUiPersistence";
 import { integrationsApi } from "../services/refact/integrations";
 import { capsApi, isCapsErrorResponse } from "../services/refact/caps";
 import { promptsApi } from "../services/refact/prompts";
@@ -50,26 +62,29 @@ import {
   setError,
   setIsAuthError,
 } from "../features/Errors/errorsSlice";
+import { reportBuddyFrontendError } from "../features/Buddy/reportBuddyFrontendError";
 import { setThemeMode, updateConfig } from "../features/Config/configSlice";
 import { nextTip } from "../features/TipOfTheDay";
-import { telemetryApi } from "../services/refact/telemetry";
 import { tasksApi } from "../services/refact/tasks";
-import { closeTask } from "../features/Tasks/tasksSlice";
+import {
+  closeTask,
+  openTask,
+  addPlannerChat,
+  setTaskActiveChat,
+} from "../features/Tasks/tasksSlice";
 import { closeThread } from "../features/Chat/Thread";
-import { CONFIG_PATH_URL, FULL_PATH_URL } from "../services/refact/consts";
+import {
+  createChatWithId,
+  requestSseRefresh,
+} from "../features/Chat/Thread/actions";
+import { push, selectCurrentPage } from "../features/Pages/pagesSlice";
 import {
   ideToolCallResponse,
-  ideForceReloadProjectTreeFiles,
   ideTaskDone,
   ideAskQuestions,
 } from "../hooks/useEventBusForIDE";
 import { upsertToolCallIntoHistory } from "../features/History/historySlice";
-import {
-  isToolMessage,
-  isDiffMessage,
-  modelsApi,
-  providersApi,
-} from "../services/refact";
+import { isToolMessage, modelsApi, providersApi } from "../services/refact";
 import { sendChatCommand } from "../services/refact/chatCommands";
 
 const AUTH_ERROR_MESSAGE =
@@ -81,17 +96,80 @@ const startListening = listenerMiddleware.startListening.withTypes<
   AppDispatch
 >();
 
+function persistOpenChatTabs(state: RootState): void {
+  savePersistedChatTabs({
+    openThreadIds: state.chat.open_thread_ids,
+    currentThreadId: state.chat.current_thread_id,
+    tabs: state.chat.open_thread_ids.map((id) => {
+      const runtime = state.chat.threads[id];
+      const historyItem = state.history.chats[id] as
+        | (typeof state.history.chats)[string]
+        | undefined;
+      return {
+        id,
+        title: runtime?.thread.title ?? historyItem?.title,
+        mode: runtime?.thread.mode ?? historyItem?.mode,
+        tool_use: runtime?.thread.tool_use,
+        session_state: runtime?.session_state ?? historyItem?.session_state,
+        is_buddy_chat: Boolean(runtime?.thread.buddy_meta?.is_buddy_chat),
+      };
+    }),
+  });
+}
+
+startListening({
+  matcher: isAnyOf(
+    newChatAction,
+    restoreChat,
+    newIntegrationChat,
+    closeThread,
+    switchToThread,
+    saveTitle,
+    createChatWithId,
+    updateChatRuntimeFromSessionState,
+    openBuddyChat,
+    newBuddyChatAction,
+    applyChatEvent,
+  ),
+  effect: (action, listenerApi) => {
+    if (
+      applyChatEvent.match(action) &&
+      action.payload.type !== "snapshot" &&
+      action.payload.type !== "thread_updated" &&
+      action.payload.type !== "runtime_updated" &&
+      action.payload.type !== "stream_finished"
+    ) {
+      return;
+    }
+
+    persistOpenChatTabs(listenerApi.getState());
+  },
+});
+
+startListening({
+  actionCreator: setError,
+  effect: (action, listenerApi) => {
+    const state = listenerApi.getState();
+    const chatId = state.chat.current_thread_id || undefined;
+    void reportBuddyFrontendError({
+      source: "ui_error_state",
+      error: action.payload,
+      sourceFile: "frontend/ui_error_state",
+      toolName: "ui_error_state",
+      chatId,
+    });
+  },
+});
+
 startListening({
   actionCreator: newChatAction,
   effect: async (_action, listenerApi) => {
     const state = listenerApi.getState();
     const chatId = state.chat.current_thread_id;
 
-    [
-      statisticsApi.util.resetApiState(),
-      toolsApi.util.resetApiState(),
-      commandsApi.util.resetApiState(),
-    ].forEach((api) => listenerApi.dispatch(api));
+    [toolsApi.util.resetApiState(), commandsApi.util.resetApiState()].forEach(
+      (api) => listenerApi.dispatch(api),
+    );
 
     listenerApi.dispatch(resetThreadImages({ id: chatId }));
     listenerApi.dispatch(clearThreadPauseReasons({ id: chatId }));
@@ -142,11 +220,9 @@ startListening({
     const state = listenerApi.getState();
     const chatId = state.chat.current_thread_id;
 
-    [
-      statisticsApi.util.resetApiState(),
-      toolsApi.util.resetApiState(),
-      commandsApi.util.resetApiState(),
-    ].forEach((api) => listenerApi.dispatch(api));
+    [toolsApi.util.resetApiState(), commandsApi.util.resetApiState()].forEach(
+      (api) => listenerApi.dispatch(api),
+    );
 
     listenerApi.dispatch(resetThreadImages({ id: chatId }));
     listenerApi.dispatch(clearError());
@@ -349,8 +425,12 @@ startListening({
 
 startListening({
   actionCreator: updateConfig,
-  effect: (_action, listenerApi) => {
+  effect: (action, listenerApi) => {
     listenerApi.dispatch(pingApi.util.resetApiState());
+    if (action.payload.lspPort !== undefined) {
+      listenerApi.dispatch(providersApi.util.resetApiState());
+      listenerApi.dispatch(modelsApi.util.resetApiState());
+    }
   },
 });
 
@@ -373,73 +453,6 @@ startListening({
         completeManual,
       }),
     );
-  },
-});
-
-// Telemetry for path API
-startListening({
-  matcher: isAnyOf(
-    pathApi.endpoints.getFullPath.matchFulfilled,
-    pathApi.endpoints.getFullPath.matchRejected,
-    pathApi.endpoints.customizationPath.matchFulfilled,
-    pathApi.endpoints.customizationPath.matchRejected,
-    pathApi.endpoints.privacyPath.matchFulfilled,
-    pathApi.endpoints.privacyPath.matchRejected,
-    pathApi.endpoints.integrationsPath.matchFulfilled,
-    pathApi.endpoints.integrationsPath.matchRejected,
-  ),
-  effect: (action, listenerApi) => {
-    if (pathApi.endpoints.getFullPath.matchFulfilled(action)) {
-      const thunk = telemetryApi.endpoints.sendTelemetryNetEvent.initiate({
-        url: FULL_PATH_URL,
-        scope: "getFullPath",
-        success: true,
-        error_message: "",
-      });
-      void listenerApi.dispatch(thunk);
-    }
-
-    if (
-      pathApi.endpoints.getFullPath.matchRejected(action) &&
-      !action.meta.condition
-    ) {
-      const thunk = telemetryApi.endpoints.sendTelemetryNetEvent.initiate({
-        url: FULL_PATH_URL,
-        scope: "getFullPath",
-        success: false,
-        error_message: action.error.message ?? JSON.stringify(action.error),
-      });
-      void listenerApi.dispatch(thunk);
-    }
-
-    if (
-      pathApi.endpoints.customizationPath.matchFulfilled(action) ||
-      pathApi.endpoints.privacyPath.matchFulfilled(action) ||
-      pathApi.endpoints.integrationsPath.matchFulfilled(action)
-    ) {
-      const thunk = telemetryApi.endpoints.sendTelemetryNetEvent.initiate({
-        url: CONFIG_PATH_URL,
-        scope: action.meta.arg.endpointName,
-        success: true,
-        error_message: "",
-      });
-      void listenerApi.dispatch(thunk);
-    }
-
-    if (
-      (pathApi.endpoints.customizationPath.matchRejected(action) ||
-        pathApi.endpoints.privacyPath.matchRejected(action) ||
-        pathApi.endpoints.integrationsPath.matchRejected(action)) &&
-      !action.meta.condition
-    ) {
-      const thunk = telemetryApi.endpoints.sendTelemetryNetEvent.initiate({
-        url: CONFIG_PATH_URL,
-        scope: action.meta.arg.endpointName,
-        success: false,
-        error_message: action.error.message ?? JSON.stringify(action.error),
-      });
-      void listenerApi.dispatch(thunk);
-    }
   },
 });
 
@@ -533,23 +546,6 @@ startListening({
 startListening({
   actionCreator: applyChatEvent,
   effect: (action, listenerApi) => {
-    const state = listenerApi.getState();
-    if (state.config.host !== "jetbrains") return;
-    if (!window.postIntellijMessage) return;
-
-    const event = action.payload;
-    if (event.type === "message_added") {
-      const msg = event.message;
-      if (isToolMessage(msg) || isDiffMessage(msg)) {
-        window.postIntellijMessage(ideForceReloadProjectTreeFiles());
-      }
-    }
-  },
-});
-
-startListening({
-  actionCreator: applyChatEvent,
-  effect: (action, listenerApi) => {
     const event = action.payload;
     if (event.type === "ide_tool_required") {
       listenerApi.dispatch(
@@ -576,9 +572,18 @@ interface AskQuestionsContent {
   questions: { id: string; type: string; text: string; options?: string[] }[];
 }
 
+interface HandoffToModeContent {
+  type: "handoff_to_mode";
+  new_chat_id: string;
+  target_mode?: string;
+  reason?: string;
+  messages_count?: number;
+}
+
 type ToolMessageContent =
   | TaskDoneContent
   | AskQuestionsContent
+  | HandoffToModeContent
   | { type: string };
 
 function isTaskDoneContent(
@@ -595,6 +600,16 @@ function isAskQuestionsContent(
     "questions" in content &&
     Array.isArray(content.questions)
   );
+}
+
+function isHandoffToModeContent(
+  content: ToolMessageContent,
+): content is HandoffToModeContent {
+  if (content.type !== "handoff_to_mode" || !("new_chat_id" in content)) {
+    return false;
+  }
+  const id = content.new_chat_id;
+  return typeof id === "string" && id.length > 0;
 }
 
 let cachedPostMessage: ((message: Record<string, unknown>) => void) | null =
@@ -661,6 +676,140 @@ startListening({
           questions: content.questions,
         }),
       );
+    }
+  },
+});
+
+// Track processed handoff tool_call_ids to avoid re-triggering on SSE reconnects.
+// Bounded to prevent unbounded growth in long sessions.
+const MAX_PROCESSED_HANDOFFS = 1000;
+const processedHandoffIds = new Set<string>();
+
+startListening({
+  actionCreator: applyChatEvent,
+  effect: async (action, listenerApi) => {
+    const event = action.payload;
+    if (event.type !== "message_added") return;
+
+    const msg = event.message;
+    if (!isToolMessage(msg)) return;
+    if (typeof msg.content !== "string") return;
+
+    const toolCallId = msg.tool_call_id;
+    if (processedHandoffIds.has(toolCallId)) return;
+
+    const parsed = safeParseJson(msg.content);
+    if (!parsed || typeof parsed !== "object") return;
+
+    const content = parsed as ToolMessageContent;
+    if (!isHandoffToModeContent(content)) return;
+
+    const { new_chat_id } = content;
+    const state = listenerApi.getState();
+
+    // Only auto-switch when the source chat is the one currently visible.
+    // Background tasks should not steal focus unexpectedly.
+    const currentId = selectCurrentThreadId(state);
+    if (event.chat_id !== currentId) return;
+
+    const port = state.config.lspPort;
+    const apiKey = state.config.apiKey;
+
+    // Preserve task/browser metadata from the source thread so the new chat
+    // inherits the correct context (planner, task agent, browser session, etc.)
+    const sourceRuntime = state.chat.threads[event.chat_id];
+    const isTaskChat = sourceRuntime?.thread.is_task_chat ?? false;
+    const taskMeta = sourceRuntime?.thread.task_meta;
+    const worktree = sourceRuntime?.thread.worktree;
+
+    listenerApi.dispatch(
+      createChatWithId({
+        id: new_chat_id,
+        isTaskChat,
+        taskMeta,
+        parentId: event.chat_id,
+        linkType: "mode_transition",
+        worktree,
+        mode:
+          isTaskChat && taskMeta?.role === "planner"
+            ? "TASK_PLANNER"
+            : content.target_mode,
+      }),
+    );
+    // Ensure the tab is open and switched to (handles both new and cached threads)
+    listenerApi.dispatch(switchToThread({ id: new_chat_id }));
+    listenerApi.dispatch(requestSseRefresh({ chatId: new_chat_id }));
+    // Optimistically mark as waiting so the UI shows a generating state
+    // immediately before the first SSE event arrives
+    listenerApi.dispatch(
+      setIsWaitingForResponse({ id: new_chat_id, value: true }),
+    );
+
+    if (isTaskChat && taskMeta?.role === "planner" && taskMeta.task_id) {
+      const taskId = taskMeta.task_id;
+      const now = new Date().toISOString();
+      // Ensure the task shell exists in tasksUI before registering the planner.
+      // openTask is a safe upsert: it only updates the name when a real name is
+      // provided and skips the update when the task already exists with a name.
+      const taskListResult =
+        tasksApi.endpoints.listTasks.select(undefined)(state);
+      const taskName =
+        taskListResult.data?.find((t) => t.id === taskId)?.name ?? "";
+      listenerApi.dispatch(openTask({ id: taskId, name: taskName }));
+      listenerApi.dispatch(
+        addPlannerChat({
+          taskId,
+          planner: {
+            id: new_chat_id,
+            title: "",
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      listenerApi.dispatch(
+        setTaskActiveChat({
+          taskId,
+          activeChat: { type: "planner", chatId: new_chat_id },
+        }),
+      );
+      const currentPage = selectCurrentPage(listenerApi.getState());
+      if (
+        currentPage?.name !== "task workspace" ||
+        currentPage.taskId !== taskId
+      ) {
+        listenerApi.dispatch(push({ name: "task workspace", taskId }));
+      }
+    } else {
+      listenerApi.dispatch(push({ name: "chat" }));
+    }
+
+    if (port) {
+      const { regenerate } = await import("../services/refact/chatCommands");
+      try {
+        await regenerate(new_chat_id, port, apiKey ?? undefined);
+        // Mark as processed only after successful start so SSE reconnects
+        // can retry if regenerate failed on the first attempt
+        if (processedHandoffIds.size >= MAX_PROCESSED_HANDOFFS) {
+          const firstKey = processedHandoffIds.values().next().value;
+          if (firstKey !== undefined) processedHandoffIds.delete(firstKey);
+        }
+        processedHandoffIds.add(toolCallId);
+      } catch {
+        // Regenerate failed — revert the waiting state and leave the id
+        // unprocessed so a reconnect can retry
+        listenerApi.dispatch(
+          setIsWaitingForResponse({ id: new_chat_id, value: false }),
+        );
+      }
+    } else {
+      // No port means we can't regenerate, but still mark processed to
+      // avoid a tight retry loop
+      if (processedHandoffIds.size >= MAX_PROCESSED_HANDOFFS) {
+        const firstKey = processedHandoffIds.values().next().value;
+        if (firstKey !== undefined) processedHandoffIds.delete(firstKey);
+      }
+      processedHandoffIds.add(toolCallId);
     }
   },
 });
@@ -884,30 +1033,6 @@ startListening({
 });
 
 startListening({
-  actionCreator: setContextTokensCap,
-  effect: async (action, listenerApi) => {
-    const state = listenerApi.getState();
-    const port = state.config.lspPort;
-    const apiKey = state.config.apiKey;
-    const chatId = action.payload.chatId;
-
-    if (!port || !chatId) return;
-
-    try {
-      const { sendChatCommand } = await import(
-        "../services/refact/chatCommands"
-      );
-      await sendChatCommand(chatId, port, apiKey ?? undefined, {
-        type: "set_params",
-        patch: { context_tokens_cap: action.payload.value },
-      });
-    } catch {
-      // Silently ignore - backend may not support this command
-    }
-  },
-});
-
-startListening({
   actionCreator: setEnabledCheckpoints,
   effect: async (action, listenerApi) => {
     const state = listenerApi.getState();
@@ -967,8 +1092,9 @@ startListening({
     const port = state.config.lspPort;
     const apiKey = state.config.apiKey;
     const chatId = state.chat.current_thread_id;
+    const runtime = chatId ? state.chat.threads[chatId] : undefined;
 
-    if (!port || !chatId) return;
+    if (!port || !chatId || !runtime) return;
 
     try {
       const { sendChatCommand } = await import(
@@ -976,7 +1102,10 @@ startListening({
       );
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "set_params",
-        patch: { mode: action.payload },
+        patch: {
+          mode: action.payload,
+          ...buildThreadScopePatch(runtime.thread),
+        },
       });
     } catch {
       // Silently ignore - backend may not support this command
@@ -1002,7 +1131,10 @@ startListening({
       );
       await sendChatCommand(chatId, port, apiKey ?? undefined, {
         type: "set_params",
-        patch: { mode: action.payload.mode },
+        patch: {
+          mode: action.payload.mode,
+          ...buildThreadScopePatch(runtime.thread),
+        },
       });
     } catch {
       // Silently ignore - backend may not support this command
@@ -1044,7 +1176,6 @@ startListening({
     setMaxTokens,
     setIncreaseMaxTokens,
     setIncludeProjectInfo,
-    setContextTokensCap,
     setEnabledCheckpoints,
     setAreFollowUpsEnabled,
     setChatMode,
@@ -1076,12 +1207,9 @@ startListening({
 
     if (isUnstartedChat) {
       patch.model = runtime.thread.model;
-      patch.temperature = runtime.thread.temperature ?? undefined;
-
       patch.max_tokens = runtime.thread.max_tokens ?? undefined;
       patch.increase_max_tokens = runtime.thread.increase_max_tokens;
       patch.include_project_info = runtime.thread.include_project_info;
-      patch.context_tokens_cap = runtime.thread.context_tokens_cap;
       patch.system_prompt = state.chat.system_prompt;
       patch.checkpoints_enabled = state.chat.checkpoints_enabled;
       patch.follow_ups_enabled = state.chat.follow_ups_enabled;
@@ -1089,19 +1217,12 @@ startListening({
 
     if (setBoostReasoning.match(_action)) {
       patch.boost_reasoning = runtime.thread.boost_reasoning;
-      // preserve temperature reset as part of “reasoning defaults”
-
-      patch.temperature = runtime.thread.temperature ?? undefined;
     }
     if (setReasoningEffort.match(_action)) {
       patch.reasoning_effort = runtime.thread.reasoning_effort ?? undefined;
-
-      patch.temperature = runtime.thread.temperature ?? undefined;
     }
     if (setThinkingBudget.match(_action)) {
       patch.thinking_budget = runtime.thread.thinking_budget ?? undefined;
-
-      patch.temperature = runtime.thread.temperature ?? undefined;
     }
 
     // Still persist model changes after start (matches current UX).
@@ -1149,3 +1270,23 @@ startListening({
     listenerApi.dispatch(closeTask(taskId));
   },
 });
+
+// ─── Buddy runtime-queue manager ───────────────────────────────────────────
+// Dequeue exactly once (in Redux middleware) so multiple mounted useBuddyState
+// instances never race to dispatch dequeueRuntimeEvent simultaneously.
+listenerMiddleware.startListening({
+  matcher: isAnyOf(enqueueRuntimeEvent, clearNowPlaying, setBuddySnapshot),
+  effect: (_action, { getState, dispatch }) => {
+    const buddy = (getState() as RootState).buddy;
+    if (buddy.nowPlaying === null && buddy.runtimeQueue.length > 0) {
+      dispatch(dequeueRuntimeEvent());
+    }
+  },
+});
+
+// ─── Buddy speech TTL ──────────────────────────────────────────────────────
+// The engine emits BuddySpeechItem with `persistent: bool` and `ttl_seconds`,
+// but nothing clears non-persistent speeches client-side, so they hang in the
+// cloud until the user dismisses them or another speech overwrites them.
+// `registerBuddySpeechTtlListener` honors the TTL — see `buddySpeechTtl.ts`.
+registerBuddySpeechTtlListener(listenerMiddleware);

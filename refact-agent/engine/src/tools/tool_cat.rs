@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use resvg::{tiny_skia, usvg};
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::at_commands::at_file::{file_repair_candidates, return_one_candidate_or_a_good_error};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{
+    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
+};
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile};
 use crate::files_correction::{
     canonical_path, correct_to_nearest_dir_path, get_project_dirs,
@@ -18,6 +20,9 @@ use crate::files_correction::{
 use crate::files_in_workspace::{get_file_text_from_memory_or_disk, ls_files};
 use crate::scratchpads::multimodality::MultimodalElement;
 use crate::knowledge_index::format_related_memories_section;
+use crate::tools::scope_utils::{
+    format_scope_notices, list_scoped_files_under_dir, resolve_existing_path_with_execution_scope,
+};
 
 use std::io::Cursor;
 use image::imageops::FilterType;
@@ -127,14 +132,9 @@ impl Tool for ToolCat {
             experimental: false,
             allow_parallel: true,
             description: "Like cat in console, but better: it can read multiple files and images. Prefer to open full files.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "paths".to_string(),
-                    description: "Comma separated file names or directories: dir1/file1.ext,dir3/dir4.".to_string(),
-                    param_type: "string".to_string(),
-                },
-            ],
-            parameters_required: vec!["paths".to_string()],
+            input_schema: json_schema_from_params(&[("paths", "string", "Comma separated file names or directories: dir1/file1.ext,dir3/dir4.")], &["paths"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -146,16 +146,22 @@ impl Tool for ToolCat {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let mut corrections = false;
         let (paths, path_line_ranges, symbols) = parse_cat_args(args)?;
-        let (filenames_present, symbols_not_found, not_found_messages, context_enums, multimodal) =
-            paths_and_symbols_to_cat_with_path_ranges(
-                ccx.clone(),
-                paths,
-                path_line_ranges,
-                symbols,
-            )
-            .await;
+        let (
+            filenames_present,
+            symbols_not_found,
+            not_found_messages,
+            context_enums,
+            multimodal,
+            scope_notices,
+        ) = paths_and_symbols_to_cat_with_path_ranges(
+            ccx.clone(),
+            paths,
+            path_line_ranges,
+            symbols,
+        )
+        .await;
 
-        let mut content = "".to_string();
+        let mut content = format_scope_notices(&scope_notices);
         if !filenames_present.is_empty() {
             content.push_str(&format!(
                 "Paths found:\n{}\n\n",
@@ -230,7 +236,9 @@ impl Tool for ToolCat {
         results.push(ContextEnum::ChatMessage(ChatMessage {
             role: "tool".to_string(),
             content: match chat_content {
-                ChatContent::SimpleText(t) => ChatContent::SimpleText(format!("{}{}", t, related_section)),
+                ChatContent::SimpleText(t) => {
+                    ChatContent::SimpleText(format!("{}{}", t, related_section))
+                }
                 ChatContent::Multimodal(mut mm) => {
                     if !related_section.is_empty() {
                         mm.push(MultimodalElement {
@@ -352,28 +360,84 @@ pub async fn paths_and_symbols_to_cat_with_path_ranges(
     Vec<String>,
     Vec<ContextEnum>,
     Vec<MultimodalElement>,
+    Vec<String>,
 ) {
-    let (gcx, top_n) = {
+    let (gcx, top_n, execution_scope) = {
         let ccx_locked = ccx.lock().await;
-        (ccx_locked.global_context.clone(), ccx_locked.top_n)
+        (
+            ccx_locked.global_context.clone(),
+            ccx_locked.top_n,
+            ccx_locked.execution_scope.clone(),
+        )
     };
     let ast_service_opt = gcx.read().await.ast_service.clone();
 
     let mut not_found_messages = vec![];
+    let mut scope_notices = vec![];
     let mut corrected_paths = vec![];
     let mut corrected_path_to_original = HashMap::new();
 
     for p in paths {
+        if execution_scope
+            .as_ref()
+            .map(|scope| scope.is_enforced())
+            .unwrap_or(false)
+        {
+            match resolve_existing_path_with_execution_scope(
+                gcx.clone(),
+                execution_scope.as_ref(),
+                &p,
+            )
+            .await
+            {
+                Ok(Some(resolved)) => {
+                    scope_notices.extend(resolved.notices);
+                    if resolved.path.is_dir() {
+                        match list_scoped_files_under_dir(
+                            gcx.clone(),
+                            &resolved.path,
+                            false,
+                            resolved.outside_absolute_path,
+                        )
+                        .await
+                        {
+                            Ok(files_in_dir) => {
+                                for file in files_in_dir {
+                                    let file_str = file.to_string_lossy().to_string();
+                                    corrected_paths.push(file_str.clone());
+                                    corrected_path_to_original.insert(file_str, p.clone());
+                                }
+                            }
+                            Err(e) => not_found_messages.push(e),
+                        }
+                    } else if resolved.path.is_file() {
+                        let file_str = resolved.path.to_string_lossy().to_string();
+                        corrected_paths.push(file_str.clone());
+                        corrected_path_to_original.insert(file_str, p.clone());
+                    } else {
+                        not_found_messages.push(format!(
+                            "Path '{}' is not a file or directory",
+                            resolved.path.display()
+                        ));
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    not_found_messages.push(e);
+                    continue;
+                }
+            }
+        }
+
         let path = if PathBuf::from(&p).is_absolute() {
             canonical_path(p).to_string_lossy().to_string()
         } else {
             preprocess_path_for_normalization(p)
         };
 
-        let candidates_file =
-            file_repair_candidates(gcx.clone(), &path, top_n, false).await;
-        let candidates_dir =
-            correct_to_nearest_dir_path(gcx.clone(), &path, false, top_n).await;
+        let candidates_file = file_repair_candidates(gcx.clone(), &path, top_n, false).await;
+        let candidates_dir = correct_to_nearest_dir_path(gcx.clone(), &path, false, top_n).await;
 
         if !candidates_file.is_empty() || candidates_dir.is_empty() {
             let file_path = match return_one_candidate_or_a_good_error(
@@ -599,5 +663,6 @@ pub async fn paths_and_symbols_to_cat_with_path_ranges(
         not_found_messages,
         context_enums,
         multimodal,
+        scope_notices,
     )
 }

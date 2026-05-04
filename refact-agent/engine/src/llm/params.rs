@@ -19,6 +19,8 @@ pub struct CommonParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub stop: Vec<String>,
@@ -36,6 +38,7 @@ impl Default for CommonParams {
             n_ctx: None,
             max_tokens: DEFAULT_MAX_TOKENS,
             temperature: None,
+            top_p: None,
             frequency_penalty: None,
             stop: Vec::new(),
             n: None,
@@ -93,13 +96,12 @@ impl ReasoningIntent {
 
     pub fn to_anthropic_effort(&self) -> Option<&'static str> {
         match self {
-            Self::Off => None,
-            Self::NoReasoning => Some("none"),
+            Self::Off | Self::NoReasoning => None,
             Self::Minimal => Some("low"),
             Self::Low => Some("low"),
             Self::Medium => Some("medium"),
             Self::High => Some("high"),
-            Self::XHigh => Some("max"),
+            Self::XHigh => Some("xhigh"),
             Self::Max => Some("max"),
             Self::BudgetTokens(_) => Some("high"),
         }
@@ -125,9 +127,15 @@ mod tests {
     #[test]
     fn test_reasoning_intent_anthropic_effort() {
         assert_eq!(ReasoningIntent::Off.to_anthropic_effort(), None);
+        assert_eq!(ReasoningIntent::NoReasoning.to_anthropic_effort(), None);
         assert_eq!(ReasoningIntent::Low.to_anthropic_effort(), Some("low"));
-        assert_eq!(ReasoningIntent::Medium.to_anthropic_effort(), Some("medium"));
+        assert_eq!(
+            ReasoningIntent::Medium.to_anthropic_effort(),
+            Some("medium")
+        );
         assert_eq!(ReasoningIntent::High.to_anthropic_effort(), Some("high"));
+        assert_eq!(ReasoningIntent::XHigh.to_anthropic_effort(), Some("xhigh"));
+        assert_eq!(ReasoningIntent::Max.to_anthropic_effort(), Some("max"));
         assert_eq!(
             ReasoningIntent::BudgetTokens(5000).to_anthropic_effort(),
             Some("high")

@@ -8,7 +8,7 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
-use crate::tools::tools_description::{Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType};
+use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskItem {
@@ -45,15 +45,37 @@ impl Tool for ToolTasksSet {
             description: "Set the task progress list shown to the user. Use to track multi-step work. \
                 Pass complete task list each time (replaces previous). \
                 Each task needs: id (unique string), content (description), status (pending/in_progress/completed/failed).".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "tasks".to_string(),
-                    param_type: "array".to_string(),
-                    description: "Array of task objects. Each object: {\"id\": \"1\", \"content\": \"Task description\", \"status\": \"pending\"}. \
-                        Status values: pending, in_progress, completed, failed.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "Complete task list (replaces previous). Each task needs id, content, and status.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique task identifier (1-50 chars)."
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Task description (1-500 chars)."
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "description": "Task status.",
+                                    "enum": ["pending", "in_progress", "completed", "failed"]
+                                }
+                            },
+                            "required": ["id", "content", "status"]
+                        }
+                    }
                 },
-            ],
-            parameters_required: vec!["tasks".to_string()],
+                "required": ["tasks"]
+            }),
+            output_schema: None,
+            annotations: None,
         }
     }
 
@@ -70,7 +92,12 @@ impl Tool for ToolTasksSet {
 
         let tasks: Vec<TaskItem> = match serde_json::from_value(tasks_value.clone()) {
             Ok(t) => t,
-            Err(e) => return Err(format!("Invalid tasks format: {}. Expected array of {{id, content, status}}", e)),
+            Err(e) => {
+                return Err(format!(
+                    "Invalid tasks format: {}. Expected array of {{id, content, status}}",
+                    e
+                ))
+            }
         };
 
         if tasks.len() > 100 {
@@ -80,10 +107,16 @@ impl Tool for ToolTasksSet {
         let mut seen_ids = std::collections::HashSet::new();
         for (i, task) in tasks.iter().enumerate() {
             if task.id.trim().is_empty() || task.id.len() > 50 {
-                return Err(format!("Task {} has invalid id (must be 1-50 non-whitespace chars)", i));
+                return Err(format!(
+                    "Task {} has invalid id (must be 1-50 non-whitespace chars)",
+                    i
+                ));
             }
             if task.content.trim().is_empty() || task.content.len() > 500 {
-                return Err(format!("Task {} has invalid content (must be 1-500 non-whitespace chars)", i));
+                return Err(format!(
+                    "Task {} has invalid content (must be 1-500 non-whitespace chars)",
+                    i
+                ));
             }
             if !seen_ids.insert(&task.id) {
                 return Err(format!("Duplicate task id: {}", task.id));

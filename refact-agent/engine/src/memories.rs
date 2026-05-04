@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock as ARwLock;
 use tokio::sync::Mutex as AMutex;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tracing::{info, warn};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use sha2::{Digest, Sha256};
 
 fn path_contains_component(path: &Path, component: &str) -> bool {
@@ -81,7 +82,9 @@ async fn load_parent_id_from_trajectory(
 ) -> Option<String> {
     let text = get_file_text_from_memory_or_disk(gcx, path).await.ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("parent_id").and_then(|x| x.as_str()).map(|s| s.to_string())
+    v.get("parent_id")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
 }
 
 async fn load_root_chat_id_from_trajectory(
@@ -90,7 +93,9 @@ async fn load_root_chat_id_from_trajectory(
 ) -> Option<String> {
     let text = get_file_text_from_memory_or_disk(gcx, path).await.ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("root_chat_id").and_then(|x| x.as_str()).map(|s| s.to_string())
+    v.get("root_chat_id")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
 }
 
 async fn resolve_root_chat_id(
@@ -150,7 +155,7 @@ pub fn create_frontmatter(
     KnowledgeFrontmatter {
         id: Some(Uuid::new_v4().to_string()),
         title: title.map(|t| t.to_string()),
-        tags: tags.to_vec(),
+        tags: normalize_memory_tags(tags, 16),
         created: Some(created.clone()),
         updated: Some(created),
         filenames: filenames.to_vec(),
@@ -170,8 +175,15 @@ pub fn create_frontmatter(
         related_entities: Vec::new(),
         content_hash: None,
         source_tool: None,
+        source_confidence: None,
         source_trajectory_id: None,
         source_message_range: None,
+        source_commit: None,
+        topic: None,
+        last_used_at: None,
+        use_count: 0,
+        last_injected_at: None,
+        dismissed_count: 0,
     }
 }
 
@@ -192,60 +204,384 @@ fn compute_content_hash_hex(content: &str) -> String {
     hex::encode(h.finalize())
 }
 
-fn extract_fallback_tags(content: &str, detected_files: &[String], detected_entities: &[String]) -> Vec<String> {
+fn normalize_memory_tag(tag: &str) -> Option<String> {
+    let raw = tag.trim().to_lowercase();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let alias = match raw.as_str() {
+        "rs" | "rust" => "language:rust",
+        "py" | "python" => "language:python",
+        "ts" | "typescript" => "language:typescript",
+        "js" | "javascript" => "language:javascript",
+        "tsx" => "language:typescript-react",
+        "jsx" => "language:javascript-react",
+        "c++" | "cpp" => "language:cpp",
+        "c#" | "csharp" => "language:csharp",
+        "behavior_learner" | "behavior-learner" => "workflow:behavior-learner",
+        "knowledge_graph" | "knowledge-graph" => "domain:knowledge-graph",
+        "playwright" | "playwright mcp" | "playwright-mcp" => "tool:playwright-mcp",
+        "chrome" | "chrome tool" | "chrome-tool" => "tool:chrome",
+        _ => raw.as_str(),
+    };
+
+    let preserve_underscores = alias.starts_with("entity:") || alias.starts_with("symbol:");
+    let mut normalized = String::new();
+    let mut last_was_dash = false;
+
+    for ch in alias.chars() {
+        match ch {
+            'a'..='z' | '0'..='9' | ':' | '/' | '.' => {
+                normalized.push(ch);
+                last_was_dash = false;
+            }
+            '_' if preserve_underscores => {
+                normalized.push(ch);
+                last_was_dash = false;
+            }
+            '-' | '_' | ' ' | '\t' => {
+                if !last_was_dash && !normalized.is_empty() {
+                    normalized.push('-');
+                    last_was_dash = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let normalized = normalized
+        .trim_matches('-')
+        .chars()
+        .take(96)
+        .collect::<String>();
+    if normalized.len() >= 2 {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+pub fn normalize_memory_tags(tags: &[String], max_tags: usize) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for tag in tags {
+        let Some(normalized) = normalize_memory_tag(tag) else {
+            continue;
+        };
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+        if out.len() >= max_tags {
+            break;
+        }
+    }
+
+    out
+}
+
+fn push_memory_tag(tags: &mut Vec<String>, tag: &str) {
+    let Some(normalized) = normalize_memory_tag(tag) else {
+        return;
+    };
+    if !tags.contains(&normalized) {
+        tags.push(normalized);
+    }
+}
+
+fn content_has_any(content_lower: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| content_lower.contains(term))
+}
+
+fn push_if_content_matches(tags: &mut Vec<String>, content_lower: &str, tag: &str, terms: &[&str]) {
+    if content_has_any(content_lower, terms) {
+        push_memory_tag(tags, tag);
+    }
+}
+
+fn push_file_path_tags(tags: &mut Vec<String>, file: &str) {
+    let lower = file.to_lowercase();
+
+    match Path::new(file).extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => push_memory_tag(tags, "language:rust"),
+        Some("py") => push_memory_tag(tags, "language:python"),
+        Some("ts") => push_memory_tag(tags, "language:typescript"),
+        Some("tsx") => push_memory_tag(tags, "language:typescript-react"),
+        Some("js") => push_memory_tag(tags, "language:javascript"),
+        Some("jsx") => push_memory_tag(tags, "language:javascript-react"),
+        Some("kt") => push_memory_tag(tags, "language:kotlin"),
+        Some("go") => push_memory_tag(tags, "language:go"),
+        Some("java") => push_memory_tag(tags, "language:java"),
+        Some("md") | Some("mdx") => push_memory_tag(tags, "format:markdown"),
+        _ => {}
+    }
+
+    let mappings = [
+        ("component:buddy", &["/buddy/", "src/buddy/"][..]),
+        (
+            "component:knowledge-graph",
+            &["/knowledge_graph/", "src/knowledge_graph/"][..],
+        ),
+        ("component:knowledge-index", &["knowledge_index.rs"][..]),
+        (
+            "component:memory-system",
+            &["memories.rs", "/knowledge/"][..],
+        ),
+        ("component:chat-engine", &["/chat/", "src/chat/"][..]),
+        ("component:subchat", &["subchat.rs", "/subchat/"][..]),
+        ("component:tools", &["/tools/", "src/tools/"][..]),
+        (
+            "component:gui-chat",
+            &["gui/src/features/chat/", "gui/src/components/chat"][..],
+        ),
+        (
+            "component:gui-state",
+            &["gui/src/app/", "gui/src/features/"][..],
+        ),
+        (
+            "component:integrations",
+            &["/integrations/", "src/integrations/"][..],
+        ),
+        (
+            "component:providers",
+            &["/providers/", "src/providers/"][..],
+        ),
+        ("component:vecdb", &["/vecdb/", "src/vecdb/"][..]),
+        ("component:ast", &["/ast/", "src/ast/"][..]),
+        ("component:http-api", &["/http/", "src/http/"][..]),
+    ];
+
+    for (tag, terms) in mappings {
+        if terms.iter().any(|term| lower.contains(term)) {
+            push_memory_tag(tags, tag);
+        }
+    }
+}
+
+fn extract_fallback_tags(
+    content: &str,
+    detected_files: &[String],
+    detected_entities: &[String],
+) -> Vec<String> {
     let content_lower = content.to_lowercase();
     let mut tags = Vec::new();
-    
-    let languages = [
-        "rust", "python", "typescript", "javascript", "java", "kotlin", 
-        "cpp", "c++", "go", "swift", "ruby", "php", "csharp", "c#"
-    ];
-    for lang in &languages {
-        if content_lower.contains(lang) {
-            tags.push(lang.to_string());
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:buddy",
+        &["buddy", "memory garden", "behavior learner"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:knowledge-graph",
+        &[
+            "knowledge graph",
+            "kg builder",
+            "kg linking",
+            "kg mechanism",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:memory-system",
+        &["memory", "memories", "knowledge entry", "knowledge content"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "domain:browser-automation",
+        &[
+            "browser automation",
+            "playwright",
+            "chrome tool",
+            "accessibility snapshot",
+        ],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:background-chat",
+        &[
+            "background chat",
+            "autonomous chat",
+            "self-initiated",
+            "proactive chat",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:behavior-learner",
+        &[
+            "behavior learner",
+            "auto-write preferences",
+            "auto write preferences",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:memory-enrichment",
+        &[
+            "memory enrichment",
+            "kg enrich",
+            "enrich knowledge",
+            "tag generation",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "workflow:patch-verification",
+        &[
+            "patch",
+            "apply_patch",
+            "verify the actual file",
+            "edits silently fail",
+        ],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:buddy-scheduler",
+        &["scheduler", "buddy job", "buddy jobs", "job/subchat"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:subchat",
+        &["subchat", "run_subchat", "run_subchat_once"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:trajectory-persistence",
+        &["trajectory", "save_trajectory_as", "source_trajectory_id"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:notifications",
+        &["notification", "notifications", "action button", "expire"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "component:buddy-animation",
+        &[
+            "animation",
+            "roaming",
+            "waypoint",
+            "motion",
+            "fireflies",
+            "aurora",
+            "garden growth",
+        ],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "tool:playwright-mcp",
+        &[
+            "playwright mcp",
+            "playwright",
+            "accessibility tree",
+            "browser snapshot",
+        ],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "tool:chrome",
+        &["chrome tool", "chrome", "tab management"],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:cargo-check",
+        &["cargo check"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:rust-tests",
+        &["cargo test", "rust unit test"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:git-sanity",
+        &["git status", "git diff", "git sanity"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:eslint",
+        &["eslint", "max-warnings 0"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:prettier",
+        &["prettier", "format:check"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "verification:vitest",
+        &["vitest"],
+    );
+
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "language:rust",
+        &["cargo", "rust"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "language:typescript",
+        &["typescript", "tsc", "eslint", "react"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "framework:react",
+        &["react", "redux"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "state:redux",
+        &["redux", "rtk query"],
+    );
+    push_if_content_matches(
+        &mut tags,
+        &content_lower,
+        "protocol:sse",
+        &["sse", "stream_delta"],
+    );
+
+    for file in detected_files.iter().take(8) {
+        push_file_path_tags(&mut tags, file);
+    }
+
+    for entity in detected_entities.iter().take(8) {
+        if entity.len() >= 3 && entity.len() <= 80 {
+            push_memory_tag(&mut tags, &format!("entity:{}", entity));
         }
     }
-    
-    let domains = [
-        "frontend", "backend", "database", "testing", "performance", 
-        "security", "api", "ui", "ux", "devops", "deployment", 
-        "refactoring", "debugging", "optimization", "architecture",
-        "react", "vue", "angular", "node", "express", "django",
-        "postgres", "mysql", "redis", "docker", "kubernetes"
-    ];
-    for domain in &domains {
-        if content_lower.contains(domain) {
-            tags.push(domain.to_string());
-        }
-    }
-    
-    let actions = [
-        "fix", "bug", "error", "implement", "add", "remove", 
-        "refactor", "optimize", "improve", "update", "migrate"
-    ];
-    for action in &actions {
-        if content_lower.contains(action) {
-            tags.push(action.to_string());
-        }
-    }
-    
-    for file in detected_files.iter().take(5) {
-        if let Some(ext) = std::path::Path::new(file).extension() {
-            if let Some(ext_str) = ext.to_str() {
-                tags.push(ext_str.to_lowercase());
-            }
-        }
-    }
-    
-    for entity in detected_entities.iter().take(3) {
-        if entity.len() >= 4 && entity.len() <= 30 {
-            tags.push(entity.to_lowercase());
-        }
-    }
-    
-    tags.sort();
-    tags.dedup();
-    tags.truncate(10);
+
+    tags.truncate(16);
     tags
 }
 
@@ -305,9 +641,7 @@ pub async fn memories_add(
     }
 
     let md_content = format!("{}\n\n{}", frontmatter.to_yaml(), content);
-    fs::write(&file_path, &md_content)
-        .await
-        .map_err(|e| format!("Failed to write knowledge file: {}", e))?;
+    atomic_write_text(&file_path, &md_content).await?;
 
     info!("Created knowledge entry: {}", file_path.display());
 
@@ -428,6 +762,223 @@ pub async fn load_memories_by_tags(
     Ok(records)
 }
 
+const PREFERENCE_MIN_CONFIDENCE: f32 = 0.85;
+#[cfg(test)]
+const PREFERENCE_STATEMENT_MAX_CHARS: usize = 240;
+#[cfg(test)]
+const PREFERENCE_EVIDENCE_MAX_CHARS: usize = 600;
+
+pub fn normalize_preference_text_for_dedupe(text: &str) -> String {
+    text.to_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn preference_statement_is_safe(statement: &str, confidence: f32) -> bool {
+    if confidence < PREFERENCE_MIN_CONFIDENCE {
+        return false;
+    }
+    let trimmed = statement.trim();
+    if trimmed.chars().count() < 12 {
+        return false;
+    }
+    let redacted = crate::buddy::actor::redact_sensitive(trimmed);
+    if redacted != trimmed || redacted.contains("[REDACTED") {
+        return false;
+    }
+    let normalized = normalize_preference_text_for_dedupe(trimmed);
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words.len() < 3 {
+        return false;
+    }
+    let vague = [
+        "remember this",
+        "do this",
+        "use this",
+        "i like this",
+        "i prefer this",
+        "preference",
+        "user preference",
+    ];
+    if vague.contains(&normalized.as_str()) {
+        return false;
+    }
+    let sensitive_terms = [
+        "password",
+        "token",
+        "secret",
+        "credential",
+        "api key",
+        "apikey",
+        "private key",
+        "ssh key",
+        "home address",
+        "phone number",
+        "email address",
+        "ssn",
+        "credit card",
+    ];
+    if sensitive_terms.iter().any(|term| normalized.contains(term)) {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let preference_cues = [
+        "prefer",
+        "always",
+        "never",
+        "avoid",
+        "don't",
+        "do not",
+        "i like",
+        "i want",
+        "please use",
+        "please keep",
+        "use ",
+        "keep ",
+        "format ",
+        "respond ",
+        "write ",
+    ];
+    preference_cues.iter().any(|cue| lower.contains(cue))
+}
+
+#[cfg(test)]
+fn redact_and_cap_preference_text(text: &str, max_chars: usize) -> String {
+    let redacted = crate::buddy::actor::redact_sensitive(text);
+    let collapsed = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::llm::safe_truncate(&collapsed, max_chars)
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+fn preference_matches_existing(existing: &MemoRecord, normalized_statement: &str) -> bool {
+    let mut candidates = vec![existing.content.as_str()];
+    if let Some(title) = existing.title.as_deref() {
+        candidates.push(title);
+    }
+    candidates.into_iter().any(|text| {
+        let normalized = normalize_preference_text_for_dedupe(text);
+        let normalized_without_heading = normalized.strip_prefix("# ").unwrap_or(&normalized);
+        normalized == normalized_statement
+            || normalized_without_heading == normalized_statement
+            || normalized.contains(normalized_statement)
+            || normalized_statement.contains(&normalized)
+            || normalized_statement.contains(normalized_without_heading)
+    })
+}
+
+#[cfg(test)]
+fn preference_file_already_exists(knowledge_dirs: &[PathBuf], normalized_statement: &str) -> bool {
+    knowledge_dirs.iter().any(|knowledge_dir| {
+        if !knowledge_dir.exists() {
+            return false;
+        }
+        WalkDir::new(knowledge_dir)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                let path = entry.path();
+                if !path.is_file() || path_contains_component(path, "archive") {
+                    return false;
+                }
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if ext != "md" && ext != "mdx" {
+                    return false;
+                }
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    return false;
+                };
+                let (frontmatter, content_start) = KnowledgeFrontmatter::parse(&text);
+                if frontmatter.is_archived()
+                    || frontmatter.is_deprecated()
+                    || !frontmatter
+                        .tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains("preference"))
+                {
+                    return false;
+                }
+                let content = text[content_start..].trim();
+                let record = MemoRecord {
+                    memid: path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    tags: frontmatter.tags,
+                    content: content.to_string(),
+                    file_path: Some(path.to_path_buf()),
+                    line_range: None,
+                    title: frontmatter.title,
+                    created: frontmatter.created,
+                    kind: frontmatter.kind,
+                    score: None,
+                };
+                preference_matches_existing(&record, normalized_statement)
+            })
+    })
+}
+
+#[cfg(test)]
+pub async fn memories_add_preference_if_new(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    statement: &str,
+    evidence: &str,
+    confidence: f32,
+) -> Result<Option<PathBuf>, String> {
+    if !preference_statement_is_safe(statement, confidence) {
+        return Ok(None);
+    }
+
+    let statement = redact_and_cap_preference_text(statement, PREFERENCE_STATEMENT_MAX_CHARS);
+    let evidence = redact_and_cap_preference_text(evidence, PREFERENCE_EVIDENCE_MAX_CHARS);
+    let normalized_statement = normalize_preference_text_for_dedupe(&statement);
+    if normalized_statement.is_empty() {
+        return Ok(None);
+    }
+
+    let existing = load_memories_by_tags(gcx.clone(), &["preference"], 200).await?;
+    if existing
+        .iter()
+        .any(|memory| preference_matches_existing(memory, &normalized_statement))
+    {
+        return Ok(None);
+    }
+
+    let knowledge_dirs = get_all_knowledge_dirs(gcx.clone()).await;
+    if preference_file_already_exists(&knowledge_dirs, &normalized_statement) {
+        return Ok(None);
+    }
+
+    let tags = vec![
+        "preference".to_string(),
+        "buddy".to_string(),
+        "behavior_learner".to_string(),
+    ];
+    let empty = Vec::<String>::new();
+    let mut frontmatter = create_frontmatter(Some(&statement), &tags, &empty, &empty, "preference");
+    frontmatter.summary = Some(statement.clone());
+    if !evidence.is_empty() {
+        frontmatter.description = Some(evidence.clone());
+    }
+    frontmatter.content_hash = Some(compute_content_hash_hex(&statement));
+    frontmatter.source_tool = Some("buddy_behavior_learner".to_string());
+
+    let content = if evidence.is_empty() {
+        format!("# {}\n\nConfidence: {:.2}", statement, confidence)
+    } else {
+        format!(
+            "# {}\n\nEvidence: {}\n\nConfidence: {:.2}",
+            statement, evidence, confidence
+        )
+    };
+
+    memories_add(gcx, &frontmatter, &content).await.map(Some)
+}
+
 pub async fn memories_search(
     gcx: Arc<ARwLock<GlobalContext>>,
     query: &str,
@@ -455,7 +1006,14 @@ pub async fn memories_search(
     let vecdb_guard = vecdb_arc.lock().await;
     if vecdb_guard.is_none() {
         drop(vecdb_guard);
-        return memories_search_fallback(gcx, query, top_n_memories, &knowledge_dirs, exclude_root.as_deref()).await;
+        return memories_search_fallback(
+            gcx,
+            query,
+            top_n_memories,
+            &knowledge_dirs,
+            exclude_root.as_deref(),
+        )
+        .await;
     }
 
     let vecdb = vecdb_guard.as_ref().unwrap();
@@ -538,7 +1096,11 @@ pub async fn memories_search(
         let is_knowledge = knowledge_dirs.iter().any(|d| rec.file_path.starts_with(d))
             && !path_contains_component(&rec.file_path, "archive");
         let is_trajectory = trajectory_dirs.iter().any(|d| rec.file_path.starts_with(d))
-            && rec.file_path.extension().map(|e| e == "json").unwrap_or(false);
+            && rec
+                .file_path
+                .extension()
+                .map(|e| e == "json")
+                .unwrap_or(false);
 
         if is_knowledge {
             knowledge_matches
@@ -560,7 +1122,9 @@ pub async fn memories_search(
                 if !traj_id.is_empty() {
                     let candidate_root = if let Some(cached) = root_cache.get(&traj_id) {
                         cached.clone()
-                    } else if let Some(stored_root) = load_root_chat_id_from_trajectory(gcx.clone(), &rec.file_path).await {
+                    } else if let Some(stored_root) =
+                        load_root_chat_id_from_trajectory(gcx.clone(), &rec.file_path).await
+                    {
                         root_cache.insert(traj_id.clone(), stored_root.clone());
                         stored_root
                     } else {
@@ -608,9 +1172,14 @@ pub async fn memories_search(
             continue;
         }
 
-        if let (Some(ref ex_root), Some(ref source_id)) = (&exclude_root, &frontmatter.source_chat_id) {
+        if let (Some(ref ex_root), Some(ref source_id)) =
+            (&exclude_root, &frontmatter.source_chat_id)
+        {
             if source_id == ex_root {
-                tracing::debug!("Excluding knowledge created by current chat: {:?}", file_path);
+                tracing::debug!(
+                    "Excluding knowledge created by current chat: {:?}",
+                    file_path
+                );
                 continue;
             }
         }
@@ -739,7 +1308,14 @@ pub async fn memories_search(
         return Ok(records);
     }
 
-    memories_search_fallback(gcx, query, top_n_memories, &knowledge_dirs, exclude_root.as_deref()).await
+    memories_search_fallback(
+        gcx,
+        query,
+        top_n_memories,
+        &knowledge_dirs,
+        exclude_root.as_deref(),
+    )
+    .await
 }
 
 async fn memories_search_fallback(
@@ -750,10 +1326,22 @@ async fn memories_search_fallback(
     exclude_root: Option<&str>,
 ) -> Result<Vec<MemoRecord>, String> {
     let query_lower = query.to_lowercase();
-    let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+    const FALLBACK_STOP_WORDS: &[&str] = &[
+        "the", "and", "for", "with", "that", "this", "from", "into", "about", "what", "where",
+        "when", "why", "how", "can", "could", "should", "would", "please", "find", "search",
+        "look", "need", "want", "have", "does", "doesn", "work",
+    ];
+    let mut seen_query_words = std::collections::HashSet::new();
+    let query_words: Vec<&str> = query_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(|w| w.trim_matches('-'))
+        .filter(|w| w.len() >= 3)
+        .filter(|w| !FALLBACK_STOP_WORDS.contains(w))
+        .filter(|w| seen_query_words.insert((*w).to_string()))
+        .collect();
     let mut scored_results: Vec<(usize, MemoRecord)> = Vec::new();
 
-    if knowledge_dirs.is_empty() {
+    if knowledge_dirs.is_empty() || query_words.is_empty() {
         return Ok(vec![]);
     }
 
@@ -797,9 +1385,14 @@ async fn memories_search_fallback(
                 continue;
             }
 
-            if let (Some(ex_root), Some(ref source_id)) = (exclude_root, &frontmatter.source_chat_id) {
+            if let (Some(ex_root), Some(ref source_id)) =
+                (exclude_root, &frontmatter.source_chat_id)
+            {
                 if source_id == ex_root {
-                    tracing::debug!("Fallback: excluding knowledge created by current chat: {:?}", path);
+                    tracing::debug!(
+                        "Fallback: excluding knowledge created by current chat: {:?}",
+                        path
+                    );
                     continue;
                 }
             }
@@ -810,8 +1403,11 @@ async fn memories_search_fallback(
                 .unwrap_or_else(|| path.to_string_lossy().to_string());
             let content_preview: String = text[content_start..].chars().take(500).collect();
 
-            // Normalize keyword score to 0-1 range (assuming max ~10 word matches)
-            let normalized_score = (score as f32 / 10.0).min(1.0);
+            let normalized_score = if score >= 2 {
+                (score as f32 / 2.0).min(1.0)
+            } else {
+                0.70
+            };
 
             scored_results.push((
                 score,
@@ -842,83 +1438,148 @@ pub async fn deprecate_document(
     gcx: Arc<ARwLock<GlobalContext>>,
     doc_path: &PathBuf,
     superseded_by: Option<&str>,
-    reason: &str,
+    _reason: &str,
 ) -> Result<(), String> {
-    let text = get_file_text_from_memory_or_disk(gcx.clone(), doc_path)
+    update_memory_document_frontmatter(gcx, doc_path, |frontmatter| {
+        frontmatter.status = Some("deprecated".to_string());
+        frontmatter.deprecated_at = Some(Local::now().format("%Y-%m-%d").to_string());
+        frontmatter.updated = Some(Local::now().format("%Y-%m-%d").to_string());
+        if let Some(superseded_by) = superseded_by {
+            frontmatter.superseded_by = Some(superseded_by.to_string());
+        }
+        Ok(true)
+    })
+    .await
+    .map(|_| ())
+}
+
+pub async fn update_memory_document_frontmatter<F>(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    doc_path: &Path,
+    update: F,
+) -> Result<bool, String>
+where
+    F: FnOnce(&mut KnowledgeFrontmatter) -> Result<bool, String>,
+{
+    let existing_text = fs::read_to_string(doc_path)
         .await
-        .map_err(|e| format!("Failed to read document: {}", e))?;
-
-    let (mut frontmatter, content_start) = KnowledgeFrontmatter::parse(&text);
-    let content = &text[content_start..];
-
-    frontmatter.status = Some("deprecated".to_string());
-    frontmatter.deprecated_at = Some(Local::now().format("%Y-%m-%d").to_string());
-    if let Some(new_id) = superseded_by {
-        frontmatter.superseded_by = Some(new_id.to_string());
+        .map_err(|e| format!("Failed to read memory file: {}", e))?;
+    let (mut frontmatter, content_start) = KnowledgeFrontmatter::parse(&existing_text);
+    if content_start == 0 && existing_text.starts_with("---") {
+        return Err("Failed to parse memory frontmatter".to_string());
     }
-
-    let deprecated_banner = format!("\n\n> ⚠️ **DEPRECATED**: {}\n", reason);
-    let new_content = format!(
-        "{}\n{}{}",
-        frontmatter.to_yaml(),
-        deprecated_banner,
-        content
-    );
-
-    fs::write(doc_path, new_content)
+    let body = existing_text.get(content_start..).unwrap_or("").to_string();
+    if !update(&mut frontmatter)? {
+        return Ok(false);
+    }
+    rewrite_memory_document(gcx, doc_path, &frontmatter, &body)
         .await
-        .map_err(|e| format!("Failed to write: {}", e))?;
+        .map(|_| true)
+}
 
-    info!("Deprecated document: {}", doc_path.display());
+pub async fn rewrite_memory_document(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    doc_path: &Path,
+    frontmatter: &KnowledgeFrontmatter,
+    body: &str,
+) -> Result<(), String> {
+    let content = format!("{}\n\n{}", frontmatter.to_yaml(), body.trim());
+    atomic_write_text(doc_path, &content).await?;
+
+    let path_buf = doc_path.to_path_buf();
+    {
+        let gcx_read = gcx.read().await;
+        let mut idx = gcx_read.knowledge_index.lock().await;
+        idx.remove_path(&path_buf);
+        if !frontmatter.is_archived() && !frontmatter.is_deprecated() {
+            idx.add_from_frontmatter(path_buf.clone(), frontmatter, Some(body));
+        }
+    }
 
     let vec_db = gcx.read().await.vec_db.clone();
     if let Some(vecdb) = vec_db.lock().await.as_ref() {
-        vecdb
-            .vectorizer_enqueue_files(&vec![doc_path.to_string_lossy().to_string()], true)
-            .await;
+        if frontmatter.is_archived() || frontmatter.is_deprecated() {
+            let _ = vecdb.remove_file(&path_buf).await;
+        } else {
+            vecdb
+                .vectorizer_enqueue_files(&vec![path_buf.to_string_lossy().to_string()], true)
+                .await;
+        }
     }
+
+    gcx.write()
+        .await
+        .documents_state
+        .memory_document_map
+        .remove(&path_buf);
 
     Ok(())
 }
 
-pub async fn archive_document(
+async fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid memory path: missing parent".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid memory path: missing file name".to_string())?;
+    let tmp_path = parent.join(format!(".{}.tmp-{}", file_name, Uuid::new_v4()));
+    let write_result = async {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .await
+            .map_err(|e| format!("Failed to create temporary memory file: {}", e))?;
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write temporary memory file: {}", e))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush temporary memory file: {}", e))?;
+        #[cfg(windows)]
+        if path.exists() {
+            fs::remove_file(path)
+                .await
+                .map_err(|e| format!("Failed to replace memory file: {}", e))?;
+        }
+        fs::rename(&tmp_path, path)
+            .await
+            .map_err(|e| format!("Failed to replace memory file: {}", e))
+    }
+    .await;
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path).await;
+    }
+    write_result
+}
+
+pub async fn delete_document_from_disk(
     gcx: Arc<ARwLock<GlobalContext>>,
     doc_path: &PathBuf,
-) -> Result<PathBuf, String> {
-    // Archive under the document's own knowledge root to support both local and global
-    // knowledge directories, and multi-root workspaces.
-    let archive_dir = doc_path
-        .parent()
-        .map(|p| p.join("archive"))
-        .ok_or("Invalid document path: no parent")?;
-    fs::create_dir_all(&archive_dir)
-        .await
-        .map_err(|e| format!("Failed to create archive dir: {}", e))?;
-
-    let filename = doc_path.file_name().ok_or("Invalid filename")?;
-    let archive_path = archive_dir.join(filename);
-
-    let old_path_str = doc_path.to_string_lossy().to_string();
-    fs::rename(doc_path, &archive_path)
-        .await
-        .map_err(|e| format!("Failed to move to archive: {}", e))?;
-
-    info!(
-        "Archived document: {} -> {}",
-        doc_path.display(),
-        archive_path.display()
-    );
-
-    // Keep VecDB consistent with the rename (remove old path, enqueue new path).
-    let vec_db = gcx.read().await.vec_db.clone();
-    if let Some(vecdb) = vec_db.lock().await.as_ref() {
-        let _ = vecdb.remove_file(&PathBuf::from(old_path_str)).await;
-        vecdb
-            .vectorizer_enqueue_files(&vec![archive_path.to_string_lossy().to_string()], true)
-            .await;
+) -> Result<(), String> {
+    match fs::remove_file(doc_path).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Failed to delete document: {}", e)),
     }
 
-    Ok(archive_path)
+    info!("Deleted document from disk: {}", doc_path.display());
+
+    let vec_db = gcx.read().await.vec_db.clone();
+    if let Some(vecdb) = vec_db.lock().await.as_ref() {
+        let _ = vecdb.remove_file(doc_path).await;
+    }
+
+    gcx.write()
+        .await
+        .documents_state
+        .memory_document_map
+        .remove(doc_path);
+
+    Ok(())
 }
 
 pub fn extract_entities(content: &str) -> Vec<String> {
@@ -998,8 +1659,8 @@ pub async fn memories_add_enriched(
             Ok(e) => {
                 let mut tags = params.base_tags.clone();
                 tags.extend(e.tags);
-                tags.sort();
-                tags.dedup();
+                tags.extend(extract_fallback_tags(content, &detected_paths, &entities));
+                let tags = normalize_memory_tags(&tags, 16);
 
                 let mut files = params.base_filenames.clone();
                 files.extend(e.filenames);
@@ -1018,10 +1679,7 @@ pub async fn memories_add_enriched(
                     if tags.is_empty() {
                         let mut fallback = vec![params.base_kind.clone()];
                         fallback.extend(extract_fallback_tags(content, &detected_paths, &entities));
-                        fallback.sort();
-                        fallback.dedup();
-                        fallback.truncate(15);
-                        fallback
+                        normalize_memory_tags(&fallback, 16)
                     } else {
                         tags
                     },
@@ -1032,20 +1690,21 @@ pub async fn memories_add_enriched(
                 )
             }
             Err(e) => {
-                warn!("Enrichment failed, using defaults with fallback tags: {}", e);
+                warn!(
+                    "Enrichment failed, using defaults with fallback tags: {}",
+                    e
+                );
                 let mut tags = params.base_tags.clone();
-                
+
                 let fallback_tags = extract_fallback_tags(content, &detected_paths, &entities);
                 tags.extend(fallback_tags);
-                
+
                 if tags.is_empty() {
                     tags.push(params.base_kind.clone());
                 }
-                
-                tags.sort();
-                tags.dedup();
-                tags.truncate(15);
-                
+
+                let tags = normalize_memory_tags(&tags, 16);
+
                 (
                     params.base_title.or_else(|| {
                         content
@@ -1122,22 +1781,35 @@ pub async fn memories_add_enriched(
         related_entities,
         content_hash: Some(content_hash),
         source_tool: Some("memories_add_enriched".to_string()),
+        source_confidence: None,
         source_trajectory_id: None,
         source_message_range: None,
+        source_commit: None,
+        topic: None,
+        last_used_at: None,
+        use_count: 0,
+        last_injected_at: None,
+        dismissed_count: 0,
     };
 
     let file_path = memories_add(gcx.clone(), &frontmatter, content).await?;
     let new_doc_id = frontmatter.id.clone().unwrap();
 
     let mut updated_frontmatter = frontmatter.clone();
-    if let Err(e) = auto_link_memory(gcx.clone(), &mut updated_frontmatter, content, &file_path).await {
+    if let Err(e) =
+        auto_link_memory(gcx.clone(), &mut updated_frontmatter, content, &file_path).await
+    {
         warn!("Auto-linking failed for new memory: {}", e);
     } else if updated_frontmatter.links != frontmatter.links {
         let md_content = format!("{}\n\n{}", updated_frontmatter.to_yaml(), content);
         if let Err(e) = fs::write(&file_path, &md_content).await {
             warn!("Failed to update memory with auto-links: {}", e);
         } else {
-            info!("Auto-linked {} docs to {}", updated_frontmatter.links.len(), file_path.display());
+            info!(
+                "Auto-linked {} docs to {}",
+                updated_frontmatter.links.len(),
+                file_path.display()
+            );
         }
     }
 
@@ -1187,4 +1859,152 @@ pub async fn memories_add_enriched(
     }
 
     Ok(file_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preference_statement_validation_rejects_low_confidence_vague_and_sensitive() {
+        assert!(preference_statement_is_safe(
+            "I prefer concise answers with bullet lists",
+            0.90
+        ));
+        assert!(!preference_statement_is_safe(
+            "I prefer concise answers with bullet lists",
+            0.80
+        ));
+        assert!(!preference_statement_is_safe("remember this", 0.95));
+        assert!(!preference_statement_is_safe("I prefer token=secret", 0.95));
+    }
+
+    #[test]
+    fn normalized_preference_dedupe_matches_case_and_punctuation() {
+        let first = normalize_preference_text_for_dedupe("I prefer concise answers, with bullets!");
+        let second = normalize_preference_text_for_dedupe("i prefer concise answers with bullets");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn memory_tags_are_namespaced_and_normalized() {
+        let tags = normalize_memory_tags(
+            &vec![
+                "Rust".to_string(),
+                "behavior_learner".to_string(),
+                " Playwright MCP ".to_string(),
+                "component:Buddy Scheduler".to_string(),
+                "Rust".to_string(),
+            ],
+            16,
+        );
+
+        assert_eq!(
+            tags,
+            vec![
+                "language:rust".to_string(),
+                "workflow:behavior-learner".to_string(),
+                "tool:playwright-mcp".to_string(),
+                "component:buddy-scheduler".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_tags_extract_precise_kg_linking_signals() {
+        let tags = extract_fallback_tags(
+            "Buddy autonomous background chat should reuse subchat and save_trajectory_as. Run cargo check and git status.",
+            &vec![
+                "refact-agent/engine/src/buddy/jobs.rs".to_string(),
+                "refact-agent/engine/src/subchat.rs".to_string(),
+            ],
+            &vec!["save_trajectory_as".to_string()],
+        );
+
+        assert!(tags.contains(&"domain:buddy".to_string()));
+        assert!(tags.contains(&"workflow:background-chat".to_string()));
+        assert!(tags.contains(&"component:subchat".to_string()));
+        assert!(tags.contains(&"component:trajectory-persistence".to_string()));
+        assert!(tags.contains(&"component:buddy".to_string()));
+        assert!(tags.contains(&"language:rust".to_string()));
+        assert!(tags.contains(&"verification:cargo-check".to_string()));
+        assert!(tags.contains(&"verification:git-sanity".to_string()));
+        assert!(tags.contains(&"entity:save_trajectory_as".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn memories_add_preference_if_new_dedupes_existing_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+
+        let first = memories_add_preference_if_new(
+            gcx.clone(),
+            "I prefer concise answers with bullet lists",
+            "User-authored snippet",
+            0.91,
+        )
+        .await
+        .unwrap();
+        let duplicate = memories_add_preference_if_new(
+            gcx,
+            "i prefer concise answers with bullet lists.",
+            "Repeated user-authored snippet",
+            0.95,
+        )
+        .await
+        .unwrap();
+
+        assert!(first.is_some());
+        assert!(duplicate.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deprecate_document_marks_inactive_without_deleting_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+        let path = knowledge_dir.join("memory.md");
+        let mut frontmatter = create_frontmatter(
+            Some("Memory"),
+            &vec!["old".to_string()],
+            &Vec::new(),
+            &Vec::new(),
+            "domain",
+        );
+        frontmatter.id = Some("old-doc".to_string());
+        let body = "Original body";
+        tokio::fs::write(&path, format!("{}\n\n{}", frontmatter.to_yaml(), body))
+            .await
+            .unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+
+        deprecate_document(
+            gcx.clone(),
+            &path,
+            Some("new-doc"),
+            "superseded by canonical memory",
+        )
+        .await
+        .unwrap();
+
+        assert!(path.exists());
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        let (updated, content_start) = KnowledgeFrontmatter::parse(&text);
+        assert_eq!(updated.status.as_deref(), Some("deprecated"));
+        assert_eq!(updated.superseded_by.as_deref(), Some("new-doc"));
+        assert_eq!(text[content_start..].trim(), body);
+        let found = load_memories_by_tags(gcx, &["old"], 10).await.unwrap();
+        assert!(found.is_empty());
+    }
 }

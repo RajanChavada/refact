@@ -8,8 +8,80 @@ use crate::integrations::running_integrations::load_integrations;
 use crate::yaml_configs::customization_registry::get_project_registry;
 use crate::caps::resolve_chat_model;
 
-use super::tools_description::{Tool, ToolGroup, ToolGroupCategory};
+use super::tools_description::{Tool, ToolGroup, ToolGroupCategory, ToolSourceType};
 use super::tool_config_subagent::ToolConfigSubagent;
+
+/// When MCP tool count exceeds this threshold, lazy loading activates.
+/// The full MCP schemas are replaced by two fixed proxy tools:
+/// - `mcp_tool_search` — discover MCP tools by regex, returns schema text
+/// - `mcp_call`        — execute any MCP tool by name + args JSON
+///
+/// The tool list is FIXED for the entire session (cache-safe).
+const MCP_LAZY_THRESHOLD: usize = 15;
+
+/// Result of applying MCP lazy-loading logic on a tool list.
+pub struct ToolsForMode {
+    /// Tool list to send to the LLM as schemas. Fixed for the session lifetime.
+    pub tools: Vec<Box<dyn Tool + Send>>,
+    /// True when lazy mode replaced MCP schemas with the two proxy tools.
+    pub mcp_lazy_mode: bool,
+    /// Total count of all MCP tools (for the hint message).
+    pub mcp_total_count: usize,
+    /// (name, description) index for ALL MCP tools — used to build the `cd_instruction` hint.
+    /// Empty when lazy mode is inactive.
+    pub mcp_tool_index: Vec<(String, String)>,
+}
+
+/// Returns true for real MCP integration tools, false for the proxy builtins
+/// (`mcp_call`, `mcp_tool_search`) which share the "mcp" name prefix but have
+/// `ToolSourceType::Builtin`. This makes `apply_mcp_lazy_filter` idempotent.
+fn is_integration_mcp_tool(t: &Box<dyn Tool + Send>) -> bool {
+    let d = t.tool_description();
+    d.name.starts_with("mcp") && matches!(d.source.source_type, ToolSourceType::Integration)
+}
+
+/// Apply MCP lazy-loading to a flat tool list returned by `get_tools_for_mode`.
+///
+/// When there are more than `MCP_LAZY_THRESHOLD` MCP tools, ALL individual MCP
+/// schemas are replaced by two fixed proxy tools (`mcp_tool_search` + `mcp_call`).
+/// The tool list produced here NEVER changes during the session — cache-safe.
+///
+/// Safe to call multiple times: proxy tools have `ToolSourceType::Builtin` so they
+/// are never counted or removed by subsequent calls.
+pub fn apply_mcp_lazy_filter(mut tools: Vec<Box<dyn Tool + Send>>) -> ToolsForMode {
+    // Collect the index of ALL real MCP integration tools before filtering.
+    // Proxy builtins (mcp_call / mcp_tool_search) are excluded via source_type check.
+    let mcp_tool_index: Vec<(String, String)> = tools
+        .iter()
+        .filter(|t| is_integration_mcp_tool(t))
+        .map(|t| {
+            let d = t.tool_description();
+            (d.name, d.description)
+        })
+        .collect();
+
+    let mcp_total_count = mcp_tool_index.len();
+    let mcp_lazy_mode = mcp_total_count > MCP_LAZY_THRESHOLD;
+
+    if mcp_lazy_mode {
+        // Drop ALL individual MCP tool schemas (integration tools only).
+        tools.retain(|t| !is_integration_mcp_tool(t));
+        // Inject two fixed proxies — tool list is now stable for the session.
+        tools.push(Box::new(crate::tools::tool_mcp_search::ToolMcpSearch {}));
+        tools.push(Box::new(crate::tools::tool_mcp_call::ToolMcpCall {}));
+    }
+
+    ToolsForMode {
+        tools,
+        mcp_lazy_mode,
+        mcp_total_count,
+        mcp_tool_index: if mcp_lazy_mode {
+            mcp_tool_index
+        } else {
+            vec![]
+        },
+    }
+}
 
 fn tool_available(
     tool: &Box<dyn Tool + Send>,
@@ -154,6 +226,10 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_web_search::ToolWebSearch {
             config_path: config_path.clone(),
         }),
+        Box::new(crate::tools::tool_chrome::ToolChrome {
+            config_path: config_path.clone(),
+            ..Default::default()
+        }),
     ];
 
     let system_tools: Vec<Box<dyn Tool + Send>> = vec![
@@ -167,9 +243,11 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_shell_service::ToolShellService {
             config_path: config_path.clone(),
         }),
-        Box::new(crate::tools::tool_add_workspace_folder::ToolAddWorkspaceFolder {
-            config_path: config_path.clone(),
-        }),
+        Box::new(
+            crate::tools::tool_add_workspace_folder::ToolAddWorkspaceFolder {
+                config_path: config_path.clone(),
+            },
+        ),
     ];
 
     let deep_analysis_tools: Vec<Box<dyn Tool + Send>> = vec![
@@ -178,11 +256,9 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
                 config_path: config_path.clone(),
             },
         ),
-        Box::new(
-            crate::tools::tool_code_review::ToolCodeReview {
-                config_path: config_path.clone(),
-            },
-        ),
+        Box::new(crate::tools::tool_code_review::ToolCodeReview {
+            config_path: config_path.clone(),
+        }),
         Box::new(crate::tools::tool_deep_research::ToolDeepResearch {
             config_path: config_path.clone(),
         }),
@@ -195,6 +271,12 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
     ];
 
     let knowledge_tools: Vec<Box<dyn Tool + Send>> = vec![
+        Box::new(crate::tools::tool_activate_skill::ToolActivateSkill {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_activate_skill::ToolDeactivateSkill {
+            config_path: config_path.clone(),
+        }),
         Box::new(crate::tools::tool_knowledge::ToolGetKnowledge {
             config_path: config_path.clone(),
         }),
@@ -218,6 +300,53 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
 
     let interaction_tools: Vec<Box<dyn Tool + Send>> = vec![
         Box::new(crate::tools::tool_ask_questions::ToolAskQuestions {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_say::ToolBuddySay {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_say::ToolBuddyRenderControls {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_get_logs::ToolBuddyGetLogs {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_buddy_get_context::ToolBuddyGetContext {
+            config_path: config_path.clone(),
+        }),
+        Box::new(
+            crate::tools::tool_buddy_create_issue::ToolBuddyCreateIssue {
+                config_path: config_path.clone(),
+            },
+        ),
+        Box::new(crate::tools::tool_buddy_open_view::ToolBuddyOpenView {
+            config_path: config_path.clone(),
+        }),
+        Box::new(
+            crate::tools::tool_buddy_open_setup_flow::ToolBuddyOpenSetupFlow {
+                config_path: config_path.clone(),
+            },
+        ),
+        Box::new(
+            crate::tools::tool_buddy_create_draft::ToolBuddyCreateDraft {
+                config_path: config_path.clone(),
+            },
+        ),
+        Box::new(
+            crate::tools::tool_buddy_launch_investigation::ToolBuddyLaunchInvestigation {
+                config_path: config_path.clone(),
+            },
+        ),
+    ];
+
+    let chat_management_tools: Vec<Box<dyn Tool + Send>> = vec![
+        Box::new(crate::tools::tool_compress_chat::ToolCompressChatProbe {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_compress_chat::ToolCompressChatApply {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_handoff_to_mode::ToolHandoffToMode {
             config_path: config_path.clone(),
         }),
     ];
@@ -244,6 +373,10 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_task_memory::ToolTaskMemorySave::new()),
         Box::new(crate::tools::tool_task_memory::ToolTaskMemoriesGet::new()),
     ];
+
+    let worktree_tools: Vec<Box<dyn Tool + Send>> = vec![Box::new(
+        crate::tools::tool_worktree_merge::ToolWorktreeMerge::new(),
+    )];
 
     let mut tool_groups = vec![
         ToolGroup {
@@ -289,10 +422,22 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
             tools: interaction_tools,
         },
         ToolGroup {
+            name: "Chat Management".to_string(),
+            description: "Chat compression and handoff tools".to_string(),
+            category: ToolGroupCategory::Builtin,
+            tools: chat_management_tools,
+        },
+        ToolGroup {
             name: "Task Management".to_string(),
             description: "Task workspace and kanban board tools".to_string(),
             category: ToolGroupCategory::Builtin,
             tools: task_tools,
+        },
+        ToolGroup {
+            name: "Worktrees".to_string(),
+            description: "Worktree lifecycle tools".to_string(),
+            category: ToolGroupCategory::Builtin,
+            tools: worktree_tools,
         },
     ];
 
@@ -303,7 +448,7 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
     tool_groups
 }
 
-async fn get_integration_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
+pub async fn get_integration_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
     let mut integrations_group = ToolGroup {
         name: "Integrations".to_string(),
         description: "Integration tools".to_string(),
@@ -344,8 +489,11 @@ async fn get_integration_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGrou
         }
     }
 
+    let mut sorted_mcp: Vec<(String, ToolGroup)> = mcp_groups.into_iter().collect();
+    sorted_mcp.sort_by(|(a, _), (b, _)| a.cmp(b));
+
     let mut tool_groups = vec![integrations_group];
-    tool_groups.extend(mcp_groups.into_values());
+    tool_groups.extend(sorted_mcp.into_iter().map(|(_, group)| group));
 
     for tool_group in tool_groups.iter_mut() {
         tool_group.retain_available_tools(gcx.clone()).await;
@@ -358,7 +506,9 @@ async fn get_config_subagent_tools(gcx: Arc<ARwLock<GlobalContext>>) -> ToolGrou
     let mut subagent_tools: Vec<Box<dyn Tool + Send>> = vec![];
 
     if let Some(registry) = get_project_registry(gcx.clone()).await {
-        for (_, subagent_config) in registry.subagents {
+        let mut subagents: Vec<(String, _)> = registry.subagents.into_iter().collect();
+        subagents.sort_by(|(a, _), (b, _)| a.cmp(b));
+        for (_, subagent_config) in subagents {
             if subagent_config.expose_as_tool && !subagent_config.has_code {
                 subagent_tools.push(Box::new(ToolConfigSubagent::new(subagent_config)));
             }
@@ -453,7 +603,8 @@ pub async fn get_tools_for_mode(
         })
         .collect();
 
-    let tool_order: HashMap<&str, usize> = mode_config.tools
+    let tool_order: HashMap<&str, usize> = mode_config
+        .tools
         .iter()
         .enumerate()
         .map(|(i, name)| (name.as_str(), i))
@@ -461,19 +612,27 @@ pub async fn get_tools_for_mode(
 
     let mut result: Vec<Box<dyn Tool + Send>> = all_tools
         .into_iter()
-        .filter(|(cat, tool)| {
-            match cat {
-                ToolGroupCategory::Integration if allow_integrations => true,
-                ToolGroupCategory::MCP if allow_mcp => true,
-                ToolGroupCategory::ConfigSubagent if allow_subagents => true,
-                _ => allowed_tools.contains(tool.tool_description().name.as_str()),
-            }
+        .filter(|(cat, tool)| match cat {
+            ToolGroupCategory::Integration if allow_integrations => true,
+            ToolGroupCategory::MCP if allow_mcp => true,
+            ToolGroupCategory::ConfigSubagent if allow_subagents => true,
+            _ => allowed_tools.contains(tool.tool_description().name.as_str()),
         })
         .map(|(_, tool)| tool)
         .collect();
 
-    result.sort_by_key(|tool| {
-        tool_order.get(tool.tool_description().name.as_str()).copied().unwrap_or(usize::MAX)
+    result.sort_by(|a, b| {
+        let a_order = tool_order
+            .get(a.tool_description().name.as_str())
+            .copied()
+            .unwrap_or(usize::MAX);
+        let b_order = tool_order
+            .get(b.tool_description().name.as_str())
+            .copied()
+            .unwrap_or(usize::MAX);
+        a_order
+            .cmp(&b_order)
+            .then_with(|| a.tool_description().name.cmp(&b.tool_description().name))
     });
 
     result

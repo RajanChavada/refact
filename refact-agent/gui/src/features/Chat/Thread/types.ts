@@ -1,7 +1,9 @@
 import { ToolConfirmationPauseReason, Usage } from "../../../services/refact";
 import { SystemPrompts } from "../../../services/refact/prompts";
 import { ChatMessages } from "../../../services/refact/types";
+import type { WorktreeMeta } from "../../../services/refact/worktrees";
 import { parseOrElse } from "../../../utils/parseOrElse";
+import { BuddyThreadMeta } from "../../Buddy/types";
 
 export type ImageFile = {
   name: string;
@@ -33,6 +35,25 @@ export type QueuedItem = {
   priority: boolean;
   command_type: string;
   preview: string;
+  content?: string;
+};
+
+/** A single item returned by the wand-preview endpoint, shown as an editable chip. */
+export type ManualPreviewItem = {
+  /** "memory" | "trajectory" | "file" */
+  kind: "memory" | "trajectory" | "file";
+  /** Human-friendly display label for the chip */
+  label: string;
+  /** Full ContextFile to inject when the user sends */
+  context_file: {
+    file_name: string;
+    file_content: string;
+    line1: number;
+    line2: number;
+    usefulness: number;
+    skip_pp?: boolean;
+    gradient_type?: number;
+  };
 };
 
 export type IntegrationMeta = {
@@ -50,6 +71,20 @@ export type ReasoningEffort =
   | "high"
   | "xhigh"
   | "max";
+
+const REASONING_EFFORTS: ReasoningEffort[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+export function isReasoningEffort(v: unknown): v is ReasoningEffort {
+  return typeof v === "string" && (REASONING_EFFORTS as string[]).includes(v);
+}
 
 export type ChatThread = {
   id: string;
@@ -98,6 +133,18 @@ export type ChatThread = {
 
   /** OpenAI Responses API multi-turn state: link next request to the previous response */
   previous_response_id?: string;
+
+  /** Currently active skill name, set by activate_skill tool */
+  active_skill?: string | null;
+
+  auto_enrichment_enabled?: boolean;
+  worktree?: WorktreeMeta | null;
+
+  parent_id?: string;
+  link_type?: string;
+  root_chat_id?: string;
+
+  buddy_meta?: BuddyThreadMeta;
 };
 
 export type SuggestedChat = {
@@ -124,7 +171,9 @@ export function normalizeLegacyMode(mode: string | undefined): ChatModeId {
     case "CONFIGURE":
       return "configurator";
     case "PROJECT_SUMMARY":
-      return "project_summary";
+      return "setup";
+    case "SETUP":
+      return "setup";
     case "TASK_PLANNER":
       return "task_planner";
     case "TASK_AGENT":
@@ -162,6 +211,9 @@ export type ChatThreadRuntime = {
   last_applied_seq?: string;
   /** Fast lookup index from message_id to message index (rebuilt on snapshots/mutations) */
   message_index_by_id?: Record<string, number>;
+  memory_enrichment_user_touched: boolean;
+  manual_preview_items: ManualPreviewItem[];
+  manual_preview_ran: boolean;
 };
 
 export type Chat = {

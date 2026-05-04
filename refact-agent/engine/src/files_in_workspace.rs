@@ -17,7 +17,6 @@ use crate::files_correction::{canonical_path, CommandSimplifiedDirExt};
 use crate::git::operations::git_ls_files;
 use crate::global_context::{get_app_searchable_id, GlobalContext};
 use crate::integrations::running_integrations::load_integrations;
-use crate::telemetry;
 use crate::file_filter::{is_valid_file, SOURCE_FILE_EXTENSIONS};
 use crate::ast::ast_indexer_thread::ast_indexer_enqueue_files;
 use crate::privacy::{check_file_privacy, load_privacy_if_needed, PrivacySettings, FilePrivacyLevel};
@@ -79,6 +78,35 @@ pub async fn get_file_text_from_memory_or_disk(
         .await
         .map(|x| x.to_string())
         .map_err(|e| format!("Not found in memory, not found on disk: {}", e))
+}
+
+pub async fn check_file_privacy_for_send(
+    global_context: Arc<ARwLock<GlobalContext>>,
+    file_path: &PathBuf,
+) -> Result<(), String> {
+    check_file_privacy(
+        load_privacy_if_needed(global_context).await,
+        file_path,
+        &FilePrivacyLevel::AllowToSendAnywhere,
+    )
+}
+
+pub async fn filter_privacy_allowed_files(
+    global_context: Arc<ARwLock<GlobalContext>>,
+    files: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let privacy = load_privacy_if_needed(global_context).await;
+    files
+        .into_iter()
+        .filter(|path| {
+            check_file_privacy(
+                privacy.clone(),
+                path,
+                &FilePrivacyLevel::AllowToSendAnywhere,
+            )
+            .is_ok()
+        })
+        .collect()
 }
 
 impl Document {
@@ -177,7 +205,10 @@ impl CacheCorrection {
                     unique_directories.insert(parent);
                 }
             }
-            unique_directories.iter().map(|p| PathBuf::from(p)).collect()
+            unique_directories
+                .iter()
+                .map(|p| PathBuf::from(p))
+                .collect()
         };
         directories.sort();
 
@@ -201,7 +232,7 @@ pub struct DocumentsState {
     pub memory_document_map: HashMap<PathBuf, Arc<ARwLock<Document>>>, // if a file is open in IDE, and it's outside workspace dirs, it will be in this map and not in workspace_files
     pub cache_dirty: Arc<AMutex<f64>>,
     pub cache_correction: Arc<CacheCorrection>,
-    pub fs_watcher: Arc<ARwLock<RecommendedWatcher>>,
+    pub fs_watcher: Option<Arc<ARwLock<RecommendedWatcher>>>,
 }
 
 async fn mem_overwrite_or_create_document(
@@ -227,7 +258,6 @@ async fn mem_overwrite_or_create_document(
 
 impl DocumentsState {
     pub async fn new(workspace_dirs: Vec<PathBuf>) -> Self {
-        let watcher = RecommendedWatcher::new(|_| {}, Default::default()).unwrap();
         Self {
             workspace_folders: Arc::new(StdMutex::new(workspace_dirs)),
             workspace_files: Arc::new(StdMutex::new(Vec::new())),
@@ -238,7 +268,7 @@ impl DocumentsState {
             memory_document_map: HashMap::new(),
             cache_dirty: Arc::new(AMutex::<f64>::new(0.0)),
             cache_correction: Arc::new(CacheCorrection::new()),
-            fs_watcher: Arc::new(ARwLock::new(watcher)),
+            fs_watcher: None,
         }
     }
 }
@@ -253,7 +283,13 @@ pub async fn watcher_init(gcx: Arc<ARwLock<GlobalContext>>) {
             }
         });
     };
-    let mut watcher = RecommendedWatcher::new(event_callback, Config::default()).unwrap();
+    let mut watcher = match RecommendedWatcher::new(event_callback, Config::default()) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("Failed to create file watcher (file watching disabled): {e}");
+            return;
+        }
+    };
 
     let workspace_folders: Arc<StdMutex<Vec<PathBuf>>> =
         gcx.read().await.documents_state.workspace_folders.clone();
@@ -263,14 +299,12 @@ pub async fn watcher_init(gcx: Arc<ARwLock<GlobalContext>>) {
         let _ = watcher.watch(folder, RecursiveMode::Recursive);
     }
 
-    let mut fs_watcher_on_stack = Arc::new(ARwLock::new(watcher));
-    {
+    let new_watcher = Some(Arc::new(ARwLock::new(watcher)));
+    let old_watcher = {
         let mut gcx_locked = gcx.write().await;
-        std::mem::swap(
-            &mut gcx_locked.documents_state.fs_watcher,
-            &mut fs_watcher_on_stack,
-        ); // avoid destructor under lock
-    }
+        std::mem::replace(&mut gcx_locked.documents_state.fs_watcher, new_watcher)
+    };
+    drop(old_watcher);
 }
 
 async fn read_file_from_disk_without_privacy_check(path: &PathBuf) -> Result<Rope, String> {
@@ -502,6 +536,66 @@ pub fn get_vcs_type(path: &Path) -> Option<&'static str> {
 //         .unwrap_or(false)
 // }
 
+fn path_has_hidden_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
+    })
+}
+
+fn path_has_allowed_hidden_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, Component::Normal(name) if name.to_string_lossy() == ".refact")
+    })
+}
+
+fn path_is_refact_import_internal(path: &Path) -> bool {
+    let mut last_was_refact = false;
+    for component in path.components() {
+        if last_was_refact && component == Component::Normal("imports".as_ref()) {
+            return true;
+        }
+        last_was_refact = component == Component::Normal(".refact".as_ref());
+    }
+    false
+}
+
+fn path_triggers_registry_reload(path: &Path) -> bool {
+    if path_is_refact_import_internal(path) {
+        return false;
+    }
+    if !path
+        .components()
+        .any(|c| c == Component::Normal(".refact".as_ref()))
+    {
+        return false;
+    }
+    path.components().any(|c| {
+        c == Component::Normal("modes".as_ref())
+            || c == Component::Normal("subagents".as_ref())
+            || c == Component::Normal("toolbox_commands".as_ref())
+            || c == Component::Normal("code_lens".as_ref())
+    })
+}
+
+fn is_valid_file_for_scan(
+    path: &PathBuf,
+    scan_root: &Path,
+    allow_hidden_folders: bool,
+    ignore_size_thresholds: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if path_is_refact_import_internal(path) {
+        return Err(".refact/imports is internal".into());
+    }
+    is_valid_file(path, true, ignore_size_thresholds)?;
+    if !allow_hidden_folders {
+        let rel_path = path.strip_prefix(scan_root).unwrap_or(path.as_path());
+        if path_has_hidden_component(rel_path) && !path_has_allowed_hidden_component(rel_path) {
+            return Err("Parent dir starts with a dot".into());
+        }
+    }
+    Ok(())
+}
+
 async fn _ls_files_under_version_control_recursive(
     all_files: &mut Vec<PathBuf>,
     vcs_folders: &mut Vec<PathBuf>,
@@ -512,16 +606,16 @@ async fn _ls_files_under_version_control_recursive(
     ignore_size_thresholds: bool,
     check_blocklist: bool,
 ) {
-    let mut candidates: Vec<PathBuf> = vec![crate::files_correction::canonical_path(
-        &path.to_string_lossy().to_string(),
-    )];
+    let scan_root = crate::files_correction::canonical_path(&path.to_string_lossy().to_string());
+    let mut candidates: Vec<PathBuf> = vec![scan_root.clone()];
     let mut rejected_reasons: HashMap<String, usize> = HashMap::new();
     let mut blocklisted_dirs_cnt: usize = 0;
     while !candidates.is_empty() {
         let checkme = candidates.pop().unwrap();
         if checkme.is_file() {
-            let maybe_valid = is_valid_file(
+            let maybe_valid = is_valid_file_for_scan(
                 &checkme,
+                &scan_root,
                 allow_files_in_hidden_folders,
                 ignore_size_thresholds,
             );
@@ -575,8 +669,18 @@ async fn _ls_files_under_version_control_recursive(
                     };
                 }
                 for x in v.iter() {
-                    let maybe_valid =
-                        is_valid_file(x, allow_files_in_hidden_folders, ignore_size_thresholds);
+                    let indexing_settings = indexing_everywhere.indexing_for_path(x);
+                    let rel_for_blocklist = x.strip_prefix(&scan_root).unwrap_or(x);
+                    if check_blocklist && is_blocklisted(&indexing_settings, rel_for_blocklist) {
+                        blocklisted_dirs_cnt += 1;
+                        continue;
+                    }
+                    let maybe_valid = is_valid_file_for_scan(
+                        x,
+                        &scan_root,
+                        allow_files_in_hidden_folders,
+                        ignore_size_thresholds,
+                    );
                     match maybe_valid {
                         Ok(_) => {
                             all_files.push(x.clone());
@@ -592,7 +696,8 @@ async fn _ls_files_under_version_control_recursive(
             } else {
                 // Don't have version control
                 let indexing_settings = indexing_everywhere.indexing_for_path(&checkme);
-                if check_blocklist && is_blocklisted(&indexing_settings, &checkme) {
+                let rel_for_blocklist = checkme.strip_prefix(&scan_root).unwrap_or(&checkme);
+                if check_blocklist && is_blocklisted(&indexing_settings, rel_for_blocklist) {
                     blocklisted_dirs_cnt += 1;
                     continue;
                 }
@@ -717,7 +822,14 @@ pub async fn enqueue_all_files_from_workspace_folders(
     wake_up_indexers: bool,
     vecdb_only: bool,
 ) -> i32 {
-    let folders = gcx.read().await.documents_state.workspace_folders.lock().unwrap().clone();
+    let folders = gcx
+        .read()
+        .await
+        .documents_state
+        .workspace_folders
+        .lock()
+        .unwrap()
+        .clone();
 
     info!(
         "enqueue_all_files_from_workspace_folders started files search with {} folders",
@@ -806,13 +918,15 @@ pub async fn on_workspaces_init(gcx: Arc<ARwLock<GlobalContext>>) -> i32 {
     if old_app_searchable_id != new_app_searchable_id {
         gcx.write().await.app_searchable_id = get_app_searchable_id(&folders);
     }
+    // Project competitor import runs only here for normal startup and workspace add/remove changes.
+    let _ = crate::ext::competitor_import::run_project_import(gcx.clone()).await;
     watcher_init(gcx.clone()).await;
     let files_enqueued = enqueue_all_files_from_workspace_folders(gcx.clone(), false, false).await;
 
-    // enqueue shadow repos initialization
     crate::git::checkpoints::enqueue_init_shadow_repos(gcx.clone()).await;
 
-    // Start or connect to mcp servers
+    crate::chat::start_trajectory_watcher(gcx.clone());
+
     let _ = load_integrations(gcx.clone(), &["**/mcp_*".to_string()]).await;
 
     files_enqueued
@@ -824,6 +938,9 @@ pub async fn on_did_open(
     text: &String,
     _language_id: &String,
 ) {
+    if path_is_refact_import_internal(cpath) {
+        return;
+    }
     let mut doc = Document::new(cpath);
     doc.update_text(text);
     info!(
@@ -864,6 +981,9 @@ pub async fn on_did_close(gcx: Arc<ARwLock<GlobalContext>>, cpath: &PathBuf) {
 }
 
 pub async fn on_did_change(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, text: &String) {
+    if path_is_refact_import_internal(path) {
+        return;
+    }
     let t0 = Instant::now();
     let (doc_arc, dirty_arc, mark_dirty) = {
         let mut doc = Document::new(path);
@@ -903,13 +1023,6 @@ pub async fn on_did_change(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, tex
         enqueue_some_docs(gcx.clone(), &vec![cpath], false).await;
     }
 
-    telemetry::snippets_collection::sources_changed(
-        gcx.clone(),
-        &path.to_string_lossy().to_string(),
-        text,
-    )
-    .await;
-
     info!(
         "on_did_change {}, total time {:.3}s",
         crate::nicer_logs::last_n_chars(&path.to_string_lossy().to_string(), 30),
@@ -918,6 +1031,9 @@ pub async fn on_did_change(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf, tex
 }
 
 pub async fn on_did_delete(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf) {
+    if path_is_refact_import_internal(path) {
+        return;
+    }
     info!(
         "on_did_delete {}",
         crate::nicer_logs::last_n_chars(&path.to_string_lossy().to_string(), 30)
@@ -953,7 +1069,8 @@ pub async fn on_did_delete(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf) {
 }
 
 pub async fn add_folder(gcx: Arc<ARwLock<GlobalContext>>, fpath: &PathBuf) {
-    let canonical_path = crate::files_correction::canonical_path(fpath.to_string_lossy().to_string());
+    let canonical_path =
+        crate::files_correction::canonical_path(fpath.to_string_lossy().to_string());
     let was_added = {
         let documents_state = &gcx.write().await.documents_state;
         let mut folders = documents_state.workspace_folders.lock().unwrap();
@@ -968,12 +1085,16 @@ pub async fn add_folder(gcx: Arc<ARwLock<GlobalContext>>, fpath: &PathBuf) {
         tracing::info!("Added folder {} to workspace", canonical_path.display());
         on_workspaces_init(gcx.clone()).await;
     } else {
-        tracing::debug!("Folder {} already in workspace, skipping", canonical_path.display());
+        tracing::debug!(
+            "Folder {} already in workspace, skipping",
+            canonical_path.display()
+        );
     }
 }
 
 pub async fn remove_folder(gcx: Arc<ARwLock<GlobalContext>>, path: &PathBuf) {
-    let canonical_path = crate::files_correction::canonical_path(path.to_string_lossy().to_string());
+    let canonical_path =
+        crate::files_correction::canonical_path(path.to_string_lossy().to_string());
     let was_removed = {
         let documents_state = &gcx.write().await.documents_state;
         let mut folders = documents_state.workspace_folders.lock().unwrap();
@@ -998,7 +1119,18 @@ pub async fn file_watcher_event(event: Event, gcx_weak: Weak<ARwLock<GlobalConte
         } else {
             return; // the program is shutting down
         }
+        if let Some(gcx) = gcx_weak.clone().upgrade() {
+            if event.paths.iter().any(|p| path_triggers_registry_reload(p)) {
+                crate::yaml_configs::customization_registry::invalidate_all_registry_caches(
+                    gcx.clone(),
+                )
+                .await;
+            }
+        }
         for p in &event.paths {
+            if path_is_refact_import_internal(p) {
+                continue;
+            }
             let indexing_settings = indexing_everywhere_arc.indexing_for_path(p);
             if is_blocklisted(&indexing_settings, &p) {
                 // important to filter BEFORE canonical_path
@@ -1104,7 +1236,268 @@ pub async fn file_watcher_event(event: Event, gcx_weak: Weak<ARwLock<GlobalConte
 }
 
 pub async fn files_in_workspace_init_task(gcx: Arc<ARwLock<GlobalContext>>) {
-    enqueue_all_files_from_workspace_folders(gcx.clone(), true, false).await;
+    let ev = crate::buddy::actor::make_runtime_event(
+        "indexing",
+        "Indexing project files...",
+        "indexer",
+        "indexing",
+        "started",
+        None,
+    );
+    crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+    let file_count = enqueue_all_files_from_workspace_folders(gcx.clone(), true, false).await;
     enqueue_all_docs_from_jsonl_but_read_first(gcx.clone(), true, false).await;
     crate::git::checkpoints::enqueue_init_shadow_repos(gcx.clone()).await;
+    let ev = crate::buddy::actor::make_runtime_event(
+        "indexing",
+        &format!("Workspace indexed: {} files", file_count),
+        "indexer",
+        "indexing",
+        "completed",
+        None,
+    );
+    crate::buddy::actor::buddy_enqueue_event(gcx, ev).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_file(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn normalized(path: &Path) -> PathBuf {
+        crate::files_correction::canonical_path(path.to_string_lossy().to_string())
+    }
+
+    async fn scan_workspace(root: &Path) -> Vec<PathBuf> {
+        let mut indexing_everywhere = IndexingEverywhere::default();
+        let (files, _) = retrieve_files_in_workspace_folders(
+            vec![root.to_path_buf()],
+            &mut indexing_everywhere,
+            false,
+            false,
+        )
+        .await;
+        files
+    }
+
+    async fn cache_dirty_value(gcx: &Arc<ARwLock<GlobalContext>>) -> f64 {
+        let dirty = {
+            let gcx_locked = gcx.read().await;
+            gcx_locked.documents_state.cache_dirty.clone()
+        };
+        let value = *dirty.lock().await;
+        value
+    }
+
+    #[tokio::test]
+    async fn workspace_scan_excludes_refact_import_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let regular = temp.path().join("src").join("main.rs");
+        let manifest = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("competitors.json");
+        write_file(&regular, "fn main() {}\n");
+        write_file(&manifest, "{\"ok\":true}");
+
+        let files = scan_workspace(temp.path()).await;
+
+        assert!(files.contains(&normalized(&regular)));
+        assert!(!files.contains(&normalized(&manifest)));
+    }
+
+    #[tokio::test]
+    async fn workspace_scan_excludes_refact_import_staging_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let regular = temp.path().join("src").join("lib.rs");
+        let staged = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("staging")
+            .join("skill")
+            .join("SKILL.md");
+        write_file(&regular, "pub fn ok() {}\n");
+        write_file(&staged, "staged skill content\n");
+
+        let files = scan_workspace(temp.path()).await;
+
+        assert!(files.contains(&normalized(&regular)));
+        assert!(!files.contains(&normalized(&staged)));
+    }
+
+    #[tokio::test]
+    async fn workspace_scan_keeps_refact_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp
+            .path()
+            .join(".refact")
+            .join("skills")
+            .join("example")
+            .join("SKILL.md");
+        write_file(&skill, "# Example skill\nUse this skill.\n");
+
+        let files = scan_workspace(temp.path()).await;
+
+        assert!(files.contains(&normalized(&skill)));
+    }
+
+    #[tokio::test]
+    async fn on_did_open_ignores_refact_import_internal_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("staging")
+            .join("x.md");
+        let text = "staged content".to_string();
+        let language_id = "markdown".to_string();
+
+        on_did_open(gcx.clone(), &path, &text, &language_id).await;
+
+        let (has_doc, active_file_path) = {
+            let gcx_locked = gcx.read().await;
+            (
+                gcx_locked
+                    .documents_state
+                    .memory_document_map
+                    .contains_key(&path),
+                gcx_locked.documents_state.active_file_path.clone(),
+            )
+        };
+        assert!(!has_doc);
+        assert!(active_file_path.is_none());
+        assert_eq!(cache_dirty_value(&gcx).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn on_did_change_ignores_refact_import_internal_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("staging")
+            .join("x.md");
+        let text = "changed staged content".to_string();
+
+        on_did_change(gcx.clone(), &path, &text).await;
+
+        let (has_doc, active_file_path, workspace_files_len) = {
+            let gcx_locked = gcx.read().await;
+            let workspace_files_len = gcx_locked
+                .documents_state
+                .workspace_files
+                .lock()
+                .unwrap()
+                .len();
+            (
+                gcx_locked
+                    .documents_state
+                    .memory_document_map
+                    .contains_key(&path),
+                gcx_locked.documents_state.active_file_path.clone(),
+                workspace_files_len,
+            )
+        };
+        assert!(!has_doc);
+        assert!(active_file_path.is_none());
+        assert_eq!(workspace_files_len, 0);
+        assert_eq!(cache_dirty_value(&gcx).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn on_did_delete_ignores_refact_import_internal_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("imports")
+            .join("competitors.json");
+        let mut doc = Document::new(&path);
+        doc.update_text(&"{}".to_string());
+        {
+            let mut gcx_locked = gcx.write().await;
+            gcx_locked
+                .documents_state
+                .memory_document_map
+                .insert(path.clone(), Arc::new(ARwLock::new(doc)));
+        }
+
+        on_did_delete(gcx.clone(), &path).await;
+
+        let has_doc = {
+            let gcx_locked = gcx.read().await;
+            gcx_locked
+                .documents_state
+                .memory_document_map
+                .contains_key(&path)
+        };
+        assert!(has_doc);
+        assert_eq!(cache_dirty_value(&gcx).await, 0.0);
+    }
+
+    #[tokio::test]
+    async fn on_did_open_keeps_refact_skills_paths() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join(".refact")
+            .join("skills")
+            .join("example")
+            .join("SKILL.md");
+        let text = "# Example skill".to_string();
+        let language_id = "markdown".to_string();
+
+        on_did_open(gcx.clone(), &path, &text, &language_id).await;
+
+        let (has_doc, active_file_path) = {
+            let gcx_locked = gcx.read().await;
+            (
+                gcx_locked
+                    .documents_state
+                    .memory_document_map
+                    .contains_key(&path),
+                gcx_locked.documents_state.active_file_path.clone(),
+            )
+        };
+        assert!(has_doc);
+        assert_eq!(active_file_path, Some(path));
+        assert!(cache_dirty_value(&gcx).await > 0.0);
+    }
+
+    #[test]
+    fn registry_reload_ignores_refact_import_paths() {
+        assert!(path_is_refact_import_internal(Path::new(
+            "/repo/.refact/imports/competitors.json"
+        )));
+        assert!(!path_is_refact_import_internal(Path::new(
+            "/repo/.refact/skills/example/SKILL.md"
+        )));
+        assert!(!path_triggers_registry_reload(Path::new(
+            "/repo/.refact/imports/staging/source/.refact/subagents/agent.yaml"
+        )));
+        assert!(path_triggers_registry_reload(Path::new(
+            "/repo/.refact/modes/agent.yaml"
+        )));
+        assert!(path_triggers_registry_reload(Path::new(
+            "/repo/.refact/subagents/agent.yaml"
+        )));
+        assert!(path_triggers_registry_reload(Path::new(
+            "/repo/.refact/toolbox_commands/command.yaml"
+        )));
+        assert!(path_triggers_registry_reload(Path::new(
+            "/repo/.refact/code_lens/lens.yaml"
+        )));
+    }
 }

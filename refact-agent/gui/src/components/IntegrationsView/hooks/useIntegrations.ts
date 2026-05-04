@@ -599,6 +599,37 @@ export const useIntegrations = ({
     dispatch(setIntegrationData(null));
   }, [dispatch, goBack]);
 
+  const handleMCPWizardSubmit = useCallback(
+    (
+      configPath: string,
+      integrName: string,
+      initialInput?: { input: string; transport: string },
+    ) => {
+      if (!currentNotConfiguredIntegration) return;
+      const newIntegration: IntegrationWithIconRecord = {
+        when_isolated: false,
+        on_your_laptop: false,
+        integr_name: integrName,
+        integr_config_path: configPath,
+        icon_path: currentNotConfiguredIntegration.icon_path,
+        project_path: configPath.includes(".config") ? "" : configPath,
+        integr_config_exists: false,
+      };
+      if (initialInput) {
+        const fieldKey =
+          initialInput.transport === "http" || initialInput.transport === "sse"
+            ? "url"
+            : "command";
+        void saveIntegrationMutationTrigger(configPath, {
+          [fieldKey]: initialInput.input,
+        });
+      }
+      setCurrentIntegration(newIntegration);
+      setCurrentNotConfiguredIntegration(null);
+    },
+    [currentNotConfiguredIntegration, saveIntegrationMutationTrigger],
+  );
+
   const handleNotSetupIntegrationShowUp = useCallback(
     (integration: NotConfiguredIntegrationWithIconRecord) => {
       if (!integrationsMap) return;
@@ -638,6 +669,7 @@ export const useIntegrations = ({
     handleSubmit,
     handleDeleteIntegration,
     handleNotConfiguredIntegrationSubmit,
+    handleMCPWizardSubmit,
     handleNavigateToIntegrationSetup,
     handleSetCurrentIntegrationSchema,
     handleSetCurrentIntegrationValues,

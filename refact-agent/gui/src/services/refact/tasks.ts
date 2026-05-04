@@ -47,8 +47,16 @@ export interface BoardCard {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  last_heartbeat_at?: string | null;
   agent_branch?: string;
   agent_worktree?: string;
+  agent_worktree_name?: string;
+  target_files: string[];
+}
+
+export interface CreateTaskRequest {
+  name: string;
+  target_files?: string[];
 }
 
 export interface TaskBoard {
@@ -85,7 +93,7 @@ export const tasksApi = createApi({
       return headers;
     },
   }),
-  tagTypes: ["Tasks", "Board"],
+  tagTypes: ["Tasks", "Board", "TaskTrajectories"],
   endpoints: (builder) => ({
     listTasks: builder.query<TaskMeta[], undefined>({
       queryFn: async (_args, api, _opts, baseQuery) => {
@@ -100,7 +108,7 @@ export const tasksApi = createApi({
       providesTags: ["Tasks"],
     }),
 
-    createTask: builder.mutation<TaskMeta, { name: string }>({
+    createTask: builder.mutation<TaskMeta, CreateTaskRequest>({
       queryFn: async (args, api, _opts, baseQuery) => {
         const state = api.getState() as RootState;
         const port = state.config.lspPort;
@@ -258,6 +266,9 @@ export const tasksApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as TrajectoryInfo[] };
       },
+      providesTags: (_result, _error, { taskId, role }) => [
+        { type: "TaskTrajectories", id: `${taskId}/${role}` },
+      ],
     }),
 
     createPlannerChat: builder.mutation<{ chat_id: string }, string>({
@@ -271,6 +282,43 @@ export const tasksApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as { chat_id: string } };
       },
+      invalidatesTags: (_result, _error, taskId) => [
+        { type: "TaskTrajectories", id: `${taskId}/planner` },
+      ],
+    }),
+
+    createPlannerChatFromTransition: builder.mutation<
+      { new_chat_id: string; messages_count: number },
+      {
+        taskId: string;
+        sourceChatId: string;
+        targetModeDescription?: string;
+      }
+    >({
+      queryFn: async (
+        { taskId, sourceChatId, targetModeDescription },
+        api,
+        _opts,
+        baseQuery,
+      ) => {
+        const state = api.getState() as RootState;
+        const port = state.config.lspPort;
+        const result = await baseQuery({
+          url: `http://127.0.0.1:${port}/v1/tasks/${taskId}/planner-chats/from-transition`,
+          method: "POST",
+          body: {
+            source_chat_id: sourceChatId,
+            target_mode_description: targetModeDescription ?? "",
+          },
+        });
+        if (result.error) return { error: result.error };
+        return {
+          data: result.data as { new_chat_id: string; messages_count: number },
+        };
+      },
+      invalidatesTags: (_result, _error, { taskId }) => [
+        { type: "TaskTrajectories", id: `${taskId}/planner` },
+      ],
     }),
 
     updateTaskMeta: builder.mutation<
@@ -326,4 +374,5 @@ export const {
   useSetOrchestratorInstructionsMutation,
   useListTaskTrajectoriesQuery,
   useCreatePlannerChatMutation,
+  useCreatePlannerChatFromTransitionMutation,
 } = tasksApi;

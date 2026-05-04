@@ -4,16 +4,19 @@ use crate::global_context::GlobalContext;
 use crate::integrations::integr_abstract::IntegrationConfirmation;
 use crate::privacy::load_privacy_if_needed;
 use crate::tools::file_edit::auxiliary::{
-    await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary, parse_bool_arg,
-    parse_path_for_update, parse_string_arg, str_replace_anchored, sync_documents_ast, AnchorMode,
+    append_scope_warnings, await_ast_indexing, convert_edit_to_diffchunks, edit_result_summary,
+    parse_bool_arg, parse_path_for_update, parse_string_arg, scope_warnings_to_tool_message,
+    str_replace_anchored, sync_documents_ast, AnchorMode,
 };
 use crate::tools::tools_description::{
-    MatchConfirmDeny, MatchConfirmDenyResult, Tool, ToolDesc, ToolParam, ToolSource, ToolSourceType,
+    MatchConfirmDeny, MatchConfirmDenyResult, Tool, ToolDesc, ToolSource, ToolSourceType,
+    json_schema_from_params,
 };
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use crate::worktrees::scope::ExecutionScope;
 use std::sync::Arc;
 use tokio::sync::Mutex as AMutex;
 use tokio::sync::RwLock as ARwLock;
@@ -30,15 +33,17 @@ struct Args {
     anchor2: Option<String>,
     content: String,
     multiple: bool,
+    scope_warnings: Vec<String>,
 }
 
 async fn parse_args(
     gcx: Arc<ARwLock<GlobalContext>>,
     args: &HashMap<String, Value>,
-    code_workdir: &Option<PathBuf>,
+    execution_scope: Option<&ExecutionScope>,
 ) -> Result<Args, String> {
     let privacy = load_privacy_if_needed(gcx.clone()).await;
-    let path = parse_path_for_update(gcx, args, privacy, code_workdir).await?;
+    let resolved = parse_path_for_update(gcx, args, privacy, execution_scope).await?;
+    let path = resolved.path;
 
     let mode_str = parse_string_arg(
         args,
@@ -88,6 +93,7 @@ async fn parse_args(
         anchor2,
         content,
         multiple,
+        scope_warnings: resolved.warnings,
     })
 }
 
@@ -95,9 +101,9 @@ pub async fn tool_update_text_doc_anchored_exec(
     gcx: Arc<ARwLock<GlobalContext>>,
     args: &HashMap<String, Value>,
     dry: bool,
-    code_workdir: &Option<PathBuf>,
+    execution_scope: Option<&ExecutionScope>,
 ) -> Result<(String, String, Vec<DiffChunk>, String), String> {
-    let a = parse_args(gcx.clone(), args, code_workdir).await?;
+    let a = parse_args(gcx.clone(), args, execution_scope).await?;
     await_ast_indexing(gcx.clone()).await?;
     let (before, after) = str_replace_anchored(
         gcx.clone(),
@@ -112,7 +118,10 @@ pub async fn tool_update_text_doc_anchored_exec(
     .await?;
     sync_documents_ast(gcx.clone(), &a.path).await?;
     let chunks = convert_edit_to_diffchunks(a.path.clone(), &before, &after)?;
-    let summary = edit_result_summary(&before, &after, &a.path);
+    let summary = append_scope_warnings(
+        edit_result_summary(&before, &after, &a.path),
+        &a.scope_warnings,
+    );
     Ok((before, after, chunks, summary))
 }
 
@@ -124,12 +133,16 @@ impl Tool for ToolUpdateTextDocAnchored {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = {
+        let (gcx, execution_scope) = {
             let ccx_locked = ccx.lock().await;
-            ccx_locked.global_context.clone()
+            (
+                ccx_locked.global_context.clone(),
+                ccx_locked.execution_scope.clone(),
+            )
         };
-        let (_, _, chunks, _) =
-            tool_update_text_doc_anchored_exec(gcx.clone(), args, false, &None).await?;
+        let (_, _, chunks, summary) =
+            tool_update_text_doc_anchored_exec(gcx.clone(), args, false, execution_scope.as_ref())
+                .await?;
 
         let related_section = {
             let idx_arc = { gcx.read().await.knowledge_index.clone() };
@@ -162,6 +175,10 @@ impl Tool for ToolUpdateTextDocAnchored {
             ..Default::default()
         })];
 
+        if let Some(message) = scope_warnings_to_tool_message(&summary, tool_call_id) {
+            out.push(message);
+        }
+
         if !related_section.trim().is_empty() {
             out.push(ContextEnum::ChatMessage(ChatMessage {
                 role: "tool".to_string(),
@@ -180,12 +197,17 @@ impl Tool for ToolUpdateTextDocAnchored {
         ccx: Arc<AMutex<AtCommandsContext>>,
         args: &HashMap<String, Value>,
     ) -> Result<MatchConfirmDeny, String> {
-        let gcx = {
+        let (gcx, execution_scope, msgs_len) = {
             let ccx_locked = ccx.lock().await;
-            ccx_locked.global_context.clone()
+            (
+                ccx_locked.global_context.clone(),
+                ccx_locked.execution_scope.clone(),
+                ccx_locked.messages.len(),
+            )
         };
-        let can_exec = parse_args(gcx.clone(), args, &None).await.is_ok();
-        let msgs_len = ccx.lock().await.messages.len();
+        let can_exec = parse_args(gcx.clone(), args, execution_scope.as_ref())
+            .await
+            .is_ok();
         if msgs_len != 0 && !can_exec {
             return Ok(MatchConfirmDeny {
                 result: MatchConfirmDenyResult::PASS,
@@ -226,44 +248,9 @@ impl Tool for ToolUpdateTextDocAnchored {
             experimental: false,
             allow_parallel: false,
             description: "Edit file by finding anchor text. More reliable than exact string match. Use 'replace_between' to replace content between two anchors, or 'insert_after'/'insert_before' to insert at anchor.".to_string(),
-            parameters: vec![
-                ToolParam {
-                    name: "path".to_string(),
-                    description: "Absolute path to the file.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "mode".to_string(),
-                    description: "'replace_between' (needs anchor_before + anchor_after), 'insert_after', or 'insert_before' (need anchor).".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "anchor_before".to_string(),
-                    description: "For replace_between: text marking start of region to replace.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "anchor_after".to_string(),
-                    description: "For replace_between: text marking end of region to replace.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "anchor".to_string(),
-                    description: "For insert_after/insert_before: text to locate insert position.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "content".to_string(),
-                    description: "The new content to insert or replace with.".to_string(),
-                    param_type: "string".to_string(),
-                },
-                ToolParam {
-                    name: "multiple".to_string(),
-                    description: "If true, apply to all matching anchors. Default false.".to_string(),
-                    param_type: "boolean".to_string(),
-                },
-            ],
-            parameters_required: vec!["path".to_string(), "mode".to_string(), "content".to_string()],
+            input_schema: json_schema_from_params(&[("path", "string", "Absolute path to the file."), ("mode", "string", "'replace_between' (needs anchor_before + anchor_after), 'insert_after', or 'insert_before' (need anchor)."), ("anchor_before", "string", "For replace_between: text marking start of region to replace."), ("anchor_after", "string", "For replace_between: text marking end of region to replace."), ("anchor", "string", "For insert_after/insert_before: text to locate insert position."), ("content", "string", "The new content to insert or replace with."), ("multiple", "boolean", "If true, apply to all matching anchors. Default false.")], &["path", "mode", "content"]),
+            output_schema: None,
+            annotations: None,
         }
     }
 }

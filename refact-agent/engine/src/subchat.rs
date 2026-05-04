@@ -21,11 +21,11 @@ use crate::chat::stream_core::{
     run_llm_stream, StreamRunParams, ChoiceFinal, StreamCollector, normalize_tool_call,
 };
 use crate::chat::tools::{execute_tools, ExecuteToolsOptions};
-use crate::chat::types::ThreadParams;
+use crate::chat::types::{TaskMeta, ThreadParams};
+use crate::worktrees::types::WorktreeMeta;
 use crate::chat::trajectories::save_trajectory_as;
 use crate::chat::trajectory_ops::sanitize_messages_for_new_thread;
-use crate::stats::event::{LlmCallEvent, split_model_provider, sum_metering_coins};
-
+use crate::stats::event::{LlmCallEvent, canonicalize_mode_for_stats, split_model_provider};
 
 fn get_context_files_from_messages(messages: &[ChatMessage]) -> Vec<String> {
     use std::collections::HashSet;
@@ -110,6 +110,8 @@ pub struct SubchatConfig {
     pub max_steps: usize,
     pub prepend_system_prompt: bool,
     pub wrap_up: Option<WrapUpConfig>,
+    pub task_meta: Option<TaskMeta>,
+    pub worktree: Option<WorktreeMeta>,
     pub model: String,
     pub mode: String,
     pub n_ctx: usize,
@@ -120,6 +122,7 @@ pub struct SubchatConfig {
     pub parent_subchat_tx: Option<Arc<AMutex<mpsc::UnboundedSender<Value>>>>,
     pub abort_flag: Option<Arc<AtomicBool>>,
     pub subchat_depth: usize,
+    pub buddy_meta: Option<crate::buddy::types::BuddyThreadMeta>,
 }
 
 fn should_stream_thinking_progress(tool_name: &str) -> bool {
@@ -253,7 +256,8 @@ impl StreamCollector for SubchatProgressCollector {
                     }
                 }
                 crate::chat::types::DeltaOp::AppendContent { text } => {
-                    if self.thinking_tail.trim().is_empty() && self.reasoning_tail.trim().is_empty() {
+                    if self.thinking_tail.trim().is_empty() && self.reasoning_tail.trim().is_empty()
+                    {
                         Self::append_tail(&mut self.content_tail, &text, 50_000);
                     }
                 }
@@ -276,12 +280,76 @@ impl StreamCollector for SubchatProgressCollector {
 
 pub struct SubchatResult {
     pub messages: Vec<ChatMessage>,
-    /// Aggregated metering data from all assistant messages (coins, tokens, etc.)
+    /// Reserved for provider-local usage metadata returned by nested agent calls.
     pub metering: serde_json::Map<String, serde_json::Value>,
     /// Set when `config.stateful == true`, allows caller to reference the saved trajectory.
     /// Intentionally public API - callers may use it for trajectory linking.
     #[allow(dead_code)]
     pub chat_id: Option<String>,
+}
+
+fn scale_subchat_budget(value: usize, new_n_ctx: usize, old_n_ctx: usize) -> usize {
+    if value == 0 || old_n_ctx == 0 || new_n_ctx >= old_n_ctx {
+        return value;
+    }
+
+    (((value as u128) * (new_n_ctx as u128)) / (old_n_ctx as u128)) as usize
+}
+
+fn normalize_subchat_params_for_model(
+    tool_name: &str,
+    params: &mut SubchatParameters,
+    model_rec: &crate::caps::ChatModelRecord,
+) {
+    let requested_n_ctx = params.subchat_n_ctx;
+    let requested_max_new_tokens = params.subchat_max_new_tokens;
+    let requested_tokens_for_rag = params.subchat_tokens_for_rag;
+
+    if model_rec.base.n_ctx > 0 && params.subchat_n_ctx > model_rec.base.n_ctx {
+        params.subchat_n_ctx = model_rec.base.n_ctx;
+
+        if requested_tokens_for_rag > 0 {
+            params.subchat_max_new_tokens = scale_subchat_budget(
+                requested_max_new_tokens,
+                params.subchat_n_ctx,
+                requested_n_ctx,
+            )
+            .max(1);
+            params.subchat_tokens_for_rag = scale_subchat_budget(
+                requested_tokens_for_rag,
+                params.subchat_n_ctx,
+                requested_n_ctx,
+            );
+        }
+
+        info!(
+            "normalized subchat '{}' budget for model '{}' from n_ctx={} to n_ctx={}, max_new_tokens={}, tokens_for_rag={}",
+            tool_name,
+            model_rec.base.id,
+            requested_n_ctx,
+            params.subchat_n_ctx,
+            params.subchat_max_new_tokens,
+            params.subchat_tokens_for_rag,
+        );
+    }
+
+    if let Some(max_output_tokens) = model_rec.max_output_tokens.filter(|v| *v > 0) {
+        if params.subchat_max_new_tokens > max_output_tokens {
+            params.subchat_max_new_tokens = max_output_tokens;
+        }
+    }
+
+    if params.subchat_n_ctx > 1 {
+        params.subchat_max_new_tokens = params.subchat_max_new_tokens.min(params.subchat_n_ctx - 1);
+    }
+
+    let available_for_rag = params
+        .subchat_n_ctx
+        .saturating_sub(params.subchat_max_new_tokens)
+        .saturating_sub(1);
+    if params.subchat_tokens_for_rag > available_for_rag {
+        params.subchat_tokens_for_rag = available_for_rag;
+    }
 }
 
 pub async fn resolve_subchat_params(
@@ -290,9 +358,13 @@ pub async fn resolve_subchat_params(
 ) -> Result<SubchatParameters, String> {
     use crate::yaml_configs::customization_registry::get_subagent_config;
 
-    let subagent_config = get_subagent_config(gcx.clone(), tool_name, None).await
+    let subagent_config = get_subagent_config(gcx.clone(), tool_name, None)
+        .await
         .ok_or_else(|| {
-            format!("subchat params for '{}' not found in subagents registry", tool_name)
+            format!(
+                "subchat params for '{}' not found in subagents registry",
+                tool_name
+            )
         })?;
 
     let subchat = &subagent_config.subchat;
@@ -301,10 +373,13 @@ pub async fn resolve_subchat_params(
         Some(mt) if mt.eq_ignore_ascii_case("light") => ChatModelType::Light,
         Some(mt) if mt.eq_ignore_ascii_case("thinking") => ChatModelType::Thinking,
         Some(mt) if mt.eq_ignore_ascii_case("default") => ChatModelType::Default,
-        Some(mt) => return Err(format!(
-            "invalid model_type '{}' for '{}', expected: light, default, thinking",
-            mt, tool_name
-        )),
+        Some(mt) if mt.eq_ignore_ascii_case("buddy") => ChatModelType::Buddy,
+        Some(mt) => {
+            return Err(format!(
+                "invalid model_type '{}' for '{}', expected: light, default, thinking, buddy",
+                mt, tool_name
+            ))
+        }
         None => ChatModelType::Default,
     };
 
@@ -319,7 +394,7 @@ pub async fn resolve_subchat_params(
         None => None,
     };
 
-    let params = SubchatParameters {
+    let mut params = SubchatParameters {
         subchat_model_type: model_type,
         subchat_model: subchat.model.clone().unwrap_or_default(),
         subchat_n_ctx: subchat.n_ctx.unwrap_or(0),
@@ -342,6 +417,13 @@ pub async fn resolve_subchat_params(
         ));
     }
 
+    let model = resolve_subchat_model_for_tool(gcx.clone(), tool_name, &params).await?;
+    let caps = try_load_caps_quickly_if_not_present(gcx.clone(), 0)
+        .await
+        .map_err(|e| format!("failed to load caps: {:?}", e))?;
+    let model_rec = resolve_chat_model(caps, &model)?;
+    normalize_subchat_params_for_model(tool_name, &mut params, &model_rec);
+
     Ok(params)
 }
 
@@ -349,32 +431,143 @@ pub async fn resolve_subchat_model(
     gcx: Arc<ARwLock<GlobalContext>>,
     params: &SubchatParameters,
 ) -> Result<String, String> {
+    resolve_subchat_model_inner(gcx, params, None).await
+}
+
+async fn resolve_subchat_model_for_tool(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    tool_name: &str,
+    params: &SubchatParameters,
+) -> Result<String, String> {
+    resolve_subchat_model_inner(gcx, params, Some(tool_name)).await
+}
+
+async fn resolve_subchat_model_inner(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    params: &SubchatParameters,
+    tool_name: Option<&str>,
+) -> Result<String, String> {
     let caps = try_load_caps_quickly_if_not_present(gcx.clone(), 0)
         .await
         .map_err(|e| format!("failed to load caps: {:?}", e))?;
 
     if !params.subchat_model.is_empty() {
-        resolve_chat_model(caps, &params.subchat_model)?;
-        return Ok(params.subchat_model.clone());
+        let model_rec = resolve_chat_model(caps, &params.subchat_model).map_err(|e| {
+            subchat_explicit_model_error(tool_name, &params.subchat_model, "is not available", &e)
+        })?;
+        if let Some(reason) = llm_endpoint_unusable_reason(&model_rec.base.endpoint) {
+            return Err(subchat_explicit_model_error(
+                tool_name,
+                &params.subchat_model,
+                "is misconfigured",
+                &reason,
+            ));
+        }
+        return Ok(model_rec.base.id.clone());
     }
 
     let model_id = match params.subchat_model_type {
         ChatModelType::Light => &caps.defaults.chat_light_model,
         ChatModelType::Default => &caps.defaults.chat_default_model,
         ChatModelType::Thinking => &caps.defaults.chat_thinking_model,
+        ChatModelType::Buddy => &caps.defaults.chat_buddy_model,
     };
+    let model_label = subchat_model_type_label(params.subchat_model_type);
 
-    if model_id.is_empty() {
+    if model_id.trim().is_empty() {
         return Err(format!(
-            "no model configured for {:?} in caps.defaults",
-            params.subchat_model_type
+            "{} is not set up. Go to Default model settings and configure {}.",
+            subchat_model_requirement_label(tool_name, params.subchat_model_type),
+            model_label
         ));
     }
 
-    let model_rec = resolve_model(&caps.chat_models, model_id)
-        .map_err(|e| format!("model '{}' not found: {}", model_id, e))?;
+    let model_rec = resolve_model(&caps.chat_models, model_id).map_err(|e| {
+        format!(
+            "{} '{}' is not available: {}. Go to Default model settings and configure {}.",
+            subchat_model_requirement_label(tool_name, params.subchat_model_type),
+            model_id,
+            e,
+            model_label
+        )
+    })?;
+
+    if let Some(reason) = llm_endpoint_unusable_reason(&model_rec.base.endpoint) {
+        return Err(format!(
+            "{} '{}' is misconfigured: {}. Go to Default model settings and configure {}.",
+            subchat_model_requirement_label(tool_name, params.subchat_model_type),
+            model_id,
+            reason,
+            model_label
+        ));
+    }
 
     Ok(model_rec.base.id.clone())
+}
+
+fn subchat_explicit_model_error(
+    tool_name: Option<&str>,
+    model: &str,
+    state: &str,
+    reason: &str,
+) -> String {
+    match tool_name {
+        Some(tool_name) => format!(
+            "Subagent '{}' is pinned to model '{}', but it {}: {}. Go to Default model settings and configure this model or update the subagent config.",
+            tool_name, model, state, reason
+        ),
+        None => format!(
+            "Subchat model '{}' {}: {}. Go to Default model settings and configure this model or update the subagent config.",
+            model, state, reason
+        ),
+    }
+}
+
+fn subchat_model_requirement_label(tool_name: Option<&str>, model_type: ChatModelType) -> String {
+    let model_label = subchat_model_type_label(model_type);
+    match tool_name {
+        Some(tool_name) => format!(
+            "{} required by subagent '{}' (model_type: {})",
+            model_label,
+            tool_name,
+            subchat_model_type_config_value(model_type)
+        ),
+        None => model_label.to_string(),
+    }
+}
+
+fn subchat_model_type_config_value(model_type: ChatModelType) -> &'static str {
+    match model_type {
+        ChatModelType::Light => "light",
+        ChatModelType::Default => "default",
+        ChatModelType::Thinking => "thinking",
+        ChatModelType::Buddy => "buddy",
+    }
+}
+
+fn subchat_model_type_label(model_type: ChatModelType) -> &'static str {
+    match model_type {
+        ChatModelType::Light => "Light model",
+        ChatModelType::Default => "Default model",
+        ChatModelType::Thinking => "Thinking model",
+        ChatModelType::Buddy => "Buddy model",
+    }
+}
+
+fn llm_endpoint_unusable_reason(endpoint: &str) -> Option<String> {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        return Some("an empty LLM endpoint URL".to_string());
+    }
+    match url::Url::parse(endpoint) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => None,
+        Ok(url) => Some(format!(
+            "an unsupported LLM endpoint URL scheme '{}': {}",
+            url.scheme(),
+            endpoint
+        )),
+        Err(e) => Some(format!("an invalid LLM endpoint URL '{}': {}", endpoint, e)),
+    }
 }
 
 pub async fn resolve_subchat_config(
@@ -409,6 +602,8 @@ pub async fn resolve_subchat_config(
         None,
         None,
         None,
+        None,
+        None,
         0,
     )
     .await
@@ -428,6 +623,8 @@ pub async fn resolve_subchat_config_with_parent(
     prepend_system_prompt: bool,
     wrap_up: Option<WrapUpConfig>,
     mode: String,
+    task_meta: Option<TaskMeta>,
+    worktree: Option<WorktreeMeta>,
     parent_tool_call_id: Option<String>,
     parent_subchat_tx: Option<Arc<AMutex<mpsc::UnboundedSender<Value>>>>,
     abort_flag: Option<Arc<AtomicBool>>,
@@ -438,11 +635,14 @@ pub async fn resolve_subchat_config_with_parent(
         return Err("max_steps must be > 0".to_string());
     }
     if subchat_depth >= MAX_SUBCHAT_DEPTH {
-        return Err(format!("subchat depth limit ({}) exceeded", MAX_SUBCHAT_DEPTH));
+        return Err(format!(
+            "subchat depth limit ({}) exceeded",
+            MAX_SUBCHAT_DEPTH
+        ));
     }
 
     let params = resolve_subchat_params(gcx.clone(), tool_name).await?;
-    let model = resolve_subchat_model(gcx.clone(), &params).await?;
+    let model = resolve_subchat_model_for_tool(gcx.clone(), tool_name, &params).await?;
 
     let caps = try_load_caps_quickly_if_not_present(gcx.clone(), 0)
         .await
@@ -468,6 +668,8 @@ pub async fn resolve_subchat_config_with_parent(
         max_steps,
         prepend_system_prompt,
         wrap_up,
+        task_meta,
+        worktree,
         model,
         mode,
         n_ctx: params.subchat_n_ctx,
@@ -478,6 +680,7 @@ pub async fn resolve_subchat_config_with_parent(
         parent_subchat_tx,
         abort_flag,
         subchat_depth,
+        buddy_meta: None,
     })
 }
 
@@ -488,6 +691,51 @@ fn has_final_answer(messages: &[ChatMessage]) -> bool {
         .find(|m| m.role == "assistant")
         .map(|m| m.tool_calls.as_ref().map_or(true, |tc| tc.is_empty()))
         .unwrap_or(false)
+}
+
+fn stateful_thread_from_config(chat_id: &str, config: &SubchatConfig) -> ThreadParams {
+    let tool_use = match &config.tools {
+        ToolsPolicy::All => "agent".to_string(),
+        ToolsPolicy::None => "none".to_string(),
+        ToolsPolicy::Only(v) => v.join(","),
+    };
+    let task_meta = task_meta_for_stateful_subchat(config);
+
+    ThreadParams {
+        id: chat_id.to_string(),
+        title: config
+            .title
+            .clone()
+            .unwrap_or_else(|| "Subchat".to_string()),
+        model: config.model.clone(),
+        mode: config.mode.clone(),
+        tool_use,
+        task_meta,
+        worktree: config.worktree.clone(),
+        parent_id: config.parent_id.clone(),
+        link_type: config.link_type.clone(),
+        root_chat_id: config.root_chat_id.clone(),
+        buddy_meta: config.buddy_meta.clone(),
+        ..Default::default()
+    }
+}
+
+fn is_subagentic_link_type(link_type: &str) -> bool {
+    !matches!(link_type, "handoff" | "mode_transition" | "branch")
+}
+
+fn task_meta_for_stateful_subchat(config: &SubchatConfig) -> Option<TaskMeta> {
+    let mut task_meta = config.task_meta.clone()?;
+    if task_meta.role == "planner"
+        && config
+            .link_type
+            .as_deref()
+            .map(is_subagentic_link_type)
+            .unwrap_or(false)
+    {
+        task_meta.role = "subchats".to_string();
+    }
+    Some(task_meta)
 }
 
 pub async fn run_subchat(
@@ -516,7 +764,8 @@ pub async fn run_subchat(
             chat_id.clone(),
             config.root_chat_id.clone(),
             config.model.clone(),
-            None,
+            config.task_meta.clone(),
+            config.worktree.clone(),
             config.abort_flag.clone(),
         )
         .await,
@@ -553,26 +802,7 @@ pub async fn run_subchat(
     }
 
     if config.stateful {
-        let tool_use_str = match &config.tools {
-            ToolsPolicy::All => "agent".to_string(),
-            ToolsPolicy::None => "none".to_string(),
-            ToolsPolicy::Only(v) => v.join(","),
-        };
-
-        let thread = ThreadParams {
-            id: chat_id.clone(),
-            title: config
-                .title
-                .clone()
-                .unwrap_or_else(|| "Subchat".to_string()),
-            model: config.model.clone(),
-            mode: config.mode.clone(),
-            tool_use: tool_use_str,
-            parent_id: config.parent_id.clone(),
-            link_type: config.link_type.clone(),
-            ..Default::default()
-        };
-
+        let thread = stateful_thread_from_config(&chat_id, &config);
         save_trajectory_as(gcx.clone(), &thread, &current_messages).await;
     }
 
@@ -621,6 +851,7 @@ pub async fn run_subchat_once(
             config.root_chat_id.clone(),
             config.model.clone(),
             None,
+            None,
         )
         .await,
     ));
@@ -660,6 +891,8 @@ pub async fn run_subchat_once_with_parent(
     parent_subchat_tx: Arc<AMutex<mpsc::UnboundedSender<Value>>>,
     parent_abort_flag: Arc<AtomicBool>,
     parent_depth: usize,
+    parent_task_meta: Option<TaskMeta>,
+    parent_worktree: Option<WorktreeMeta>,
 ) -> Result<SubchatResult, String> {
     let config = resolve_subchat_config_with_parent(
         gcx.clone(),
@@ -675,6 +908,8 @@ pub async fn run_subchat_once_with_parent(
         false,
         None,
         "agent".to_string(),
+        parent_task_meta,
+        parent_worktree,
         Some(parent_tool_call_id),
         Some(parent_subchat_tx),
         Some(parent_abort_flag),
@@ -900,7 +1135,8 @@ fn truncate_args(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
-    let boundary = s.char_indices()
+    let boundary = s
+        .char_indices()
         .take_while(|(i, _)| *i < max)
         .last()
         .map(|(i, c)| i + c.len_utf8())
@@ -918,9 +1154,14 @@ async fn execute_pending_tool_calls(
     max_steps: usize,
     tx_toolid_mb: Option<String>,
 ) -> Result<Vec<ChatMessage>, String> {
-    let (gcx, n_ctx) = {
+    let (gcx, n_ctx, task_meta, worktree) = {
         let ccx_locked = ccx.lock().await;
-        (ccx_locked.global_context.clone(), ccx_locked.n_ctx)
+        (
+            ccx_locked.global_context.clone(),
+            ccx_locked.n_ctx,
+            ccx_locked.task_meta.clone(),
+            ccx_locked.execution_scope_worktree(),
+        )
     };
     let last = match messages.last() {
         Some(m) => m,
@@ -957,6 +1198,8 @@ async fn execute_pending_tool_calls(
         model: model_id.to_string(),
         mode: mode_id.to_string(),
         context_tokens_cap: Some(n_ctx),
+        task_meta,
+        worktree,
         ..Default::default()
     };
 
@@ -1041,12 +1284,14 @@ async fn subchat_stream(
     only_deterministic_messages: bool,
     progress_tool_call_id: Option<&str>,
 ) -> Result<Vec<Vec<ChatMessage>>, String> {
-    let (gcx, effective_n_ctx, abort_flag) = {
+    let (gcx, effective_n_ctx, abort_flag, task_meta, worktree) = {
         let ccx_locked = ccx.lock().await;
         (
             ccx_locked.global_context.clone(),
             ccx_locked.n_ctx,
             ccx_locked.abort_flag.clone(),
+            ccx_locked.task_meta.clone(),
+            ccx_locked.execution_scope_worktree(),
         )
     };
 
@@ -1072,6 +1317,7 @@ async fn subchat_stream(
         context_tokens_cap: Some(capped_n_ctx),
         include_project_info: true,
         request_attempt_id: Uuid::new_v4().to_string(),
+        worktree: worktree.clone(),
     };
 
     let thread = ThreadParams {
@@ -1079,6 +1325,8 @@ async fn subchat_stream(
         model: model_id.to_string(),
         mode: mode_id.to_string(),
         context_tokens_cap: Some(capped_n_ctx),
+        task_meta,
+        worktree,
         ..Default::default()
     };
 
@@ -1105,8 +1353,16 @@ async fn subchat_stream(
 
     let messages_count = messages.len();
     let tools_count = tools.len();
+    let mode_for_stats = canonicalize_mode_for_stats(mode_id);
 
-    let (stats_chat_id, stats_root_chat_id, stats_task_id, stats_task_role, stats_agent_id, stats_card_id) = {
+    let (
+        stats_chat_id,
+        stats_root_chat_id,
+        stats_task_id,
+        stats_task_role,
+        stats_agent_id,
+        stats_card_id,
+    ) = {
         let ccx_locked = ccx.lock().await;
         let tm = ccx_locked.task_meta.as_ref();
         (
@@ -1144,12 +1400,13 @@ async fn subchat_stream(
         supports_tools: model_rec.supports_tools,
         supports_reasoning: model_rec.has_reasoning_support(),
         reasoning_type: model_rec.reasoning_type_string(),
-        supports_temperature: model_rec.supports_temperature
+        supports_temperature: model_rec.supports_temperature,
     };
 
     let progress_sender: Option<mpsc::UnboundedSender<Value>> = if progress_tool_call_id.is_some() {
         let subchat_tx_arc = ccx.lock().await.subchat_tx.clone();
-        let x = Some(subchat_tx_arc.lock().await.clone()); x
+        let x = Some(subchat_tx_arc.lock().await.clone());
+        x
     } else {
         None
     };
@@ -1178,7 +1435,7 @@ async fn subchat_stream(
                 duration_ms,
                 chat_id: stats_chat_id,
                 root_chat_id: Some(stats_root_chat_id),
-                mode: mode_id.to_string(),
+                mode: mode_for_stats.clone(),
                 task_id: stats_task_id,
                 task_role: stats_task_role,
                 agent_id: stats_agent_id,
@@ -1201,7 +1458,6 @@ async fn subchat_stream(
                 cache_creation_tokens: None,
                 total_tokens: 0,
                 cost_usd: None,
-                cost_coins: None,
             };
             if let Some(sender) = &gcx.read().await.llm_stats_sender {
                 if sender.try_send(event).is_err() {
@@ -1211,7 +1467,6 @@ async fn subchat_stream(
         }
         Ok(ref results_ok) => {
             let usage = results_ok.first().and_then(|r| r.usage.as_ref());
-            let cost_coins = results_ok.first().map(|r| &r.extra).and_then(|e| sum_metering_coins(e));
             let event = LlmCallEvent {
                 id: uuid::Uuid::new_v4().to_string(),
                 ts_start: call_ts_start,
@@ -1219,7 +1474,7 @@ async fn subchat_stream(
                 duration_ms,
                 chat_id: stats_chat_id,
                 root_chat_id: Some(stats_root_chat_id),
-                mode: mode_id.to_string(),
+                mode: mode_for_stats.clone(),
                 task_id: stats_task_id,
                 task_role: stats_task_role,
                 agent_id: stats_agent_id,
@@ -1241,8 +1496,9 @@ async fn subchat_stream(
                 cache_read_tokens: usage.and_then(|u| u.cache_read_tokens),
                 cache_creation_tokens: usage.and_then(|u| u.cache_creation_tokens),
                 total_tokens: usage.map(|u| u.total_tokens).unwrap_or(0),
-                cost_usd: usage.and_then(|u| u.metering_usd.as_ref()).map(|m| m.total_usd),
-                cost_coins,
+                cost_usd: usage
+                    .and_then(|u| u.metering_usd.as_ref())
+                    .map(|m| m.total_usd),
             };
             if let Some(sender) = &gcx.read().await.llm_stats_sender {
                 if sender.try_send(event).is_err() {
@@ -1336,31 +1592,9 @@ fn update_usage_from_messages(usage: &mut ChatUsage, messages: &[Vec<ChatMessage
 }
 
 fn aggregate_metering_from_messages(
-    messages: &[ChatMessage],
+    _messages: &[ChatMessage],
 ) -> serde_json::Map<String, serde_json::Value> {
-    let mut aggregated = serde_json::Map::new();
-    let mut last_balance: Option<serde_json::Value> = None;
-
-    for msg in messages.iter().filter(|m| m.role == "assistant") {
-        for (key, value) in &msg.extra {
-            if key.starts_with("metering_") {
-                if let Some(num) = value.as_f64() {
-                    if key == "metering_balance" {
-                        last_balance = Some(serde_json::json!(num));
-                    } else {
-                        let current = aggregated.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        aggregated.insert(key.clone(), serde_json::json!(current + num));
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(balance) = last_balance {
-        aggregated.insert("metering_balance".to_string(), balance);
-    }
-
-    aggregated
+    serde_json::Map::new()
 }
 
 async fn subchat_single_internal(
@@ -1398,10 +1632,7 @@ async fn subchat_single_internal(
         }
     };
 
-    let tools = tools_desclist
-        .into_iter()
-        .filter(|x| x.is_supported_by(model_id))
-        .collect::<Vec<_>>();
+    let tools = tools_desclist;
 
     subchat_stream(
         ccx.clone(),
@@ -1419,126 +1650,386 @@ async fn subchat_single_internal(
     .await
 }
 #[cfg(test)]
-mod aggregate_metering_tests {
-    use super::aggregate_metering_from_messages;
-    use crate::call_validation::{ChatMessage, ChatContent};
-    use serde_json::json;
+mod subchat_tests {
+    use super::{
+        resolve_subchat_model, resolve_subchat_params, stateful_thread_from_config, SubchatConfig,
+        ToolsPolicy,
+    };
+    use crate::call_validation::{ChatModelType, ReasoningEffort, SubchatParameters};
+    use crate::chat::types::TaskMeta;
+    use crate::caps::{BaseModelRecord, ChatModelRecord, CodeAssistantCaps};
+    use crate::global_context::tests::make_test_gcx;
+    use crate::worktrees::types::WorktreeMeta;
+    use crate::yaml_configs::project_configs_bootstrap::global_configs_try_create_all;
+    use std::fs;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn assistant_msg_with_metering(extra: serde_json::Map<String, serde_json::Value>) -> ChatMessage {
-        ChatMessage {
-            role: "assistant".to_string(),
-            content: ChatContent::SimpleText("test".to_string()),
-            extra,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_coins_are_summed() {
-        let mut extra1 = serde_json::Map::new();
-        extra1.insert("metering_coins_prompt".to_string(), json!(10.0));
-        extra1.insert("metering_coins_generated".to_string(), json!(5.0));
-
-        let mut extra2 = serde_json::Map::new();
-        extra2.insert("metering_coins_prompt".to_string(), json!(20.0));
-        extra2.insert("metering_coins_generated".to_string(), json!(3.0));
-
-        let messages = vec![
-            assistant_msg_with_metering(extra1),
-            assistant_msg_with_metering(extra2),
-        ];
-
-        let result = aggregate_metering_from_messages(&messages);
-        assert_eq!(result.get("metering_coins_prompt").unwrap().as_f64().unwrap(), 30.0);
-        assert_eq!(result.get("metering_coins_generated").unwrap().as_f64().unwrap(), 8.0);
-    }
-
-    #[test]
-    fn test_balance_takes_last_value() {
-        let mut extra1 = serde_json::Map::new();
-        extra1.insert("metering_balance".to_string(), json!(50000));
-        extra1.insert("metering_coins_prompt".to_string(), json!(10.0));
-
-        let mut extra2 = serde_json::Map::new();
-        extra2.insert("metering_balance".to_string(), json!(49500));
-        extra2.insert("metering_coins_prompt".to_string(), json!(5.0));
-
-        let mut extra3 = serde_json::Map::new();
-        extra3.insert("metering_balance".to_string(), json!(49000));
-        extra3.insert("metering_coins_prompt".to_string(), json!(7.0));
-
-        let messages = vec![
-            assistant_msg_with_metering(extra1),
-            assistant_msg_with_metering(extra2),
-            assistant_msg_with_metering(extra3),
-        ];
-
-        let result = aggregate_metering_from_messages(&messages);
-        assert_eq!(result.get("metering_balance").unwrap().as_f64().unwrap(), 49000.0);
-        assert_eq!(result.get("metering_coins_prompt").unwrap().as_f64().unwrap(), 22.0);
-    }
-
-    #[test]
-    fn test_non_assistant_messages_ignored() {
-        let mut extra_user = serde_json::Map::new();
-        extra_user.insert("metering_coins_prompt".to_string(), json!(999.0));
-        extra_user.insert("metering_balance".to_string(), json!(999999));
-
-        let mut extra_assistant = serde_json::Map::new();
-        extra_assistant.insert("metering_coins_prompt".to_string(), json!(10.0));
-        extra_assistant.insert("metering_balance".to_string(), json!(45000));
-
-        let messages = vec![
-            ChatMessage {
-                role: "user".to_string(),
-                content: ChatContent::SimpleText("hi".to_string()),
-                extra: extra_user,
+    fn chat_model_record(id: &str, n_ctx: usize, endpoint: &str) -> Arc<ChatModelRecord> {
+        Arc::new(ChatModelRecord {
+            base: BaseModelRecord {
+                id: id.to_string(),
+                name: id.to_string(),
+                n_ctx,
+                endpoint: endpoint.to_string(),
                 ..Default::default()
             },
-            assistant_msg_with_metering(extra_assistant),
-        ];
+            max_output_tokens: Some(128_000),
+            ..Default::default()
+        })
+    }
 
-        let result = aggregate_metering_from_messages(&messages);
-        assert_eq!(result.get("metering_coins_prompt").unwrap().as_f64().unwrap(), 10.0);
-        assert_eq!(result.get("metering_balance").unwrap().as_f64().unwrap(), 45000.0);
+    fn sample_worktree() -> (tempfile::TempDir, WorktreeMeta) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("worktree");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&source).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let source = fs::canonicalize(source).unwrap();
+        (
+            temp,
+            WorktreeMeta {
+                id: "wt-subchat".to_string(),
+                kind: "task_agent".to_string(),
+                root,
+                source_workspace_root: source.clone(),
+                repo_root: source,
+                branch: Some("feature".to_string()),
+                base_branch: Some("main".to_string()),
+                base_commit: Some("base".to_string()),
+                task_id: Some("task-1".to_string()),
+                card_id: Some("card-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                enforce: true,
+            },
+        )
+    }
+
+    async fn install_caps(
+        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        caps: CodeAssistantCaps,
+    ) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_add(60);
+        let mut gcx_locked = gcx.write().await;
+        gcx_locked.caps = Some(Arc::new(caps));
+        gcx_locked.caps_last_attempted_ts = now;
     }
 
     #[test]
-    fn test_empty_messages() {
-        let result = aggregate_metering_from_messages(&[]);
-        assert!(result.is_empty());
+    fn subchat_worktree_stateful_thread_from_config_carries_scope() {
+        let (_temp, worktree) = sample_worktree();
+        let task_meta = TaskMeta {
+            task_id: "task-1".to_string(),
+            role: "agents".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            card_id: Some("card-1".to_string()),
+        };
+        let config = SubchatConfig {
+            tool_name: "subagent".to_string(),
+            stateful: true,
+            chat_id: None,
+            title: Some("Subchat".to_string()),
+            parent_id: Some("parent".to_string()),
+            link_type: Some("subagent".to_string()),
+            root_chat_id: Some("root".to_string()),
+            tools: ToolsPolicy::Only(vec!["cat".to_string()]),
+            max_steps: 3,
+            prepend_system_prompt: false,
+            wrap_up: None,
+            task_meta: Some(task_meta.clone()),
+            worktree: Some(worktree.clone()),
+            model: "model".to_string(),
+            mode: "agent".to_string(),
+            n_ctx: 4096,
+            max_new_tokens: 512,
+            temperature: None,
+            reasoning_effort: Some(ReasoningEffort::Low),
+            parent_tool_call_id: None,
+            parent_subchat_tx: None,
+            abort_flag: None,
+            subchat_depth: 1,
+            buddy_meta: None,
+        };
+
+        let thread = stateful_thread_from_config("subchat-1", &config);
+
+        assert_eq!(thread.id, "subchat-1");
+        assert_eq!(thread.task_meta, Some(task_meta));
+        assert_eq!(thread.worktree, Some(worktree));
+        assert_eq!(thread.tool_use, "cat");
+        assert_eq!(thread.parent_id.as_deref(), Some("parent"));
+        assert_eq!(thread.root_chat_id.as_deref(), Some("root"));
     }
 
     #[test]
-    fn test_non_metering_keys_ignored() {
-        let mut extra = serde_json::Map::new();
-        extra.insert("metering_coins_prompt".to_string(), json!(10.0));
-        extra.insert("some_other_field".to_string(), json!(42));
+    fn stateful_subchat_from_planner_uses_hidden_task_role() {
+        let task_meta = TaskMeta {
+            task_id: "task-1".to_string(),
+            role: "planner".to_string(),
+            agent_id: None,
+            card_id: None,
+        };
+        let config = SubchatConfig {
+            tool_name: "strategic_planning_gather_files".to_string(),
+            stateful: true,
+            chat_id: None,
+            title: Some("Strategic Planning: Gathering Files".to_string()),
+            parent_id: Some("planner-task-1-1".to_string()),
+            link_type: Some("gather_files".to_string()),
+            root_chat_id: Some("planner-task-1-1".to_string()),
+            tools: ToolsPolicy::Only(vec!["cat".to_string(), "tree".to_string()]),
+            max_steps: 3,
+            prepend_system_prompt: false,
+            wrap_up: None,
+            task_meta: Some(task_meta),
+            worktree: None,
+            model: "model".to_string(),
+            mode: "agent".to_string(),
+            n_ctx: 4096,
+            max_new_tokens: 512,
+            temperature: None,
+            reasoning_effort: None,
+            parent_tool_call_id: None,
+            parent_subchat_tx: None,
+            abort_flag: None,
+            subchat_depth: 1,
+            buddy_meta: None,
+        };
 
-        let messages = vec![assistant_msg_with_metering(extra)];
-        let result = aggregate_metering_from_messages(&messages);
+        let thread = stateful_thread_from_config("subchat-1", &config);
 
-        assert_eq!(result.len(), 1);
-        assert!(result.get("some_other_field").is_none());
+        assert_eq!(
+            thread.task_meta.as_ref().map(|m| m.role.as_str()),
+            Some("subchats")
+        );
+        assert_eq!(
+            thread.task_meta.as_ref().map(|m| m.task_id.as_str()),
+            Some("task-1")
+        );
+        assert_eq!(thread.parent_id.as_deref(), Some("planner-task-1-1"));
+        assert_eq!(thread.link_type.as_deref(), Some("gather_files"));
+        assert_eq!(thread.root_chat_id.as_deref(), Some("planner-task-1-1"));
     }
 
     #[test]
-    fn test_balance_absent_from_some_messages() {
-        let mut extra1 = serde_json::Map::new();
-        extra1.insert("metering_balance".to_string(), json!(50000));
-        extra1.insert("metering_coins_prompt".to_string(), json!(10.0));
+    fn subchat_worktree_config_fields_carry_parent_scope() {
+        let (_temp, worktree) = sample_worktree();
+        let task_meta = TaskMeta {
+            task_id: "task-1".to_string(),
+            role: "agents".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            card_id: Some("card-1".to_string()),
+        };
+        let config = SubchatConfig {
+            tool_name: "subagent".to_string(),
+            stateful: false,
+            chat_id: None,
+            title: None,
+            parent_id: None,
+            link_type: None,
+            root_chat_id: None,
+            tools: ToolsPolicy::All,
+            max_steps: 1,
+            prepend_system_prompt: false,
+            wrap_up: None,
+            task_meta: Some(task_meta.clone()),
+            worktree: Some(worktree.clone()),
+            model: "model".to_string(),
+            mode: "agent".to_string(),
+            n_ctx: 4096,
+            max_new_tokens: 512,
+            temperature: None,
+            reasoning_effort: None,
+            parent_tool_call_id: None,
+            parent_subchat_tx: None,
+            abort_flag: None,
+            subchat_depth: 1,
+            buddy_meta: None,
+        };
 
-        let mut extra2 = serde_json::Map::new();
-        extra2.insert("metering_coins_prompt".to_string(), json!(5.0));
+        assert_eq!(config.task_meta, Some(task_meta));
+        assert_eq!(config.worktree, Some(worktree));
+    }
 
-        let messages = vec![
-            assistant_msg_with_metering(extra1),
-            assistant_msg_with_metering(extra2),
-        ];
+    #[tokio::test]
+    async fn test_resolve_subchat_params_normalizes_code_review_for_smaller_model() {
+        let gcx = make_test_gcx().await;
+        let config_dir = gcx.read().await.config_dir.clone();
+        global_configs_try_create_all(&config_dir).await.unwrap();
 
-        let result = aggregate_metering_from_messages(&messages);
-        assert_eq!(result.get("metering_balance").unwrap().as_f64().unwrap(), 50000.0);
-        assert_eq!(result.get("metering_coins_prompt").unwrap().as_f64().unwrap(), 15.0);
+        let thinking_model_id = "claude_code/claude-opus-4-6".to_string();
+        let mut caps = CodeAssistantCaps::default();
+        caps.chat_models.insert(
+            thinking_model_id.clone(),
+            chat_model_record(
+                &thinking_model_id,
+                200_000,
+                "https://api.anthropic.com/v1/messages",
+            ),
+        );
+        caps.defaults.chat_default_model = thinking_model_id.clone();
+        caps.defaults.chat_light_model = thinking_model_id.clone();
+        caps.defaults.chat_thinking_model = thinking_model_id;
+
+        install_caps(gcx.clone(), caps).await;
+
+        let params = resolve_subchat_params(gcx, "code_review").await.unwrap();
+        let extra_budget = (params.subchat_n_ctx as f32 * 0.06) as usize;
+
+        assert_eq!(params.subchat_n_ctx, 200_000);
+        assert!(
+            params.subchat_max_new_tokens + params.subchat_tokens_for_rag + extra_budget
+                < params.subchat_n_ctx,
+            "normalized code_review budget must fit the clamped model context window"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_subchat_model_errors_when_light_model_missing() {
+        let gcx = make_test_gcx().await;
+        let default_model_id = "openai/gpt-4o".to_string();
+
+        let mut caps = CodeAssistantCaps::default();
+        caps.chat_models.insert(
+            default_model_id.clone(),
+            chat_model_record(
+                &default_model_id,
+                128_000,
+                "https://api.openai.com/v1/chat/completions",
+            ),
+        );
+        caps.defaults.chat_default_model = default_model_id;
+
+        install_caps(gcx.clone(), caps).await;
+
+        let params = SubchatParameters {
+            subchat_model_type: ChatModelType::Light,
+            subchat_model: String::new(),
+            subchat_n_ctx: 128_000,
+            subchat_max_new_tokens: 8_192,
+            subchat_temperature: None,
+            subchat_tokens_for_rag: 0,
+            subchat_reasoning_effort: None,
+        };
+
+        let err = resolve_subchat_model(gcx, &params).await.unwrap_err();
+        assert!(err.contains("Light model is not set up"));
+        assert!(err.contains("Default model settings"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_subchat_model_errors_when_endpoint_empty() {
+        let gcx = make_test_gcx().await;
+        let default_model_id = "openai/gpt-4o".to_string();
+        let thinking_model_id = "broken/o1".to_string();
+
+        let mut caps = CodeAssistantCaps::default();
+        caps.chat_models.insert(
+            default_model_id.clone(),
+            chat_model_record(
+                &default_model_id,
+                128_000,
+                "https://api.openai.com/v1/chat/completions",
+            ),
+        );
+        caps.chat_models.insert(
+            thinking_model_id.clone(),
+            chat_model_record(&thinking_model_id, 128_000, ""),
+        );
+        caps.defaults.chat_default_model = default_model_id;
+        caps.defaults.chat_light_model = "openai/gpt-4o-mini".to_string();
+        caps.defaults.chat_thinking_model = thinking_model_id.clone();
+
+        install_caps(gcx.clone(), caps).await;
+
+        let params = SubchatParameters {
+            subchat_model_type: ChatModelType::Thinking,
+            subchat_model: String::new(),
+            subchat_n_ctx: 128_000,
+            subchat_max_new_tokens: 8_192,
+            subchat_temperature: None,
+            subchat_tokens_for_rag: 0,
+            subchat_reasoning_effort: None,
+        };
+
+        let err = resolve_subchat_model(gcx, &params).await.unwrap_err();
+        assert!(err.contains("Thinking model 'broken/o1' is misconfigured"));
+        assert!(err.contains("an empty LLM endpoint URL"));
+        assert!(err.contains("Default model settings"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_subchat_model_errors_when_endpoint_relative() {
+        let gcx = make_test_gcx().await;
+        let default_model_id = "openai/gpt-4o".to_string();
+        let thinking_model_id = "openai/o1".to_string();
+
+        let mut caps = CodeAssistantCaps::default();
+        caps.chat_models.insert(
+            default_model_id.clone(),
+            chat_model_record(
+                &default_model_id,
+                128_000,
+                "https://api.openai.com/v1/chat/completions",
+            ),
+        );
+        caps.chat_models.insert(
+            thinking_model_id.clone(),
+            chat_model_record(&thinking_model_id, 128_000, "/v1/chat/completions"),
+        );
+        caps.defaults.chat_default_model = default_model_id;
+        caps.defaults.chat_thinking_model = thinking_model_id.clone();
+
+        install_caps(gcx.clone(), caps).await;
+
+        let params = SubchatParameters {
+            subchat_model_type: ChatModelType::Thinking,
+            subchat_model: String::new(),
+            subchat_n_ctx: 128_000,
+            subchat_max_new_tokens: 8_192,
+            subchat_temperature: None,
+            subchat_tokens_for_rag: 0,
+            subchat_reasoning_effort: None,
+        };
+
+        let err = resolve_subchat_model(gcx, &params).await.unwrap_err();
+        assert!(err.contains("Thinking model 'openai/o1' is misconfigured"));
+        assert!(err.contains("an invalid LLM endpoint URL"));
+        assert!(err.contains("Default model settings"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_subchat_params_names_gather_files_light_model_requirement() {
+        let gcx = make_test_gcx().await;
+        let config_dir = gcx.read().await.config_dir.clone();
+        global_configs_try_create_all(&config_dir).await.unwrap();
+
+        let thinking_model_id = "openai/gpt-5".to_string();
+        let mut caps = CodeAssistantCaps::default();
+        caps.chat_models.insert(
+            thinking_model_id.clone(),
+            chat_model_record(
+                &thinking_model_id,
+                128_000,
+                "https://api.openai.com/v1/chat/completions",
+            ),
+        );
+        caps.defaults.chat_default_model = thinking_model_id.clone();
+        caps.defaults.chat_thinking_model = thinking_model_id;
+
+        install_caps(gcx.clone(), caps).await;
+
+        let err = resolve_subchat_params(gcx, "code_review_gather_files")
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("Light model required by subagent 'code_review_gather_files'"));
+        assert!(err.contains("model_type: light"));
+        assert!(err.contains("Default model settings"));
     }
 }
-

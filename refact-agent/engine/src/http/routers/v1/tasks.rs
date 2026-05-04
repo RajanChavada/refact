@@ -19,6 +19,8 @@ use crate::tasks::storage;
 #[derive(Deserialize)]
 pub struct CreateTaskRequest {
     pub name: String,
+    #[serde(default)]
+    pub target_files: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +42,8 @@ pub enum BoardPatch {
         depends_on: Vec<String>,
         #[serde(default)]
         instructions: String,
+        #[serde(default)]
+        target_files: Vec<String>,
     },
     UpdateCard {
         id: String,
@@ -51,6 +55,8 @@ pub enum BoardPatch {
         depends_on: Option<Vec<String>>,
         #[serde(default)]
         instructions: Option<String>,
+        #[serde(default)]
+        target_files: Option<Vec<String>>,
     },
     MoveCard {
         id: String,
@@ -108,9 +114,38 @@ pub async fn handle_create_task(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskMeta>, (StatusCode, String)> {
-    let meta = storage::create_task(gcx, &req.name)
+    let meta = storage::create_task(gcx.clone(), &req.name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if !req.target_files.is_empty() {
+        let now = Utc::now().to_rfc3339();
+        let mut board = storage::load_board(gcx.clone(), &meta.id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        board.cards.push(BoardCard {
+            id: "targets".to_string(),
+            title: "Target files".to_string(),
+            column: "planned".into(),
+            priority: "P1".into(),
+            depends_on: vec![],
+            instructions: String::new(),
+            assignee: None,
+            agent_chat_id: None,
+            status_updates: vec![],
+            final_report: None,
+            created_at: now,
+            started_at: None,
+            last_heartbeat_at: None,
+            completed_at: None,
+            agent_branch: None,
+            agent_worktree: None,
+            agent_worktree_name: None,
+            target_files: req.target_files,
+        });
+        storage::save_board(gcx, &meta.id, &board)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    }
     Ok(Json(meta))
 }
 
@@ -184,6 +219,7 @@ pub async fn handle_patch_board(
             priority,
             depends_on,
             instructions,
+            target_files,
         } => {
             if board.cards.iter().any(|c| c.id == id) {
                 return Err((
@@ -204,10 +240,12 @@ pub async fn handle_patch_board(
                 final_report: None,
                 created_at: now.clone(),
                 started_at: None,
+                last_heartbeat_at: None,
                 completed_at: None,
                 agent_branch: None,
                 agent_worktree: None,
                 agent_worktree_name: None,
+                target_files,
             });
         }
         BoardPatch::UpdateCard {
@@ -216,6 +254,7 @@ pub async fn handle_patch_board(
             priority,
             depends_on,
             instructions,
+            target_files,
         } => {
             let card = board
                 .get_card_mut(&id)
@@ -231,6 +270,9 @@ pub async fn handle_patch_board(
             }
             if let Some(i) = instructions {
                 card.instructions = i;
+            }
+            if let Some(files) = target_files {
+                card.target_files = files;
             }
         }
         BoardPatch::MoveCard { id, column } => {
@@ -353,19 +395,77 @@ pub async fn handle_update_task_status(
     let mut meta = storage::load_task_meta(gcx.clone(), &task_id)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
+    let old_status = meta.status;
     meta.status = req.status;
     meta.updated_at = Utc::now().to_rfc3339();
     storage::save_task_meta(gcx.clone(), &task_id, &meta)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     crate::tasks::events::emit_task_event(
-        gcx,
+        gcx.clone(),
         TaskEvent::TaskUpdated {
-            task_id,
+            task_id: task_id.clone(),
             meta: meta.clone(),
         },
     )
     .await;
+    if old_status != meta.status {
+        match meta.status {
+            TaskStatus::Completed => {
+                crate::buddy::actor::buddy_apply(
+                    gcx.clone(),
+                    crate::buddy::actor::BuddyMutation {
+                        runtime_event: Some(crate::buddy::actor::make_runtime_event(
+                            "task_completed",
+                            &format!("Task done: {}", meta.name),
+                            "task",
+                            &format!("task_{}", task_id),
+                            "completed",
+                            None,
+                        )),
+                        xp: 30,
+                        activity: Some(crate::buddy::types::BuddyActivity {
+                            icon: "✅".to_string(),
+                            title: format!("Task completed: {}", meta.name),
+                            description: format!("Task {} finished successfully", task_id),
+                            timestamp: Utc::now().to_rfc3339(),
+                            activity_type: "task_completed".to_string(),
+                            chat_id: None,
+                        }),
+                        mood: Some("excited".to_string()),
+                    },
+                )
+                .await;
+            }
+            TaskStatus::Abandoned => {
+                crate::buddy::actor::buddy_apply(
+                    gcx.clone(),
+                    crate::buddy::actor::BuddyMutation {
+                        runtime_event: Some(crate::buddy::actor::make_runtime_event(
+                            "task_abandoned",
+                            &format!("Task abandoned: {}", meta.name),
+                            "task",
+                            &format!("task_{}", task_id),
+                            "failed",
+                            Some("high"),
+                        )),
+                        activity: Some(crate::buddy::types::BuddyActivity {
+                            icon: "🗑️".to_string(),
+                            title: format!("Task abandoned: {}", meta.name),
+                            description: format!("Task {} was abandoned", task_id),
+                            timestamp: Utc::now().to_rfc3339(),
+                            activity_type: "task_abandoned".to_string(),
+                            chat_id: None,
+                        }),
+                        mood: Some("worried".to_string()),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
     Ok(Json(meta))
 }
 
@@ -439,21 +539,9 @@ pub async fn handle_create_planner_chat(
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
-    let existing = storage::list_task_trajectories(gcx.clone(), &task_id, "planner", None)
+    let chat_id = storage::next_planner_chat_id(gcx.clone(), &task_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    let max_num = existing
-        .iter()
-        .filter_map(|t| {
-            t.id.strip_prefix(&format!("planner-{}-", task_id))
-                .and_then(|s| s.parse::<u32>().ok())
-        })
-        .max()
-        .unwrap_or(0);
-
-    let new_num = max_num + 1;
-    let chat_id = format!("planner-{}-{}", task_id, new_num);
 
     crate::chat::trajectories::save_initial_planner_trajectory(gcx, &task_id, &chat_id)
         .await
@@ -523,6 +611,15 @@ pub async fn handle_tasks_subscribe(
                     let envelope = TaskEventEnvelope { seq, event: TaskEvent::Snapshot { tasks } };
                     let json = serde_json::to_string(&envelope).unwrap_or_default();
                     yield Ok::<_, std::convert::Infallible>(format!("data: {}\n\n", json));
+                }
+
+                _ = async {
+                    let shutdown_flag = gcx.read().await.shutdown_flag.clone();
+                    while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                } => {
+                    break;
                 }
             }
         }

@@ -16,6 +16,9 @@ defaults:
   run:
     working-directory: refact-agent/gui
 
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+
 jobs:
   build:
     runs-on: ubuntu-latest

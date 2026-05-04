@@ -12,7 +12,7 @@ pub enum WireFormat {
     OpenaiChatCompletions,
     OpenaiResponses,
     AnthropicMessages,
-    Refact,
+    OllamaNative,
 }
 
 impl Default for WireFormat {
@@ -27,7 +27,7 @@ impl std::fmt::Display for WireFormat {
             Self::OpenaiChatCompletions => write!(f, "openai_chat_completions"),
             Self::OpenaiResponses => write!(f, "openai_responses"),
             Self::AnthropicMessages => write!(f, "anthropic_messages"),
-            Self::Refact => write!(f, "refact"),
+            Self::OllamaNative => write!(f, "ollama_native"),
         }
     }
 }
@@ -49,13 +49,14 @@ pub struct AdapterSettings {
     pub reasoning_type: Option<String>,
     pub supports_temperature: bool,
     pub supports_max_completion_tokens: bool,
-    pub support_metadata: bool,
     pub eof_is_done: bool,
     pub supports_web_search: bool,
+    pub supports_cache_control: bool,
 }
 
 pub trait LlmWireAdapter: Send + Sync {
-    fn build_http(&self, req: &LlmRequest, settings: &AdapterSettings) -> Result<HttpParts, String>;
+    fn build_http(&self, req: &LlmRequest, settings: &AdapterSettings)
+        -> Result<HttpParts, String>;
 
     fn parse_stream_chunk(&self, data: &str) -> Result<Vec<LlmStreamDelta>, StreamParseError>;
 }
@@ -69,24 +70,27 @@ pub enum StreamParseError {
 
 use std::sync::OnceLock;
 
-static OPENAI_CHAT_ADAPTER: OnceLock<crate::llm::adapters::openai_chat::OpenAiChatAdapter> = OnceLock::new();
-static OPENAI_RESPONSES_ADAPTER: OnceLock<crate::llm::adapters::openai_responses::OpenAiResponsesAdapter> = OnceLock::new();
-static ANTHROPIC_ADAPTER: OnceLock<crate::llm::adapters::anthropic::AnthropicAdapter> = OnceLock::new();
-static REFACT_ADAPTER: OnceLock<crate::llm::adapters::refact::RefactAdapter> = OnceLock::new();
+static OPENAI_CHAT_ADAPTER: OnceLock<crate::llm::adapters::openai_chat::OpenAiChatAdapter> =
+    OnceLock::new();
+static OPENAI_RESPONSES_ADAPTER: OnceLock<
+    crate::llm::adapters::openai_responses::OpenAiResponsesAdapter,
+> = OnceLock::new();
+static ANTHROPIC_ADAPTER: OnceLock<crate::llm::adapters::anthropic::AnthropicAdapter> =
+    OnceLock::new();
+static OLLAMA_ADAPTER: OnceLock<crate::llm::adapters::ollama::OllamaAdapter> = OnceLock::new();
 
 pub fn get_adapter(format: WireFormat) -> &'static dyn LlmWireAdapter {
     match format {
         WireFormat::OpenaiChatCompletions => {
             OPENAI_CHAT_ADAPTER.get_or_init(|| crate::llm::adapters::openai_chat::OpenAiChatAdapter)
         }
-        WireFormat::OpenaiResponses => {
-            OPENAI_RESPONSES_ADAPTER.get_or_init(|| crate::llm::adapters::openai_responses::OpenAiResponsesAdapter)
-        }
+        WireFormat::OpenaiResponses => OPENAI_RESPONSES_ADAPTER
+            .get_or_init(|| crate::llm::adapters::openai_responses::OpenAiResponsesAdapter),
         WireFormat::AnthropicMessages => {
             ANTHROPIC_ADAPTER.get_or_init(|| crate::llm::adapters::anthropic::AnthropicAdapter)
         }
-        WireFormat::Refact => {
-            REFACT_ADAPTER.get_or_init(|| crate::llm::adapters::refact::RefactAdapter)
+        WireFormat::OllamaNative => {
+            OLLAMA_ADAPTER.get_or_init(|| crate::llm::adapters::ollama::OllamaAdapter)
         }
     }
 }
@@ -108,8 +112,14 @@ const PROTECTED_HEADERS: &[&str] = &[
 pub fn insert_extra_headers(headers: &mut HeaderMap, extra_headers: &HashMap<String, String>) {
     for (key, value) in extra_headers {
         let key_lower = key.to_lowercase();
+        if key_lower.starts_with("x-refact-internal-") {
+            continue;
+        }
         if PROTECTED_HEADERS.contains(&key_lower.as_str()) {
-            tracing::warn!("extra_headers attempted to override protected header '{}', ignoring", key);
+            tracing::warn!(
+                "extra_headers attempted to override protected header '{}', ignoring",
+                key
+            );
             continue;
         }
         if let (Ok(name), Ok(val)) = (
@@ -121,8 +131,8 @@ pub fn insert_extra_headers(headers: &mut HeaderMap, extra_headers: &HashMap<Str
     }
 }
 
-/// Extract Refact-specific extra fields from streaming response chunks.
-/// These include metering, billing, cost, cache fields and provider-specific data.
+/// Extract provider-specific extra fields from streaming response chunks.
+/// These include billing, cost, cache fields and provider-specific data.
 /// Handles both top-level fields and nested fields under "response" wrapper.
 pub fn extract_extra_fields(json: &Value) -> Map<String, Value> {
     let mut result = Map::new();
@@ -132,8 +142,7 @@ pub fn extract_extra_fields(json: &Value) -> Map<String, Value> {
             if val.is_null() {
                 continue;
             }
-            let is_extra = key.starts_with("metering_")
-                || key.starts_with("billing_")
+            let is_extra = key.starts_with("billing_")
                 || key.starts_with("cost_")
                 || key.starts_with("cache_")
                 || key == "system_fingerprint";
@@ -168,10 +177,16 @@ mod tests {
 
     #[test]
     fn test_wire_format_display() {
-        assert_eq!(WireFormat::OpenaiChatCompletions.to_string(), "openai_chat_completions");
+        assert_eq!(
+            WireFormat::OpenaiChatCompletions.to_string(),
+            "openai_chat_completions"
+        );
         assert_eq!(WireFormat::OpenaiResponses.to_string(), "openai_responses");
-        assert_eq!(WireFormat::AnthropicMessages.to_string(), "anthropic_messages");
-        assert_eq!(WireFormat::Refact.to_string(), "refact");
+        assert_eq!(
+            WireFormat::AnthropicMessages.to_string(),
+            "anthropic_messages"
+        );
+        assert_eq!(WireFormat::OllamaNative.to_string(), "ollama_native");
     }
 
     #[test]
@@ -180,14 +195,24 @@ mod tests {
         assert_eq!(json, "\"anthropic_messages\"");
         let parsed: WireFormat = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, WireFormat::AnthropicMessages);
+
+        let json = serde_json::to_string(&WireFormat::OllamaNative).unwrap();
+        assert_eq!(json, "\"ollama_native\"");
+        let parsed: WireFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, WireFormat::OllamaNative);
+    }
+
+    #[test]
+    fn test_ollama_adapter_registration() {
+        let adapter = get_adapter(WireFormat::OllamaNative);
+        let deltas = adapter.parse_stream_chunk(r#"{"done":true}"#).unwrap();
+        assert!(matches!(deltas.last(), Some(LlmStreamDelta::Done)));
     }
 
     #[test]
     fn test_extract_extra_fields_top_level() {
         let json = json!({
             "id": "chatcmpl-123",
-            "metering_balance": 5000,
-            "metering_prompt_tokens_n": 100,
             "billing_amount": 0.01,
             "cost_total": 0.02,
             "cache_status": "hit",
@@ -196,8 +221,6 @@ mod tests {
 
         let extra = extract_extra_fields(&json);
 
-        assert_eq!(extra.get("metering_balance"), Some(&json!(5000)));
-        assert_eq!(extra.get("metering_prompt_tokens_n"), Some(&json!(100)));
         assert_eq!(extra.get("billing_amount"), Some(&json!(0.01)));
         assert_eq!(extra.get("cost_total"), Some(&json!(0.02)));
         assert_eq!(extra.get("cache_status"), Some(&json!("hit")));
@@ -213,30 +236,26 @@ mod tests {
             "type": "response.completed",
             "response": {
                 "id": "resp_123",
-                "metering_balance": 3000,
-                "metering_generated_tokens_n": 50,
                 "system_fingerprint": "fp_nested"
             }
         });
 
         let extra = extract_extra_fields(&json);
 
-        assert_eq!(extra.get("metering_balance"), Some(&json!(3000)));
-        assert_eq!(extra.get("metering_generated_tokens_n"), Some(&json!(50)));
         assert_eq!(extra.get("system_fingerprint"), Some(&json!("fp_nested")));
     }
 
     #[test]
     fn test_extract_extra_fields_ignores_null() {
         let json = json!({
-            "metering_balance": null,
-            "metering_prompt_tokens_n": 100
+            "billing_amount": null,
+            "cost_total": 100
         });
 
         let extra = extract_extra_fields(&json);
 
-        assert!(extra.get("metering_balance").is_none());
-        assert_eq!(extra.get("metering_prompt_tokens_n"), Some(&json!(100)));
+        assert!(extra.get("billing_amount").is_none());
+        assert_eq!(extra.get("cost_total"), Some(&json!(100)));
     }
 
     #[test]
@@ -254,6 +273,10 @@ mod tests {
         extra.insert("x-api-key".to_string(), "HACKED-KEY".to_string());
         extra.insert("content-type".to_string(), "text/plain".to_string());
         extra.insert("X-Custom-Header".to_string(), "allowed-value".to_string());
+        extra.insert(
+            "x-refact-internal-test".to_string(),
+            "internal-value".to_string(),
+        );
 
         insert_extra_headers(&mut headers, &extra);
 
@@ -264,5 +287,6 @@ mod tests {
 
         // Non-protected headers should be added
         assert_eq!(headers.get("X-Custom-Header").unwrap(), "allowed-value");
+        assert!(headers.get("x-refact-internal-test").is_none());
     }
 }

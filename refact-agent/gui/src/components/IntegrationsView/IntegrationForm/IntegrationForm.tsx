@@ -1,4 +1,4 @@
-import { Button, Flex, Grid, Text } from "@radix-ui/themes";
+import { Button, Flex, Grid, Separator, Text } from "@radix-ui/themes";
 import classNames from "classnames";
 import { FC, FormEvent, useEffect } from "react";
 import { useGetIntegrationDataByPathQuery } from "../../../hooks/useGetIntegrationDataByPathQuery";
@@ -16,8 +16,7 @@ import { FormAvailabilityAndDelete } from "./FormAvailabilityAndDelete";
 import { FormFields } from "./FormFields";
 import { FormSmartlinks } from "./FormSmartlinks";
 import styles from "./IntegrationForm.module.css";
-import { MCPLogs } from "./MCPLogs";
-import { toPascalCase } from "../../../utils/toPascalCase";
+import { MCPServerView } from "../MCPServerView";
 
 type IntegrationFormProps = {
   integrationPath: string;
@@ -87,6 +86,122 @@ export const IntegrationForm: FC<IntegrationFormProps> = ({
         isApplying={isApplying}
         isDeletingIntegration={isDeletingIntegration}
       />
+    );
+  }
+
+  if (integration.data.integr_name.includes("mcp")) {
+    return (
+      <Flex width="100%" direction="column" gap="2" pb="8">
+        {integration.data.integr_schema.description && (
+          <Text size="2" color="gray" mb="3">
+            {integration.data.integr_schema.description}
+          </Text>
+        )}
+
+        <form
+          onSubmit={handleSubmit}
+          id={`form-${integration.data.integr_name}`}
+        >
+          <Flex direction="column" gap="2">
+            <Grid mb="0">
+              <FormAvailabilityAndDelete
+                integration={integration.data}
+                isApplying={isApplying}
+                isDeletingIntegration={isDeletingIntegration}
+                formValues={formValues}
+                onDelete={handleDeleteIntegration}
+                onChange={handleUpdateFormField}
+              />
+              <FormSmartlinks
+                integration={integration.data}
+                smartlinks={integration.data.integr_schema.smartlinks}
+              />
+              <FormFields
+                integration={integration.data}
+                importantFields={importantFields}
+                extraFields={extraFields}
+                areExtraFieldsRevealed={areExtraFieldsRevealed}
+                values={formValues}
+                onChange={handleUpdateFormField}
+              />
+            </Grid>
+
+            {Object.keys(extraFields).length > 0 && (
+              <Button
+                variant="soft"
+                type="button"
+                color="gray"
+                size="2"
+                onClick={toggleExtraFields}
+                mb="1"
+                mt={{ initial: "3", xs: "0" }}
+                className={styles.advancedButton}
+              >
+                {areExtraFieldsRevealed
+                  ? "Hide advanced configuration"
+                  : "Show advanced configuration"}
+              </Button>
+            )}
+
+            {!integration.data.integr_schema.confirmation.not_applicable && (
+              <Flex gap="4" mb="3">
+                <Confirmation
+                  confirmationByUser={
+                    areToolConfirmation(formValues?.confirmation)
+                      ? formValues.confirmation
+                      : null
+                  }
+                  confirmationFromValues={
+                    areToolConfirmation(
+                      integration.data.integr_values?.confirmation,
+                    )
+                      ? integration.data.integr_values.confirmation
+                      : null
+                  }
+                  defaultConfirmationObject={
+                    integration.data.integr_schema.confirmation
+                  }
+                  onChange={handleUpdateFormField}
+                />
+              </Flex>
+            )}
+
+            <Flex
+              justify="end"
+              width="100%"
+              position="sticky"
+              bottom="4"
+              right="8"
+            >
+              <Flex gap="4">
+                <Button
+                  color="green"
+                  variant="solid"
+                  type="submit"
+                  size="2"
+                  title={isDisabled ? "Cannot apply, no changes made" : "Apply"}
+                  className={classNames(styles.button, styles.applyButton, {
+                    [styles.disabledButton]: isApplying || isDisabled,
+                  })}
+                  disabled={isDisabled || isApplying}
+                >
+                  {isApplying ? "Applying..." : "Apply"}
+                </Button>
+              </Flex>
+            </Flex>
+          </Flex>
+        </form>
+
+        {integration.data.integr_values !== null && (
+          <>
+            <Separator size="4" />
+            <MCPServerView
+              configPath={integration.data.integr_config_path}
+              integrName={integration.data.integr_name}
+            />
+          </>
+        )}
+      </Flex>
     );
   }
 
@@ -188,14 +303,6 @@ export const IntegrationForm: FC<IntegrationFormProps> = ({
           </Flex>
         </Flex>
       </form>
-
-      {integration.data.integr_values !== null &&
-        integration.data.integr_name.includes("mcp") && (
-          <MCPLogs
-            integrationPath={integration.data.integr_config_path}
-            integrationName={toPascalCase(integration.data.integr_name)}
-          />
-        )}
     </Flex>
   );
 };

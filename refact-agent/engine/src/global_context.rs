@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::Hasher;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,7 +22,6 @@ use crate::files_in_workspace::DocumentsState;
 use crate::integrations::browser_runtime::BrowserRuntime;
 use crate::integrations::sessions::IntegrationSession;
 use crate::privacy::PrivacySettings;
-use crate::telemetry::telemetry_structs;
 use crate::background_tasks::BackgroundTasksHolder;
 use crate::voice::SharedVoiceService;
 use crate::yaml_configs::customization_registry::RegistryCacheManager;
@@ -45,21 +42,6 @@ pub struct CommandLine {
     pub logs_stderr: bool,
     #[structopt(long, default_value = "", help = "Send logs to a file.")]
     pub logs_to_file: String,
-    #[structopt(
-        long,
-        short = "u",
-        default_value = "",
-        help = "URL to use: \"Refact\" for Cloud, or your Server URL. Leave empty for BYOK mode (configure providers via UI)."
-    )]
-    /// Inference server URL, or "Refact" for cloud
-    pub address_url: String,
-    #[structopt(
-        long,
-        short = "k",
-        default_value = "",
-        help = "The API key to authenticate your requests, will appear in HTTP requests this binary makes."
-    )]
-    pub api_key: String,
     #[structopt(
         long,
         help = "Trust self-signed SSL certificates, when connecting to an inference server."
@@ -86,18 +68,6 @@ pub struct CommandLine {
     )]
     pub lsp_stdin_stdout: u16,
 
-    #[structopt(
-        long,
-        default_value = "",
-        help = "End-user client version, such as version of VS Code plugin."
-    )]
-    pub enduser_client_version: String,
-    #[structopt(
-        long,
-        short = "b",
-        help = "Send basic telemetry (counters and errors)."
-    )]
-    pub basic_telemetry: bool,
     #[structopt(
         long,
         short = "v",
@@ -209,27 +179,6 @@ pub struct CommandLine {
         help = "Specify the privacy.yaml, replacing the global one"
     )]
     pub privacy_yaml: String,
-
-    #[structopt(long, help = "An pre-setup active group id")]
-    pub active_group_id: Option<String>,
-}
-
-impl CommandLine {
-    fn create_hash(msg: String) -> String {
-        let mut hasher = DefaultHasher::new();
-        hasher.write(msg.as_bytes());
-        format!("{:x}", hasher.finish())
-    }
-
-    pub fn get_prefix(&self) -> String {
-        // This helps several self-hosting or cloud accounts to not mix
-        Self::create_hash(format!(
-            "{}:{}",
-            self.address_url.clone(),
-            self.api_key.clone()
-        ))[..6]
-            .to_string()
-    }
 }
 
 pub struct AtCommandsPreviewCache {
@@ -272,10 +221,10 @@ pub struct GlobalContext {
     pub caps_reading_lock: Arc<AMutex<bool>>,
     pub caps_last_error: String,
     pub caps_last_attempted_ts: u64,
+    pub models_dev_startup_refresh_attempted: bool,
     pub tokenizer_map: HashMap<String, Option<Arc<Tokenizer>>>,
     pub tokenizer_download_lock: Arc<AMutex<bool>>,
     pub completions_cache: Arc<StdRwLock<CompletionCache>>,
-    pub telemetry: Arc<StdRwLock<telemetry_structs::Storage>>,
     pub vec_db: Arc<AMutex<Option<crate::vecdb::vdb_highlev::VecDb>>>,
     pub vec_db_error: String,
     pub ast_service: Option<Arc<AMutex<AstIndexService>>>,
@@ -287,24 +236,27 @@ pub struct GlobalContext {
     pub integration_sessions: HashMap<String, Arc<AMutex<Box<dyn IntegrationSession>>>>,
     pub browser_runtimes: HashMap<String, Arc<AMutex<BrowserRuntime>>>,
     pub codelens_cache: Arc<AMutex<crate::http::routers::v1::code_lens::CodeLensCache>>,
-    pub active_group_id: Option<String>,
     pub init_shadow_repos_background_task_holder: BackgroundTasksHolder,
     pub init_shadow_repos_lock: Arc<AMutex<bool>>,
     pub git_operations_abort_flag: Arc<AtomicBool>,
     pub app_searchable_id: String,
     pub trajectory_events_tx: Option<tokio::sync::broadcast::Sender<crate::chat::TrajectoryEvent>>,
+    pub workspace_changed_tx: Option<tokio::sync::broadcast::Sender<()>>,
     pub task_events_tx:
         Option<tokio::sync::broadcast::Sender<crate::tasks::events::TaskEventEnvelope>>,
     pub task_events_seq: Option<Arc<std::sync::atomic::AtomicU64>>,
-    pub notification_events_tx: Option<tokio::sync::broadcast::Sender<crate::http::routers::v1::sidebar::NotificationEvent>>,
+    pub notification_events_tx: Option<
+        tokio::sync::broadcast::Sender<crate::http::routers::v1::sidebar::NotificationEvent>,
+    >,
     pub chat_sessions: crate::chat::SessionsMap,
     pub voice_service: SharedVoiceService,
     pub project_registry_cache: Arc<StdRwLock<RegistryCacheManager>>,
     pub providers: Arc<ARwLock<ProviderRegistry>>,
-    // Fast in-memory index for knowledge cards. Built asynchronously.
     pub knowledge_index: Arc<AMutex<KnowledgeIndex>>,
-
     pub llm_stats_sender: Option<tokio::sync::mpsc::Sender<crate::stats::event::LlmCallEvent>>,
+    pub ext_cache_generation: Arc<std::sync::atomic::AtomicU64>,
+    pub buddy: Arc<AMutex<Option<crate::buddy::actor::BuddyService>>>,
+    pub buddy_events_tx: Option<tokio::sync::broadcast::Sender<crate::buddy::events::BuddyEvent>>,
 }
 
 pub type SharedGlobalContext = Arc<ARwLock<GlobalContext>>; // TODO: remove this type alias, confusing
@@ -530,7 +482,7 @@ pub async fn block_until_signal(
             let _ = ask_shutdown_receiver.recv();
             shutdown_flag.store(true, Ordering::SeqCst);
         }) => {
-            info!("graceful shutdown to store telemetry");
+            info!("graceful shutdown requested");
         }
     }
 }
@@ -559,7 +511,7 @@ pub async fn create_global_context(
     let cx = GlobalContext {
         shutdown_flag: Arc::new(AtomicBool::new(false)),
         cmdline: cmdline.clone(),
-        http_client,
+        http_client: http_client.clone(),
         http_client_slowdown: Arc::new(Semaphore::new(2)),
         cache_dir,
         config_dir: config_dir.clone(),
@@ -567,10 +519,10 @@ pub async fn create_global_context(
         caps_reading_lock: Arc::new(AMutex::<bool>::new(false)),
         caps_last_error: String::new(),
         caps_last_attempted_ts: 0,
+        models_dev_startup_refresh_attempted: false,
         tokenizer_map: HashMap::new(),
         tokenizer_download_lock: Arc::new(AMutex::<bool>::new(false)),
         completions_cache: Arc::new(StdRwLock::new(CompletionCache::new())),
-        telemetry: Arc::new(StdRwLock::new(telemetry_structs::Storage::new())),
         vec_db: Arc::new(AMutex::new(None)),
         vec_db_error: String::new(),
         ast_service: None,
@@ -584,12 +536,12 @@ pub async fn create_global_context(
         codelens_cache: Arc::new(AMutex::new(
             crate::http::routers::v1::code_lens::CodeLensCache::default(),
         )),
-        active_group_id: cmdline.active_group_id.clone(),
         init_shadow_repos_background_task_holder: BackgroundTasksHolder::new(vec![]),
         init_shadow_repos_lock: Arc::new(AMutex::new(false)),
         git_operations_abort_flag: Arc::new(AtomicBool::new(false)),
         app_searchable_id: get_app_searchable_id(&workspace_dirs),
         trajectory_events_tx: Some(tokio::sync::broadcast::channel(1024).0),
+        workspace_changed_tx: Some(tokio::sync::broadcast::channel(16).0),
         task_events_tx: Some(tokio::sync::broadcast::channel(1024).0),
         task_events_seq: Some(Arc::new(std::sync::atomic::AtomicU64::new(0))),
         notification_events_tx: Some(tokio::sync::broadcast::channel(256).0),
@@ -597,12 +549,15 @@ pub async fn create_global_context(
         voice_service: crate::voice::VoiceService::new(),
         project_registry_cache: Arc::new(StdRwLock::new(RegistryCacheManager::new())),
         providers: Arc::new(ARwLock::new(
-            load_providers_from_config(&config_dir, &cmdline.address_url, &cmdline.api_key)
+            load_providers_from_config(&config_dir, &http_client)
                 .await
-                .unwrap_or_default()
+                .unwrap_or_default(),
         )),
         knowledge_index: Arc::new(AMutex::new(KnowledgeIndex::empty())),
         llm_stats_sender: None,
+        ext_cache_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        buddy: Arc::new(AMutex::new(None)),
+        buddy_events_tx: Some(tokio::sync::broadcast::channel(256).0),
     };
     let gcx = Arc::new(ARwLock::new(cx));
     crate::files_in_workspace::watcher_init(gcx.clone()).await;
@@ -627,14 +582,10 @@ pub mod tests {
             ping_message: "pong".to_string(),
             logs_stderr: true,
             logs_to_file: String::new(),
-            address_url: "Refact".to_string(),
-            api_key: String::new(),
             insecure: true,
             http_port: 0,
             lsp_port: 0,
             lsp_stdin_stdout: 0,
-            enduser_client_version: String::new(),
-            basic_telemetry: false,
             verbose: false,
             ast: false,
             ast_max_files: 0,
@@ -655,7 +606,6 @@ pub mod tests {
             secrets_yaml: String::new(),
             indexing_yaml: String::new(),
             privacy_yaml: String::new(),
-            active_group_id: None,
         };
 
         let http_client = reqwest::Client::builder()
@@ -674,10 +624,10 @@ pub mod tests {
             caps_reading_lock: Arc::new(AMutex::<bool>::new(false)),
             caps_last_error: String::new(),
             caps_last_attempted_ts: 0,
+            models_dev_startup_refresh_attempted: true,
             tokenizer_map: HashMap::new(),
             tokenizer_download_lock: Arc::new(AMutex::<bool>::new(false)),
             completions_cache: Arc::new(StdRwLock::new(CompletionCache::new())),
-            telemetry: Arc::new(StdRwLock::new(telemetry_structs::Storage::new())),
             vec_db: Arc::new(AMutex::new(None)),
             vec_db_error: String::new(),
             ast_service: None,
@@ -691,12 +641,12 @@ pub mod tests {
             codelens_cache: Arc::new(AMutex::new(
                 crate::http::routers::v1::code_lens::CodeLensCache::default(),
             )),
-            active_group_id: None,
             init_shadow_repos_background_task_holder: BackgroundTasksHolder::new(vec![]),
             init_shadow_repos_lock: Arc::new(AMutex::new(false)),
             git_operations_abort_flag: Arc::new(AtomicBool::new(false)),
             app_searchable_id: "test".to_string(),
             trajectory_events_tx: Some(tokio::sync::broadcast::channel(1024).0),
+            workspace_changed_tx: Some(tokio::sync::broadcast::channel(16).0),
             task_events_tx: Some(tokio::sync::broadcast::channel(1024).0),
             task_events_seq: Some(Arc::new(std::sync::atomic::AtomicU64::new(0))),
             notification_events_tx: Some(tokio::sync::broadcast::channel(256).0),
@@ -706,6 +656,9 @@ pub mod tests {
             providers: Arc::new(ARwLock::new(ProviderRegistry::default())),
             knowledge_index: Arc::new(AMutex::new(KnowledgeIndex::empty())),
             llm_stats_sender: None,
+            ext_cache_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            buddy: Arc::new(AMutex::new(None)),
+            buddy_events_tx: Some(tokio::sync::broadcast::channel(256).0),
         };
         Arc::new(ARwLock::new(cx))
     }

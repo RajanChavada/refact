@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fs;
 use std::sync::Arc;
 use std::path::PathBuf;
 use tokio::sync::RwLock as ARwLock;
@@ -11,6 +10,10 @@ use crate::scratchpads::scratchpad_utils::HasRagResults;
 use super::system_context::{
     self, create_instruction_files_message, create_memories_message, gather_system_context,
     generate_git_info_prompt, gather_git_info, PROJECT_CONTEXT_MARKER,
+};
+use crate::ext::skills_context::{
+    build_skills_context_messages_tracked, build_skills_prompt_text, SkillsTrackingInfo,
+    SKILLS_CONTEXT_MARKER,
 };
 use crate::yaml_configs::project_information::load_project_information_config;
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile, canonical_mode_id};
@@ -77,55 +80,6 @@ async fn _workspace_info(workspace_dirs: &[String], active_file_path: &Option<Pa
     info
 }
 
-pub async fn dig_for_project_summarization_file(
-    gcx: Arc<ARwLock<GlobalContext>>,
-) -> (bool, Option<String>) {
-    match crate::files_correction::get_active_project_path(gcx.clone()).await {
-        Some(active_project_path) => {
-            let summary_path = active_project_path
-                .join(".refact")
-                .join("project_summary.yaml");
-            if !summary_path.exists() {
-                (false, Some(summary_path.to_string_lossy().to_string()))
-            } else {
-                (true, Some(summary_path.to_string_lossy().to_string()))
-            }
-        }
-        None => {
-            tracing::info!("No projects found, project summarization is not relevant.");
-            (false, None)
-        }
-    }
-}
-
-async fn _read_project_summary(summary_path: String) -> Option<String> {
-    match fs::read_to_string(summary_path) {
-        Ok(content) => {
-            if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                if let Some(project_summary) = yaml.get("project_summary") {
-                    match project_summary {
-                        serde_yaml::Value::String(s) => Some(s.clone()),
-                        _ => {
-                            tracing::error!("'project_summary' is not a string in YAML file.");
-                            None
-                        }
-                    }
-                } else {
-                    tracing::error!("Key 'project_summary' not found in YAML file.");
-                    None
-                }
-            } else {
-                tracing::error!("Failed to parse project summary YAML file.");
-                None
-            }
-        }
-        Err(e) => {
-            tracing::error!("Failed to read project summary file: {}", e);
-            None
-        }
-    }
-}
-
 pub async fn system_prompt_add_extra_instructions(
     gcx: Arc<ARwLock<GlobalContext>>,
     system_prompt: String,
@@ -188,7 +142,8 @@ pub async fn system_prompt_add_extra_instructions(
         if include_project_info && config.sections.environment_instructions.enabled {
             let project_dirs = get_project_dirs(gcx.clone()).await;
             let environments = system_context::detect_environments(&project_dirs).await;
-            let mut env_instructions = system_context::generate_environment_instructions(&environments);
+            let mut env_instructions =
+                system_context::generate_environment_instructions(&environments);
             if let Some(max_chars) = config.sections.environment_instructions.max_chars {
                 env_instructions = truncate_to_chars(&env_instructions, max_chars);
             }
@@ -300,22 +255,18 @@ pub async fn system_prompt_add_extra_instructions(
     }
 
     if system_prompt.contains("%PROJECT_SUMMARY%") {
-        if include_project_info {
-            let (exists, summary_path_option) =
-                dig_for_project_summarization_file(gcx.clone()).await;
-            if exists {
-                if let Some(summary_path) = summary_path_option {
-                    if let Some(project_info) = _read_project_summary(summary_path).await {
-                        system_prompt = system_prompt.replace("%PROJECT_SUMMARY%", &project_info);
-                    } else {
-                        system_prompt = system_prompt.replace("%PROJECT_SUMMARY%", "");
-                    }
-                }
-            } else {
-                system_prompt = system_prompt.replace("%PROJECT_SUMMARY%", "");
-            }
+        system_prompt = system_prompt.replace("%PROJECT_SUMMARY%", "");
+    }
+
+    if system_prompt.contains("%SKILLS_INSTRUCTIONS%") {
+        let has_activate = tool_names.contains("activate_skill");
+        let has_deactivate = tool_names.contains("deactivate_skill");
+        if has_activate || has_deactivate {
+            let skills_text =
+                build_skills_prompt_text(gcx.clone(), has_activate, has_deactivate).await;
+            system_prompt = system_prompt.replace("%SKILLS_INSTRUCTIONS%", &skills_text);
         } else {
-            system_prompt = system_prompt.replace("%PROJECT_SUMMARY%", "");
+            system_prompt = system_prompt.replace("%SKILLS_INSTRUCTIONS%", "");
         }
     }
 
@@ -333,7 +284,7 @@ pub async fn system_prompt_add_extra_instructions(
     if system_prompt.contains("%AGENT_EXPLORATION_INSTRUCTIONS%") {
         system_prompt = system_prompt.replace(
             "%AGENT_EXPLORATION_INSTRUCTIONS%",
-            super::prompt_snippets::AGENT_EXPLORATION_INSTRUCTIONS
+            super::prompt_snippets::AGENT_EXPLORATION_INSTRUCTIONS,
         );
     }
 
@@ -349,16 +300,35 @@ pub async fn system_prompt_add_extra_instructions(
     }
 
     if system_prompt.contains("%CD_INSTRUCTIONS%") {
-        system_prompt = system_prompt.replace(
-            "%CD_INSTRUCTIONS%",
-            super::prompt_snippets::CD_INSTRUCTIONS
-        );
+        system_prompt =
+            system_prompt.replace("%CD_INSTRUCTIONS%", super::prompt_snippets::CD_INSTRUCTIONS);
     }
 
     if system_prompt.contains("%SHELL_INSTRUCTIONS%") {
         system_prompt = system_prompt.replace(
             "%SHELL_INSTRUCTIONS%",
-            super::prompt_snippets::SHELL_INSTRUCTIONS
+            super::prompt_snippets::SHELL_INSTRUCTIONS,
+        );
+    }
+
+    if system_prompt.contains("%COMPRESS_HANDOFF_INSTRUCTIONS%") {
+        let has_compress = tool_names.contains("compress_chat_probe")
+            || tool_names.contains("compress_chat_apply");
+        let has_handoff = tool_names.contains("handoff_to_mode");
+        let replacement = if has_compress {
+            super::prompt_snippets::COMPRESS_HANDOFF_INSTRUCTIONS
+        } else if has_handoff {
+            super::prompt_snippets::HANDOFF_ONLY_INSTRUCTIONS
+        } else {
+            ""
+        };
+        system_prompt = system_prompt.replace("%COMPRESS_HANDOFF_INSTRUCTIONS%", replacement);
+    }
+
+    if system_prompt.contains("%RICH_CONTENT_INSTRUCTIONS%") {
+        system_prompt = system_prompt.replace(
+            "%RICH_CONTENT_INSTRUCTIONS%",
+            super::prompt_snippets::RICH_CONTENT_INSTRUCTIONS,
         );
     }
 
@@ -374,10 +344,10 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
     tool_names: HashSet<String>,
     mode_id: &str,
     model_id: &str,
-) -> Vec<call_validation::ChatMessage> {
+) -> (Vec<call_validation::ChatMessage>, SkillsTrackingInfo) {
     if messages.is_empty() {
         tracing::error!("What's that? Messages list is empty");
-        return messages;
+        return (messages, SkillsTrackingInfo::default());
     }
 
     let have_system = messages
@@ -389,7 +359,8 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
         .any(|m| m.role == "context_file" && m.tool_call_id == PROJECT_CONTEXT_MARKER);
 
     if !have_system {
-        let canonical_mode = canonical_mode_id(&chat_meta.chat_mode).unwrap_or_else(|_| "agent".to_string());
+        let canonical_mode =
+            canonical_mode_id(&chat_meta.chat_mode).unwrap_or_else(|_| "agent".to_string());
         match canonical_mode.as_str() {
             "configurator" => {
                 crate::integrations::config_chat::mix_config_messages(
@@ -400,8 +371,8 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
                 )
                 .await;
             }
-            "project_summary" => {
-                crate::integrations::project_summary_chat::mix_project_summary_messages(
+            "setup" => {
+                crate::integrations::setup_chat::mix_setup_messages(
                     gcx.clone(),
                     &chat_meta,
                     &mut messages,
@@ -410,7 +381,8 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
                 .await;
             }
             _ => {
-                let base_prompt = get_mode_system_prompt(gcx.clone(), mode_id, Some(model_id)).await;
+                let base_prompt =
+                    get_mode_system_prompt(gcx.clone(), mode_id, Some(model_id)).await;
                 let system_message_content = system_prompt_add_extra_instructions(
                     gcx.clone(),
                     base_prompt,
@@ -430,9 +402,12 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
         }
     }
 
+    let mut skills_tracking = SkillsTrackingInfo::default();
     if chat_meta.include_project_info && !have_project_context {
         match gather_and_inject_system_context(&gcx, &mut messages, stream_back_to_user).await {
-            Ok(()) => {}
+            Ok(info) => {
+                skills_tracking = info;
+            }
             Err(e) => {
                 tracing::warn!("Failed to gather system context: {}", e);
             }
@@ -441,13 +416,14 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
         tracing::info!("Skipping project/system context injection (include_project_info=false)");
     }
 
-    let canonical_chat_mode = canonical_mode_id(&chat_meta.chat_mode).unwrap_or_else(|_| "agent".to_string());
+    let canonical_chat_mode =
+        canonical_mode_id(&chat_meta.chat_mode).unwrap_or_else(|_| "agent".to_string());
     if matches!(canonical_chat_mode.as_str(), "task_planner" | "task_agent") {
-        let task_id_opt = task_meta.as_ref().map(|m| m.task_id.clone())
+        let task_id_opt = task_meta
+            .as_ref()
+            .map(|m| m.task_id.clone())
             .or_else(|| infer_task_id_from_chat_id(&chat_meta.chat_id));
-        match inject_task_memories(&gcx, &mut messages, stream_back_to_user, task_id_opt)
-            .await
-        {
+        match inject_task_memories(&gcx, &mut messages, stream_back_to_user, task_id_opt).await {
             Ok(()) => {}
             Err(e) => {
                 tracing::warn!("Failed to inject task memories: {}", e);
@@ -455,8 +431,11 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
         }
     }
 
-    tracing::info!("\n\nSYSTEM PROMPT MIXER chat_mode={:?}", chat_meta.chat_mode);
-    messages
+    tracing::info!(
+        "\n\nSYSTEM PROMPT MIXER chat_mode={:?}",
+        chat_meta.chat_mode
+    );
+    (messages, skills_tracking)
 }
 
 const TASK_MEMORIES_CONTEXT_MARKER: &str = "task_memories_context";
@@ -467,7 +446,7 @@ async fn gather_and_inject_system_context(
     gcx: &Arc<ARwLock<GlobalContext>>,
     messages: &mut Vec<ChatMessage>,
     stream_back_to_user: &mut HasRagResults,
-) -> Result<(), String> {
+) -> Result<SkillsTrackingInfo, String> {
     let context = gather_system_context(gcx.clone(), false, 4).await?;
 
     if !context.instruction_files.is_empty() {
@@ -528,7 +507,35 @@ async fn gather_and_inject_system_context(
         );
     }
 
-    Ok(())
+    let have_skills_context = messages
+        .iter()
+        .any(|m| m.role == "context_file" && m.tool_call_id == SKILLS_CONTEXT_MARKER);
+    let skills_tracking = if !have_skills_context {
+        let last_user_text = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .and_then(|m| match &m.content {
+                crate::call_validation::ChatContent::SimpleText(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let (skills_msgs, tracking) =
+            build_skills_context_messages_tracked(gcx.clone(), &last_user_text, None).await;
+        for skills_msg in skills_msgs {
+            let insert_pos = messages
+                .iter()
+                .position(|m| m.role == "user" || m.role == "assistant")
+                .unwrap_or(messages.len());
+            stream_back_to_user.push_in_json(serde_json::json!(skills_msg));
+            messages.insert(insert_pos, skills_msg);
+        }
+        tracking
+    } else {
+        SkillsTrackingInfo::default()
+    };
+
+    Ok(skills_tracking)
 }
 
 pub async fn inject_task_memories(
@@ -634,5 +641,3 @@ pub async fn inject_task_memories(
 
     Ok(())
 }
-
-

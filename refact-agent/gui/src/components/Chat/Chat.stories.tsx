@@ -23,7 +23,6 @@ import {
   // noChatLinks,
 } from "../../__fixtures__/msw";
 import { Flex } from "@radix-ui/themes";
-import { http, HttpResponse } from "msw";
 
 const Template: React.FC<{
   thread?: ChatThread;
@@ -60,6 +59,9 @@ const Template: React.FC<{
           },
           snapshot_received: true,
           task_widget_expanded: false,
+          memory_enrichment_user_touched: false,
+          manual_preview_items: [],
+          manual_preview_ran: false,
         },
       },
       max_new_tokens: 4096,
@@ -364,32 +366,6 @@ export const CompressButton: Story = {
         chatLinks,
         noTools,
       ],
-    },
-  },
-};
-
-const lowBalance = http.get("https://www.smallcloud.ai/v1/login", () => {
-  return HttpResponse.json({
-    retcode: "OK",
-    account: "party@refact.ai",
-    inference_url: "https://www.smallcloud.ai/v1",
-    inference: "PRO",
-    metering_balance: 1,
-    questionnaire: {},
-    refact_agent_max_request_num: 20,
-    refact_agent_request_available: 20,
-  });
-});
-
-export const LowBalance: Story = {
-  parameters: {
-    msw: {
-      goodCaps,
-      goodPing,
-      goodPrompts,
-      chatLinks,
-      noTools,
-      lowBalance,
     },
   },
 };

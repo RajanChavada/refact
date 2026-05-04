@@ -1,21 +1,28 @@
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 
 use crate::call_validation::ChatUsage;
-use crate::llm::adapter::{AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, extract_extra_fields, insert_extra_headers};
+use crate::llm::adapter::{
+    AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, extract_extra_fields,
+    insert_extra_headers,
+};
 use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta};
 use crate::llm::params::CacheControl;
+use super::claude_code_compat;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_THINKING_BUDGET: usize = 8192;
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
-const EFFORT: &str = "effort-2025-11-24";
-const CLAUDE_CODE_OAUTH_BETA: &str = "oauth-2025-04-20";
-const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.2 (external, cli)";
-const CLAUDE_CODE_SYSTEM_PREFIX: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
-const CLAUDE_CODE_MCP_TOOL_PREFIX: &str = "mcp_";
 
-const PROTECTED_FIELDS: &[&str] = &["model", "messages", "stream", "system", "tools", "tool_choice"];
+const PROTECTED_FIELDS: &[&str] = &[
+    "model",
+    "messages",
+    "stream",
+    "system",
+    "tools",
+    "tool_choice",
+    "metadata",
+];
 
 pub struct AnthropicAdapter;
 
@@ -28,32 +35,23 @@ impl LlmWireAdapter for AnthropicAdapter {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        // Support both API key auth (x-api-key) and OAuth Bearer token auth
-        // (Authorization: Bearer). This mirrors the official Anthropic SDK which
-        // accepts both api_key and auth_token parameters.
-        
-        let mut is_claude_code_oauth = false;
-        if !settings.auth_token.is_empty() {
-            is_claude_code_oauth = true;
+        let is_cc = claude_code_compat::is_claude_code_oauth(&settings.auth_token);
+        let is_github_copilot =
+            crate::llm::provider_quirks::is_github_copilot_request(req, settings);
+        if is_cc {
+            claude_code_compat::apply_oauth_headers(&mut headers, &settings.auth_token)?;
+            claude_code_compat::apply_stainless_headers(&mut headers)?;
+        } else if is_github_copilot && !settings.api_key.is_empty() {
             headers.insert(
-                "authorization",
-                HeaderValue::from_str(&format!("Bearer {}", settings.auth_token))
-                    .map_err(|e| format!("invalid auth_token: {e}"))?,
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", settings.api_key))
+                    .map_err(|e| format!("invalid api_key for header: {e}"))?,
             );
         } else if !settings.api_key.is_empty() {
             headers.insert(
                 "x-api-key",
                 HeaderValue::from_str(&settings.api_key)
                     .map_err(|e| format!("invalid api_key: {e}"))?,
-            );
-        }
-
-        // Claude Code OAuth requires specific headers and user-agent to pass
-        // Anthropic's server-side validation for subscription-based access.
-        if is_claude_code_oauth {
-            headers.insert(
-                "user-agent",
-                HeaderValue::from_static(CLAUDE_CODE_USER_AGENT),
             );
         }
 
@@ -65,8 +63,20 @@ impl LlmWireAdapter for AnthropicAdapter {
         let is_effort_mode = settings.reasoning_type.as_deref() == Some("anthropic_effort");
 
         insert_extra_headers(&mut headers, &settings.extra_headers);
+        crate::llm::provider_quirks::apply_github_copilot_request_headers(
+            &mut headers,
+            req,
+            settings,
+        );
 
-        let (system, messages) = convert_to_anthropic(&req.messages, req.cache_control);
+        let context_sanitizer: Option<Box<dyn Fn(&str) -> String>> = if is_cc {
+            Some(Box::new(|text: &str| {
+                claude_code_compat::sanitize_system_text(text)
+            }))
+        } else {
+            None
+        };
+        let (system, messages) = convert_to_anthropic(&req.messages, context_sanitizer.as_deref());
 
         let mut body = json!({
             "model": settings.model_name,
@@ -76,16 +86,14 @@ impl LlmWireAdapter for AnthropicAdapter {
         });
 
         if let Some(sys) = system {
-            if is_claude_code_oauth {
-                // Claude Code OAuth requires the system prompt to start with a specific prefix
-                // for Anthropic's server-side validation.
-                let prefixed = prepend_claude_code_system(sys);
-                body["system"] = prefixed;
+            if is_cc {
+                let sanitized = claude_code_compat::sanitize_system_for_cc(sys);
+                body["system"] = claude_code_compat::prepend_system(sanitized);
             } else {
                 body["system"] = sys;
             }
-        } else if is_claude_code_oauth {
-            body["system"] = json!(CLAUDE_CODE_SYSTEM_PREFIX);
+        } else if is_cc {
+            body["system"] = json!(claude_code_compat::SYSTEM_PREFIX);
         }
 
         if let Some(temp) = req.params.temperature {
@@ -100,8 +108,10 @@ impl LlmWireAdapter for AnthropicAdapter {
             if let Some(tools) = &req.tools {
                 if !tools.is_empty() {
                     let mut converted_tools = convert_tools_to_anthropic(tools);
-                    if is_claude_code_oauth {
-                        prefix_tool_names(&mut converted_tools, CLAUDE_CODE_MCP_TOOL_PREFIX);
+                    if is_cc {
+                        claude_code_compat::apply_cc_tool_names(&mut converted_tools);
+                        claude_code_compat::strip_tool_descriptions(&mut converted_tools);
+                        claude_code_compat::inject_cc_tool_stubs(&mut converted_tools);
                     }
                     // Add Anthropic's server-side web_search tool if enabled
                     if settings.supports_web_search {
@@ -114,11 +124,31 @@ impl LlmWireAdapter for AnthropicAdapter {
                     }
                     body["tools"] = converted_tools;
                     if let Some(choice) = &req.tool_choice {
-                        body["tool_choice"] = tool_choice_to_anthropic(choice);
+                        let mut tc = tool_choice_to_anthropic(choice);
+                        if is_cc {
+                            if let Some(name) = tc
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .map(|s| s.to_string())
+                            {
+                                if name.starts_with(claude_code_compat::MCP_TOOL_PREFIX) {
+                                    // already transformed
+                                } else if name.starts_with("mcp_") {
+                                    tc["name"] = json!(&name["mcp_".len()..]);
+                                } else {
+                                    let renamed = claude_code_compat::cc_rename_base_tool(&name);
+                                    tc["name"] = json!(format!(
+                                        "{}{}",
+                                        claude_code_compat::MCP_TOOL_PREFIX,
+                                        renamed
+                                    ));
+                                }
+                            }
+                        }
+                        body["tool_choice"] = tc;
                     }
                 }
             } else if settings.supports_web_search {
-                // No user tools but web_search is enabled
                 body["tools"] = json!([{
                     "type": "web_search_20250305",
                     "name": "web_search"
@@ -126,24 +156,20 @@ impl LlmWireAdapter for AnthropicAdapter {
             }
         }
 
+        if matches!(req.cache_control, CacheControl::Ephemeral) && settings.supports_cache_control {
+            body["cache_control"] = json!({"type": "ephemeral", "ttl": "1h"});
+        }
+
         if settings.supports_reasoning {
             if is_effort_mode {
                 match &req.reasoning {
-                    crate::llm::params::ReasoningIntent::BudgetTokens(n) => {
-                        body["thinking"] = json!({"type": "enabled", "budget_tokens": *n});
-                        let current_max = req.params.max_tokens;
-                        if current_max <= *n {
-                            let adjusted_max = *n + std::cmp::max(current_max, 1024);
-                            body["max_tokens"] = json!(adjusted_max);
-                            tracing::debug!(
-                                "Adjusted max_tokens from {} to {} (thinking budget: {})",
-                                current_max, adjusted_max, n
-                            );
-                        }
+                    crate::llm::params::ReasoningIntent::BudgetTokens(_n) => {
+                        body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
+                        body["output_config"] = json!({"effort": "high"});
                     }
                     _ => {
                         if let Some(effort) = req.reasoning.to_anthropic_effort() {
-                            body["thinking"] = json!({"type": "adaptive"});
+                            body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
                             body["output_config"] = json!({"effort": effort});
                         }
                     }
@@ -157,7 +183,9 @@ impl LlmWireAdapter for AnthropicAdapter {
                         body["max_tokens"] = json!(adjusted_max);
                         tracing::debug!(
                             "Adjusted max_tokens from {} to {} (thinking budget: {})",
-                            current_max, adjusted_max, budget
+                            current_max,
+                            adjusted_max,
+                            budget
                         );
                     }
                 }
@@ -165,17 +193,44 @@ impl LlmWireAdapter for AnthropicAdapter {
             body.as_object_mut().map(|obj| obj.remove("temperature"));
         }
 
-        {
-            let mut betas = Vec::new();
-            if body.get("thinking").and_then(|t| t.get("type")).and_then(|t| t.as_str()) == Some("enabled") {
-                betas.push(INTERLEAVED_THINKING_BETA);
-                betas.push(EFFORT);
+        if is_cc {
+            claude_code_compat::inject_billing_block(&mut body);
+            claude_code_compat::inject_metadata(&mut body);
+        }
+
+        if let Some(extra) = &req.extra_body {
+            if let Some(obj) = body.as_object_mut() {
+                for (k, v) in extra {
+                    if PROTECTED_FIELDS.contains(&k.as_str()) {
+                        tracing::warn!(
+                            "extra_body attempted to override protected field '{}', ignoring",
+                            k
+                        );
+                        continue;
+                    }
+                    obj.insert(k.clone(), v.clone());
+                }
             }
-            if is_claude_code_oauth {
-                betas.push(CLAUDE_CODE_OAUTH_BETA);
+        }
+
+        crate::llm::provider_quirks::remove_anthropic_unsupported_fields(&mut body, settings);
+
+        {
+            let mut betas: Vec<&str> = Vec::new();
+            let thinking_type = body
+                .get("thinking")
+                .and_then(|t| t.get("type"))
+                .and_then(|t| t.as_str());
+            if thinking_type == Some("enabled") {
                 if !betas.contains(&INTERLEAVED_THINKING_BETA) {
                     betas.push(INTERLEAVED_THINKING_BETA);
-                    betas.push(EFFORT);
+                }
+            }
+            if is_cc {
+                for &beta in claude_code_compat::CC_OAUTH_BETAS {
+                    if !betas.contains(&beta) {
+                        betas.push(beta);
+                    }
                 }
             }
             if !betas.is_empty() {
@@ -185,18 +240,6 @@ impl LlmWireAdapter for AnthropicAdapter {
                     HeaderValue::from_str(&beta_value)
                         .map_err(|e| format!("invalid anthropic-beta: {e}"))?,
                 );
-            }
-        }
-
-        if let Some(extra) = &req.extra_body {
-            if let Some(obj) = body.as_object_mut() {
-                for (k, v) in extra {
-                    if PROTECTED_FIELDS.contains(&k.as_str()) {
-                        tracing::warn!("extra_body attempted to override protected field '{}', ignoring", k);
-                        continue;
-                    }
-                    obj.insert(k.clone(), v.clone());
-                }
             }
         }
 
@@ -217,38 +260,19 @@ impl LlmWireAdapter for AnthropicAdapter {
             "anthropic adapter request"
         );
 
-        let url = if is_claude_code_oauth {
-            // Claude Code OAuth requires ?beta=true query parameter
-            let sep = if settings.endpoint.contains('?') { "&" } else { "?" };
-            format!("{}{}beta=true", settings.endpoint, sep)
+        let url = if is_cc {
+            claude_code_compat::build_oauth_url(&settings.endpoint)
         } else {
             settings.endpoint.clone()
         };
 
-        // For Claude Code OAuth, prefix tool_use names in messages with mcp_
-        if is_claude_code_oauth {
-            if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
-                for msg in msgs {
-                    if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-                        for block in content {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                                if let Some(name) = block.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) {
-                                    if !name.starts_with(CLAUDE_CODE_MCP_TOOL_PREFIX) {
-                                        block["name"] = json!(format!("{}{}", CLAUDE_CODE_MCP_TOOL_PREFIX, name));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        if is_cc {
+            if let Some(msgs) = body.get_mut("messages") {
+                claude_code_compat::apply_cc_tool_use_in_messages(msgs);
             }
         }
 
-        Ok(HttpParts {
-            url,
-            headers,
-            body,
-        })
+        Ok(HttpParts { url, headers, body })
     }
 
     fn parse_stream_chunk(&self, data: &str) -> Result<Vec<LlmStreamDelta>, StreamParseError> {
@@ -298,8 +322,10 @@ impl LlmWireAdapter for AnthropicAdapter {
                         "signature_delta" => {
                             // Anthropic signature for thinking block verification
                             // Required for multi-turn tool calling conversations
-                            if let Some(signature) = delta.get("signature").and_then(|s| s.as_str()) {
-                                let block_index = json.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                            if let Some(signature) = delta.get("signature").and_then(|s| s.as_str())
+                            {
+                                let block_index =
+                                    json.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                                 deltas.push(LlmStreamDelta::SetThinkingBlocks {
                                     blocks: vec![json!({
                                         "index": block_index,
@@ -325,14 +351,16 @@ impl LlmWireAdapter for AnthropicAdapter {
                             // Anthropic citations streaming - citation is in delta.citation
                             // Include content block index to preserve association
                             if let Some(citation) = delta.get("citation") {
-                                let block_index = json.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                                let block_index =
+                                    json.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                                 let mut enriched = citation.clone();
                                 if let Some(obj) = enriched.as_object_mut() {
-                                    obj.insert("_content_block_index".to_string(), json!(block_index));
+                                    obj.insert(
+                                        "_content_block_index".to_string(),
+                                        json!(block_index),
+                                    );
                                 }
-                                deltas.push(LlmStreamDelta::AddCitation {
-                                    citation: enriched,
-                                });
+                                deltas.push(LlmStreamDelta::AddCitation { citation: enriched });
                             }
                         }
                         _ => {}
@@ -403,9 +431,7 @@ impl LlmWireAdapter for AnthropicAdapter {
                                     obj.insert("_order_index".to_string(), index.clone());
                                 }
                             }
-                            deltas.push(LlmStreamDelta::AddServerContentBlock {
-                                block,
-                            });
+                            deltas.push(LlmStreamDelta::AddServerContentBlock { block });
                         }
                         _ => {}
                     }
@@ -433,23 +459,61 @@ impl LlmWireAdapter for AnthropicAdapter {
 
 fn convert_to_anthropic(
     messages: &[crate::call_validation::ChatMessage],
-    cache: CacheControl,
+    context_sanitizer: Option<&dyn Fn(&str) -> String>,
 ) -> (Option<Value>, Vec<Value>) {
+    use super::render_extra::{is_context_role, render_context_message};
+
     let mut system_text = None;
     let mut result: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
+    // Context buffered when there are no pending tool results; merged into the
+    // next user message to avoid introducing extra consecutive user turns.
+    let mut pending_context_text: Vec<String> = Vec::new();
 
     for msg in messages {
         match msg.role.as_str() {
             "system" => {
                 system_text = Some(msg.content.content_text_only());
             }
+            role if is_context_role(role) => {
+                let Some(raw_text) = render_context_message(msg) else {
+                    continue;
+                };
+                let text = match context_sanitizer {
+                    Some(f) => f(&raw_text),
+                    None => raw_text,
+                };
+                if !pending_tool_results.is_empty() {
+                    // Inside a tool-results group: add as a plain text content block
+                    // so it is delivered in the same user turn as the tool outputs.
+                    pending_tool_results.push(json!({"type": "text", "text": text}));
+                } else {
+                    // No open tool-results group: buffer for the next user message.
+                    pending_context_text.push(text);
+                }
+            }
             "user" | "assistant" => {
                 let mut content = Vec::new();
-                // Merge pending tool_results into user message to avoid consecutive user blocks
-                if msg.role == "user" && !pending_tool_results.is_empty() {
+                // Merge pending tool_results (and any trailing context blocks) into
+                // the user message to avoid consecutive user turns.
+                if msg.role == "user"
+                    && (!pending_tool_results.is_empty() || !pending_context_text.is_empty())
+                {
                     content.extend(pending_tool_results.drain(..));
+                    for text in pending_context_text.drain(..) {
+                        content.push(json!({"type": "text", "text": text}));
+                    }
                 } else {
+                    // Flush any open tool-results group before an assistant turn.
+                    if !pending_context_text.is_empty() && pending_tool_results.is_empty() {
+                        // Emit buffered context as a standalone user turn so it is
+                        // not lost when an assistant message follows without a user.
+                        let ctx: Vec<Value> = pending_context_text
+                            .drain(..)
+                            .map(|t| json!({"type": "text", "text": t}))
+                            .collect();
+                        result.push(json!({"role": "user", "content": ctx}));
+                    }
                     flush_tool_results(&mut result, &mut pending_tool_results);
                 }
                 if msg.role == "assistant" {
@@ -464,7 +528,11 @@ fn convert_to_anthropic(
                     let mut ordered_blocks: Vec<(u64, u64, Value)> = Vec::new();
                     let mut seq: u64 = 0;
 
-                    if let Some(text_blocks) = msg.extra.get("_anthropic_text_blocks").and_then(|v| v.as_array()) {
+                    if let Some(text_blocks) = msg
+                        .extra
+                        .get("_anthropic_text_blocks")
+                        .and_then(|v| v.as_array())
+                    {
                         for block in text_blocks {
                             let (Some(order_idx), Some(text)) = (
                                 block.get("index").and_then(|v| v.as_u64()),
@@ -475,7 +543,11 @@ fn convert_to_anthropic(
                             if text.is_empty() {
                                 continue;
                             }
-                            ordered_blocks.push((order_idx, seq, json!({"type": "text", "text": text})));
+                            ordered_blocks.push((
+                                order_idx,
+                                seq,
+                                json!({"type": "text", "text": text}),
+                            ));
                             seq += 1;
                         }
                     } else {
@@ -488,14 +560,18 @@ fn convert_to_anthropic(
                     if let Some(blocks) = &msg.thinking_blocks {
                         for block in blocks {
                             if let Some(block_type) = block.get("type").and_then(|t| t.as_str()) {
-                                let order_idx = block.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let order_idx =
+                                    block.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
                                 match block_type {
                                     "thinking" => {
-                                        let thinking_text = block.get("thinking")
+                                        let thinking_text = block
+                                            .get("thinking")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("");
                                         if thinking_text.trim().is_empty() {
-                                            tracing::warn!("skipping thinking block with empty thinking text");
+                                            tracing::warn!(
+                                                "skipping thinking block with empty thinking text"
+                                            );
                                             continue;
                                         }
                                         let mut tb = json!({
@@ -523,13 +599,22 @@ fn convert_to_anthropic(
                     }
 
                     if !msg.server_content_blocks.is_empty() {
-                        let result_ids: std::collections::HashSet<&str> = msg.server_content_blocks.iter()
-                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("web_search_tool_result"))
+                        let result_ids: std::collections::HashSet<&str> = msg
+                            .server_content_blocks
+                            .iter()
+                            .filter(|b| {
+                                b.get("type").and_then(|t| t.as_str())
+                                    == Some("web_search_tool_result")
+                            })
                             .filter_map(|b| b.get("tool_use_id").and_then(|v| v.as_str()))
                             .collect();
 
-                        let server_tool_use_ids: std::collections::HashSet<&str> = msg.server_content_blocks.iter()
-                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("server_tool_use"))
+                        let server_tool_use_ids: std::collections::HashSet<&str> = msg
+                            .server_content_blocks
+                            .iter()
+                            .filter(|b| {
+                                b.get("type").and_then(|t| t.as_str()) == Some("server_tool_use")
+                            })
                             .filter_map(|b| b.get("id").and_then(|v| v.as_str()))
                             .collect();
 
@@ -538,7 +623,8 @@ fn convert_to_anthropic(
 
                         for block in &msg.server_content_blocks {
                             if !is_complete_historical
-                                && block.get("type").and_then(|t| t.as_str()) == Some("server_tool_use")
+                                && block.get("type").and_then(|t| t.as_str())
+                                    == Some("server_tool_use")
                             {
                                 let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                 if !result_ids.contains(id) {
@@ -547,7 +633,10 @@ fn convert_to_anthropic(
                                 }
                             }
 
-                            let order_idx = block.get("_order_index").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+                            let order_idx = block
+                                .get("_order_index")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(u64::MAX);
                             let mut clean = block.clone();
                             if let Some(obj) = clean.as_object_mut() {
                                 obj.remove("_order_index");
@@ -559,7 +648,8 @@ fn convert_to_anthropic(
 
                     if let Some(tcs) = &msg.tool_calls {
                         for tc in tcs.iter().filter(|tc| !tc.id.starts_with("srvtoolu_")) {
-                            let input = match serde_json::from_str::<Value>(&tc.function.arguments) {
+                            let input = match serde_json::from_str::<Value>(&tc.function.arguments)
+                            {
                                 Ok(v) => v,
                                 Err(e) => {
                                     tracing::warn!(
@@ -576,18 +666,25 @@ fn convert_to_anthropic(
                                 u64::MAX
                             };
 
-                            ordered_blocks.push((order_idx, seq, json!({
-                                "type": "tool_use",
-                                "id": tc.id,
-                                "name": tc.function.name,
-                                "input": input,
-                            })));
+                            ordered_blocks.push((
+                                order_idx,
+                                seq,
+                                json!({
+                                    "type": "tool_use",
+                                    "id": tc.id,
+                                    "name": tc.function.name,
+                                    "input": input,
+                                }),
+                            ));
                             seq += 1;
                         }
                     }
 
                     if !msg.citations.is_empty() {
-                        let mut citations_by_idx: std::collections::HashMap<Option<u64>, Vec<Value>> = std::collections::HashMap::new();
+                        let mut citations_by_idx: std::collections::HashMap<
+                            Option<u64>,
+                            Vec<Value>,
+                        > = std::collections::HashMap::new();
                         for c in &msg.citations {
                             let has_encrypted = c.get("encrypted_index").is_some();
                             if has_encrypted && msg.server_content_blocks.is_empty() {
@@ -615,13 +712,16 @@ fn convert_to_anthropic(
                         }
 
                         // Attach remaining citations (unindexed or unmatched) to the last text block.
-                        let mut remaining: Vec<Value> = citations_by_idx.remove(&None).unwrap_or_default();
+                        let mut remaining: Vec<Value> =
+                            citations_by_idx.remove(&None).unwrap_or_default();
                         for (_idx, mut cits) in citations_by_idx {
                             remaining.append(&mut cits);
                         }
                         if !remaining.is_empty() {
-                            if let Some((_idx, _seq, block)) = ordered_blocks.iter_mut().rev()
-                                .find(|(_, _, b)| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                            if let Some((_idx, _seq, block)) =
+                                ordered_blocks.iter_mut().rev().find(|(_, _, b)| {
+                                    b.get("type").and_then(|t| t.as_str()) == Some("text")
+                                })
                             {
                                 if let Some(obj) = block.as_object_mut() {
                                     obj.insert("citations".to_string(), json!(remaining));
@@ -641,13 +741,41 @@ fn convert_to_anthropic(
                 result.push(json!({"role": msg.role, "content": content}));
             }
             "tool" | "diff" => {
-                if !msg.tool_call_id.starts_with("srvtoolu_") {  // Filter server-executed tool results
+                if !msg.tool_call_id.starts_with("srvtoolu_") {
                     let tool_text = msg.content.content_text_only();
-                    let tool_text = if tool_text.is_empty() { "(empty)".to_string() } else { tool_text };
+                    let tool_text = if tool_text.is_empty() {
+                        "(empty)".to_string()
+                    } else {
+                        tool_text
+                    };
+
+                    // Anthropic supports images directly inside tool_result.content as
+                    // an array of content blocks.  Build an array when images are present
+                    // so the model can see them as part of the tool output.
+                    let content_value = match &msg.content {
+                        crate::call_validation::ChatContent::Multimodal(elements)
+                            if elements.iter().any(|el| el.is_image()) =>
+                        {
+                            let mut blocks = vec![json!({"type": "text", "text": tool_text})];
+                            for el in elements.iter().filter(|el| el.is_image()) {
+                                blocks.push(json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": el.m_type,
+                                        "data": el.m_content
+                                    }
+                                }));
+                            }
+                            json!(blocks)
+                        }
+                        _ => json!(tool_text),
+                    };
+
                     pending_tool_results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": msg.tool_call_id,
-                        "content": tool_text
+                        "content": content_value
                     }));
                 }
             }
@@ -655,51 +783,18 @@ fn convert_to_anthropic(
         }
     }
 
+    // Flush any remaining context and tool results.
+    if !pending_context_text.is_empty() {
+        for text in pending_context_text.drain(..) {
+            pending_tool_results.push(json!({"type": "text", "text": text}));
+        }
+    }
     flush_tool_results(&mut result, &mut pending_tool_results);
 
     // Claude prompt caching breakpoints are handled on messages (not system).
     let system = system_text.map(|text| json!(text));
 
-    // Apply cache breakpoints for prefix-based caching.
-    // Strategy: 4 message breakpoints, recomputed every request:
-    //   - last 2 messages
-    //   - middle message
-    //   - 1/4 point message
-    // (No system cache_control.)
-    if cache == CacheControl::Ephemeral && !result.is_empty() {
-        let len = result.len();
-
-        let quarter = len / 4;
-        let middle = len / 2;
-        let last = len - 1;
-        let last2 = len.saturating_sub(2);
-
-        let mut breakpoint_indices = vec![quarter, middle, last2, last];
-        breakpoint_indices.sort_unstable();
-        breakpoint_indices.dedup();
-        breakpoint_indices.truncate(4);
-
-        for idx in breakpoint_indices {
-            add_cache_control_to_last_block(&mut result[idx]);
-        }
-    }
-
     (system, result)
-}
-
-/// Adds `cache_control` to the last content block of an Anthropic message.
-/// Each message has a "content" array of blocks; the breakpoint goes on the last one.
-fn add_cache_control_to_last_block(message: &mut Value) {
-    let cc = json!({"type": "ephemeral", "ttl": "1h"});
-    if let Some(content) = message.get_mut("content") {
-        if let Some(arr) = content.as_array_mut() {
-            if let Some(last_block) = arr.last_mut() {
-                if let Some(obj) = last_block.as_object_mut() {
-                    obj.insert("cache_control".to_string(), cc);
-                }
-            }
-        }
-    }
 }
 
 fn flush_tool_results(result: &mut Vec<Value>, pending: &mut Vec<Value>) {
@@ -718,7 +813,10 @@ fn flush_tool_results(result: &mut Vec<Value>, pending: &mut Vec<Value>) {
 fn sanitize_anthropic_content(mut blocks: Vec<Value>) -> Vec<Value> {
     blocks.retain(|block| {
         let is_empty_text = block.get("type").and_then(|t| t.as_str()) == Some("text")
-            && block.get("text").and_then(|t| t.as_str()).map_or(false, |s| s.is_empty());
+            && block
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map_or(false, |s| s.is_empty());
         !is_empty_text
     });
     if blocks.is_empty() {
@@ -753,60 +851,6 @@ fn convert_tools_to_anthropic(tools: &[Value]) -> Value {
     json!(converted)
 }
 
-/// Prefix tool names in an Anthropic tools array with the given prefix.
-/// Required for Claude Code OAuth: Anthropic's server expects tools to be
-/// prefixed with "mcp_" when using subscription-based OAuth tokens.
-fn prefix_tool_names(tools: &mut Value, prefix: &str) {
-    if let Some(arr) = tools.as_array_mut() {
-        for tool in arr {
-            if let Some(name) = tool.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()) {
-                if !name.starts_with(prefix) {
-                    tool["name"] = json!(format!("{}{}", prefix, name));
-                }
-            }
-        }
-    }
-}
-
-/// Prepend the Claude Code system prompt prefix to an existing system value.
-fn prepend_claude_code_system(system: Value) -> Value {
-    match system {
-        Value::String(text) => {
-            if text.trim().is_empty() {
-                json!(CLAUDE_CODE_SYSTEM_PREFIX)
-            } else {
-                json!([
-                    {"type": "text", "text": CLAUDE_CODE_SYSTEM_PREFIX},
-                    {"type": "text", "text": text}
-                ])
-            }
-        }
-        Value::Array(blocks) => {
-            let mut new_blocks = vec![json!({"type": "text", "text": CLAUDE_CODE_SYSTEM_PREFIX})];
-            new_blocks.extend(blocks);
-
-            if let Some(second_text) = new_blocks
-                .get(1)
-                .and_then(|v| {
-                    v.get("type")
-                        .and_then(|t| t.as_str())
-                        .filter(|&t| t == "text")
-                        .and_then(|_| v.get("text").and_then(|t| t.as_str()))
-                })
-            {
-                if !second_text.starts_with(CLAUDE_CODE_SYSTEM_PREFIX) {
-                    new_blocks[1] = json!({
-                        "type": "text",
-                        "text": format!("{}\n\n{}", CLAUDE_CODE_SYSTEM_PREFIX, second_text),
-                    });
-                }
-            }
-            json!(new_blocks)
-        }
-        _ => json!(CLAUDE_CODE_SYSTEM_PREFIX),
-    }
-}
-
 fn tool_choice_to_anthropic(choice: &CanonicalToolChoice) -> Value {
     match choice {
         CanonicalToolChoice::Auto => json!({"type": "auto"}),
@@ -833,10 +877,8 @@ fn parse_anthropic_usage(usage: &Value) -> Option<ChatUsage> {
         .get("cache_read_input_tokens")
         .and_then(|t| t.as_u64())
         .map(|v| v as usize);
-    let total_tokens = prompt_tokens
-        + completion_tokens
-        + cache_creation.unwrap_or(0)
-        + cache_read.unwrap_or(0);
+    let total_tokens =
+        prompt_tokens + completion_tokens + cache_creation.unwrap_or(0) + cache_read.unwrap_or(0);
     Some(ChatUsage {
         prompt_tokens,
         completion_tokens,
@@ -864,9 +906,9 @@ mod tests {
             reasoning_type: Some("anthropic_budget".to_string()),
             supports_temperature: true,
             supports_max_completion_tokens: false,
-            support_metadata: false,
             eof_is_done: false,
             supports_web_search: false,
+            supports_cache_control: true,
         }
     }
 
@@ -880,28 +922,66 @@ mod tests {
     }
 
     #[test]
-    fn test_prepend_claude_code_system_keeps_prefix_as_standalone_block() {
-        // For Claude Code OAuth, the server may reject requests if the prefix is
-        // concatenated with other text in the same system block.
-        let system = json!("Be helpful");
-        let prefixed = prepend_claude_code_system(system);
-        assert!(prefixed.is_array());
-        let arr = prefixed.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["type"], "text");
-        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
-        assert_eq!(arr[1]["type"], "text");
-        assert_eq!(arr[1]["text"], "Be helpful");
+    fn github_copilot_anthropic_messages_uses_bearer_auth_and_copilot_headers() {
+        use crate::call_validation::ChatContent;
+        use crate::scratchpads::multimodality::MultimodalElement;
 
-        let system2 = json!([
-            {"type": "text", "text": "Be helpful"},
-            {"type": "text", "text": "Also be brief"}
-        ]);
-        let prefixed2 = prepend_claude_code_system(system2);
-        let arr2 = prefixed2.as_array().unwrap();
-        assert_eq!(arr2[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
-        assert_eq!(arr2[1]["text"], "You are Claude Code, Anthropic's official CLI for Claude.\n\nBe helpful");
-        assert_eq!(arr2[2]["text"], "Also be brief");
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "github_copilot/claude-sonnet-4".to_string(),
+            vec![ChatMessage::new("user".to_string(), "Hello".to_string())],
+        );
+        let mut settings = settings();
+        settings.endpoint = "https://api.githubcopilot.com/v1/messages".to_string();
+        settings.api_key = "copilot-token".to_string();
+        settings
+            .extra_headers
+            .insert("Authorization".to_string(), "Bearer hacked".to_string());
+        settings
+            .extra_headers
+            .insert("x-api-key".to_string(), "hacked".to_string());
+        settings
+            .extra_headers
+            .insert("Copilot-Vision-Request".to_string(), "true".to_string());
+
+        let http = adapter.build_http(&req, &settings).unwrap();
+
+        assert_eq!(
+            http.headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
+            "Bearer copilot-token"
+        );
+        assert!(http.headers.get("x-api-key").is_none());
+        assert_eq!(
+            http.headers.get("Openai-Intent").unwrap().to_str().unwrap(),
+            "conversation-edits"
+        );
+        assert_eq!(
+            http.headers.get("x-initiator").unwrap().to_str().unwrap(),
+            "user"
+        );
+        assert!(http.headers.get("Copilot-Vision-Request").is_none());
+
+        let image_req = LlmRequest::new(
+            "github_copilot/claude-sonnet-4".to_string(),
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: ChatContent::Multimodal(vec![MultimodalElement {
+                    m_type: "image/png".to_string(),
+                    m_content: "base64data".to_string(),
+                }]),
+                ..Default::default()
+            }],
+        );
+        let image_http = adapter.build_http(&image_req, &settings).unwrap();
+        assert_eq!(
+            image_http
+                .headers
+                .get("Copilot-Vision-Request")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "true"
+        );
     }
 
     #[test]
@@ -913,10 +993,16 @@ mod tests {
         let req_with_reasoning = LlmRequest::new(
             "claude".to_string(),
             vec![ChatMessage::new("user".to_string(), "test".to_string())],
-        ).with_reasoning(ReasoningIntent::High);
+        )
+        .with_reasoning(ReasoningIntent::High);
 
-        let http = adapter.build_http(&req_with_reasoning, &settings()).unwrap();
-        let beta = http.headers.get("anthropic-beta").map(|v| v.to_str().unwrap().to_string());
+        let http = adapter
+            .build_http(&req_with_reasoning, &settings())
+            .unwrap();
+        let beta = http
+            .headers
+            .get("anthropic-beta")
+            .map(|v| v.to_str().unwrap().to_string());
         // When thinking is enabled, the adapter may include multiple beta flags.
         assert!(beta.is_some());
         let beta = beta.unwrap();
@@ -937,6 +1023,134 @@ mod tests {
     }
 
     #[test]
+    fn test_top_level_cache_control_ephemeral() {
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "claude".to_string(),
+            vec![ChatMessage::new("user".to_string(), "test".to_string())],
+        )
+        .with_cache_control(CacheControl::Ephemeral);
+
+        let http = adapter.build_http(&req, &settings()).unwrap();
+        assert_eq!(http.body["cache_control"]["type"], "ephemeral");
+        assert_eq!(http.body["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn test_top_level_cache_control_omitted_when_unsupported() {
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "claude".to_string(),
+            vec![ChatMessage::new("user".to_string(), "test".to_string())],
+        )
+        .with_cache_control(CacheControl::Ephemeral);
+        let mut settings = settings();
+        settings.supports_cache_control = false;
+
+        let http = adapter.build_http(&req, &settings).unwrap();
+        assert!(http.body.get("cache_control").is_none());
+    }
+
+    #[test]
+    fn test_minimax_unsupported_cache_control_beta_and_tools_remain_absent() {
+        use crate::llm::params::ReasoningIntent;
+        use std::collections::HashMap;
+
+        let adapter = AnthropicAdapter;
+        let mut extra = HashMap::new();
+        extra.insert(
+            "cache_control".to_string(),
+            json!({"type": "ephemeral", "ttl": "1h"}),
+        );
+        extra.insert(
+            "thinking".to_string(),
+            json!({"type": "enabled", "budget_tokens": 4096}),
+        );
+        extra.insert("output_config".to_string(), json!({"effort": "high"}));
+        extra.insert("tools".to_string(), json!([{"name": "blocked"}]));
+        extra.insert("tool_choice".to_string(), json!({"type": "any"}));
+
+        let req = LlmRequest::new(
+            "minimax/MiniMax-M2".to_string(),
+            vec![
+                ChatMessage::new("user".to_string(), "test".to_string()),
+                ChatMessage {
+                    role: "assistant".to_string(),
+                    content: crate::call_validation::ChatContent::SimpleText("visible".to_string()),
+                    thinking_blocks: Some(vec![json!({
+                        "type": "thinking",
+                        "thinking": "hidden",
+                        "signature": "sig"
+                    })]),
+                    ..Default::default()
+                },
+            ],
+        )
+        .with_cache_control(CacheControl::Ephemeral)
+        .with_reasoning(ReasoningIntent::High)
+        .with_tools(
+            vec![json!({
+                "type": "function",
+                "function": {"name": "tool", "parameters": {}}
+            })],
+            Some(CanonicalToolChoice::Required),
+        )
+        .with_extra_body(extra);
+
+        let mut settings = settings();
+        settings.model_name = "MiniMax-M2".to_string();
+        settings.endpoint = "https://api.minimax.io/anthropic/v1/messages".to_string();
+        settings.supports_cache_control = false;
+        settings.supports_reasoning = false;
+        settings.supports_tools = false;
+
+        let http = adapter.build_http(&req, &settings).unwrap();
+
+        assert!(http.body.get("cache_control").is_none());
+        assert!(http.body.get("thinking").is_none());
+        assert!(http.body.get("output_config").is_none());
+        assert!(http.body.get("tools").is_none());
+        assert!(http.body.get("tool_choice").is_none());
+        assert!(http.headers.get("anthropic-beta").is_none());
+        let messages = http.body["messages"].as_array().unwrap();
+        assert!(!messages.iter().any(|message| {
+            message["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|block| block["type"] == "thinking")
+        }));
+    }
+
+    #[test]
+    fn test_anthropic_supported_flags_keep_cache_control_tools_and_reasoning() {
+        use crate::llm::params::ReasoningIntent;
+
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "claude".to_string(),
+            vec![ChatMessage::new("user".to_string(), "test".to_string())],
+        )
+        .with_cache_control(CacheControl::Ephemeral)
+        .with_reasoning(ReasoningIntent::High)
+        .with_tools(
+            vec![json!({
+                "type": "function",
+                "function": {"name": "tool", "parameters": {}}
+            })],
+            Some(CanonicalToolChoice::Required),
+        );
+
+        let http = adapter.build_http(&req, &settings()).unwrap();
+
+        assert_eq!(http.body["cache_control"]["type"], "ephemeral");
+        assert!(http.body.get("tools").is_some());
+        assert_eq!(http.body["tool_choice"], json!({"type": "any"}));
+        assert_eq!(http.body["thinking"]["type"], "enabled");
+        assert!(http.headers.get("anthropic-beta").is_some());
+    }
+
+    #[test]
     fn test_no_beta_header_when_reasoning_not_supported() {
         use crate::llm::params::ReasoningIntent;
 
@@ -947,7 +1161,8 @@ mod tests {
         let req = LlmRequest::new(
             "claude".to_string(),
             vec![ChatMessage::new("user".to_string(), "test".to_string())],
-        ).with_reasoning(ReasoningIntent::High);
+        )
+        .with_reasoning(ReasoningIntent::High);
 
         let http = adapter.build_http(&req, &no_reasoning_settings).unwrap();
         assert!(http.headers.get("anthropic-beta").is_none());
@@ -959,22 +1174,22 @@ mod tests {
             ChatMessage::new("system".to_string(), "Be helpful".to_string()),
             ChatMessage::new("user".to_string(), "Hi".to_string()),
         ];
-        let (system, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (system, msgs) = convert_to_anthropic(&messages, None);
         assert_eq!(system, Some(json!("Be helpful")));
         assert_eq!(msgs.len(), 1);
     }
 
     #[test]
-    fn test_system_with_cache_control() {
+    fn test_system_no_block_level_cache_control() {
         let messages = vec![
             ChatMessage::new("system".to_string(), "Be helpful".to_string()),
             ChatMessage::new("user".to_string(), "Hi".to_string()),
         ];
-        let (system, msgs) = convert_to_anthropic(&messages, CacheControl::Ephemeral);
+        let (system, msgs) = convert_to_anthropic(&messages, None);
         assert_eq!(system, Some(json!("Be helpful")));
         assert_eq!(msgs.len(), 1);
-        // Single message should get a cache breakpoint
-        assert!(msgs[0]["content"][0].get("cache_control").is_some());
+        // Block-level cache_control is no longer injected by the adapter
+        assert!(msgs[0]["content"][0].get("cache_control").is_none());
     }
 
     #[test]
@@ -983,7 +1198,9 @@ mod tests {
         let chunk =
             r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}"#;
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
-        assert!(matches!(&deltas[0], LlmStreamDelta::AppendContent { text, .. } if text == "Hello"));
+        assert!(
+            matches!(&deltas[0], LlmStreamDelta::AppendContent { text, .. } if text == "Hello")
+        );
     }
 
     #[test]
@@ -1061,31 +1278,41 @@ mod tests {
     #[test]
     fn test_parse_stream_thinking_block_start() {
         let adapter = AnthropicAdapter;
-        let chunk = r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
+        let chunk =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
 
         // Thinking blocks are NOT emitted on content_block_start - content arrives via thinking_delta
         // which emits AppendReasoning. This is intentional to avoid empty placeholder blocks.
-        assert!(!deltas.iter().any(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. })));
+        assert!(!deltas
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. })));
     }
 
     #[test]
     fn test_extra_body_protected_fields_ignored() {
         let adapter = AnthropicAdapter;
-        let mut req = LlmRequest::new("claude".to_string(), vec![
-            ChatMessage::new("user".to_string(), "Hi".to_string()),
-        ]);
+        let mut req = LlmRequest::new(
+            "claude".to_string(),
+            vec![ChatMessage::new("user".to_string(), "Hi".to_string())],
+        );
         req.extra_body = Some(serde_json::Map::from_iter([
             ("model".to_string(), json!("hacked-model")),
-            ("messages".to_string(), json!([{"role": "user", "content": "hacked"}])),
+            (
+                "messages".to_string(),
+                json!([{"role": "user", "content": "hacked"}]),
+            ),
             ("custom_field".to_string(), json!("allowed")),
         ]));
 
         let http = adapter.build_http(&req, &settings()).unwrap();
 
         assert_eq!(http.body["model"], "claude-3-sonnet");
-        assert_ne!(http.body["messages"], json!([{"role": "user", "content": "hacked"}]));
+        assert_ne!(
+            http.body["messages"],
+            json!([{"role": "user", "content": "hacked"}])
+        );
         assert_eq!(http.body["custom_field"], "allowed");
     }
 
@@ -1136,7 +1363,7 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0]["role"], "user");
@@ -1183,7 +1410,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "now fix it".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         // Should be 3 messages: user, assistant, user(tool_result + text)
         // NOT 4: user, assistant, user(tool_result), user(text)
@@ -1227,7 +1454,7 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         assert_eq!(msgs.len(), 3);
         let tool_result = &msgs[2]["content"][0];
@@ -1244,8 +1471,12 @@ mod tests {
         let deltas1 = adapter.parse_stream_chunk(chunk_missing_id).unwrap();
         let deltas2 = adapter.parse_stream_chunk(chunk_missing_name).unwrap();
 
-        let has_tool_calls1 = deltas1.iter().any(|d| matches!(d, LlmStreamDelta::SetToolCalls { .. }));
-        let has_tool_calls2 = deltas2.iter().any(|d| matches!(d, LlmStreamDelta::SetToolCalls { .. }));
+        let has_tool_calls1 = deltas1
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::SetToolCalls { .. }));
+        let has_tool_calls2 = deltas2
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::SetToolCalls { .. }));
 
         assert!(!has_tool_calls1);
         assert!(!has_tool_calls2);
@@ -1257,26 +1488,45 @@ mod tests {
         let chunk = r#"{"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"Some text","document_index":0,"document_title":"doc.txt","start_char_index":0,"end_char_index":10}}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
-        let has_citation = deltas.iter().any(|d| matches!(d, LlmStreamDelta::AddCitation { .. }));
+        let has_citation = deltas
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::AddCitation { .. }));
         assert!(has_citation);
 
         // Verify citation content and block index preservation
-        if let Some(LlmStreamDelta::AddCitation { citation }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddCitation { .. })) {
-            assert_eq!(citation.get("type").and_then(|v| v.as_str()), Some("char_location"));
-            assert_eq!(citation.get("cited_text").and_then(|v| v.as_str()), Some("Some text"));
+        if let Some(LlmStreamDelta::AddCitation { citation }) = deltas
+            .iter()
+            .find(|d| matches!(d, LlmStreamDelta::AddCitation { .. }))
+        {
+            assert_eq!(
+                citation.get("type").and_then(|v| v.as_str()),
+                Some("char_location")
+            );
+            assert_eq!(
+                citation.get("cited_text").and_then(|v| v.as_str()),
+                Some("Some text")
+            );
             // Verify block index is preserved for multi-block association
-            assert_eq!(citation.get("_content_block_index").and_then(|v| v.as_u64()), Some(2));
+            assert_eq!(
+                citation
+                    .get("_content_block_index")
+                    .and_then(|v| v.as_u64()),
+                Some(2)
+            );
         }
     }
 
     #[test]
     fn test_thinking_block_start_no_empty_blocks() {
         let adapter = AnthropicAdapter;
-        let chunk = r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
+        let chunk =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
         // Should NOT emit SetThinkingBlocks - thinking content comes via thinking_delta -> AppendReasoning
-        let has_thinking_blocks = deltas.iter().any(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. }));
+        let has_thinking_blocks = deltas
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::SetThinkingBlocks { .. }));
         assert!(!has_thinking_blocks);
     }
 
@@ -1292,21 +1542,24 @@ mod tests {
             "claude".to_string(),
             vec![ChatMessage::new("user".to_string(), "test".to_string())],
         );
-        req_low_max.params.max_tokens = 4096;  // Less than DEFAULT_THINKING_BUDGET
-        req_low_max.reasoning = ReasoningIntent::High;  // Will use DEFAULT_THINKING_BUDGET
+        req_low_max.params.max_tokens = 4096; // Less than DEFAULT_THINKING_BUDGET
+        req_low_max.reasoning = ReasoningIntent::High; // Will use DEFAULT_THINKING_BUDGET
         req_low_max.stream = true;
 
         let http = adapter.build_http(&req_low_max, &settings()).unwrap();
         // Should be adjusted: budget + max(current_max, 1024)
         assert_eq!(http.body["max_tokens"], DEFAULT_THINKING_BUDGET + 4096);
-        assert_eq!(http.body["thinking"]["budget_tokens"], DEFAULT_THINKING_BUDGET);
+        assert_eq!(
+            http.body["thinking"]["budget_tokens"],
+            DEFAULT_THINKING_BUDGET
+        );
 
         // Test with max_tokens > thinking budget (should NOT be adjusted)
         let mut req_high_max = LlmRequest::new(
             "claude".to_string(),
             vec![ChatMessage::new("user".to_string(), "test".to_string())],
         );
-        req_high_max.params.max_tokens = 20000;  // More than DEFAULT_THINKING_BUDGET
+        req_high_max.params.max_tokens = 20000; // More than DEFAULT_THINKING_BUDGET
         req_high_max.reasoning = ReasoningIntent::High;
         req_high_max.stream = true;
 
@@ -1329,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_breakpoints_on_messages() {
+    fn test_no_block_level_cache_breakpoints_on_messages() {
         // After linearization: user, assistant+tool_use, tool_result, user
         use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
 
@@ -1360,7 +1613,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Thanks, now explain".to_string()),
         ];
 
-        let (system, msgs) = convert_to_anthropic(&messages, CacheControl::Ephemeral);
+        let (system, msgs) = convert_to_anthropic(&messages, None);
 
         // System should be plain text (no cache_control)
         assert_eq!(system, Some(json!("Be helpful")));
@@ -1369,46 +1622,50 @@ mod tests {
         // Tool result is merged into the following user message (no consecutive user blocks)
         assert_eq!(msgs.len(), 3);
 
-        // With 3 messages, quarter=0, middle=1, last2=1, last=2 => all messages get breakpoints.
+        // No block-level cache_control in message content
         for i in 0..msgs.len() {
-            assert!(msgs[i]["content"].as_array().unwrap().last().unwrap().get("cache_control").is_some());
+            assert!(msgs[i]["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .get("cache_control")
+                .is_none());
         }
 
         // Verify the merged user message contains both tool_result and text
         let last_content = msgs[2]["content"].as_array().unwrap();
         let has_tool_result = last_content.iter().any(|b| b["type"] == "tool_result");
         let has_text = last_content.iter().any(|b| b["type"] == "text");
-        assert!(has_tool_result, "Merged user message should contain tool_result");
+        assert!(
+            has_tool_result,
+            "Merged user message should contain tool_result"
+        );
         assert!(has_text, "Merged user message should contain user text");
     }
 
     #[test]
-    fn test_cache_breakpoints_single_message() {
-        let messages = vec![
-            ChatMessage::new("user".to_string(), "Hello".to_string()),
-        ];
+    fn test_no_block_level_cache_breakpoints_single_message() {
+        let messages = vec![ChatMessage::new("user".to_string(), "Hello".to_string())];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Ephemeral);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         assert_eq!(msgs.len(), 1);
-        // Single message gets breakpoint at [-1]
-        assert!(msgs[0]["content"][0].get("cache_control").is_some());
-        assert_eq!(msgs[0]["content"][0]["cache_control"]["ttl"], "1h");
+        assert!(msgs[0]["content"][0].get("cache_control").is_none());
     }
 
     #[test]
-    fn test_cache_breakpoints_two_messages() {
+    fn test_no_block_level_cache_breakpoints_two_messages() {
         let messages = vec![
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage::new("assistant".to_string(), "Hi there".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Ephemeral);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         assert_eq!(msgs.len(), 2);
-        // Two messages: [0] (always) and [-1] get breakpoints
-        assert!(msgs[0]["content"][0].get("cache_control").is_some());
-        assert!(msgs[1]["content"][0].get("cache_control").is_some());
+        assert!(msgs[0]["content"][0].get("cache_control").is_none());
+        assert!(msgs[1]["content"][0].get("cache_control").is_none());
     }
 
     #[test]
@@ -1420,7 +1677,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Thanks".to_string()),
         ];
 
-        let (system, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (system, msgs) = convert_to_anthropic(&messages, None);
 
         // System should be plain text, no cache_control
         assert_eq!(system, Some(json!("Be helpful")));
@@ -1429,15 +1686,17 @@ mod tests {
         for msg in &msgs {
             if let Some(content) = msg["content"].as_array() {
                 for block in content {
-                    assert!(block.get("cache_control").is_none(),
-                        "No cache breakpoints expected when CacheControl::Off");
+                    assert!(
+                        block.get("cache_control").is_none(),
+                        "No cache breakpoints expected when CacheControl::Off"
+                    );
                 }
             }
         }
     }
 
     #[test]
-    fn test_cache_breakpoint_on_tool_use_last_block() {
+    fn test_no_block_level_cache_breakpoint_on_tool_use_last_block() {
         use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
 
         let messages = vec![
@@ -1465,14 +1724,20 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Ephemeral);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         // [0]=user, [1]=assistant(text+tool_use), [2]=tool_result(user)
         assert_eq!(msgs.len(), 3);
 
-        // With 3 messages, quarter=0, middle=1, last2=1, last=2 => all messages get breakpoints.
+        // No block-level cache_control in message content
         for i in 0..msgs.len() {
-            assert!(msgs[i]["content"].as_array().unwrap().last().unwrap().get("cache_control").is_some());
+            assert!(msgs[i]["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .get("cache_control")
+                .is_none());
         }
     }
 
@@ -1482,7 +1747,9 @@ mod tests {
             ChatMessage::new("user".to_string(), "Solve this".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("The answer is 42".to_string()),
+                content: crate::call_validation::ChatContent::SimpleText(
+                    "The answer is 42".to_string(),
+                ),
                 thinking_blocks: Some(vec![json!({
                     "type": "thinking",
                     "thinking": "Let me work through this...",
@@ -1493,13 +1760,16 @@ mod tests {
             ChatMessage::new("user".to_string(), "Explain more".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         assert_eq!(msgs.len(), 3);
         let assistant_content = msgs[1]["content"].as_array().unwrap();
         // Thinking block should come first, then text
         assert_eq!(assistant_content[0]["type"], "thinking");
-        assert_eq!(assistant_content[0]["thinking"], "Let me work through this...");
+        assert_eq!(
+            assistant_content[0]["thinking"],
+            "Let me work through this..."
+        );
         assert_eq!(assistant_content[0]["signature"], "abc123signature");
         assert_eq!(assistant_content[1]["type"], "text");
         assert_eq!(assistant_content[1]["text"], "The answer is 42");
@@ -1539,7 +1809,7 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         // assistant content: [thinking, (empty text removed), tool_use]
         let assistant_content = msgs[1]["content"].as_array().unwrap();
@@ -1572,7 +1842,7 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let content = msgs[1]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "thinking");
@@ -1588,23 +1858,23 @@ mod tests {
             ChatMessage::new("user".to_string(), "What color is the grass?".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("The grass is green.".to_string()),
-                citations: vec![
-                    json!({
-                        "type": "char_location",
-                        "cited_text": "The grass is green.",
-                        "document_index": 0,
-                        "document_title": "My Document",
-                        "start_char_index": 0,
-                        "end_char_index": 20
-                    }),
-                ],
+                content: crate::call_validation::ChatContent::SimpleText(
+                    "The grass is green.".to_string(),
+                ),
+                citations: vec![json!({
+                    "type": "char_location",
+                    "cited_text": "The grass is green.",
+                    "document_index": 0,
+                    "document_title": "My Document",
+                    "start_char_index": 0,
+                    "end_char_index": 20
+                })],
                 ..Default::default()
             },
             ChatMessage::new("user".to_string(), "And the sky?".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         assert_eq!(msgs.len(), 3);
         let assistant_content = msgs[1]["content"].as_array().unwrap();
@@ -1620,20 +1890,20 @@ mod tests {
 
     #[test]
     fn test_empty_citations_not_included_in_resend() {
-        let messages = vec![
-            ChatMessage {
-                role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Hello".to_string()),
-                citations: vec![],
-                ..Default::default()
-            },
-        ];
+        let messages = vec![ChatMessage {
+            role: "assistant".to_string(),
+            content: crate::call_validation::ChatContent::SimpleText("Hello".to_string()),
+            citations: vec![],
+            ..Default::default()
+        }];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let content = msgs[0]["content"].as_array().unwrap();
-        assert!(content[0].get("citations").is_none(),
-            "Empty citations should not be included in re-sent messages");
+        assert!(
+            content[0].get("citations").is_none(),
+            "Empty citations should not be included in re-sent messages"
+        );
     }
 
     #[test]
@@ -1648,7 +1918,7 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let content = msgs[1]["content"].as_array().unwrap();
         assert_eq!(content.len(), 1);
@@ -1656,7 +1926,7 @@ mod tests {
     }
 
     #[test]
-    fn test_thinking_blocks_cache_breakpoint_on_last_block() {
+    fn test_thinking_blocks_no_block_level_cache_breakpoint_on_last_block() {
         use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
 
         // Simulate call 2: user + assistant(thinking+tool_use) + tool_result
@@ -1690,11 +1960,17 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Ephemeral);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
-        // With 3 messages, quarter=0, middle=1, last2=1, last=2 => all messages get breakpoints.
+        // No block-level cache_control in message content
         for i in 0..msgs.len() {
-            assert!(msgs[i]["content"].as_array().unwrap().last().unwrap().get("cache_control").is_some());
+            assert!(msgs[i]["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .get("cache_control")
+                .is_none());
         }
     }
 
@@ -1705,16 +1981,14 @@ mod tests {
             ChatMessage {
                 role: "assistant".to_string(),
                 content: crate::call_validation::ChatContent::SimpleText("Found it.".to_string()),
-                citations: vec![
-                    json!({
-                        "type": "web_search_result_location",
-                        "url": "https://example.com",
-                        "title": "Example",
-                        "encrypted_index": "abc123",
-                        "cited_text": "Found it.",
-                        "_content_block_index": 2
-                    }),
-                ],
+                citations: vec![json!({
+                    "type": "web_search_result_location",
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "encrypted_index": "abc123",
+                    "cited_text": "Found it.",
+                    "_content_block_index": 2
+                })],
                 server_content_blocks: vec![
                     json!({
                         "type": "server_tool_use",
@@ -1733,19 +2007,24 @@ mod tests {
             ChatMessage::new("user".to_string(), "Tell me more".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let assistant_content = msgs[1]["content"].as_array().unwrap();
         // Find the text block (may not be at index 0 due to interleaved server content blocks)
-        let text_block = assistant_content.iter()
+        let text_block = assistant_content
+            .iter()
             .find(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
             .expect("should have a text block");
         let citations = text_block["citations"].as_array().unwrap();
         assert_eq!(citations.len(), 1);
-        assert!(citations[0].get("_content_block_index").is_none(),
-            "Internal _content_block_index should be stripped from re-sent citations");
-        assert_eq!(citations[0]["encrypted_index"], "abc123",
-            "encrypted_index should be preserved");
+        assert!(
+            citations[0].get("_content_block_index").is_none(),
+            "Internal _content_block_index should be stripped from re-sent citations"
+        );
+        assert_eq!(
+            citations[0]["encrypted_index"], "abc123",
+            "encrypted_index should be preserved"
+        );
     }
 
     #[test]
@@ -1768,33 +2047,42 @@ mod tests {
                         "content": [{"type": "web_search_result", "url": "https://weather.com", "encrypted_content": "enc123"}]
                     }),
                 ],
-                citations: vec![
-                    json!({
-                        "type": "web_search_result_location",
-                        "url": "https://weather.com",
-                        "title": "Weather",
-                        "encrypted_index": "idx123",
-                        "cited_text": "It's sunny."
-                    }),
-                ],
+                citations: vec![json!({
+                    "type": "web_search_result_location",
+                    "url": "https://weather.com",
+                    "title": "Weather",
+                    "encrypted_index": "idx123",
+                    "cited_text": "It's sunny."
+                })],
                 ..Default::default()
             },
             ChatMessage::new("user".to_string(), "And tomorrow?".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let assistant_content = msgs[1]["content"].as_array().unwrap();
         // Should contain: text block (with citations), server_tool_use, web_search_tool_result
-        assert!(assistant_content.len() >= 3,
-            "Assistant should have text + server content blocks, got {} blocks", assistant_content.len());
+        assert!(
+            assistant_content.len() >= 3,
+            "Assistant should have text + server content blocks, got {} blocks",
+            assistant_content.len()
+        );
 
-        let has_server_tool_use = assistant_content.iter().any(|b|
-            b.get("type").and_then(|t| t.as_str()) == Some("server_tool_use"));
-        let has_web_search_result = assistant_content.iter().any(|b|
-            b.get("type").and_then(|t| t.as_str()) == Some("web_search_tool_result"));
-        assert!(has_server_tool_use, "server_tool_use block should be included");
-        assert!(has_web_search_result, "web_search_tool_result block should be included");
+        let has_server_tool_use = assistant_content
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("server_tool_use"));
+        let has_web_search_result = assistant_content
+            .iter()
+            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("web_search_tool_result"));
+        assert!(
+            has_server_tool_use,
+            "server_tool_use block should be included"
+        );
+        assert!(
+            has_web_search_result,
+            "web_search_tool_result block should be included"
+        );
     }
 
     #[test]
@@ -1803,15 +2091,32 @@ mod tests {
         let chunk = r#"{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_abc","name":"web_search","input":{"query":"test"}}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
-        let has_server_block = deltas.iter().any(|d| matches!(d, LlmStreamDelta::AddServerContentBlock { .. }));
-        assert!(has_server_block, "Should emit AddServerContentBlock for server_tool_use");
+        let has_server_block = deltas
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::AddServerContentBlock { .. }));
+        assert!(
+            has_server_block,
+            "Should emit AddServerContentBlock for server_tool_use"
+        );
 
-        if let Some(LlmStreamDelta::AddServerContentBlock { block }) = deltas.iter().find(|d| matches!(d, LlmStreamDelta::AddServerContentBlock { .. })) {
-            assert_eq!(block.get("type").and_then(|v| v.as_str()), Some("server_tool_use"));
-            assert_eq!(block.get("name").and_then(|v| v.as_str()), Some("web_search"));
+        if let Some(LlmStreamDelta::AddServerContentBlock { block }) = deltas
+            .iter()
+            .find(|d| matches!(d, LlmStreamDelta::AddServerContentBlock { .. }))
+        {
+            assert_eq!(
+                block.get("type").and_then(|v| v.as_str()),
+                Some("server_tool_use")
+            );
+            assert_eq!(
+                block.get("name").and_then(|v| v.as_str()),
+                Some("web_search")
+            );
             // Verify streaming index is preserved for interleaved ordering
-            assert_eq!(block.get("_order_index").and_then(|v| v.as_u64()), Some(1),
-                "Server content block should carry original streaming index");
+            assert_eq!(
+                block.get("_order_index").and_then(|v| v.as_u64()),
+                Some(1),
+                "Server content block should carry original streaming index"
+            );
         }
     }
 
@@ -1821,37 +2126,54 @@ mod tests {
         let chunk = r#"{"type":"content_block_start","index":2,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_abc","content":[{"type":"web_search_result","url":"https://example.com","title":"Example","encrypted_content":"enc123"}]}}"#;
 
         let deltas = adapter.parse_stream_chunk(chunk).unwrap();
-        let has_server_block = deltas.iter().any(|d| matches!(d, LlmStreamDelta::AddServerContentBlock { .. }));
-        assert!(has_server_block, "Should emit AddServerContentBlock for web_search_tool_result");
+        let has_server_block = deltas
+            .iter()
+            .any(|d| matches!(d, LlmStreamDelta::AddServerContentBlock { .. }));
+        assert!(
+            has_server_block,
+            "Should emit AddServerContentBlock for web_search_tool_result"
+        );
     }
 
     #[test]
     fn test_web_search_tool_added_when_supported() {
         let adapter = AnthropicAdapter;
-        let req = LlmRequest::new("claude".to_string(), vec![])
-            .with_tools(vec![json!({"type": "function", "function": {"name": "test", "parameters": {}}})], None);
+        let req = LlmRequest::new("claude".to_string(), vec![]).with_tools(
+            vec![json!({"type": "function", "function": {"name": "test", "parameters": {}}})],
+            None,
+        );
         let mut s = settings();
         s.supports_web_search = true;
         let http = adapter.build_http(&req, &s).unwrap();
 
         let tools = http.body["tools"].as_array().unwrap();
-        let has_web_search = tools.iter().any(|t|
-            t.get("type").and_then(|v| v.as_str()) == Some("web_search_20250305"));
-        assert!(has_web_search, "web_search tool should be included when supports_web_search is true");
+        let has_web_search = tools
+            .iter()
+            .any(|t| t.get("type").and_then(|v| v.as_str()) == Some("web_search_20250305"));
+        assert!(
+            has_web_search,
+            "web_search tool should be included when supports_web_search is true"
+        );
     }
 
     #[test]
     fn test_web_search_tool_not_added_when_unsupported() {
         let adapter = AnthropicAdapter;
-        let req = LlmRequest::new("claude".to_string(), vec![])
-            .with_tools(vec![json!({"type": "function", "function": {"name": "test", "parameters": {}}})], None);
+        let req = LlmRequest::new("claude".to_string(), vec![]).with_tools(
+            vec![json!({"type": "function", "function": {"name": "test", "parameters": {}}})],
+            None,
+        );
         let s = settings(); // supports_web_search: false
         let http = adapter.build_http(&req, &s).unwrap();
 
         let tools = http.body["tools"].as_array().unwrap();
-        let has_web_search = tools.iter().any(|t|
-            t.get("type").and_then(|v| v.as_str()) == Some("web_search_20250305"));
-        assert!(!has_web_search, "web_search tool should NOT be included when supports_web_search is false");
+        let has_web_search = tools
+            .iter()
+            .any(|t| t.get("type").and_then(|v| v.as_str()) == Some("web_search_20250305"));
+        assert!(
+            !has_web_search,
+            "web_search tool should NOT be included when supports_web_search is false"
+        );
     }
 
     #[test]
@@ -1863,26 +2185,28 @@ mod tests {
             ChatMessage {
                 role: "assistant".to_string(),
                 content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
-                thinking_blocks: Some(vec![
-                    json!({
-                        "type": "thinking",
-                        "thinking": "",
-                        "signature": "sig_empty"
-                    }),
-                ]),
+                thinking_blocks: Some(vec![json!({
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": "sig_empty"
+                })]),
                 ..Default::default()
             },
             ChatMessage::new("user".to_string(), "Follow up".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let assistant_content = msgs[1]["content"].as_array().unwrap();
-        let thinking_blocks: Vec<_> = assistant_content.iter()
+        let thinking_blocks: Vec<_> = assistant_content
+            .iter()
             .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
             .collect();
-        assert!(thinking_blocks.is_empty(),
-            "Empty thinking blocks should be filtered out, got {:?}", thinking_blocks);
+        assert!(
+            thinking_blocks.is_empty(),
+            "Empty thinking blocks should be filtered out, got {:?}",
+            thinking_blocks
+        );
     }
 
     #[test]
@@ -1893,25 +2217,26 @@ mod tests {
             ChatMessage {
                 role: "assistant".to_string(),
                 content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
-                thinking_blocks: Some(vec![
-                    json!({
-                        "type": "thinking",
-                        "thinking": "   \n\t  ",
-                        "signature": "sig_ws"
-                    }),
-                ]),
+                thinking_blocks: Some(vec![json!({
+                    "type": "thinking",
+                    "thinking": "   \n\t  ",
+                    "signature": "sig_ws"
+                })]),
                 ..Default::default()
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let assistant_content = msgs[0]["content"].as_array().unwrap();
-        let thinking_blocks: Vec<_> = assistant_content.iter()
+        let thinking_blocks: Vec<_> = assistant_content
+            .iter()
             .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
             .collect();
-        assert!(thinking_blocks.is_empty(),
-            "Whitespace-only thinking blocks should be filtered out");
+        assert!(
+            thinking_blocks.is_empty(),
+            "Whitespace-only thinking blocks should be filtered out"
+        );
     }
 
     #[test]
@@ -1922,24 +2247,25 @@ mod tests {
             ChatMessage {
                 role: "assistant".to_string(),
                 content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
-                thinking_blocks: Some(vec![
-                    json!({
-                        "type": "thinking",
-                        "signature": "sig_no_text"
-                    }),
-                ]),
+                thinking_blocks: Some(vec![json!({
+                    "type": "thinking",
+                    "signature": "sig_no_text"
+                })]),
                 ..Default::default()
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let assistant_content = msgs[0]["content"].as_array().unwrap();
-        let thinking_blocks: Vec<_> = assistant_content.iter()
+        let thinking_blocks: Vec<_> = assistant_content
+            .iter()
             .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
             .collect();
-        assert!(thinking_blocks.is_empty(),
-            "Thinking blocks without thinking text should be filtered out");
+        assert!(
+            thinking_blocks.is_empty(),
+            "Thinking blocks without thinking text should be filtered out"
+        );
     }
 
     #[test]
@@ -1970,18 +2296,23 @@ mod tests {
             },
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         // msgs[0] = user, msgs[1] = assistant
         let assistant_content = msgs[1]["content"].as_array().unwrap();
-        let thinking_blocks: Vec<_> = assistant_content.iter()
+        let thinking_blocks: Vec<_> = assistant_content
+            .iter()
             .filter(|b| {
                 let t = b.get("type").and_then(|t| t.as_str());
                 t == Some("thinking") || t == Some("redacted_thinking")
             })
             .collect();
-        assert_eq!(thinking_blocks.len(), 2,
-            "Should keep valid thinking + redacted, filter empty: {:?}", thinking_blocks);
+        assert_eq!(
+            thinking_blocks.len(),
+            2,
+            "Should keep valid thinking + redacted, filter empty: {:?}",
+            thinking_blocks
+        );
         assert_eq!(thinking_blocks[0]["thinking"], "Valid reasoning");
         assert_eq!(thinking_blocks[1]["type"], "redacted_thinking");
     }
@@ -1994,7 +2325,9 @@ mod tests {
             ChatMessage::new("user".to_string(), "Search for X".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Found results.".to_string()),
+                content: crate::call_validation::ChatContent::SimpleText(
+                    "Found results.".to_string(),
+                ),
                 thinking_blocks: Some(vec![
                     json!({
                         "type": "thinking",
@@ -2029,27 +2362,39 @@ mod tests {
             ChatMessage::new("user".to_string(), "Tell me more".to_string()),
         ];
 
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
+        let (_, msgs) = convert_to_anthropic(&messages, None);
 
         let assistant_content = msgs[1]["content"].as_array().unwrap();
         // Verify interleaved order: thinking(0), server_tool_use(1), web_search_result(2), thinking(3), text(4)
-        assert_eq!(assistant_content[0]["type"], "thinking",
-            "Block 0 should be thinking");
+        assert_eq!(
+            assistant_content[0]["type"], "thinking",
+            "Block 0 should be thinking"
+        );
         assert_eq!(assistant_content[0]["thinking"], "Let me search for X");
-        assert_eq!(assistant_content[1]["type"], "server_tool_use",
-            "Block 1 should be server_tool_use");
-        assert_eq!(assistant_content[2]["type"], "web_search_tool_result",
-            "Block 2 should be web_search_tool_result");
-        assert_eq!(assistant_content[3]["type"], "thinking",
-            "Block 3 should be thinking");
+        assert_eq!(
+            assistant_content[1]["type"], "server_tool_use",
+            "Block 1 should be server_tool_use"
+        );
+        assert_eq!(
+            assistant_content[2]["type"], "web_search_tool_result",
+            "Block 2 should be web_search_tool_result"
+        );
+        assert_eq!(
+            assistant_content[3]["type"], "thinking",
+            "Block 3 should be thinking"
+        );
         assert_eq!(assistant_content[3]["thinking"], "Now I have the results");
-        assert_eq!(assistant_content[4]["type"], "text",
-            "Block 4 should be text");
+        assert_eq!(
+            assistant_content[4]["type"], "text",
+            "Block 4 should be text"
+        );
         assert_eq!(assistant_content[4]["text"], "Found results.");
 
         // Verify _order_index is stripped from server content blocks
-        assert!(assistant_content[1].get("_order_index").is_none(),
-            "Internal _order_index should be stripped from server content blocks");
+        assert!(
+            assistant_content[1].get("_order_index").is_none(),
+            "Internal _order_index should be stripped from server content blocks"
+        );
     }
 
     #[test]
@@ -2058,14 +2403,12 @@ mod tests {
         // server_tool_use + web_search_tool_result pairs, ALL blocks must be
         // preserved exactly to maintain cache prefix consistency.
         // Previously, orphan detection would strip blocks on subsequent turns.
-        
+
         // Simulate a historical assistant message from storage with complete
         // web_search server content blocks
-        let mut assistant_msg = ChatMessage::new(
-            "assistant".to_string(),
-            "Here are the results.".to_string()
-        );
-        
+        let mut assistant_msg =
+            ChatMessage::new("assistant".to_string(), "Here are the results.".to_string());
+
         assistant_msg.server_content_blocks = vec![
             json!({
                 "type": "server_tool_use",
@@ -2086,71 +2429,256 @@ mod tests {
                 "_order_index": 2
             }),
         ];
-        
+
         let messages = vec![
             ChatMessage::new("user".to_string(), "Search for X".to_string()),
             assistant_msg,
             ChatMessage::new("user".to_string(), "Tell me more".to_string()),
         ];
-        
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
-        
+
+        let (_, msgs) = convert_to_anthropic(&messages, None);
+
         // Verify both blocks are preserved in the re-processed message
         let assistant_content = msgs[1]["content"].as_array().unwrap();
-        
-        let server_tool_use_count = assistant_content.iter()
+
+        let server_tool_use_count = assistant_content
+            .iter()
             .filter(|b| b["type"] == "server_tool_use")
             .count();
-        let web_search_result_count = assistant_content.iter()
+        let web_search_result_count = assistant_content
+            .iter()
             .filter(|b| b["type"] == "web_search_tool_result")
             .count();
-        
-        assert_eq!(server_tool_use_count, 1, 
-            "server_tool_use block must be preserved for cache consistency");
-        assert_eq!(web_search_result_count, 1, 
-            "web_search_tool_result block must be preserved for cache consistency");
-        
+
+        assert_eq!(
+            server_tool_use_count, 1,
+            "server_tool_use block must be preserved for cache consistency"
+        );
+        assert_eq!(
+            web_search_result_count, 1,
+            "web_search_tool_result block must be preserved for cache consistency"
+        );
+
         // Verify _order_index was stripped (not part of Anthropic wire format)
         for block in assistant_content {
-            assert!(block.get("_order_index").is_none(),
-                "_order_index should be stripped from all blocks");
+            assert!(
+                block.get("_order_index").is_none(),
+                "_order_index should be stripped from all blocks"
+            );
         }
     }
-    
+
     #[test]
     fn test_orphaned_server_tool_use_filtered_for_fresh_responses() {
         // Test that orphan filtering still works for incomplete/fresh responses
         // (where server_tool_use exists but matching result is missing)
-        
-        let mut assistant_msg = ChatMessage::new(
-            "assistant".to_string(),
-            "Searching...".to_string()
-        );
-        
+
+        let mut assistant_msg =
+            ChatMessage::new("assistant".to_string(), "Searching...".to_string());
+
         // Simulate incomplete response: server_tool_use without matching result
-        assistant_msg.server_content_blocks = vec![
-            json!({
-                "type": "server_tool_use",
-                "id": "srvtoolu_01ORPHAN",
-                "name": "web_search",
-                "input": {}
-            }),
-        ];
-        
+        assistant_msg.server_content_blocks = vec![json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_01ORPHAN",
+            "name": "web_search",
+            "input": {}
+        })];
+
         let messages = vec![
             ChatMessage::new("user".to_string(), "Search for Y".to_string()),
             assistant_msg,
         ];
-        
-        let (_, msgs) = convert_to_anthropic(&messages, CacheControl::Off);
-        
+
+        let (_, msgs) = convert_to_anthropic(&messages, None);
+
         // Verify orphaned server_tool_use is filtered out
         let assistant_content = msgs[1]["content"].as_array().unwrap();
-        
-        let has_orphaned_block = assistant_content.iter()
+
+        let has_orphaned_block = assistant_content
+            .iter()
             .any(|b| b["type"] == "server_tool_use" && b["id"] == "srvtoolu_01ORPHAN");
-        
-        assert!(!has_orphaned_block, 
+
+        assert!(!has_orphaned_block,
             "Orphaned server_tool_use without matching result should be filtered for incomplete responses");
+    }
+
+    #[test]
+    fn test_convert_tools_to_anthropic_maps_parameters_to_input_schema() {
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search the web",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "limit": {"type": "integer"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        })];
+
+        let result = convert_tools_to_anthropic(&tools);
+        let converted = result.as_array().unwrap();
+        assert_eq!(converted.len(), 1);
+
+        let tool = &converted[0];
+        assert_eq!(tool["name"], json!("search"));
+        assert_eq!(tool["description"], json!("Search the web"));
+
+        let input_schema = &tool["input_schema"];
+        assert_eq!(input_schema["type"], json!("object"));
+        assert_eq!(input_schema["properties"]["query"]["type"], json!("string"));
+        assert_eq!(
+            input_schema["properties"]["limit"]["type"],
+            json!("integer")
+        );
+        assert_eq!(input_schema["required"], json!(["query"]));
+
+        assert!(
+            tool.get("parameters").is_none(),
+            "parameters field should not be present"
+        );
+    }
+
+    #[test]
+    fn test_context_file_sanitized_in_cc_mode() {
+        use crate::call_validation::{ChatContent, ContextFile};
+        use super::claude_code_compat;
+
+        // Simulate an AGENTS.md context file injection
+        let agents_md_content = "# Refact Agent Engine\nBinary: `refact-lsp` — AI coding agent.\nConfig: `.refact/integrations/*.yaml`.";
+        let messages = vec![
+            ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(vec![ContextFile {
+                    file_name: "AGENTS.md".to_string(),
+                    file_content: agents_md_content.to_string(),
+                    line1: 1,
+                    line2: 3,
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            ChatMessage::new("user".to_string(), "What tools do I have?".to_string()),
+        ];
+
+        // Non-CC mode: content passes through unsanitized
+        let (_, msgs_plain) = convert_to_anthropic(&messages, None);
+        let user_content = msgs_plain[0]["content"].as_array().unwrap();
+        let has_context = user_content.iter().any(|b| {
+            b.get("text")
+                .and_then(|t| t.as_str())
+                .map_or(false, |t| t.contains("refact-lsp"))
+        });
+        assert!(
+            has_context,
+            "Non-CC mode should pass context files through unchanged"
+        );
+
+        // CC mode: identifying strings are sanitized
+        let sanitizer: Box<dyn Fn(&str) -> String> =
+            Box::new(|text: &str| claude_code_compat::sanitize_system_text(text));
+        let (_, msgs_cc) = convert_to_anthropic(&messages, Some(sanitizer.as_ref()));
+        let user_content_cc = msgs_cc[0]["content"].as_array().unwrap();
+        let has_refact_lsp = user_content_cc.iter().any(|b| {
+            b.get("text")
+                .and_then(|t| t.as_str())
+                .map_or(false, |t| t.contains("refact-lsp"))
+        });
+        assert!(
+            !has_refact_lsp,
+            "CC mode should sanitize refact-lsp from context files"
+        );
+        let has_refact_dir = user_content_cc.iter().any(|b| {
+            b.get("text")
+                .and_then(|t| t.as_str())
+                .map_or(false, |t| t.contains(".refact/"))
+        });
+        assert!(
+            !has_refact_dir,
+            "CC mode should sanitize .refact/ from context files"
+        );
+        // Content should still be present (just sanitized)
+        let has_content = user_content_cc.iter().any(|b| {
+            b.get("text")
+                .and_then(|t| t.as_str())
+                .map_or(false, |t| t.contains("AGENTS.md"))
+        });
+        assert!(
+            has_content,
+            "CC mode sanitization should preserve file header"
+        );
+    }
+
+    fn effort_settings() -> AdapterSettings {
+        AdapterSettings {
+            reasoning_type: Some("anthropic_effort".to_string()),
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn test_effort_mode_medium_sends_adaptive() {
+        use crate::llm::params::ReasoningIntent;
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "claude-opus-4-7".to_string(),
+            vec![ChatMessage::new("user".to_string(), "hi".to_string())],
+        )
+        .with_reasoning(ReasoningIntent::Medium);
+        let http = adapter.build_http(&req, &effort_settings()).unwrap();
+        assert_eq!(http.body["thinking"]["type"], "adaptive");
+        assert_eq!(http.body["thinking"]["display"], "summarized");
+        assert!(http.body["thinking"].get("budget_tokens").is_none());
+        assert_eq!(http.body["output_config"]["effort"], "medium");
+        assert!(http.headers.get("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn test_effort_mode_budget_tokens_sends_adaptive() {
+        use crate::llm::params::ReasoningIntent;
+        let adapter = AnthropicAdapter;
+        let req = LlmRequest::new(
+            "claude-opus-4-7".to_string(),
+            vec![ChatMessage::new("user".to_string(), "hi".to_string())],
+        )
+        .with_reasoning(ReasoningIntent::BudgetTokens(5000));
+        let http = adapter.build_http(&req, &effort_settings()).unwrap();
+        assert_eq!(http.body["thinking"]["type"], "adaptive");
+        assert_eq!(http.body["thinking"]["display"], "summarized");
+        assert!(http.body["thinking"].get("budget_tokens").is_none());
+        assert_eq!(http.body["output_config"]["effort"], "high");
+        assert!(http.headers.get("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn test_effort_mode_extra_body_thinking_override_updates_betas() {
+        use crate::llm::params::ReasoningIntent;
+        use std::collections::HashMap;
+        let adapter = AnthropicAdapter;
+        let mut extra = HashMap::new();
+        extra.insert(
+            "thinking".to_string(),
+            json!({"type": "enabled", "budget_tokens": 4096}),
+        );
+        let req = LlmRequest::new(
+            "claude-opus-4-7".to_string(),
+            vec![ChatMessage::new("user".to_string(), "hi".to_string())],
+        )
+        .with_reasoning(ReasoningIntent::Medium)
+        .with_extra_body(extra);
+        let http = adapter.build_http(&req, &effort_settings()).unwrap();
+        assert_eq!(http.body["thinking"]["type"], "enabled");
+        let beta = http
+            .headers
+            .get("anthropic-beta")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(beta.contains(INTERLEAVED_THINKING_BETA));
+        assert!(!beta.contains("effort-2025-11-24"));
     }
 }
