@@ -216,9 +216,9 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
   const toolDiffs = useAppSelector(selectDiffs);
 
   const hasResult = maybeResult !== undefined;
-  const hasDiffPayload = diffs.length > 0 || toolDiffs.length > 0;
+  const hasDiffs = diffs.length > 0 || toolDiffs.length > 0;
   const isToolBusy = !hasResult && (isStreaming || isWaiting);
-  const shouldRenderDiffs = hasDiffPayload && !isToolBusy;
+  const shouldRenderDiffs = hasDiffs && !isToolBusy;
 
   const allDiffs = useMemo(() => {
     if (!shouldRenderDiffs) return [];
@@ -276,21 +276,16 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
     return null;
   }, [toolCall, allDiffs]);
   const isCreate = isCreateTool(toolCall.function.name);
-  const stats = useMemo(
-    () => (shouldRenderDiffs ? getDiffStats(allDiffs) : { added: 0, removed: 0 }),
-    [allDiffs, shouldRenderDiffs],
-  );
+  const stats = useMemo(() => getDiffStats(allDiffs), [allDiffs]);
 
   const filesByName = useMemo(() => {
-    if (!shouldRenderDiffs) return {};
-
     const grouped: Record<string, DiffChunk[]> = {};
     for (const diff of allDiffs) {
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       grouped[diff.file_name] = (grouped[diff.file_name] || []).concat(diff);
     }
     return grouped;
-  }, [allDiffs, shouldRenderDiffs]);
+  }, [allDiffs]);
 
   const fileNames = Object.keys(filesByName);
   const isSingleFile = fileNames.length <= 1;
@@ -313,11 +308,12 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
       return "error";
     }
     if (isToolBusy) return "running";
-    if (hasResult && !hasDiffPayload) {
+    // Has result but no diffs - could be an error message
+    if (hasResult && !hasDiffs) {
       return "error";
     }
     return "success";
-  }, [hasDiffPayload, hasResult, isToolBusy, maybeResult]);
+  }, [hasDiffs, hasResult, isToolBusy, maybeResult]);
 
   const summary = useMemo(() => {
     const statsEl =
