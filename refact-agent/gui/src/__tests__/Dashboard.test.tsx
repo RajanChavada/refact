@@ -1,10 +1,11 @@
 import { http, HttpResponse } from "msw";
+import { QueryStatus } from "@reduxjs/toolkit/query";
 import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "../utils/test-utils";
+import { render, screen } from "../utils/test-utils";
 import { emptyTasks, server } from "../utils/mockServer";
 import { Dashboard } from "../features/Dashboard/Dashboard";
 import { updateConfig } from "../features/Config/configSlice";
-import type { TaskMeta } from "../services/refact/tasks";
+import { tasksApi, type TaskMeta } from "../services/refact/tasks";
 
 const CONFIG_STATE = {
   config: {
@@ -23,7 +24,17 @@ const CONFIG_STATE = {
   current_project: {
     name: "refact-test",
     workspaceRoots: ["/tmp/refact-test"],
-    workspaceSnapshotReceived: true,
+  },
+};
+
+const READY_SIDEBAR = {
+  subscriptionId: "test-sidebar",
+  lspPort: 8001,
+  sections: {
+    workspace: { status: "ready" as const, error: null },
+    chats: { status: "ready" as const, error: null },
+    tasks: { status: "ready" as const, error: null },
+    buddy: { status: "ready" as const, error: null },
   },
 };
 
@@ -51,7 +62,19 @@ describe("Dashboard progressive sidebar readiness", () => {
 
   it("does not show empty states before section snapshots arrive", () => {
     render(<Dashboard />, {
-      preloadedState: CONFIG_STATE,
+      preloadedState: {
+        ...CONFIG_STATE,
+        sidebar: {
+          subscriptionId: null,
+          lspPort: 8001,
+          sections: {
+            workspace: { status: "ready", error: null },
+            chats: { status: "loading", error: null },
+            tasks: { status: "loading", error: null },
+            buddy: { status: "loading", error: null },
+          },
+        },
+      },
     });
 
     expect(screen.getAllByText("Loading").length).toBeGreaterThan(0);
@@ -72,10 +95,8 @@ describe("Dashboard progressive sidebar readiness", () => {
         current_project: {
           name: "",
           workspaceRoots: [],
-          workspaceSnapshotReceived: true,
-          trajectoriesSnapshotReceived: true,
-          tasksSnapshotReceived: true,
         },
+        sidebar: READY_SIDEBAR,
       },
     });
 
@@ -93,14 +114,7 @@ describe("Dashboard progressive sidebar readiness", () => {
           loadError: null,
           pagination: { cursor: null, hasMore: false },
         },
-        current_project: {
-          name: "refact-test",
-          workspaceRoots: ["/tmp/refact-test"],
-          workspaceSnapshotReceived: true,
-          trajectoriesSnapshotReceived: true,
-          tasksSnapshotReceived: true,
-          buddySnapshotReceived: true,
-        },
+        sidebar: READY_SIDEBAR,
       },
     });
 
@@ -109,11 +123,11 @@ describe("Dashboard progressive sidebar readiness", () => {
 
     store.dispatch(updateConfig({ lspPort: 8001 }));
 
-    expect(store.getState().current_project).toMatchObject({
-      workspaceSnapshotReceived: true,
-      trajectoriesSnapshotReceived: true,
-      tasksSnapshotReceived: true,
-      buddySnapshotReceived: true,
+    expect(store.getState().sidebar.sections).toMatchObject({
+      workspace: { status: "ready" },
+      chats: { status: "ready" },
+      tasks: { status: "ready" },
+      buddy: { status: "ready" },
     });
     expect(screen.queryByText("Loading")).not.toBeInTheDocument();
     expect(screen.getByText(/No chats yet/i)).toBeInTheDocument();
@@ -121,21 +135,50 @@ describe("Dashboard progressive sidebar readiness", () => {
   });
 
   it("lets tasks become ready while chats are still loading", async () => {
-    server.use(
-      http.get("http://127.0.0.1:8001/v1/tasks", () =>
-        HttpResponse.json([task]),
-      ),
-    );
-
     render(<Dashboard />, {
       preloadedState: {
         ...CONFIG_STATE,
-        current_project: {
-          name: "refact-test",
-          workspaceRoots: ["/tmp/refact-test"],
-          workspaceSnapshotReceived: true,
-          tasksSnapshotReceived: true,
-          trajectoriesSnapshotReceived: false,
+        sidebar: {
+          subscriptionId: "test-sidebar",
+          lspPort: 8001,
+          sections: {
+            workspace: { status: "ready", error: null },
+            chats: { status: "loading", error: null },
+            tasks: { status: "ready", error: null },
+            buddy: { status: "ready", error: null },
+          },
+        },
+        [tasksApi.reducerPath]: {
+          queries: {
+            "listTasks(undefined)": {
+              status: QueryStatus.fulfilled,
+              endpointName: "listTasks",
+              error: undefined,
+              originalArgs: undefined,
+              requestId: "test",
+              startedTimeStamp: Date.now(),
+              data: [task],
+              fulfilledTimeStamp: Date.now(),
+            },
+          },
+          mutations: {},
+          provided: {
+            Tasks: {},
+            Board: {},
+            TaskTrajectories: {},
+          },
+          subscriptions: {},
+          config: {
+            online: true,
+            focused: true,
+            middlewareRegistered: true,
+            refetchOnFocus: false,
+            refetchOnReconnect: false,
+            refetchOnMountOrArgChange: false,
+            keepUnusedDataFor: 60,
+            reducerPath: tasksApi.reducerPath,
+            invalidationBehavior: "delayed",
+          },
         },
       },
     });
@@ -145,53 +188,25 @@ describe("Dashboard progressive sidebar readiness", () => {
     expect(screen.queryByText(/No chats yet/i)).not.toBeInTheDocument();
   });
 
-  it("shows task load errors instead of a loading skeleton forever", async () => {
-    server.use(
-      http.get("http://127.0.0.1:8001/v1/tasks", () =>
-        HttpResponse.json({ detail: "boom" }, { status: 500 }),
-      ),
-    );
-
+  it("shows task load errors instead of a loading skeleton forever", () => {
     render(<Dashboard />, {
       preloadedState: {
         ...CONFIG_STATE,
-        current_project: {
-          name: "refact-test",
-          workspaceRoots: ["/tmp/refact-test"],
-          tasksSnapshotReceived: true,
-          trajectoriesSnapshotReceived: true,
+        sidebar: {
+          subscriptionId: "test-sidebar",
+          lspPort: 8001,
+          sections: {
+            workspace: { status: "ready", error: null },
+            chats: { status: "ready", error: null },
+            tasks: { status: "error", error: "boom" },
+            buddy: { status: "ready", error: null },
+          },
         },
       },
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("Failed to load tasks")).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/No tasks yet/i)).not.toBeInTheDocument();
-  });
-
-  it("shows task load errors even before sidebar task readiness arrives", async () => {
-    server.use(
-      http.get("http://127.0.0.1:8001/v1/tasks", () =>
-        HttpResponse.json({ detail: "boom" }, { status: 500 }),
-      ),
-    );
-
-    render(<Dashboard />, {
-      preloadedState: {
-        ...CONFIG_STATE,
-        current_project: {
-          name: "refact-test",
-          workspaceRoots: ["/tmp/refact-test"],
-          tasksSnapshotReceived: false,
-          trajectoriesSnapshotReceived: true,
-        },
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Failed to load tasks")).toBeInTheDocument();
-    });
+    expect(screen.getByText("Failed to load tasks")).toBeInTheDocument();
+    expect(screen.getByText("boom")).toBeInTheDocument();
     expect(screen.queryByText(/No tasks yet/i)).not.toBeInTheDocument();
   });
 
@@ -205,12 +220,7 @@ describe("Dashboard progressive sidebar readiness", () => {
           loadError: "trajectory boom",
           pagination: { cursor: null, hasMore: false },
         },
-        current_project: {
-          name: "refact-test",
-          workspaceRoots: ["/tmp/refact-test"],
-          tasksSnapshotReceived: true,
-          trajectoriesSnapshotReceived: true,
-        },
+        sidebar: READY_SIDEBAR,
       },
     });
 

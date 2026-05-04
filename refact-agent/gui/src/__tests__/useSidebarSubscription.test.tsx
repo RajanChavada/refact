@@ -9,14 +9,41 @@ import { useSidebarSubscription } from "../hooks/useSidebarSubscription";
 import { server } from "../utils/mockServer";
 import { setCurrentProjectInfo } from "../features/Chat/currentProject";
 
-function sidebarSnapshotHandler(snapshot: Record<string, unknown>) {
+function envelope(seq: number, event: Record<string, unknown>) {
+  return {
+    protocol_version: 2,
+    seq,
+    subscription_id: "test-sidebar",
+    event,
+  };
+}
+
+function sectionSnapshot(
+  seq: number,
+  section: "workspace" | "chats" | "tasks" | "buddy",
+  snapshot: Record<string, unknown>,
+  status: "ready" | "error" = "ready",
+  error?: string,
+) {
+  return envelope(seq, {
+    type: "section_snapshot",
+    section,
+    status,
+    snapshot,
+    ...(error ? { error } : {}),
+  });
+}
+
+function sidebarSnapshotHandler(...events: Record<string, unknown>[]) {
   return http.get("http://127.0.0.1:8001/v1/sidebar/subscribe", () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify(snapshot)}\n\n`),
-        );
+        for (const event of events) {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+          );
+        }
       },
     });
 
@@ -26,20 +53,6 @@ function sidebarSnapshotHandler(snapshot: Record<string, unknown>) {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       },
-    });
-  });
-}
-
-function emptyTrajectoriesHandler(status = 200) {
-  return http.get("http://127.0.0.1:8001/v1/trajectories", () => {
-    if (status !== 200) {
-      return HttpResponse.json({ detail: "failed" }, { status });
-    }
-
-    return HttpResponse.json({
-      items: [],
-      next_cursor: null,
-      has_more: false,
     });
   });
 }
@@ -71,51 +84,42 @@ afterEach(() => {
 });
 
 describe("useSidebarSubscription", () => {
-  it("marks the server snapshot as received without clearing local project info when workspace_roots is omitted", async () => {
+  it("keeps local project info while waiting for an explicit workspace snapshot", async () => {
     server.use(
-      emptyTrajectoriesHandler(),
-      sidebarSnapshotHandler({
-        seq: 0,
-        category: "snapshot",
-        trajectories: [],
-        tasks: [],
-      }),
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "chats", { trajectories: [] }),
+        sectionSnapshot(1, "tasks", { tasks: [] }),
+        sectionSnapshot(2, "buddy", { buddy: null }),
+      ),
     );
 
     const store = renderSidebarSubscription({
       current_project: {
         name: "local-refact",
         workspaceRoots: ["/local/refact"],
-        workspaceSnapshotReceived: false,
       },
     });
 
     await waitFor(() => {
-      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
-        true,
-      );
+      expect(store.getState().sidebar.sections.chats.status).toBe("ready");
+      expect(store.getState().sidebar.sections.tasks.status).toBe("ready");
     });
 
     expect(store.getState().current_project).toEqual({
       name: "local-refact",
       workspaceRoots: ["/local/refact"],
-      workspaceSnapshotReceived: true,
-      trajectoriesSnapshotReceived: true,
-      tasksSnapshotReceived: true,
-      buddySnapshotReceived: true,
     });
+    expect(store.getState().sidebar.sections.workspace.status).toBe("loading");
   });
 
   it("accepts an explicit empty server workspace snapshot as loaded", async () => {
     server.use(
-      emptyTrajectoriesHandler(),
-      sidebarSnapshotHandler({
-        seq: 0,
-        category: "snapshot",
-        trajectories: [],
-        tasks: [],
-        workspace_roots: [],
-      }),
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", { workspace_roots: [] }),
+        sectionSnapshot(1, "chats", { trajectories: [] }),
+        sectionSnapshot(2, "tasks", { tasks: [] }),
+        sectionSnapshot(3, "buddy", { buddy: null }),
+      ),
     );
 
     const store = renderSidebarSubscription();
@@ -124,27 +128,25 @@ describe("useSidebarSubscription", () => {
       expect(store.getState().current_project).toEqual({
         name: "",
         workspaceRoots: [],
-        workspaceSnapshotReceived: true,
-        trajectoriesSnapshotReceived: true,
-        tasksSnapshotReceived: true,
-        buddySnapshotReceived: true,
       });
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
+      expect(store.getState().sidebar.sections.chats.status).toBe("ready");
+      expect(store.getState().sidebar.sections.tasks.status).toBe("ready");
+      expect(store.getState().sidebar.sections.buddy.status).toBe("ready");
     });
   });
 
-  it("keeps history loading false after the initial history request fails", async () => {
+  it("keeps history loading false after an empty chat snapshot", async () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation((key) =>
       key === "refact-trajectories-migrated" ? "true" : null,
     );
     server.use(
-      emptyTrajectoriesHandler(500),
-      sidebarSnapshotHandler({
-        seq: 0,
-        category: "snapshot",
-        trajectories: [],
-        tasks: [],
-        workspace_roots: ["/workspace/refact"],
-      }),
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/refact"],
+        }),
+        sectionSnapshot(1, "chats", { trajectories: [] }),
+      ),
     );
 
     const store = renderSidebarSubscription();
@@ -156,22 +158,17 @@ describe("useSidebarSubscription", () => {
 
   it("does not return to project loading when local IDE project info matches the server snapshot", async () => {
     server.use(
-      emptyTrajectoriesHandler(),
-      sidebarSnapshotHandler({
-        seq: 0,
-        category: "snapshot",
-        trajectories: [],
-        tasks: [],
-        workspace_roots: ["/workspace/refact"],
-      }),
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/refact"],
+        }),
+      ),
     );
 
     const store = renderSidebarSubscription();
 
     await waitFor(() => {
-      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
-        true,
-      );
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
     });
 
     store.dispatch(
@@ -181,29 +178,22 @@ describe("useSidebarSubscription", () => {
       }),
     );
 
-    expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
-      true,
-    );
+    expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
   });
 
-  it("returns to project loading when local IDE project info changes workspace after a server snapshot", async () => {
+  it("tracks changed local IDE project info separately from sidebar section status", async () => {
     server.use(
-      emptyTrajectoriesHandler(),
-      sidebarSnapshotHandler({
-        seq: 0,
-        category: "snapshot",
-        trajectories: [],
-        tasks: [],
-        workspace_roots: ["/workspace/refact"],
-      }),
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/refact"],
+        }),
+      ),
     );
 
     const store = renderSidebarSubscription();
 
     await waitFor(() => {
-      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
-        true,
-      );
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
     });
 
     store.dispatch(
@@ -213,11 +203,10 @@ describe("useSidebarSubscription", () => {
       }),
     );
 
-    expect(store.getState().current_project).toMatchObject({
-      workspaceSnapshotReceived: false,
-      trajectoriesSnapshotReceived: false,
-      tasksSnapshotReceived: false,
-      buddySnapshotReceived: false,
+    expect(store.getState().current_project).toEqual({
+      name: "other-project",
+      workspaceRoots: ["/workspace/other-project"],
     });
+    expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
   });
 });

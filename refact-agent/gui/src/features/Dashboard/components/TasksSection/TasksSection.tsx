@@ -8,10 +8,10 @@ import {
 } from "@radix-ui/react-icons";
 import { CollapsePanel } from "../../../../components/shared/CollapsePanel";
 import { Virtuoso } from "react-virtuoso";
-import { useAppDispatch } from "../../../../hooks";
+import { useAppDispatch, useAppSelector } from "../../../../hooks";
 import { push } from "../../../Pages/pagesSlice";
 import {
-  useListTasksQuery,
+  tasksApi,
   useCreateTaskMutation,
 } from "../../../../services/refact/tasks";
 import { StatusDot } from "../../../../components/StatusDot";
@@ -24,6 +24,7 @@ type TasksSectionProps = {
   breakpoint: DashboardBreakpoint;
   collapsed: boolean;
   projectLoading: boolean;
+  loadError: string | null;
   onToggleCollapsed: () => void;
 };
 
@@ -74,6 +75,7 @@ function getStatusColor(
 }
 
 const GROUP_ORDER = ["Today", "Yesterday", "Earlier"] as const;
+const EMPTY_TASKS: TaskMeta[] = [];
 
 type FlatItem =
   | { type: "header"; label: string }
@@ -105,18 +107,17 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
   breakpoint,
   collapsed,
   projectLoading,
+  loadError,
   onToggleCollapsed,
 }) => {
   const dispatch = useAppDispatch();
-  const {
-    data: tasks,
-    isLoading,
-    isFetching,
-    isError,
-  } = useListTasksQuery(undefined, {
-    refetchOnMountOrArgChange: true,
-    refetchOnFocus: true,
-    refetchOnReconnect: true,
+  const tasks = useAppSelector((state) => {
+    const query = tasksApi.endpoints.listTasks.select(undefined)(state);
+    if (query.data) return query.data;
+    const seededQuery = Object.values(state.tasksApi.queries).find(
+      (item) => item?.endpointName === "listTasks",
+    );
+    return (seededQuery?.data as TaskMeta[] | undefined) ?? EMPTY_TASKS;
   });
   const [createTask, { isLoading: isCreatingTask }] = useCreateTaskMutation();
 
@@ -124,7 +125,6 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
   const deferredQuery = useDeferredValue(searchQuery);
 
   const sortedTasks = useMemo(() => {
-    if (!tasks) return [];
     const priority = new Map([
       ["active", 0],
       ["planning", 1],
@@ -177,11 +177,8 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
   const activeCount = filteredTasks.filter(
     (t) => t.status === "active" || t.status === "planning",
   ).length;
-  const tasksLoaded = Boolean(tasks);
-  const showTaskError = isError && !tasksLoaded;
-  const tasksLoading =
-    !showTaskError &&
-    (projectLoading || isLoading || (isFetching && !tasksLoaded));
+  const showTaskError = Boolean(loadError);
+  const tasksLoading = !showTaskError && projectLoading;
 
   const renderHeader = (children?: React.ReactNode) => (
     <div className={styles.header}>
@@ -228,8 +225,7 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
               Failed to load tasks
             </Text>
             <Text size="1" color="gray" align="center">
-              Refact could not load the task list. Check the engine logs or try
-              reconnecting.
+              {loadError ?? "Refact could not load the task list."}
             </Text>
           </Flex>
         </CollapsePanel>
@@ -262,19 +258,6 @@ export const TasksSection: React.FC<TasksSectionProps> = ({
               </Flex>
             ))}
           </Flex>
-        </CollapsePanel>
-      </div>
-    );
-  }
-
-  if (isError) {
-    return (
-      <div className={styles.section} data-collapsed={collapsed || undefined}>
-        {renderHeader()}
-        <CollapsePanel collapsed={collapsed} className={styles.bodyPanel}>
-          <Text size="1" color="red">
-            Failed to load tasks
-          </Text>
         </CollapsePanel>
       </div>
     );

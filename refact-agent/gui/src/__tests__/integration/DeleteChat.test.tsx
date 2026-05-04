@@ -72,18 +72,57 @@ describe("Delete a Chat form history", () => {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
           start(controller) {
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({
-                  seq: 0,
-                  category: "snapshot",
-                  trajectories: [trajectory],
-                  tasks: [],
-                  workspace_roots: ["/tmp/refact-test"],
-                  buddy: { enabled: false },
-                })}\n\n`,
-              ),
-            );
+            const events = [
+              {
+                protocol_version: 2,
+                seq: 0,
+                subscription_id: "test-sidebar",
+                event: {
+                  type: "section_snapshot",
+                  section: "workspace",
+                  status: "ready",
+                  snapshot: { workspace_roots: ["/tmp/refact-test"] },
+                },
+              },
+              {
+                protocol_version: 2,
+                seq: 1,
+                subscription_id: "test-sidebar",
+                event: {
+                  type: "section_snapshot",
+                  section: "chats",
+                  status: "ready",
+                  snapshot: { trajectories: [trajectory] },
+                },
+              },
+              {
+                protocol_version: 2,
+                seq: 2,
+                subscription_id: "test-sidebar",
+                event: {
+                  type: "section_snapshot",
+                  section: "tasks",
+                  status: "ready",
+                  snapshot: { tasks: [] },
+                },
+              },
+              {
+                protocol_version: 2,
+                seq: 3,
+                subscription_id: "test-sidebar",
+                event: {
+                  type: "section_snapshot",
+                  section: "buddy",
+                  status: "ready",
+                  snapshot: { buddy: null },
+                },
+              },
+            ];
+            for (const event of events) {
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+              );
+            }
           },
         });
 

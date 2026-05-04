@@ -13,10 +13,10 @@ import { ChatLoading } from "../../components/ChatContent/ChatLoading";
 import { useAppSelector } from "../../hooks";
 import { selectBackendStatus } from "../Connection";
 import {
-  selectTasksSnapshotReceived,
-  selectTrajectoriesSnapshotReceived,
-  selectWorkspaceSnapshotReceived,
-} from "../Chat/currentProject";
+  selectChatsSection,
+  selectTasksSection,
+  selectWorkspaceSection,
+} from "../Sidebar/sidebarSlice";
 
 const OfflineState: React.FC = () => {
   const backendStatus = useAppSelector(selectBackendStatus);
@@ -48,9 +48,9 @@ export const Dashboard: React.FC = () => {
   const splitRef = useRef<HTMLDivElement>(null);
   const breakpoint = useDashboardLayout(containerRef);
   const backendStatus = useAppSelector(selectBackendStatus);
-  const workspaceReady = useAppSelector(selectWorkspaceSnapshotReceived);
-  const trajectoriesReady = useAppSelector(selectTrajectoriesSnapshotReceived);
-  const tasksReady = useAppSelector(selectTasksSnapshotReceived);
+  const workspaceSection = useAppSelector(selectWorkspaceSection);
+  const chatsSection = useAppSelector(selectChatsSection);
+  const tasksSection = useAppSelector(selectTasksSection);
 
   const { collapsed, toggle } = useDashboardCollapseState();
   const {
@@ -61,8 +61,10 @@ export const Dashboard: React.FC = () => {
 
   const showResizeDivider = !collapsed.chats && !collapsed.tasks;
   const isOffline = backendStatus !== "online";
-  const chatsLoading = !workspaceReady || !trajectoriesReady;
-  const tasksLoading = !workspaceReady || !tasksReady;
+  const chatsLoading =
+    workspaceSection.status === "loading" || chatsSection.status === "loading";
+  const tasksLoading =
+    workspaceSection.status === "loading" || tasksSection.status === "loading";
 
   const chatsFlexStyle = collapsed.chats
     ? undefined
@@ -112,6 +114,7 @@ export const Dashboard: React.FC = () => {
                 breakpoint={breakpoint}
                 collapsed={collapsed.tasks}
                 projectLoading={tasksLoading}
+                loadError={tasksSection.error}
                 onToggleCollapsed={() => toggle("tasks")}
               />
             </div>

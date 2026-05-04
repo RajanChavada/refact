@@ -6,8 +6,6 @@ import { useSidebarSubscription } from "../hooks/useSidebarSubscription";
 import { setBuddySnapshot } from "../features/Buddy/buddySlice";
 import type { BuddySnapshot } from "../features/Buddy/types";
 import type { TaskMeta } from "../services/refact/tasks";
-import { setBackendStatus } from "../features/Connection";
-
 
 const CONFIG_STATE = {
   config: {
@@ -21,6 +19,50 @@ const CONFIG_STATE = {
 function TestHarness() {
   useSidebarSubscription();
   return null;
+}
+
+function envelope(seq: number, event: Record<string, unknown>) {
+  return {
+    protocol_version: 2,
+    seq,
+    subscription_id: "test-sidebar",
+    event,
+  };
+}
+
+function sectionSnapshot(
+  seq: number,
+  section: "workspace" | "chats" | "tasks" | "buddy",
+  snapshot: Record<string, unknown>,
+  status: "ready" | "error" = "ready",
+  error?: string,
+) {
+  return envelope(seq, {
+    type: "section_snapshot",
+    section,
+    status,
+    snapshot,
+    ...(error ? { error } : {}),
+  });
+}
+
+function sectionUpdate(
+  seq: number,
+  section: "chats" | "tasks" | "buddy",
+  update: Record<string, unknown>,
+) {
+  return envelope(seq, {
+    type: "section_update",
+    section,
+    update,
+  });
+}
+
+function notification(seq: number, payload: Record<string, unknown>) {
+  return envelope(seq, {
+    type: "notification",
+    notification: payload,
+  });
 }
 
 function sseStream(events: unknown[]): ReadableStream<Uint8Array> {
@@ -56,21 +98,19 @@ const taskB: TaskMeta = {
 };
 
 describe("useSidebarSubscription", () => {
-  it("handles progressive snapshots and null buddy snapshots", async () => {
+  it("handles v2 section snapshots and null buddy snapshots", async () => {
     server.use(
       http.get(
         "http://127.0.0.1:8001/v1/sidebar/subscribe",
         () =>
           new HttpResponse(
             sseStream([
-              {
-                seq: 0,
-                category: "workspace_snapshot",
+              sectionSnapshot(0, "workspace", {
                 workspace_roots: ["/tmp/refact-test"],
-              },
-              { seq: 1, category: "trajectories_snapshot", trajectories: [] },
-              { seq: 2, category: "tasks_snapshot", tasks: [] },
-              { seq: 3, category: "buddy_snapshot", buddy: null },
+              }),
+              sectionSnapshot(1, "chats", { trajectories: [] }),
+              sectionSnapshot(2, "tasks", { tasks: [] }),
+              sectionSnapshot(3, "buddy", { buddy: null }),
             ]),
             { headers: { "Content-Type": "text/event-stream" } },
           ),
@@ -83,17 +123,15 @@ describe("useSidebarSubscription", () => {
       expect(store.getState().current_project.workspaceRoots).toEqual([
         "/tmp/refact-test",
       ]);
-      expect(
-        store.getState().current_project.trajectoriesSnapshotReceived,
-      ).toBe(true);
-      expect(store.getState().current_project.tasksSnapshotReceived).toBe(true);
-      expect(store.getState().current_project.buddySnapshotReceived).toBe(true);
+      expect(store.getState().sidebar.sections.chats.status).toBe("ready");
+      expect(store.getState().sidebar.sections.tasks.status).toBe("ready");
+      expect(store.getState().sidebar.sections.buddy.status).toBe("ready");
       expect(store.getState().buddy.loaded).toBe(true);
       expect(store.getState().buddy.snapshot).toBeNull();
     });
   });
 
-  it("routes notification events without treating them as task events", async () => {
+  it("routes v2 notification events without treating them as task events", async () => {
     const posted: unknown[] = [];
     const postMessageSpy = vi
       .spyOn(window, "postMessage")
@@ -108,22 +146,18 @@ describe("useSidebarSubscription", () => {
         () =>
           new HttpResponse(
             sseStream([
-              {
-                seq: 0,
-                category: "notification",
+              notification(0, {
                 type: "task_done",
                 chat_id: "chat-1",
                 tool_call_id: "tool-1",
                 summary: "Done",
-              },
-              {
-                seq: 1,
-                category: "notification",
+              }),
+              notification(1, {
                 type: "ask_questions",
                 chat_id: "chat-1",
                 tool_call_id: "tool-2",
                 questions: [{ id: "q1", type: "free_text", text: "Why?" }],
-              },
+              }),
             ]),
             { headers: { "Content-Type": "text/event-stream" } },
           ),
@@ -142,14 +176,16 @@ describe("useSidebarSubscription", () => {
     postMessageSpy.mockRestore();
   });
 
-  it("clears stale buddy state when a later buddy snapshot is null", async () => {
+  it("clears stale buddy state when a later v2 buddy snapshot is null", async () => {
     server.use(
       http.get(
         "http://127.0.0.1:8001/v1/sidebar/subscribe",
         () =>
           new HttpResponse(
-            sseStream([{ seq: 0, category: "buddy_snapshot", buddy: null }]),
-            { headers: { "Content-Type": "text/event-stream" } },
+            sseStream([sectionSnapshot(0, "buddy", { buddy: null })]),
+            {
+              headers: { "Content-Type": "text/event-stream" },
+            },
           ),
       ),
     );
@@ -170,29 +206,20 @@ describe("useSidebarSubscription", () => {
     });
   });
 
-  it("ignores stale compatibility snapshots after progressive task events", async () => {
+  it("section resync replaces only the tasks section", async () => {
     server.use(
       http.get(
         "http://127.0.0.1:8001/v1/sidebar/subscribe",
         () =>
           new HttpResponse(
             sseStream([
-              { seq: 0, category: "tasks_snapshot", tasks: [taskA] },
-              {
-                seq: 1,
-                category: "task",
-                type: "task_updated",
-                task_id: taskB.id,
+              sectionSnapshot(0, "tasks", { tasks: [taskA] }),
+              sectionUpdate(1, "tasks", {
+                type: "task_created",
+                task_id: "task-b",
                 meta: taskB,
-              },
-              {
-                seq: 2,
-                category: "snapshot",
-                workspace_roots: ["/tmp/refact-test"],
-                trajectories: [],
-                tasks: [taskA],
-                buddy: null,
-              },
+              }),
+              sectionSnapshot(2, "tasks", { tasks: [taskB] }),
             ]),
             { headers: { "Content-Type": "text/event-stream" } },
           ),
@@ -202,11 +229,10 @@ describe("useSidebarSubscription", () => {
     const { store } = render(<TestHarness />, { preloadedState: CONFIG_STATE });
 
     await waitFor(() => {
-      expect(tasksQueryFromStore(store.getState())).toBeDefined();
-    });
-    await waitFor(() => {
-      const tasks = tasksFromStore(store.getState());
-      expect(tasks.map((task) => task.id).sort()).toEqual(["task-a", "task-b"]);
+      expect(tasksFromStore(store.getState()).map((t) => t.id)).toEqual([
+        "task-b",
+      ]);
+      expect(store.getState().sidebar.sections.tasks.status).toBe("ready");
     });
   });
 
@@ -217,51 +243,11 @@ describe("useSidebarSubscription", () => {
         () =>
           new HttpResponse(
             sseStream([
-              { seq: 0, category: "tasks_snapshot", tasks: [] },
-              { seq: 1, category: "trajectories_snapshot", trajectories: [] },
-              {
-                seq: 2,
-                category: "workspace_snapshot",
+              sectionSnapshot(0, "tasks", { tasks: [] }),
+              sectionSnapshot(1, "chats", { trajectories: [] }),
+              sectionSnapshot(2, "workspace", {
                 workspace_roots: ["/tmp/refact-test"],
-              },
-            ]),
-            { headers: { "Content-Type": "text/event-stream" } },
-          ),
-      ),
-    );
-
-    const { store } = render(<TestHarness />, {
-      preloadedState: {
-        ...CONFIG_STATE,
-        current_project: { name: "refact-test" },
-      },
-    });
-
-    await waitFor(() => {
-      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
-        true,
-      );
-      expect(
-        store.getState().current_project.trajectoriesSnapshotReceived,
-      ).toBe(true);
-      expect(store.getState().current_project.tasksSnapshotReceived).toBe(true);
-    });
-  });
-
-  it("keeps received sidebar sections ready across transient backend status changes", async () => {
-    server.use(
-      http.get(
-        "http://127.0.0.1:8001/v1/sidebar/subscribe",
-        () =>
-          new HttpResponse(
-            sseStream([
-              {
-                seq: 0,
-                category: "workspace_snapshot",
-                workspace_roots: ["/tmp/refact-test"],
-              },
-              { seq: 1, category: "tasks_snapshot", tasks: [] },
-              { seq: 2, category: "buddy_snapshot", buddy: null },
+              }),
             ]),
             { headers: { "Content-Type": "text/event-stream" } },
           ),
@@ -271,37 +257,26 @@ describe("useSidebarSubscription", () => {
     const { store } = render(<TestHarness />, { preloadedState: CONFIG_STATE });
 
     await waitFor(() => {
-      expect(store.getState().current_project.workspaceSnapshotReceived).toBe(
-        true,
-      );
-      expect(store.getState().current_project.tasksSnapshotReceived).toBe(true);
-      expect(store.getState().current_project.buddySnapshotReceived).toBe(true);
-    });
-
-    store.dispatch(setBackendStatus({ status: "offline" }));
-
-    expect(store.getState().current_project).toMatchObject({
-      workspaceSnapshotReceived: true,
-      tasksSnapshotReceived: true,
-      buddySnapshotReceived: true,
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
+      expect(store.getState().sidebar.sections.chats.status).toBe("ready");
+      expect(store.getState().sidebar.sections.tasks.status).toBe("ready");
     });
   });
 
-  it("keeps trajectory loading errors instead of accepting empty failed snapshots", async () => {
+  it("turns a chat error snapshot into an error state instead of forever loading", async () => {
     server.use(
       http.get(
         "http://127.0.0.1:8001/v1/sidebar/subscribe",
         () =>
           new HttpResponse(
             sseStream([
-              { seq: 0, category: "trajectories_snapshot", trajectories: [] },
-              {
-                seq: 1,
-                category: "loading_phase",
-                section: "trajectories",
-                status: "error",
-                error: "trajectory boom",
-              },
+              sectionSnapshot(
+                0,
+                "chats",
+                { trajectories: [] },
+                "error",
+                "trajectory boom",
+              ),
             ]),
             { headers: { "Content-Type": "text/event-stream" } },
           ),
@@ -313,6 +288,7 @@ describe("useSidebarSubscription", () => {
     await waitFor(() => {
       expect(store.getState().history.loadError).toBe("trajectory boom");
       expect(store.getState().history.isLoading).toBe(false);
+      expect(store.getState().sidebar.sections.chats.status).toBe("error");
     });
   });
 });

@@ -32,6 +32,8 @@ export type TrajectoryMeta = {
   total_prompt_tokens?: number;
   total_completion_tokens?: number;
   total_tokens?: number;
+  total_cache_read_tokens?: number;
+  total_cache_creation_tokens?: number;
   total_cost_usd?: number;
   total_lines_added: number;
   total_lines_removed: number;
@@ -90,6 +92,12 @@ export type TrajectoryEvent = {
   tasks_total?: number;
   tasks_done?: number;
   tasks_failed?: number;
+  total_prompt_tokens?: number;
+  total_completion_tokens?: number;
+  total_tokens?: number;
+  total_cache_read_tokens?: number;
+  total_cache_creation_tokens?: number;
+  total_cost_usd?: number;
 };
 
 export type PaginatedTrajectories = {

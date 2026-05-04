@@ -67,6 +67,7 @@ import { mcpMarketplaceApi } from "../services/refact/mcpMarketplace";
 import { extensionsMarketplaceApi } from "../services/refact/extensionsMarketplace";
 import { memoryEnrichmentApi } from "../services/refact/memoryEnrichment";
 import { buddySlice } from "../features/Buddy/buddySlice";
+import { sidebarReducer } from "../features/Sidebar/sidebarSlice";
 import { buddyApi } from "../services/refact/buddy";
 
 const tipOfTheDayPersistConfig = {
@@ -90,6 +91,7 @@ const rootReducer = combineSlices(
     config: configReducer,
     active_file: activeFileReducer,
     current_project: currentProjectInfoReducer,
+    sidebar: sidebarReducer,
     selected_snippet: selectedSnippetReducer,
     chat: chatReducer,
     [statsApi.reducerPath]: statsApi.reducer,

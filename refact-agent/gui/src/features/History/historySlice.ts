@@ -55,6 +55,12 @@ export type ChatHistoryItem = Omit<ChatThread, "new_chat_suggested"> & {
   tasks_total?: number;
   tasks_done?: number;
   tasks_failed?: number;
+  total_prompt_tokens?: number;
+  total_completion_tokens?: number;
+  total_tokens?: number;
+  total_cache_read_tokens?: number;
+  total_cache_creation_tokens?: number;
+  total_cost_usd?: number;
 };
 
 export function isTaskChatLike(
@@ -303,6 +309,12 @@ function trajectoryMetaToHistoryItem(meta: TrajectoryMeta): ChatHistoryItem {
     tasks_total: meta.tasks_total,
     tasks_done: meta.tasks_done,
     tasks_failed: meta.tasks_failed,
+    total_prompt_tokens: meta.total_prompt_tokens,
+    total_completion_tokens: meta.total_completion_tokens,
+    total_tokens: meta.total_tokens,
+    total_cache_read_tokens: meta.total_cache_read_tokens,
+    total_cache_creation_tokens: meta.total_cache_creation_tokens,
+    total_cost_usd: meta.total_cost_usd,
     worktree: meta.worktree,
   };
 }
@@ -390,6 +402,13 @@ export const historySlice = createSlice({
           existing.tasks_total = meta.tasks_total;
           existing.tasks_done = meta.tasks_done;
           existing.tasks_failed = meta.tasks_failed;
+          existing.total_prompt_tokens = meta.total_prompt_tokens;
+          existing.total_completion_tokens = meta.total_completion_tokens;
+          existing.total_tokens = meta.total_tokens;
+          existing.total_cache_read_tokens = meta.total_cache_read_tokens;
+          existing.total_cache_creation_tokens =
+            meta.total_cache_creation_tokens;
+          existing.total_cost_usd = meta.total_cost_usd;
         }
       }
     },
@@ -426,6 +445,13 @@ export const historySlice = createSlice({
           existing.tasks_total = meta.tasks_total;
           existing.tasks_done = meta.tasks_done;
           existing.tasks_failed = meta.tasks_failed;
+          existing.total_prompt_tokens = meta.total_prompt_tokens;
+          existing.total_completion_tokens = meta.total_completion_tokens;
+          existing.total_tokens = meta.total_tokens;
+          existing.total_cache_read_tokens = meta.total_cache_read_tokens;
+          existing.total_cache_creation_tokens =
+            meta.total_cache_creation_tokens;
+          existing.total_cost_usd = meta.total_cost_usd;
         }
       }
       state.pagination = { cursor: null, hasMore: false };

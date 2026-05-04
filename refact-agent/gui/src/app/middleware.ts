@@ -64,7 +64,7 @@ import {
 } from "../features/Errors/errorsSlice";
 import { reportBuddyFrontendError } from "../features/Buddy/reportBuddyFrontendError";
 import { setThemeMode, updateConfig } from "../features/Config/configSlice";
-import { resetSidebarReadiness } from "../features/Chat/currentProject";
+import { resetSidebarState } from "../features/Sidebar/sidebarSlice";
 import { nextTip } from "../features/TipOfTheDay";
 import { tasksApi } from "../services/refact/tasks";
 import {
@@ -442,7 +442,7 @@ startListening({
       listenerApi.dispatch(modelsApi.util.resetApiState());
     }
     if (portChanged || workspaceChanged) {
-      listenerApi.dispatch(resetSidebarReadiness());
+      listenerApi.dispatch(resetSidebarState({ lspPort: nextPort ?? null }));
     }
   },
 });

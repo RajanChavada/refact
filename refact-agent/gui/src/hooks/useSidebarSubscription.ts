@@ -6,8 +6,17 @@ import {
   subscribeToSidebarEvents,
   SidebarEventEnvelope,
   type BuddySnapshotPayload,
+  type NotificationEvent,
+  type SidebarSection,
+  type SidebarSectionSnapshot,
+  type SidebarSectionUpdate,
+  type TaskEvent,
 } from "../services/refact/sidebarSubscription";
-import type { TrajectoryMeta } from "../services/refact/trajectories";
+import type { BuddySSEEvent } from "../features/Buddy/types";
+import type {
+  TrajectoryMeta,
+  TrajectoryEvent,
+} from "../services/refact/trajectories";
 import {
   hydrateHistoryFromMeta,
   replaceSnapshotHistory,
@@ -22,14 +31,7 @@ import {
   closeThread,
   updateChatRuntimeFromSessionState,
 } from "../features/Chat/Thread";
-import {
-  markBuddySnapshotReceived,
-  markTasksSnapshotReceived,
-  markTrajectoriesSnapshotReceived,
-  markWorkspaceSnapshotReceived,
-  resetSidebarReadiness,
-  setCurrentProjectInfo,
-} from "../features/Chat/currentProject";
+import { setCurrentProjectInfo } from "../features/Chat/currentProject";
 import { tasksApi, type TaskMeta } from "../services/refact/tasks";
 import {
   setBuddySnapshot,
@@ -57,6 +59,11 @@ import {
 } from "../services/refact/trajectories";
 import { useAppSelector } from "./useAppSelector";
 import { ideAskQuestions, ideTaskDone } from "./useEventBusForIDE";
+import {
+  resetSidebarState,
+  sidebarSectionSnapshotReceived,
+  sidebarSubscriptionStarted,
+} from "../features/Sidebar/sidebarSlice";
 
 const RECONNECT_DELAY_MS = 500;
 const MIGRATION_KEY = "refact-trajectories-migrated";
@@ -145,6 +152,26 @@ function trajectoryItemsFromMeta(
   }));
 }
 
+function hasSnapshotKey<K extends string>(
+  snapshot: SidebarSectionSnapshot,
+  key: K,
+): snapshot is Extract<SidebarSectionSnapshot, Record<K, unknown>> {
+  return key in snapshot;
+}
+
+function isTrajectoryUpdate(
+  update: SidebarSectionUpdate,
+): update is TrajectoryEvent {
+  return "type" in update && "id" in update;
+}
+
+function isTaskUpdate(update: SidebarSectionUpdate): update is TaskEvent {
+  return "type" in update && !("id" in update);
+}
+
+function isBuddyUpdate(update: SidebarSectionUpdate): update is BuddySSEEvent {
+  return "event_type" in update;
+}
 export function useSidebarSubscription() {
   const dispatch = useAppDispatch();
   const config = useConfig();
@@ -156,20 +183,13 @@ export function useSidebarSubscription() {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const trajectoriesSnapshotDoneRef = useRef(false);
-  const tasksSnapshotDoneRef = useRef(false);
   const tasksSnapshotRef = useRef<TaskMeta[] | null>(null);
-  const progressiveSnapshotsRef = useRef({
-    workspace: false,
-    trajectories: false,
-    tasks: false,
-    buddy: false,
-  });
+  const generationRef = useRef(0);
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   const connectRef = useRef<() => void>(() => {});
 
   const processTrajectoryEvent = useCallback(
-    (event: SidebarEventEnvelope & { category: "trajectory" }) => {
+    (event: TrajectoryEvent) => {
       if (event.type === "deleted") {
         dispatch(deleteChatById(event.id));
         dispatch(closeThread({ id: event.id, force: true }));
@@ -331,30 +351,24 @@ export function useSidebarSubscription() {
 
   const updateListTasksCache = useCallback(
     (updater: (draft: TaskMeta[]) => void) => {
-      if (tasksSnapshotRef.current) {
-        const next = [...tasksSnapshotRef.current];
-        updater(next);
-        tasksSnapshotRef.current = next;
-        void dispatch(
-          tasksApi.util.upsertQueryData("listTasks", undefined, next),
-        );
-        return;
-      }
+      const next = [...(tasksSnapshotRef.current ?? [])];
+      updater(next);
+      tasksSnapshotRef.current = next;
       void dispatch(
-        tasksApi.util.updateQueryData("listTasks", undefined, updater),
+        tasksApi.util.upsertQueryData("listTasks", undefined, next),
       );
     },
     [dispatch],
   );
 
   const processTaskEvent = useCallback(
-    (event: SidebarEventEnvelope & { category: "task" }) => {
+    (event: Extract<SidebarSectionUpdate, { type: string }>) => {
       switch (event.type) {
         case "snapshot":
+          tasksSnapshotRef.current = event.tasks;
           void dispatch(
             tasksApi.util.upsertQueryData("listTasks", undefined, event.tasks),
           );
-          dispatch(markTasksSnapshotReceived());
           break;
 
         case "task_created":
@@ -421,89 +435,81 @@ export function useSidebarSubscription() {
 
   const processWorkspaceSnapshot = useCallback(
     (workspaceRoots: string[]) => {
-      progressiveSnapshotsRef.current.workspace = true;
       dispatch(
         setCurrentProjectInfo({
           name: getWorkspaceDisplayName(workspaceRoots[0] ?? ""),
           workspaceRoots,
-          workspaceSnapshotReceived: true,
         }),
       );
-      dispatch(markWorkspaceSnapshotReceived());
     },
     [dispatch],
   );
 
   const processTrajectoriesSnapshot = useCallback(
-    (trajectories: TrajectoryMeta[]) => {
-      progressiveSnapshotsRef.current.trajectories = true;
+    (trajectories: TrajectoryMeta[], error?: string) => {
       dispatch(replaceSnapshotHistory(trajectoryItemsFromMeta(trajectories)));
-      dispatch(setHistoryLoadError(null));
+      dispatch(setHistoryLoadError(error ?? null));
       dispatch(setHistoryLoading(false));
-      dispatch(markTrajectoriesSnapshotReceived());
-      trajectoriesSnapshotDoneRef.current = true;
     },
     [dispatch],
   );
 
   const processTasksSnapshot = useCallback(
     (tasks: TaskMeta[]) => {
-      progressiveSnapshotsRef.current.tasks = true;
       tasksSnapshotRef.current = tasks;
       void dispatch(
         tasksApi.util.upsertQueryData("listTasks", undefined, tasks),
       );
-      tasksSnapshotDoneRef.current = true;
-      dispatch(markTasksSnapshotReceived());
     },
     [dispatch],
   );
 
   const processBuddySnapshot = useCallback(
     (buddy: BuddySnapshotPayload | undefined) => {
-      progressiveSnapshotsRef.current.buddy = true;
-      if (!buddy || !("state" in buddy)) {
+      if (!buddy) {
         dispatch(setBuddyUnavailable());
       } else {
         dispatch(setBuddySnapshot(buddy));
       }
-      dispatch(markBuddySnapshotReceived());
     },
     [dispatch],
   );
 
-  const processLoadingPhase = useCallback(
-    (event: SidebarEventEnvelope & { category: "loading_phase" }) => {
-      if (event.status !== "error") return;
-      const message = event.error ?? `Failed to load ${event.section}`;
-      if (event.section === "trajectories") {
-        trajectoriesSnapshotDoneRef.current = false;
-        dispatch(setHistoryLoadError(message));
-      } else if (event.section === "tasks") {
-        tasksSnapshotDoneRef.current = false;
-        dispatch(markTasksSnapshotReceived());
-      }
-    },
-    [dispatch],
-  );
+  const processSectionSnapshot = useCallback(
+    (
+      event: Extract<
+        SidebarEventEnvelope["event"],
+        { type: "section_snapshot" }
+      >,
+    ) => {
+      const { section, snapshot, status, error } = event;
 
-  const processSnapshot = useCallback(
-    (event: SidebarEventEnvelope & { category: "snapshot" }) => {
-      const progressive = progressiveSnapshotsRef.current;
-      if (event.workspace_roots !== undefined && !progressive.workspace) {
-        processWorkspaceSnapshot(event.workspace_roots);
-      } else if (!progressive.workspace) {
-        dispatch(markWorkspaceSnapshotReceived());
+      if (
+        section === "workspace" &&
+        hasSnapshotKey(snapshot, "workspace_roots")
+      ) {
+        processWorkspaceSnapshot(snapshot.workspace_roots);
+      } else if (
+        section === "chats" &&
+        hasSnapshotKey(snapshot, "trajectories")
+      ) {
+        processTrajectoriesSnapshot(
+          snapshot.trajectories,
+          status === "error" ? error ?? "Failed to load chats" : undefined,
+        );
+      } else if (section === "tasks" && hasSnapshotKey(snapshot, "tasks")) {
+        processTasksSnapshot(snapshot.tasks);
+      } else if (section === "buddy" && hasSnapshotKey(snapshot, "buddy")) {
+        processBuddySnapshot(snapshot.buddy);
       }
-      if (!progressive.trajectories) {
-        processTrajectoriesSnapshot(event.trajectories);
-      }
-      if (!progressive.tasks) {
-        processTasksSnapshot(event.tasks);
-      }
-      if (!progressive.buddy) {
-        processBuddySnapshot(event.buddy);
-      }
+
+      dispatch(
+        sidebarSectionSnapshotReceived({
+          section,
+          status,
+          error: status === "error" ? error : null,
+        }),
+      );
     },
     [
       dispatch,
@@ -515,7 +521,7 @@ export function useSidebarSubscription() {
   );
 
   const processNotification = useCallback(
-    (event: SidebarEventEnvelope & { category: "notification" }) => {
+    (event: NotificationEvent) => {
       if (event.type === "task_done") {
         postMessage(
           ideTaskDone({
@@ -540,64 +546,75 @@ export function useSidebarSubscription() {
   );
 
   const processBuddyEvent = useCallback(
-    (event: SidebarEventEnvelope & { category: "buddy" }) => {
-      const { buddy_event } = event;
-      switch (buddy_event.event_type) {
+    (event: Extract<SidebarSectionUpdate, { event_type: string }>) => {
+      switch (event.event_type) {
         case "StateUpdated":
-          dispatch(updateBuddyState(buddy_event.state));
+          dispatch(updateBuddyState(event.state));
           break;
         case "ActivityAdded":
-          dispatch(addBuddyActivity(buddy_event.activity));
+          dispatch(addBuddyActivity(event.activity));
           break;
         case "SuggestionAdded":
-          dispatch(addBuddySuggestion(buddy_event.suggestion));
+          dispatch(addBuddySuggestion(event.suggestion));
           break;
         case "SuggestionDismissed":
-          dispatch(dismissBuddySuggestion(buddy_event.suggestion_id));
+          dispatch(dismissBuddySuggestion(event.suggestion_id));
           break;
         case "SettingsChanged":
-          dispatch(updateBuddySettings(buddy_event.settings));
+          dispatch(updateBuddySettings(event.settings));
           break;
         case "DiagnosticAdded":
-          dispatch(addBuddyDiagnostic(buddy_event.diagnostic));
+          dispatch(addBuddyDiagnostic(event.diagnostic));
           break;
         case "RuntimeEvent":
-          dispatch(enqueueRuntimeEvent(buddy_event.event));
+          dispatch(enqueueRuntimeEvent(event.event));
           break;
         case "SpeechUpdated":
-          dispatch(setActiveSpeech(buddy_event.speech));
+          dispatch(setActiveSpeech(event.speech));
           break;
         case "NavigationRequest":
-          executeBuddyNavigation(buddy_event.page, dispatch);
+          executeBuddyNavigation(event.page, dispatch);
           break;
         case "OpportunityProduced":
-          dispatch(addOpportunity(buddy_event.opportunity));
+          dispatch(addOpportunity(event.opportunity));
           break;
         case "OpportunityResolved":
           dispatch(
             resolveOpportunity({
-              id: buddy_event.opportunity_id,
-              status: buddy_event.status,
+              id: event.opportunity_id,
+              status: event.status,
             }),
           );
           break;
         case "PulseUpdated":
-          dispatch(setPulse(buddy_event.pulse));
+          dispatch(setPulse(event.pulse));
           break;
         case "DraftCreated":
-          dispatch(addDraft(buddy_event.draft));
+          dispatch(addDraft(event.draft));
           break;
         case "DraftConsumed":
-          dispatch(consumeDraft(buddy_event.draft_id));
+          dispatch(consumeDraft(event.draft_id));
           break;
         case "DraftRemoved":
-          dispatch(removeDraft(buddy_event.draft_id));
+          dispatch(removeDraft(event.draft_id));
           break;
       }
     },
     [dispatch],
   );
 
+  const processSectionUpdate = useCallback(
+    (section: SidebarSection, update: SidebarSectionUpdate) => {
+      if (section === "chats" && isTrajectoryUpdate(update)) {
+        processTrajectoryEvent(update);
+      } else if (section === "tasks" && isTaskUpdate(update)) {
+        processTaskEvent(update);
+      } else if (section === "buddy" && isBuddyUpdate(update)) {
+        processBuddyEvent(update);
+      }
+    },
+    [processBuddyEvent, processTaskEvent, processTrajectoryEvent],
+  );
   const migrateFromLocalStorage = useCallback(async () => {
     if (isMigrationDone()) return;
 
@@ -675,50 +692,48 @@ export function useSidebarSubscription() {
       return;
     }
 
+    const generation = ++generationRef.current;
+    dispatch(resetSidebarState({ lspPort: port }));
+    tasksSnapshotRef.current = null;
+    void prepareInitialHistory();
+
     const onEvent = (envelope: SidebarEventEnvelope) => {
-      if (envelope.category === "snapshot") {
-        processSnapshot(
-          envelope as SidebarEventEnvelope & { category: "snapshot" },
+      if (generation !== generationRef.current) return;
+
+      if (envelope.seq === 0) {
+        dispatch(
+          sidebarSubscriptionStarted({
+            subscriptionId: envelope.subscription_id,
+            lspPort: port,
+          }),
         );
-      } else if (envelope.category === "loading_phase") {
-        processLoadingPhase(
-          envelope as SidebarEventEnvelope & { category: "loading_phase" },
-        );
-      } else if (envelope.category === "workspace_snapshot") {
-        processWorkspaceSnapshot(envelope.workspace_roots);
-      } else if (envelope.category === "trajectories_snapshot") {
-        processTrajectoriesSnapshot(envelope.trajectories);
-      } else if (envelope.category === "tasks_snapshot") {
-        processTasksSnapshot(envelope.tasks);
-      } else if (envelope.category === "buddy_snapshot") {
-        processBuddySnapshot(envelope.buddy);
-      } else if (envelope.category === "trajectory") {
-        processTrajectoryEvent(
-          envelope as SidebarEventEnvelope & { category: "trajectory" },
-        );
-      } else if (envelope.category === "task") {
-        processTaskEvent(
-          envelope as SidebarEventEnvelope & { category: "task" },
-        );
-      } else if (envelope.category === "notification") {
-        processNotification(
-          envelope as SidebarEventEnvelope & { category: "notification" },
-        );
+      }
+
+      if (envelope.event.type === "section_snapshot") {
+        processSectionSnapshot(envelope.event);
+      } else if (envelope.event.type === "section_update") {
+        processSectionUpdate(envelope.event.section, envelope.event.update);
       } else {
-        processBuddyEvent(
-          envelope as SidebarEventEnvelope & { category: "buddy" },
-        );
+        processNotification(envelope.event.notification);
       }
     };
 
     const onError = (error: Error) => {
-      if (!trajectoriesSnapshotDoneRef.current) {
-        dispatch(setHistoryLoadError(error.message));
-      }
+      if (generation !== generationRef.current) return;
+      dispatch(
+        sidebarSectionSnapshotReceived({
+          section: "chats",
+          status: "error",
+          error: error.message,
+        }),
+      );
+      dispatch(setHistoryLoadError(error.message));
+      dispatch(setHistoryLoading(false));
       scheduleReconnect();
     };
 
     const onDisconnected = () => {
+      if (generation !== generationRef.current) return;
       scheduleReconnect();
     };
 
@@ -728,39 +743,22 @@ export function useSidebarSubscription() {
       onDisconnected,
     });
   }, [
-    dispatch,
     config.lspPort,
     config.apiKey,
-    processSnapshot,
-    processLoadingPhase,
-    processWorkspaceSnapshot,
-    processTrajectoriesSnapshot,
-    processTasksSnapshot,
-    processBuddySnapshot,
-    processTrajectoryEvent,
-    processTaskEvent,
+    dispatch,
+    prepareInitialHistory,
     processNotification,
-    processBuddyEvent,
+    processSectionSnapshot,
+    processSectionUpdate,
     scheduleReconnect,
   ]);
 
   connectRef.current = connect;
 
   useEffect(() => {
-    trajectoriesSnapshotDoneRef.current = false;
-    tasksSnapshotDoneRef.current = false;
-    tasksSnapshotRef.current = null;
-    progressiveSnapshotsRef.current = {
-      workspace: false,
-      trajectories: false,
-      tasks: false,
-      buddy: false,
-    };
-    dispatch(resetSidebarReadiness());
-    dispatch(setHistoryLoading(true));
-    void prepareInitialHistory();
     connect();
     return () => {
+      generationRef.current += 1;
       if (disconnectRef.current) {
         disconnectRef.current();
       }
@@ -768,5 +766,5 @@ export function useSidebarSubscription() {
         clearTimeout(reconnectTimeoutRef.current);
       }
     };
-  }, [connect, dispatch, prepareInitialHistory]);
+  }, [connect]);
 }

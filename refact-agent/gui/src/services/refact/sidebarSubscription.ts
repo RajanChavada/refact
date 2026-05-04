@@ -31,55 +31,43 @@ export type NotificationEvent =
       }[];
     };
 
-export type SidebarLoadingSection =
-  | "workspace"
-  | "trajectories"
-  | "tasks"
-  | "buddy";
+export type SidebarSection = "workspace" | "chats" | "tasks" | "buddy";
+export type SidebarSectionStatus = "ready" | "error";
+export type BuddySnapshotPayload = BuddySnapshot | null;
 
-export type SidebarLoadingStatus = "started" | "ready" | "error";
+export type SidebarSectionSnapshot =
+  | { workspace_roots: string[] }
+  | { trajectories: TrajectoryMeta[] }
+  | { tasks: TaskMeta[] }
+  | { buddy: BuddySnapshotPayload };
 
-export type BuddySnapshotPayload = BuddySnapshot | { enabled: false } | null;
+export type SidebarSectionUpdate = TrajectoryEvent | TaskEvent | BuddySSEEvent;
 
 export type SidebarEvent =
   | {
-      category: "snapshot";
-      trajectories: TrajectoryMeta[];
-      tasks: TaskMeta[];
-      workspace_roots?: string[];
-      buddy?: BuddySnapshotPayload;
-    }
-  | {
-      category: "loading_phase";
-      section: SidebarLoadingSection;
-      status: SidebarLoadingStatus;
+      type: "section_snapshot";
+      section: SidebarSection;
+      status: SidebarSectionStatus;
+      snapshot: SidebarSectionSnapshot;
       elapsed_ms?: number;
       error?: string;
     }
   | {
-      category: "workspace_snapshot";
-      workspace_roots: string[];
+      type: "section_update";
+      section: SidebarSection;
+      update: SidebarSectionUpdate;
     }
   | {
-      category: "trajectories_snapshot";
-      trajectories: TrajectoryMeta[];
-    }
-  | {
-      category: "tasks_snapshot";
-      tasks: TaskMeta[];
-    }
-  | {
-      category: "buddy_snapshot";
-      buddy: BuddySnapshotPayload;
-    }
-  | ({ category: "trajectory" } & TrajectoryEvent)
-  | ({ category: "task" } & TaskEvent)
-  | ({ category: "notification" } & NotificationEvent)
-  | { category: "buddy"; buddy_event: BuddySSEEvent };
+      type: "notification";
+      notification: NotificationEvent;
+    };
 
 export type SidebarEventEnvelope = {
+  protocol_version: 2;
   seq: number;
-} & SidebarEvent;
+  subscription_id: string;
+  event: SidebarEvent;
+};
 
 export type SidebarSubscriptionCallbacks = {
   onEvent: (event: SidebarEventEnvelope) => void;
@@ -88,12 +76,8 @@ export type SidebarSubscriptionCallbacks = {
   onDisconnected?: () => void;
 };
 
-function isValidSnapshot(obj: Record<string, unknown>): boolean {
-  return (
-    Array.isArray(obj.trajectories) &&
-    Array.isArray(obj.tasks) &&
-    (obj.workspace_roots === undefined || Array.isArray(obj.workspace_roots))
-  );
+function hasArrayProperty(obj: Record<string, unknown>, key: string): boolean {
+  return Array.isArray(obj[key]);
 }
 
 function isValidTrajectoryEvent(obj: Record<string, unknown>): boolean {
@@ -104,8 +88,9 @@ function isValidTaskEvent(obj: Record<string, unknown>): boolean {
   if (typeof obj.type !== "string") return false;
   if (obj.type === "snapshot") return Array.isArray(obj.tasks);
   if (obj.type === "task_deleted") return typeof obj.task_id === "string";
-  if (obj.type === "board_changed")
+  if (obj.type === "board_changed") {
     return typeof obj.task_id === "string" && obj.board !== undefined;
+  }
   return typeof obj.task_id === "string" && obj.meta !== undefined;
 }
 
@@ -125,35 +110,76 @@ function isValidNotificationEvent(obj: Record<string, unknown>): boolean {
   return false;
 }
 
-function isValidLoadingPhase(obj: Record<string, unknown>): boolean {
-  const validSections = new Set<SidebarLoadingSection>([
-    "workspace",
-    "trajectories",
-    "tasks",
-    "buddy",
-  ]);
-  const validStatuses = new Set<SidebarLoadingStatus>([
-    "started",
-    "ready",
-    "error",
-  ]);
-  if (
-    typeof obj.section !== "string" ||
-    !validSections.has(obj.section as SidebarLoadingSection)
-  ) {
-    return false;
+function isValidSection(value: unknown): value is SidebarSection {
+  return (
+    value === "workspace" ||
+    value === "chats" ||
+    value === "tasks" ||
+    value === "buddy"
+  );
+}
+
+function isValidSectionStatus(value: unknown): value is SidebarSectionStatus {
+  return value === "ready" || value === "error";
+}
+
+function isValidSectionSnapshot(
+  section: SidebarSection,
+  snapshot: unknown,
+): snapshot is SidebarSectionSnapshot {
+  if (typeof snapshot !== "object" || snapshot === null) return false;
+  const obj = snapshot as Record<string, unknown>;
+
+  if (section === "workspace") return hasArrayProperty(obj, "workspace_roots");
+  if (section === "chats") return hasArrayProperty(obj, "trajectories");
+  if (section === "tasks") return hasArrayProperty(obj, "tasks");
+  return "buddy" in obj;
+}
+
+function isValidSectionUpdate(
+  section: SidebarSection,
+  update: unknown,
+): update is SidebarSectionUpdate {
+  if (typeof update !== "object" || update === null) return false;
+  const obj = update as Record<string, unknown>;
+
+  if (section === "chats") return isValidTrajectoryEvent(obj);
+  if (section === "tasks") return isValidTaskEvent(obj);
+  if (section === "buddy") return typeof obj.event_type === "string";
+  return false;
+}
+
+function isValidSidebarEvent(event: unknown): event is SidebarEvent {
+  if (typeof event !== "object" || event === null) return false;
+  const obj = event as Record<string, unknown>;
+  if (typeof obj.type !== "string") return false;
+
+  if (obj.type === "section_snapshot") {
+    if (!isValidSection(obj.section)) return false;
+    if (!isValidSectionStatus(obj.status)) return false;
+    if (!isValidSectionSnapshot(obj.section, obj.snapshot)) return false;
+    if (obj.elapsed_ms !== undefined && typeof obj.elapsed_ms !== "number") {
+      return false;
+    }
+    if (obj.error !== undefined && typeof obj.error !== "string") return false;
+    return true;
   }
-  if (
-    typeof obj.status !== "string" ||
-    !validStatuses.has(obj.status as SidebarLoadingStatus)
-  ) {
-    return false;
+
+  if (obj.type === "section_update") {
+    if (!isValidSection(obj.section)) return false;
+    return isValidSectionUpdate(obj.section, obj.update);
   }
-  if (obj.elapsed_ms !== undefined && typeof obj.elapsed_ms !== "number") {
-    return false;
+
+  if (obj.type === "notification") {
+    if (typeof obj.notification !== "object" || obj.notification === null) {
+      return false;
+    }
+    return isValidNotificationEvent(
+      obj.notification as Record<string, unknown>,
+    );
   }
-  if (obj.error !== undefined && typeof obj.error !== "string") return false;
-  return true;
+
+  return false;
 }
 
 function isValidSidebarEventEnvelope(
@@ -161,33 +187,10 @@ function isValidSidebarEventEnvelope(
 ): data is SidebarEventEnvelope {
   if (typeof data !== "object" || data === null) return false;
   const obj = data as Record<string, unknown>;
+  if (obj.protocol_version !== 2) return false;
   if (typeof obj.seq !== "number") return false;
-  if (typeof obj.category !== "string") return false;
-
-  switch (obj.category) {
-    case "snapshot":
-      return isValidSnapshot(obj);
-    case "loading_phase":
-      return isValidLoadingPhase(obj);
-    case "workspace_snapshot":
-      return Array.isArray(obj.workspace_roots);
-    case "trajectories_snapshot":
-      return Array.isArray(obj.trajectories);
-    case "tasks_snapshot":
-      return Array.isArray(obj.tasks);
-    case "buddy_snapshot":
-      return "buddy" in obj;
-    case "trajectory":
-      return isValidTrajectoryEvent(obj);
-    case "task":
-      return isValidTaskEvent(obj);
-    case "notification":
-      return isValidNotificationEvent(obj);
-    case "buddy":
-      return typeof obj.buddy_event === "object" && obj.buddy_event !== null;
-    default:
-      return false;
-  }
+  if (typeof obj.subscription_id !== "string") return false;
+  return isValidSidebarEvent(obj.event);
 }
 
 const IDLE_TIMEOUT_MS = 30_000;
@@ -287,18 +290,15 @@ export function subscribeToSidebarEvents(
             }
 
             if (!isValidSidebarEventEnvelope(parsed)) {
-              throw new Error("Invalid event structure");
+              throw new Error("Invalid sidebar v2 event structure");
             }
 
-            if (parsed.category === "snapshot") {
-              state.lastSeq = parsed.seq;
-            } else if (state.lastSeq >= 0 && parsed.seq !== state.lastSeq + 1) {
+            if (state.lastSeq >= 0 && parsed.seq !== state.lastSeq + 1) {
               throw new Error(
                 `Seq gap: expected ${state.lastSeq + 1}, got ${parsed.seq}`,
               );
-            } else {
-              state.lastSeq = parsed.seq;
             }
+            state.lastSeq = parsed.seq;
 
             callbacks.onEvent(parsed);
           }

@@ -1,12 +1,16 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
 use axum::Extension;
 use axum::response::Response;
 use hyper::{Body, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock as ARwLock, broadcast, mpsc};
 use tokio::task::JoinSet;
+use tokio::time::timeout;
+use uuid::Uuid;
 
 use crate::buddy::events::BuddyEvent;
 use crate::chat::{TrajectoryEvent, TrajectoryMeta, list_all_trajectories_meta};
@@ -15,6 +19,9 @@ use crate::global_context::GlobalContext;
 use crate::http::routers::v1::tasks::list_tasks_with_session_state;
 use crate::tasks::events::TaskEvent;
 use crate::tasks::types::TaskMeta;
+
+const SIDEBAR_PROTOCOL_VERSION: u8 = 2;
+const SIDEBAR_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -43,65 +50,90 @@ pub struct NotificationQuestion {
     pub options: Option<Vec<String>>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SidebarLoadingSection {
+pub enum SidebarSection {
     Workspace,
-    Trajectories,
+    Chats,
     Tasks,
     Buddy,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarSectionStatus {
+    Ready,
+    Error,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "category", rename_all = "snake_case")]
+#[serde(untagged)]
+pub enum SidebarSectionSnapshot {
+    Workspace { workspace_roots: Vec<String> },
+    Chats { trajectories: Vec<TrajectoryMeta> },
+    Tasks { tasks: Vec<TaskMeta> },
+    Buddy { buddy: serde_json::Value },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SidebarSectionUpdate {
+    Trajectory(TrajectoryEvent),
+    Task(TaskEvent),
+    Buddy(BuddyEvent),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SidebarEvent {
-    Snapshot {
-        trajectories: Vec<TrajectoryMeta>,
-        tasks: Vec<TaskMeta>,
-        workspace_roots: Vec<String>,
-        buddy: serde_json::Value,
-    },
-    LoadingPhase {
-        section: SidebarLoadingSection,
-        status: String,
+    SectionSnapshot {
+        section: SidebarSection,
+        status: SidebarSectionStatus,
+        snapshot: SidebarSectionSnapshot,
         #[serde(skip_serializing_if = "Option::is_none")]
         elapsed_ms: Option<u128>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    WorkspaceSnapshot {
-        workspace_roots: Vec<String>,
+    SectionUpdate {
+        section: SidebarSection,
+        update: SidebarSectionUpdate,
     },
-    TrajectoriesSnapshot {
-        trajectories: Vec<TrajectoryMeta>,
-    },
-    TasksSnapshot {
-        tasks: Vec<TaskMeta>,
-    },
-    BuddySnapshot {
-        buddy: serde_json::Value,
-    },
-    Trajectory(TrajectoryEvent),
-    Task(TaskEvent),
-    Notification(NotificationEvent),
-    Buddy {
-        buddy_event: BuddyEvent,
+    Notification {
+        notification: NotificationEvent,
     },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SidebarEventEnvelope {
+    pub protocol_version: u8,
     pub seq: u64,
-    #[serde(flatten)]
+    pub subscription_id: String,
     pub event: SidebarEvent,
 }
 
 #[derive(Debug)]
 enum InitialSidebarPart {
-    Workspace(Result<Vec<String>, String>),
-    Trajectories(Result<Vec<TrajectoryMeta>, String>),
-    Tasks(Result<Vec<TaskMeta>, String>),
-    Buddy(serde_json::Value),
+    Workspace {
+        workspace_roots: Vec<String>,
+        status: SidebarSectionStatus,
+        error: Option<String>,
+    },
+    Chats {
+        trajectories: Vec<TrajectoryMeta>,
+        status: SidebarSectionStatus,
+        error: Option<String>,
+    },
+    Tasks {
+        tasks: Vec<TaskMeta>,
+        status: SidebarSectionStatus,
+        error: Option<String>,
+    },
+    Buddy {
+        buddy: serde_json::Value,
+        status: SidebarSectionStatus,
+        error: Option<String>,
+    },
 }
 
 fn all_receivers_closed(
@@ -127,71 +159,180 @@ async fn fetch_workspace_roots(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<String> 
         .collect()
 }
 
-async fn fetch_snapshot(
-    gcx: Arc<ARwLock<GlobalContext>>,
-) -> Result<(Vec<TrajectoryMeta>, Vec<TaskMeta>, Vec<String>), String> {
-    let trajectories = list_all_trajectories_meta(gcx.clone()).await?;
-    let tasks = list_tasks_with_session_state(gcx.clone())
-        .await
-        .map_err(|e| e.to_string())?;
-    let workspace_roots = fetch_workspace_roots(gcx).await;
-    Ok((trajectories, tasks, workspace_roots))
-}
-
 async fn fetch_buddy_snapshot(gcx: Arc<ARwLock<GlobalContext>>) -> serde_json::Value {
     let buddy_arc = gcx.read().await.buddy.clone();
     let locked = buddy_arc.lock().await;
     match locked.as_ref() {
-        Some(svc) => {
-            serde_json::to_value(&svc.snapshot()).unwrap_or(serde_json::json!({"enabled": false}))
-        }
-        None => serde_json::json!({"enabled": false}),
+        Some(svc) => serde_json::to_value(&svc.snapshot()).unwrap_or(serde_json::Value::Null),
+        None => serde_json::Value::Null,
     }
 }
 
-fn make_event(seq_counter: &AtomicU64, event: SidebarEvent) -> Option<String> {
+fn make_event(
+    seq_counter: &AtomicU64,
+    subscription_id: &str,
+    event: SidebarEvent,
+) -> Option<String> {
     let seq = seq_counter.fetch_add(1, Ordering::SeqCst);
-    let envelope = SidebarEventEnvelope { seq, event };
+    let envelope = SidebarEventEnvelope {
+        protocol_version: SIDEBAR_PROTOCOL_VERSION,
+        seq,
+        subscription_id: subscription_id.to_string(),
+        event,
+    };
     serde_json::to_string(&envelope)
         .ok()
         .map(|json| format!("data: {}\n\n", json))
 }
 
-fn loading_event(
-    section: SidebarLoadingSection,
-    status: &str,
+fn section_snapshot_event(
+    section: SidebarSection,
+    status: SidebarSectionStatus,
+    snapshot: SidebarSectionSnapshot,
     elapsed_ms: Option<u128>,
     error: Option<String>,
 ) -> SidebarEvent {
-    SidebarEvent::LoadingPhase {
+    SidebarEvent::SectionSnapshot {
         section,
-        status: status.to_string(),
+        status,
+        snapshot,
         elapsed_ms,
         error,
     }
 }
 
-async fn emit_full_snapshot(
-    gcx: Arc<ARwLock<GlobalContext>>,
-    seq_counter: &AtomicU64,
-) -> Option<String> {
-    match fetch_snapshot(gcx.clone()).await {
-        Ok((trajectories, tasks, workspace_roots)) => {
-            let buddy = fetch_buddy_snapshot(gcx).await;
-            make_event(
-                seq_counter,
-                SidebarEvent::Snapshot {
-                    trajectories,
-                    tasks,
-                    workspace_roots,
-                    buddy,
-                },
-            )
+impl InitialSidebarPart {
+    fn section(&self) -> SidebarSection {
+        match self {
+            InitialSidebarPart::Workspace { .. } => SidebarSection::Workspace,
+            InitialSidebarPart::Chats { .. } => SidebarSection::Chats,
+            InitialSidebarPart::Tasks { .. } => SidebarSection::Tasks,
+            InitialSidebarPart::Buddy { .. } => SidebarSection::Buddy,
         }
-        Err(error) => {
-            tracing::warn!("sidebar full snapshot recovery failed: {error}");
-            None
+    }
+
+    fn into_event(self, elapsed_ms: u128) -> SidebarEvent {
+        match self {
+            InitialSidebarPart::Workspace {
+                workspace_roots,
+                status,
+                error,
+            } => section_snapshot_event(
+                SidebarSection::Workspace,
+                status,
+                SidebarSectionSnapshot::Workspace { workspace_roots },
+                Some(elapsed_ms),
+                error,
+            ),
+            InitialSidebarPart::Chats {
+                trajectories,
+                status,
+                error,
+            } => section_snapshot_event(
+                SidebarSection::Chats,
+                status,
+                SidebarSectionSnapshot::Chats { trajectories },
+                Some(elapsed_ms),
+                error,
+            ),
+            InitialSidebarPart::Tasks {
+                tasks,
+                status,
+                error,
+            } => section_snapshot_event(
+                SidebarSection::Tasks,
+                status,
+                SidebarSectionSnapshot::Tasks { tasks },
+                Some(elapsed_ms),
+                error,
+            ),
+            InitialSidebarPart::Buddy {
+                buddy,
+                status,
+                error,
+            } => section_snapshot_event(
+                SidebarSection::Buddy,
+                status,
+                SidebarSectionSnapshot::Buddy { buddy },
+                Some(elapsed_ms),
+                error,
+            ),
         }
+    }
+}
+
+async fn load_workspace_part(gcx: Arc<ARwLock<GlobalContext>>) -> InitialSidebarPart {
+    match timeout(SIDEBAR_BOOTSTRAP_TIMEOUT, fetch_workspace_roots(gcx)).await {
+        Ok(workspace_roots) => InitialSidebarPart::Workspace {
+            workspace_roots,
+            status: SidebarSectionStatus::Ready,
+            error: None,
+        },
+        Err(_) => InitialSidebarPart::Workspace {
+            workspace_roots: Vec::new(),
+            status: SidebarSectionStatus::Error,
+            error: Some("Timed out loading workspace".to_string()),
+        },
+    }
+}
+
+async fn load_chats_part(gcx: Arc<ARwLock<GlobalContext>>) -> InitialSidebarPart {
+    match timeout(SIDEBAR_BOOTSTRAP_TIMEOUT, list_all_trajectories_meta(gcx)).await {
+        Ok(Ok(trajectories)) => InitialSidebarPart::Chats {
+            trajectories,
+            status: SidebarSectionStatus::Ready,
+            error: None,
+        },
+        Ok(Err(error)) => InitialSidebarPart::Chats {
+            trajectories: Vec::new(),
+            status: SidebarSectionStatus::Error,
+            error: Some(error),
+        },
+        Err(_) => InitialSidebarPart::Chats {
+            trajectories: Vec::new(),
+            status: SidebarSectionStatus::Error,
+            error: Some("Timed out loading chats".to_string()),
+        },
+    }
+}
+
+async fn load_tasks_part(gcx: Arc<ARwLock<GlobalContext>>) -> InitialSidebarPart {
+    match timeout(
+        SIDEBAR_BOOTSTRAP_TIMEOUT,
+        list_tasks_with_session_state(gcx),
+    )
+    .await
+    {
+        Ok(Ok(tasks)) => InitialSidebarPart::Tasks {
+            tasks,
+            status: SidebarSectionStatus::Ready,
+            error: None,
+        },
+        Ok(Err(error)) => InitialSidebarPart::Tasks {
+            tasks: Vec::new(),
+            status: SidebarSectionStatus::Error,
+            error: Some(error.to_string()),
+        },
+        Err(_) => InitialSidebarPart::Tasks {
+            tasks: Vec::new(),
+            status: SidebarSectionStatus::Error,
+            error: Some("Timed out loading tasks".to_string()),
+        },
+    }
+}
+
+async fn load_buddy_part(gcx: Arc<ARwLock<GlobalContext>>) -> InitialSidebarPart {
+    match timeout(SIDEBAR_BOOTSTRAP_TIMEOUT, fetch_buddy_snapshot(gcx)).await {
+        Ok(buddy) => InitialSidebarPart::Buddy {
+            buddy,
+            status: SidebarSectionStatus::Ready,
+            error: None,
+        },
+        Err(_) => InitialSidebarPart::Buddy {
+            buddy: serde_json::Value::Null,
+            status: SidebarSectionStatus::Error,
+            error: Some("Timed out loading buddy".to_string()),
+        },
     }
 }
 
@@ -204,31 +345,19 @@ fn spawn_initial_sidebar_loads(
 
         jobs.spawn({
             let gcx = gcx.clone();
-            async move {
-                let roots = fetch_workspace_roots(gcx).await;
-                InitialSidebarPart::Workspace(Ok(roots))
-            }
+            async move { load_workspace_part(gcx).await }
         });
-
         jobs.spawn({
             let gcx = gcx.clone();
-            async move { InitialSidebarPart::Trajectories(list_all_trajectories_meta(gcx).await) }
+            async move { load_chats_part(gcx).await }
         });
-
         jobs.spawn({
             let gcx = gcx.clone();
-            async move {
-                InitialSidebarPart::Tasks(
-                    list_tasks_with_session_state(gcx)
-                        .await
-                        .map_err(|e| e.to_string()),
-                )
-            }
+            async move { load_tasks_part(gcx).await }
         });
-
         jobs.spawn({
             let gcx = gcx.clone();
-            async move { InitialSidebarPart::Buddy(fetch_buddy_snapshot(gcx).await) }
+            async move { load_buddy_part(gcx).await }
         });
 
         while let Some(result) = jobs.join_next().await {
@@ -246,6 +375,53 @@ fn spawn_initial_sidebar_loads(
         }
     });
     rx
+}
+
+async fn workspace_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
+    load_workspace_part(gcx).await.into_event(0)
+}
+
+async fn chats_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
+    load_chats_part(gcx).await.into_event(0)
+}
+
+async fn tasks_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
+    load_tasks_part(gcx).await.into_event(0)
+}
+
+async fn buddy_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
+    load_buddy_part(gcx).await.into_event(0)
+}
+
+fn push_or_emit_live_event(
+    event: SidebarEvent,
+    bootstrap_complete: bool,
+    buffered_live_events: &mut VecDeque<SidebarEvent>,
+    seq_counter: &AtomicU64,
+    subscription_id: &str,
+) -> Option<String> {
+    if bootstrap_complete {
+        make_event(seq_counter, subscription_id, event)
+    } else {
+        buffered_live_events.push_back(event);
+        None
+    }
+}
+
+fn push_or_emit_resync_event(
+    event: SidebarEvent,
+    bootstrap_complete: bool,
+    buffered_live_events: &mut VecDeque<SidebarEvent>,
+    seq_counter: &AtomicU64,
+    subscription_id: &str,
+) -> Option<String> {
+    push_or_emit_live_event(
+        event,
+        bootstrap_complete,
+        buffered_live_events,
+        seq_counter,
+        subscription_id,
+    )
 }
 
 pub async fn handle_sidebar_subscribe(
@@ -297,6 +473,7 @@ pub async fn handle_sidebar_subscribe(
     };
 
     let gcx_for_stream = gcx.clone();
+    let subscription_id = Uuid::new_v4().to_string();
     let stream = async_stream::stream! {
         let mut trajectory_rx = trajectory_rx;
         let mut workspace_changed_rx = workspace_changed_rx;
@@ -305,28 +482,15 @@ pub async fn handle_sidebar_subscribe(
         let mut buddy_rx = buddy_rx;
         let mut initial_rx = Some(spawn_initial_sidebar_loads(gcx_for_stream.clone()));
         let mut workspace_ready = false;
-        let mut trajectories_ready = false;
+        let mut chats_ready = false;
         let mut tasks_ready = false;
         let mut buddy_ready = false;
-        let mut live_events_started = false;
+        let mut bootstrap_complete = false;
+        let mut buffered_live_events = VecDeque::new();
         let initial_started_at = Instant::now();
         let shutdown_flag = gcx_for_stream.read().await.shutdown_flag.clone();
 
-        for section in [
-            SidebarLoadingSection::Workspace,
-            SidebarLoadingSection::Trajectories,
-            SidebarLoadingSection::Tasks,
-            SidebarLoadingSection::Buddy,
-        ] {
-            if let Some(event) = make_event(
-                &seq_counter,
-                loading_event(section, "started", Some(initial_started_at.elapsed().as_millis()), None),
-            ) {
-                yield Ok::<_, std::convert::Infallible>(event);
-            }
-        }
-
-        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -338,85 +502,18 @@ pub async fn handle_sidebar_subscribe(
                     }
                 } => {
                     match part {
-                        Some(InitialSidebarPart::Workspace(result)) => {
-                            match result {
-                                Ok(roots) => {
-                                    tracing::info!("sidebar initial workspace ready in {}ms", initial_started_at.elapsed().as_millis());
-                                    workspace_ready = true;
-                                    if let Some(event) = make_event(&seq_counter, SidebarEvent::WorkspaceSnapshot { workspace_roots: roots }) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                    if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Workspace, "ready", Some(initial_started_at.elapsed().as_millis()), None)) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::warn!("sidebar initial workspace failed: {error}");
-                                    workspace_ready = true;
-                                    if let Some(event) = make_event(&seq_counter, SidebarEvent::WorkspaceSnapshot { workspace_roots: Vec::new() }) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                    if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Workspace, "error", Some(initial_started_at.elapsed().as_millis()), Some(error))) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                }
+                        Some(part) => {
+                            let section = part.section();
+                            let elapsed_ms = initial_started_at.elapsed().as_millis();
+                            let event = part.into_event(elapsed_ms);
+                            match section {
+                                SidebarSection::Workspace => workspace_ready = true,
+                                SidebarSection::Chats => chats_ready = true,
+                                SidebarSection::Tasks => tasks_ready = true,
+                                SidebarSection::Buddy => buddy_ready = true,
                             }
-                        }
-                        Some(InitialSidebarPart::Trajectories(result)) => {
-                            match result {
-                                Ok(items) => {
-                                    tracing::info!("sidebar initial trajectories ready in {}ms", initial_started_at.elapsed().as_millis());
-                                    trajectories_ready = true;
-                                    if let Some(event) = make_event(&seq_counter, SidebarEvent::TrajectoriesSnapshot { trajectories: items }) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                    if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Trajectories, "ready", Some(initial_started_at.elapsed().as_millis()), None)) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::warn!("sidebar initial trajectories failed: {error}");
-                                    trajectories_ready = true;
-                                    if let Some(event) = make_event(&seq_counter, SidebarEvent::TrajectoriesSnapshot { trajectories: Vec::new() }) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                    if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Trajectories, "error", Some(initial_started_at.elapsed().as_millis()), Some(error))) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                }
-                            }
-                        }
-                        Some(InitialSidebarPart::Tasks(result)) => {
-                            match result {
-                                Ok(items) => {
-                                    tracing::info!("sidebar initial tasks ready in {}ms", initial_started_at.elapsed().as_millis());
-                                    tasks_ready = true;
-                                    if let Some(event) = make_event(&seq_counter, SidebarEvent::TasksSnapshot { tasks: items }) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                    if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Tasks, "ready", Some(initial_started_at.elapsed().as_millis()), None)) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::warn!("sidebar initial tasks failed: {error}");
-                                    tasks_ready = true;
-                                    if let Some(event) = make_event(&seq_counter, SidebarEvent::TasksSnapshot { tasks: Vec::new() }) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                    if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Tasks, "error", Some(initial_started_at.elapsed().as_millis()), Some(error))) {
-                                        yield Ok::<_, std::convert::Infallible>(event);
-                                    }
-                                }
-                            }
-                        }
-                        Some(InitialSidebarPart::Buddy(snapshot)) => {
-                            tracing::info!("sidebar initial buddy ready in {}ms", initial_started_at.elapsed().as_millis());
-                            buddy_ready = true;
-                            if let Some(event) = make_event(&seq_counter, SidebarEvent::BuddySnapshot { buddy: snapshot }) {
-                                yield Ok::<_, std::convert::Infallible>(event);
-                            }
-                            if let Some(event) = make_event(&seq_counter, loading_event(SidebarLoadingSection::Buddy, "ready", Some(initial_started_at.elapsed().as_millis()), None)) {
+                            tracing::info!("sidebar initial {:?} finished in {}ms", section, elapsed_ms);
+                            if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
@@ -425,13 +522,14 @@ pub async fn handle_sidebar_subscribe(
                         }
                     }
 
-                    if workspace_ready && trajectories_ready && tasks_ready && buddy_ready {
-                        if !live_events_started {
-                            if let Some(event) = emit_full_snapshot(gcx_for_stream.clone(), &seq_counter).await {
+                    if workspace_ready && chats_ready && tasks_ready && buddy_ready && !bootstrap_complete {
+                        bootstrap_complete = true;
+                        initial_rx = None;
+                        while let Some(event) = buffered_live_events.pop_front() {
+                            if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
-                        initial_rx = None;
                     }
                 }
 
@@ -443,16 +541,30 @@ pub async fn handle_sidebar_subscribe(
                 } => {
                     match result {
                         Ok(event) => {
-                            live_events_started = true;
-                            if let Some(event) = make_event(&seq_counter, SidebarEvent::Trajectory(event)) {
+                            let event = SidebarEvent::SectionUpdate {
+                                section: SidebarSection::Chats,
+                                update: SidebarSectionUpdate::Trajectory(event),
+                            };
+                            if let Some(event) = push_or_emit_live_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            if let Some(event) = emit_full_snapshot(gcx_for_stream.clone(), &seq_counter).await {
+                            let event = chats_snapshot_event(gcx_for_stream.clone()).await;
+                            if let Some(event) = push_or_emit_resync_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
-                            } else {
-                                break;
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -472,16 +584,15 @@ pub async fn handle_sidebar_subscribe(
                 } => {
                     match result {
                         Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
-                            live_events_started = true;
-                            if let Ok((_trajectories, _tasks, workspace_roots)) = fetch_snapshot(gcx_for_stream.clone()).await {
-                                if let Some(event) = make_event(&seq_counter, SidebarEvent::WorkspaceSnapshot { workspace_roots }) {
-                                    yield Ok::<_, std::convert::Infallible>(event);
-                                }
-                                if let Some(event) = emit_full_snapshot(gcx_for_stream.clone(), &seq_counter).await {
-                                    yield Ok::<_, std::convert::Infallible>(event);
-                                }
-                            } else {
-                                break;
+                            let event = workspace_snapshot_event(gcx_for_stream.clone()).await;
+                            if let Some(event) = push_or_emit_resync_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
+                                yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -501,16 +612,30 @@ pub async fn handle_sidebar_subscribe(
                 } => {
                     match result {
                         Ok(task_envelope) => {
-                            live_events_started = true;
-                            if let Some(event) = make_event(&seq_counter, SidebarEvent::Task(task_envelope.event)) {
+                            let event = SidebarEvent::SectionUpdate {
+                                section: SidebarSection::Tasks,
+                                update: SidebarSectionUpdate::Task(task_envelope.event),
+                            };
+                            if let Some(event) = push_or_emit_live_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            if let Some(event) = emit_full_snapshot(gcx_for_stream.clone(), &seq_counter).await {
+                            let event = tasks_snapshot_event(gcx_for_stream.clone()).await;
+                            if let Some(event) = push_or_emit_resync_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
-                            } else {
-                                break;
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
@@ -529,9 +654,15 @@ pub async fn handle_sidebar_subscribe(
                     }
                 } => {
                     match result {
-                        Ok(event) => {
-                            live_events_started = true;
-                            if let Some(event) = make_event(&seq_counter, SidebarEvent::Notification(event)) {
+                        Ok(notification) => {
+                            let event = SidebarEvent::Notification { notification };
+                            if let Some(event) = push_or_emit_live_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
@@ -555,14 +686,29 @@ pub async fn handle_sidebar_subscribe(
                 } => {
                     match result {
                         Ok(event) => {
-                            live_events_started = true;
-                            if let Some(event) = make_event(&seq_counter, SidebarEvent::Buddy { buddy_event: event }) {
+                            let event = SidebarEvent::SectionUpdate {
+                                section: SidebarSection::Buddy,
+                                update: SidebarSectionUpdate::Buddy(event),
+                            };
+                            if let Some(event) = push_or_emit_live_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            let buddy = fetch_buddy_snapshot(gcx_for_stream.clone()).await;
-                            if let Some(event) = make_event(&seq_counter, SidebarEvent::BuddySnapshot { buddy }) {
+                            let event = buddy_snapshot_event(gcx_for_stream.clone()).await;
+                            if let Some(event) = push_or_emit_resync_event(
+                                event,
+                                bootstrap_complete,
+                                &mut buffered_live_events,
+                                &seq_counter,
+                                &subscription_id,
+                            ) {
                                 yield Ok::<_, std::convert::Infallible>(event);
                             }
                         }
@@ -581,7 +727,7 @@ pub async fn handle_sidebar_subscribe(
 
                 _ = async {
                     while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
                     }
                 } => {
                     break;
@@ -597,4 +743,66 @@ pub async fn handle_sidebar_subscribe(
         .header("Connection", "keep-alive")
         .body(Body::wrap_stream(stream))
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_event_envelope_uses_v2_nested_event_shape() {
+        let seq = AtomicU64::new(0);
+        let raw = make_event(
+            &seq,
+            "sub-1",
+            section_snapshot_event(
+                SidebarSection::Tasks,
+                SidebarSectionStatus::Ready,
+                SidebarSectionSnapshot::Tasks { tasks: Vec::new() },
+                Some(7),
+                None,
+            ),
+        )
+        .expect("event should serialize");
+        let json = raw
+            .trim_start_matches("data: ")
+            .trim()
+            .parse::<serde_json::Value>()
+            .expect("valid json");
+
+        assert_eq!(json["protocol_version"], 2);
+        assert_eq!(json["seq"], 0);
+        assert_eq!(json["subscription_id"], "sub-1");
+        assert_eq!(json["event"]["type"], "section_snapshot");
+        assert_eq!(json["event"]["section"], "tasks");
+        assert_eq!(json["event"]["status"], "ready");
+        assert_eq!(
+            json["event"]["snapshot"]["tasks"].as_array().unwrap().len(),
+            0
+        );
+        assert!(json.get("category").is_none());
+    }
+
+    #[test]
+    fn sidebar_error_snapshot_is_terminal_and_carries_empty_data() {
+        let event = section_snapshot_event(
+            SidebarSection::Chats,
+            SidebarSectionStatus::Error,
+            SidebarSectionSnapshot::Chats {
+                trajectories: Vec::new(),
+            },
+            None,
+            Some("boom".to_string()),
+        );
+        let json = serde_json::to_value(event).expect("event should serialize");
+
+        assert_eq!(json["type"], "section_snapshot");
+        assert_eq!(json["section"], "chats");
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["error"], "boom");
+        assert_eq!(
+            json["snapshot"]["trajectories"].as_array().unwrap().len(),
+            0
+        );
+    }
 }
