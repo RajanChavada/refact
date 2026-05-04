@@ -299,7 +299,6 @@ export const EditTool: React.FC<EditToolProps> = ({ toolCall, diffs = [] }) => {
   );
 
   const status: ToolStatus = useMemo(() => {
-    // Check if tool failed (returned error result instead of diff)
     if (
       maybeResult &&
       typeof maybeResult === "object" &&

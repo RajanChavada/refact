@@ -7,6 +7,7 @@ import { useAppSelector, useEventsBusForIDE } from "../../../hooks";
 import {
   selectToolResultById,
   selectManyDiffMessageByIds,
+  selectIsStreaming,
   selectIsWaiting,
 } from "../../../features/Chat/Thread/selectors";
 import { ToolCall, DiffChunk } from "../../../services/refact/types";
@@ -60,6 +61,8 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
   const storeKey = toolCall.id ? `tc:${toolCall.id}` : undefined;
   const [isOpen, handleToggle] = useStoredOpen(storeKey);
   const { queryPathThenOpenFile } = useEventsBusForIDE();
+  const isStreaming = useAppSelector(selectIsStreaming);
+  const isWaiting = useAppSelector(selectIsWaiting);
 
   const maybeResult = useAppSelector((state) =>
     selectToolResultById(state, toolCall.id),
@@ -75,9 +78,10 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
   );
   const toolDiffs = useAppSelector(selectDiffs);
 
-  const isWaiting = useAppSelector(selectIsWaiting);
+  const hasResult = maybeResult !== undefined;
   const hasDiffs = diffs.length > 0 || toolDiffs.length > 0;
-  const shouldReadDiffs = hasDiffs && !isWaiting;
+  const isToolBusy = !hasResult && (isStreaming || isWaiting);
+  const shouldReadDiffs = hasDiffs && !isToolBusy;
 
   const allDiffs = useMemo((): DiffChunk[] => {
     if (!shouldReadDiffs) return [];
@@ -109,12 +113,13 @@ export const FileOpTool: React.FC<FileOpToolProps> = ({
       }
       return "success";
     }
+    if (isToolBusy) return "running";
+    // rm tool returns diff message (not tool message) when deleting files with content
     if (hasDiffs) {
       return "success";
     }
     return "running";
-  }, [hasDiffs, maybeResult]);
-
+  }, [hasDiffs, isToolBusy, maybeResult]);
   const handleFileClick = useCallback(
     (e: React.MouseEvent, filePath: string) => {
       e.stopPropagation();
