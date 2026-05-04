@@ -137,6 +137,12 @@ enum InitialSidebarPart {
     },
 }
 
+#[derive(Debug)]
+struct InitialSidebarPartMessage {
+    generation: u64,
+    part: InitialSidebarPart,
+}
+
 fn all_receivers_closed(
     trajectory_rx: &Option<broadcast::Receiver<TrajectoryEvent>>,
     workspace_changed_rx: &Option<broadcast::Receiver<()>>,
@@ -346,51 +352,68 @@ async fn load_buddy_part(gcx: Arc<ARwLock<GlobalContext>>) -> InitialSidebarPart
     }
 }
 
-fn spawn_sidebar_section_retry(
+fn load_section_part(
     gcx: Arc<ARwLock<GlobalContext>>,
     section: SidebarSection,
-    tx: mpsc::UnboundedSender<InitialSidebarPart>,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(SIDEBAR_RETRY_DELAY).await;
-        let part = match section {
+) -> impl std::future::Future<Output = InitialSidebarPart> {
+    async move {
+        match section {
             SidebarSection::Workspace => load_workspace_part(gcx).await,
             SidebarSection::Chats => load_chats_part(gcx).await,
             SidebarSection::Tasks => load_tasks_part(gcx).await,
             SidebarSection::Buddy => load_buddy_part(gcx).await,
-        };
-        let _ = tx.send(part);
+        }
+    }
+}
+
+fn spawn_sidebar_section_retry(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    section: SidebarSection,
+    generation: u64,
+    tx: mpsc::UnboundedSender<InitialSidebarPartMessage>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(SIDEBAR_RETRY_DELAY).await;
+        let part = load_section_part(gcx, section).await;
+        let _ = tx.send(InitialSidebarPartMessage { generation, part });
     });
 }
 
 fn spawn_initial_sidebar_loads(
     gcx: Arc<ARwLock<GlobalContext>>,
-) -> mpsc::UnboundedReceiver<InitialSidebarPart> {
+    generation: u64,
+) -> mpsc::UnboundedReceiver<InitialSidebarPartMessage> {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
+        let workspace_part = load_workspace_part(gcx.clone()).await;
+        if tx
+            .send(InitialSidebarPartMessage {
+                generation,
+                part: workspace_part,
+            })
+            .is_err()
+        {
+            return;
+        }
+
         let mut jobs = JoinSet::new();
 
-        jobs.spawn({
+        for section in [
+            SidebarSection::Chats,
+            SidebarSection::Tasks,
+            SidebarSection::Buddy,
+        ] {
             let gcx = gcx.clone();
-            async move { load_workspace_part(gcx).await }
-        });
-        jobs.spawn({
-            let gcx = gcx.clone();
-            async move { load_chats_part(gcx).await }
-        });
-        jobs.spawn({
-            let gcx = gcx.clone();
-            async move { load_tasks_part(gcx).await }
-        });
-        jobs.spawn({
-            let gcx = gcx.clone();
-            async move { load_buddy_part(gcx).await }
-        });
+            jobs.spawn(async move { load_section_part(gcx, section).await });
+        }
 
         while let Some(result) = jobs.join_next().await {
             match result {
                 Ok(part) => {
-                    if tx.send(part).is_err() {
+                    if tx
+                        .send(InitialSidebarPartMessage { generation, part })
+                        .is_err()
+                    {
                         jobs.abort_all();
                         break;
                     }
@@ -404,10 +427,6 @@ fn spawn_initial_sidebar_loads(
     rx
 }
 
-async fn workspace_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
-    load_workspace_part(gcx).await.into_event(0)
-}
-
 async fn chats_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
     load_chats_part(gcx).await.into_event(0)
 }
@@ -418,6 +437,47 @@ async fn tasks_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent 
 
 async fn buddy_snapshot_event(gcx: Arc<ARwLock<GlobalContext>>) -> SidebarEvent {
     load_buddy_part(gcx).await.into_event(0)
+}
+
+fn mark_section_ready(
+    section: SidebarSection,
+    workspace_ready: &mut bool,
+    chats_ready: &mut bool,
+    tasks_ready: &mut bool,
+    buddy_ready: &mut bool,
+) {
+    match section {
+        SidebarSection::Workspace => *workspace_ready = true,
+        SidebarSection::Chats => *chats_ready = true,
+        SidebarSection::Tasks => *tasks_ready = true,
+        SidebarSection::Buddy => *buddy_ready = true,
+    }
+}
+
+fn try_finish_bootstrap(
+    workspace_ready: bool,
+    chats_ready: bool,
+    tasks_ready: bool,
+    buddy_ready: bool,
+    bootstrap_complete: &mut bool,
+    initial_rx: &mut Option<mpsc::UnboundedReceiver<InitialSidebarPartMessage>>,
+    buffered_live_events: &mut VecDeque<SidebarEvent>,
+    seq_counter: &AtomicU64,
+    subscription_id: &str,
+) -> Vec<String> {
+    if workspace_ready && chats_ready && tasks_ready && buddy_ready && !*bootstrap_complete {
+        *bootstrap_complete = true;
+        *initial_rx = None;
+        let mut events = Vec::new();
+        while let Some(event) = buffered_live_events.pop_front() {
+            if let Some(event) = make_event(seq_counter, subscription_id, event) {
+                events.push(event);
+            }
+        }
+        return events;
+    }
+
+    Vec::new()
 }
 
 fn push_or_emit_live_event(
@@ -433,22 +493,6 @@ fn push_or_emit_live_event(
         buffered_live_events.push_back(event);
         None
     }
-}
-
-fn push_or_emit_resync_event(
-    event: SidebarEvent,
-    bootstrap_complete: bool,
-    buffered_live_events: &mut VecDeque<SidebarEvent>,
-    seq_counter: &AtomicU64,
-    subscription_id: &str,
-) -> Option<String> {
-    push_or_emit_live_event(
-        event,
-        bootstrap_complete,
-        buffered_live_events,
-        seq_counter,
-        subscription_id,
-    )
 }
 
 pub async fn handle_sidebar_subscribe(
@@ -507,15 +551,19 @@ pub async fn handle_sidebar_subscribe(
         let mut task_rx = task_rx;
         let mut notification_rx = notification_rx;
         let mut buddy_rx = buddy_rx;
-        let mut initial_rx = Some(spawn_initial_sidebar_loads(gcx_for_stream.clone()));
-        let (retry_tx, mut retry_rx) = mpsc::unbounded_channel::<InitialSidebarPart>();
+        let mut load_generation = 0_u64;
+        let mut initial_rx = Some(spawn_initial_sidebar_loads(
+            gcx_for_stream.clone(),
+            load_generation,
+        ));
+        let (retry_tx, mut retry_rx) = mpsc::unbounded_channel::<InitialSidebarPartMessage>();
         let mut workspace_ready = false;
         let mut chats_ready = false;
         let mut tasks_ready = false;
         let mut buddy_ready = false;
         let mut bootstrap_complete = false;
         let mut buffered_live_events = VecDeque::new();
-        let initial_started_at = Instant::now();
+        let mut initial_started_at = Instant::now();
         let shutdown_flag = gcx_for_stream.read().await.shutdown_flag.clone();
 
         let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
@@ -530,18 +578,23 @@ pub async fn handle_sidebar_subscribe(
                     }
                 } => {
                     match part {
-                        Some(part) => {
+                        Some(message) => {
+                            if message.generation != load_generation {
+                                continue;
+                            }
+                            let part = message.part;
                             let section = part.section();
                             let status = part.status();
                             let elapsed_ms = initial_started_at.elapsed().as_millis();
                             let event = part.into_event(elapsed_ms);
                             if status == SidebarSectionStatus::Ready {
-                                match section {
-                                    SidebarSection::Workspace => workspace_ready = true,
-                                    SidebarSection::Chats => chats_ready = true,
-                                    SidebarSection::Tasks => tasks_ready = true,
-                                    SidebarSection::Buddy => buddy_ready = true,
-                                }
+                                mark_section_ready(
+                                    section,
+                                    &mut workspace_ready,
+                                    &mut chats_ready,
+                                    &mut tasks_ready,
+                                    &mut buddy_ready,
+                                );
                             }
                             tracing::info!("sidebar initial {:?} finished with {:?} in {}ms", section, status, elapsed_ms);
                             if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
@@ -551,6 +604,7 @@ pub async fn handle_sidebar_subscribe(
                                 spawn_sidebar_section_retry(
                                     gcx_for_stream.clone(),
                                     section,
+                                    load_generation,
                                     retry_tx.clone(),
                                 );
                             }
@@ -560,29 +614,38 @@ pub async fn handle_sidebar_subscribe(
                         }
                     }
 
-                    if workspace_ready && chats_ready && tasks_ready && buddy_ready && !bootstrap_complete {
-                        bootstrap_complete = true;
-                        initial_rx = None;
-                        while let Some(event) = buffered_live_events.pop_front() {
-                            if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
-                                yield Ok::<_, std::convert::Infallible>(event);
-                            }
-                        }
+                    for event in try_finish_bootstrap(
+                        workspace_ready,
+                        chats_ready,
+                        tasks_ready,
+                        buddy_ready,
+                        &mut bootstrap_complete,
+                        &mut initial_rx,
+                        &mut buffered_live_events,
+                        &seq_counter,
+                        &subscription_id,
+                    ) {
+                        yield Ok::<_, std::convert::Infallible>(event);
                     }
                 }
 
                 retry_part = retry_rx.recv() => {
-                    if let Some(part) = retry_part {
+                    if let Some(message) = retry_part {
+                        if message.generation != load_generation {
+                            continue;
+                        }
+                        let part = message.part;
                         let section = part.section();
                         let status = part.status();
                         let event = part.into_event(0);
                         if status == SidebarSectionStatus::Ready {
-                            match section {
-                                SidebarSection::Workspace => workspace_ready = true,
-                                SidebarSection::Chats => chats_ready = true,
-                                SidebarSection::Tasks => tasks_ready = true,
-                                SidebarSection::Buddy => buddy_ready = true,
-                            }
+                            mark_section_ready(
+                                section,
+                                &mut workspace_ready,
+                                &mut chats_ready,
+                                &mut tasks_ready,
+                                &mut buddy_ready,
+                            );
                         }
                         if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
                             yield Ok::<_, std::convert::Infallible>(event);
@@ -591,19 +654,24 @@ pub async fn handle_sidebar_subscribe(
                             spawn_sidebar_section_retry(
                                 gcx_for_stream.clone(),
                                 section,
+                                load_generation,
                                 retry_tx.clone(),
                             );
                         }
                     }
 
-                    if workspace_ready && chats_ready && tasks_ready && buddy_ready && !bootstrap_complete {
-                        bootstrap_complete = true;
-                        initial_rx = None;
-                        while let Some(event) = buffered_live_events.pop_front() {
-                            if let Some(event) = make_event(&seq_counter, &subscription_id, event) {
-                                yield Ok::<_, std::convert::Infallible>(event);
-                            }
-                        }
+                    for event in try_finish_bootstrap(
+                        workspace_ready,
+                        chats_ready,
+                        tasks_ready,
+                        buddy_ready,
+                        &mut bootstrap_complete,
+                        &mut initial_rx,
+                        &mut buffered_live_events,
+                        &seq_counter,
+                        &subscription_id,
+                    ) {
+                        yield Ok::<_, std::convert::Infallible>(event);
                     }
                 }
 
@@ -631,7 +699,7 @@ pub async fn handle_sidebar_subscribe(
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             let event = chats_snapshot_event(gcx_for_stream.clone()).await;
-                            if let Some(event) = push_or_emit_resync_event(
+                            if let Some(event) = push_or_emit_live_event(
                                 event,
                                 bootstrap_complete,
                                 &mut buffered_live_events,
@@ -658,16 +726,19 @@ pub async fn handle_sidebar_subscribe(
                 } => {
                     match result {
                         Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
-                            let event = workspace_snapshot_event(gcx_for_stream.clone()).await;
-                            if let Some(event) = push_or_emit_resync_event(
-                                event,
-                                bootstrap_complete,
-                                &mut buffered_live_events,
-                                &seq_counter,
-                                &subscription_id,
-                            ) {
-                                yield Ok::<_, std::convert::Infallible>(event);
-                            }
+                            load_generation = load_generation.wrapping_add(1);
+                            workspace_ready = false;
+                            chats_ready = false;
+                            tasks_ready = false;
+                            buddy_ready = false;
+                            bootstrap_complete = false;
+                            buffered_live_events.clear();
+                            initial_started_at = Instant::now();
+                            initial_rx = Some(spawn_initial_sidebar_loads(
+                                gcx_for_stream.clone(),
+                                load_generation,
+                            ));
+                            tracing::info!("sidebar workspace changed; restarting section snapshots");
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             workspace_changed_rx = None;
@@ -702,7 +773,7 @@ pub async fn handle_sidebar_subscribe(
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             let event = tasks_snapshot_event(gcx_for_stream.clone()).await;
-                            if let Some(event) = push_or_emit_resync_event(
+                            if let Some(event) = push_or_emit_live_event(
                                 event,
                                 bootstrap_complete,
                                 &mut buffered_live_events,
@@ -776,7 +847,7 @@ pub async fn handle_sidebar_subscribe(
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             let event = buddy_snapshot_event(gcx_for_stream.clone()).await;
-                            if let Some(event) = push_or_emit_resync_event(
+                            if let Some(event) = push_or_emit_live_event(
                                 event,
                                 bootstrap_complete,
                                 &mut buffered_live_events,

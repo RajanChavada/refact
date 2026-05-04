@@ -8,6 +8,7 @@ import { setUpStore } from "../app/store";
 import { useSidebarSubscription } from "../hooks/useSidebarSubscription";
 import { server } from "../utils/mockServer";
 import { setCurrentProjectInfo } from "../features/Chat/currentProject";
+import { tasksApi } from "../services/refact/tasks";
 
 function envelope(seq: number, event: Record<string, unknown>) {
   return {
@@ -55,6 +56,33 @@ function sidebarSnapshotHandler(...events: Record<string, unknown>[]) {
       },
     });
   });
+}
+
+function taskMeta(
+  id: string,
+  name: string,
+): {
+  id: string;
+  name: string;
+  status: "planning";
+  created_at: string;
+  updated_at: string;
+  cards_total: number;
+  cards_done: number;
+  cards_failed: number;
+  agents_active: number;
+} {
+  return {
+    id,
+    name,
+    status: "planning",
+    created_at: "2024-01-01T00:00:00Z",
+    updated_at: "2024-01-01T00:00:00Z",
+    cards_total: 0,
+    cards_done: 0,
+    cards_failed: 0,
+    agents_active: 0,
+  };
 }
 
 function renderSidebarSubscription(
@@ -129,6 +157,65 @@ describe("useSidebarSubscription", () => {
         name: "",
         workspaceRoots: [],
       });
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
+      expect(store.getState().sidebar.sections.chats.status).toBe("ready");
+      expect(store.getState().sidebar.sections.tasks.status).toBe("ready");
+      expect(store.getState().sidebar.sections.buddy.status).toBe("ready");
+    });
+  });
+
+  it("resets section readiness and cached tasks when the same subscription switches workspace", async () => {
+    server.use(
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/old"],
+        }),
+        sectionSnapshot(1, "chats", { trajectories: [] }),
+        sectionSnapshot(2, "tasks", { tasks: [taskMeta("old", "Old task")] }),
+        sectionSnapshot(3, "buddy", { buddy: null }),
+        sectionSnapshot(4, "workspace", {
+          workspace_roots: ["/workspace/new"],
+        }),
+      ),
+    );
+
+    const store = renderSidebarSubscription();
+
+    await waitFor(() => {
+      expect(store.getState().current_project).toEqual({
+        name: "new",
+        workspaceRoots: ["/workspace/new"],
+      });
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
+    });
+
+    expect(store.getState().sidebar.sections.chats.status).toBe("loading");
+    expect(store.getState().sidebar.sections.tasks.status).toBe("loading");
+    expect(store.getState().sidebar.sections.buddy.status).toBe("loading");
+
+    expect(
+      tasksApi.endpoints.listTasks.select(undefined)(store.getState()).data,
+    ).toEqual([]);
+  });
+
+  it("does not reset readiness for normalized-equivalent workspace snapshots", async () => {
+    server.use(
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/refact/"],
+        }),
+        sectionSnapshot(1, "chats", { trajectories: [] }),
+        sectionSnapshot(2, "tasks", { tasks: [] }),
+        sectionSnapshot(3, "buddy", { buddy: null }),
+        sectionSnapshot(4, "workspace", {
+          workspace_roots: ["/workspace/refact"],
+        }),
+      ),
+    );
+
+    const store = renderSidebarSubscription();
+
+    await waitFor(() => {
       expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
       expect(store.getState().sidebar.sections.chats.status).toBe("ready");
       expect(store.getState().sidebar.sections.tasks.status).toBe("ready");

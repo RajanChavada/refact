@@ -75,6 +75,23 @@ function getWorkspaceDisplayName(root: string): string {
   return normalized.split("/").pop() ?? normalized;
 }
 
+function normalizeWorkspaceRoot(root: string): string {
+  return root.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function workspaceRootsEqual(
+  current: string[] | undefined,
+  next: string[],
+): boolean {
+  if (!current) return false;
+  if (current.length !== next.length) return false;
+
+  return current.every(
+    (root, index) =>
+      normalizeWorkspaceRoot(root) === normalizeWorkspaceRoot(next[index]),
+  );
+}
+
 function getLegacyHistory(): ChatHistoryItem[] {
   try {
     const raw = localStorage.getItem("persist:root");
@@ -179,6 +196,7 @@ export function useSidebarSubscription() {
   const historyChats = useAppSelector((state) => state.history.chats);
   const historyRef = useRef(historyChats);
   historyRef.current = historyChats;
+  const serverWorkspaceRootsRef = useRef<string[] | undefined>(undefined);
   const disconnectRef = useRef<(() => void) | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -483,6 +501,7 @@ export function useSidebarSubscription() {
         SidebarEventEnvelope["event"],
         { type: "section_snapshot" }
       >,
+      subscriptionId: string,
     ) => {
       const { section, snapshot, status, error } = event;
 
@@ -490,7 +509,30 @@ export function useSidebarSubscription() {
         section === "workspace" &&
         hasSnapshotKey(snapshot, "workspace_roots")
       ) {
+        const workspaceChanged =
+          serverWorkspaceRootsRef.current !== undefined &&
+          !workspaceRootsEqual(
+            serverWorkspaceRootsRef.current,
+            snapshot.workspace_roots,
+          );
+        if (workspaceChanged) {
+          dispatch(resetSidebarState({ lspPort: config.lspPort }));
+          dispatch(
+            sidebarSubscriptionStarted({
+              subscriptionId,
+              lspPort: config.lspPort,
+            }),
+          );
+          tasksSnapshotRef.current = null;
+          dispatch(replaceSnapshotHistory([]));
+          void dispatch(
+            tasksApi.util.upsertQueryData("listTasks", undefined, []),
+          );
+          dispatch(setHistoryLoading(true));
+          dispatch(setHistoryLoadError(null));
+        }
         processWorkspaceSnapshot(snapshot.workspace_roots);
+        serverWorkspaceRootsRef.current = snapshot.workspace_roots;
       } else if (
         section === "chats" &&
         hasSnapshotKey(snapshot, "trajectories")
@@ -514,6 +556,7 @@ export function useSidebarSubscription() {
       );
     },
     [
+      config.lspPort,
       dispatch,
       processBuddySnapshot,
       processTasksSnapshot,
@@ -696,6 +739,7 @@ export function useSidebarSubscription() {
 
     const generation = ++generationRef.current;
     dispatch(resetSidebarState({ lspPort: port }));
+    serverWorkspaceRootsRef.current = undefined;
     tasksSnapshotRef.current = null;
     void prepareInitialHistory();
 
@@ -712,7 +756,7 @@ export function useSidebarSubscription() {
       }
 
       if (envelope.event.type === "section_snapshot") {
-        processSectionSnapshot(envelope.event);
+        processSectionSnapshot(envelope.event, envelope.subscription_id);
       } else if (envelope.event.type === "section_update") {
         processSectionUpdate(envelope.event.section, envelope.event.update);
       } else {
