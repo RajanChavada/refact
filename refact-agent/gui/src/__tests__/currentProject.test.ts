@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   currentProjectInfoReducer,
   resetSidebarReadiness,
+  selectHasActiveProject,
   setCurrentProjectInfo,
 } from "../features/Chat/currentProject";
+import { setUpStore } from "../app/store";
 
 describe("currentProjectInfoReducer", () => {
   it("preserves workspace roots when the same project update omits roots", () => {
@@ -56,5 +58,43 @@ describe("currentProjectInfoReducer", () => {
       name: "refact",
       workspaceRoots: ["/tmp/a/refact"],
     });
+  });
+
+  it("treats a name-only project as active", () => {
+    const store = setUpStore({
+      current_project: { name: "refact" },
+    });
+
+    expect(selectHasActiveProject(store.getState())).toBe(true);
+  });
+
+  it("keeps an empty-roots project active when it still has a name", () => {
+    const store = setUpStore({
+      current_project: { name: "refact", workspaceRoots: [] },
+    });
+
+    expect(selectHasActiveProject(store.getState())).toBe(true);
+  });
+
+  it("does not treat an unnamed empty-roots backend snapshot as active", () => {
+    const store = setUpStore({
+      current_project: { name: "", workspaceRoots: [] },
+    });
+
+    expect(selectHasActiveProject(store.getState())).toBe(false);
+  });
+
+  it("does not let config fallback make an unnamed empty-roots snapshot active", () => {
+    const store = setUpStore({
+      config: {
+        host: "vscode",
+        lspPort: 8001,
+        themeProps: {},
+        currentWorkspaceName: "refact",
+      },
+      current_project: { name: "", workspaceRoots: [] },
+    });
+
+    expect(selectHasActiveProject(store.getState())).toBe(false);
   });
 });

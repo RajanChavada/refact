@@ -13,7 +13,7 @@ const initialState: CurrentProjectInfo = {
 export const setCurrentProjectInfo = createAction<CurrentProjectInfo>(
   "currentProjectInfo/setCurrentProjectInfo",
 );
-export const resetSidebarReadiness = createAction(
+export const resetSidebarReadiness = createAction<undefined>(
   "currentProjectInfo/resetSidebarReadiness",
 );
 
@@ -32,25 +32,21 @@ function shouldPreserveWorkspaceRoots(
 export const currentProjectInfoReducer = createReducer(
   initialState,
   (builder) => {
-    builder
-      .addCase(setCurrentProjectInfo, (state, action) => {
-        const next = action.payload;
-        const nextRoots =
-          next.workspaceRoots ??
-          (shouldPreserveWorkspaceRoots(state, next)
-            ? state.workspaceRoots
-            : undefined);
+    builder.addCase(setCurrentProjectInfo, (state, action) => {
+      const next = action.payload;
+      const nextRoots =
+        next.workspaceRoots ??
+        (shouldPreserveWorkspaceRoots(state, next)
+          ? state.workspaceRoots
+          : undefined);
 
-        state.name = next.name;
-        if (nextRoots !== undefined) {
-          state.workspaceRoots = nextRoots;
-        } else {
-          delete state.workspaceRoots;
-        }
-      })
-      .addCase(resetSidebarReadiness, () => {
-        // Kept as a no-op compatibility action for IDE/config messages.
-      });
+      state.name = next.name;
+      if (nextRoots !== undefined) {
+        state.workspaceRoots = nextRoots;
+      } else {
+        delete state.workspaceRoots;
+      }
+    });
   },
 );
 
@@ -68,13 +64,13 @@ export const selectThreadProjectOrCurrentProject = (state: RootState) => {
 };
 
 export const selectHasActiveProject = (state: RootState): boolean => {
+  const currentProjectName = state.current_project.name.trim();
   const workspaceRoots = state.current_project.workspaceRoots;
   if (workspaceRoots !== undefined) {
-    return workspaceRoots.length > 0;
+    return workspaceRoots.length > 0 || Boolean(currentProjectName);
   }
 
   return Boolean(
-    state.current_project.name.trim() ||
-      state.config.currentWorkspaceName?.trim(),
+    currentProjectName || state.config.currentWorkspaceName?.trim(),
   );
 };

@@ -499,7 +499,7 @@ describe("useSidebarSubscription", () => {
     });
   });
 
-  it("keeps out-of-order new section snapshots after a same-port workspace switch", async () => {
+  it("does not replay stale old resync snapshots into a later workspace switch", async () => {
     server.use(
       sidebarSnapshotHandler(
         sectionSnapshot(0, "workspace", {
@@ -509,11 +509,49 @@ describe("useSidebarSubscription", () => {
         sectionSnapshot(2, "tasks", { tasks: [taskMeta("old", "Old task")] }),
         sectionSnapshot(3, "buddy", { buddy: null }),
         sectionSnapshot(4, "chats", { trajectories: [] }),
-        sectionSnapshot(5, "tasks", { tasks: [taskMeta("new", "New task")] }),
+        sectionSnapshot(5, "tasks", {
+          tasks: [taskMeta("stale", "Stale old task")],
+        }),
         sectionSnapshot(6, "buddy", { buddy: null }),
         sectionSnapshot(7, "workspace", {
           workspace_roots: ["/workspace/new"],
         }),
+      ),
+    );
+
+    const store = renderSidebarSubscription();
+
+    await waitFor(() => {
+      expect(store.getState().current_project).toEqual({
+        name: "new",
+        workspaceRoots: ["/workspace/new"],
+      });
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
+    });
+
+    expect(store.getState().sidebar.sections.chats.status).toBe("loading");
+    expect(store.getState().sidebar.sections.tasks.status).toBe("loading");
+    expect(store.getState().sidebar.sections.buddy.status).toBe("loading");
+    expect(
+      tasksApi.endpoints.listTasks.select(undefined)(store.getState()).data,
+    ).toEqual([]);
+  });
+
+  it("settles a same-port workspace switch from backend workspace-first snapshots", async () => {
+    server.use(
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/old"],
+        }),
+        sectionSnapshot(1, "chats", { trajectories: [] }),
+        sectionSnapshot(2, "tasks", { tasks: [taskMeta("old", "Old task")] }),
+        sectionSnapshot(3, "buddy", { buddy: null }),
+        sectionSnapshot(4, "workspace", {
+          workspace_roots: ["/workspace/new"],
+        }),
+        sectionSnapshot(5, "chats", { trajectories: [] }),
+        sectionSnapshot(6, "tasks", { tasks: [taskMeta("new", "New task")] }),
+        sectionSnapshot(7, "buddy", { buddy: null }),
       ),
     );
 
@@ -534,6 +572,67 @@ describe("useSidebarSubscription", () => {
         tasksApi.endpoints.listTasks.select(undefined)(store.getState()).data,
       ).toEqual([taskMeta("new", "New task")]);
       expect(store.getState().history.isLoading).toBe(false);
+    });
+  });
+
+  it("settles a workspace-first switch before the old workspace fully settles", async () => {
+    server.use(
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: ["/workspace/old"],
+        }),
+        sectionSnapshot(1, "chats", { trajectories: [] }),
+        sectionSnapshot(2, "workspace", {
+          workspace_roots: ["/workspace/new"],
+        }),
+        sectionSnapshot(3, "chats", { trajectories: [] }),
+        sectionSnapshot(4, "tasks", { tasks: [taskMeta("new", "New task")] }),
+        sectionSnapshot(5, "buddy", { buddy: null }),
+      ),
+    );
+
+    const store = renderSidebarSubscription();
+
+    await waitFor(() => {
+      expect(store.getState().current_project).toEqual({
+        name: "new",
+        workspaceRoots: ["/workspace/new"],
+      });
+      expect(store.getState().sidebar.sections).toMatchObject({
+        workspace: { status: "ready" },
+        chats: { status: "ready" },
+        tasks: { status: "ready" },
+        buddy: { status: "ready" },
+      });
+      expect(
+        tasksApi.endpoints.listTasks.select(undefined)(store.getState()).data,
+      ).toEqual([taskMeta("new", "New task")]);
+    });
+  });
+
+  it("normalizes root edge cases from workspace snapshots", async () => {
+    server.use(
+      sidebarSnapshotHandler(
+        sectionSnapshot(0, "workspace", {
+          workspace_roots: [
+            "   ",
+            "/",
+            "C:\\\\",
+            "//server/share//",
+            "\\\\server\\share\\folder\\",
+          ],
+        }),
+      ),
+    );
+
+    const store = renderSidebarSubscription();
+
+    await waitFor(() => {
+      expect(store.getState().current_project).toEqual({
+        name: "/",
+        workspaceRoots: ["/", "//server/share", "//server/share/folder", "C:/"],
+      });
+      expect(store.getState().sidebar.sections.workspace.status).toBe("ready");
     });
   });
 

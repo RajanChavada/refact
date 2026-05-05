@@ -70,18 +70,29 @@ const RECONNECT_DELAY_MS = 500;
 const MIGRATION_KEY = "refact-trajectories-migrated";
 
 function getWorkspaceDisplayName(root: string): string {
-  const trimmed = root.trim();
-  if (!trimmed) return "";
-  const normalized = trimmed.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = normalizeWorkspaceRoot(root);
+  if (!normalized) return "";
+  if (normalized === "/") return "/";
+  if (/^[A-Za-z]:\/$/u.test(normalized)) return normalized.slice(0, 2);
   return normalized.split("/").pop() ?? normalized;
 }
 
-function normalizeWorkspaceRoot(root: string): string {
-  return root.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+function normalizeWorkspaceRoot(root: string): string | null {
+  const normalized = root.trim().replace(/\\/g, "/");
+  if (!normalized) return null;
+  if (/^\/+$/u.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/u.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/u, "");
 }
 
 function canonicalWorkspaceRoots(roots: string[]): string[] {
-  return Array.from(new Set(roots.map(normalizeWorkspaceRoot))).sort();
+  return Array.from(
+    new Set(
+      roots
+        .map(normalizeWorkspaceRoot)
+        .filter((root): root is string => root !== null),
+    ),
+  ).sort();
 }
 
 function workspaceRootsEqual(
@@ -198,37 +209,6 @@ type SidebarSnapshotEvent = Extract<
   SidebarEventEnvelope["event"],
   { type: "section_snapshot" }
 >;
-type SidebarSectionSnapshotStatus = SidebarSnapshotEvent["status"];
-type SidebarRuntimeSectionStatus = SidebarSectionSnapshotStatus | "loading";
-type NonWorkspaceSidebarSection = Exclude<SidebarSection, "workspace">;
-type BufferedSectionSnapshots = Partial<
-  Record<NonWorkspaceSidebarSection, SidebarSnapshotEvent>
->;
-
-function initialSectionStatuses(): Record<
-  SidebarSection,
-  SidebarRuntimeSectionStatus
-> {
-  return {
-    workspace: "loading",
-    chats: "loading",
-    tasks: "loading",
-    buddy: "loading",
-  };
-}
-
-function sectionStatusesSettled(
-  statuses: Record<SidebarSection, SidebarRuntimeSectionStatus>,
-): boolean {
-  return Object.values(statuses).every((status) => status !== "loading");
-}
-
-function isNonWorkspaceSection(
-  section: SidebarSection,
-): section is NonWorkspaceSidebarSection {
-  return section !== "workspace";
-}
-
 export function useSidebarSubscription() {
   const dispatch = useAppDispatch();
   const config = useConfig();
@@ -243,8 +223,6 @@ export function useSidebarSubscription() {
   );
   const tasksSnapshotRef = useRef<TaskMeta[] | null>(null);
   const generationRef = useRef(0);
-  const sectionStatusesRef = useRef(initialSectionStatuses());
-  const postSettledSnapshotsRef = useRef<BufferedSectionSnapshots>({});
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   const connectRef = useRef<() => void>(() => {});
 
@@ -589,29 +567,8 @@ export function useSidebarSubscription() {
           error: event.status === "error" ? event.error : null,
         }),
       );
-      sectionStatusesRef.current = {
-        ...sectionStatusesRef.current,
-        [event.section]: event.status,
-      };
     },
     [dispatch],
-  );
-
-  const replayBufferedSnapshots = useCallback(
-    (snapshots: BufferedSectionSnapshots) => {
-      for (const section of ["chats", "tasks", "buddy"] as const) {
-        const event = snapshots[section];
-        if (!event) continue;
-        processSectionSnapshotData(
-          event.section,
-          event.snapshot,
-          event.status,
-          event.error,
-        );
-        markSectionSnapshotReceived(event);
-      }
-    },
-    [markSectionSnapshotReceived, processSectionSnapshotData],
   );
 
   const processSectionSnapshot = useCallback(
@@ -625,16 +582,6 @@ export function useSidebarSubscription() {
       const { section, snapshot, status, error } = event;
 
       if (
-        isNonWorkspaceSection(section) &&
-        sectionStatusesSettled(sectionStatusesRef.current)
-      ) {
-        postSettledSnapshotsRef.current = {
-          ...postSettledSnapshotsRef.current,
-          [section]: event,
-        };
-      }
-
-      if (
         section === "workspace" &&
         hasSnapshotKey(snapshot, "workspace_roots")
       ) {
@@ -645,15 +592,8 @@ export function useSidebarSubscription() {
           status === "ready" &&
           serverWorkspaceRootsRef.current !== undefined &&
           !workspaceRootsEqual(serverWorkspaceRootsRef.current, workspaceRoots);
-        const snapshotsToReplay = workspaceChanged
-          ? postSettledSnapshotsRef.current
-          : undefined;
-        if (status === "ready") {
-          postSettledSnapshotsRef.current = {};
-        }
         if (workspaceChanged) {
           dispatch(sidebarWorkspaceChanged({ subscriptionId }));
-          sectionStatusesRef.current = initialSectionStatuses();
           tasksSnapshotRef.current = null;
           dispatch(replaceSnapshotHistory([]));
           void dispatch(
@@ -666,9 +606,6 @@ export function useSidebarSubscription() {
           serverWorkspaceRootsRef.current = workspaceRoots;
         }
         markSectionSnapshotReceived(event);
-        if (workspaceChanged && snapshotsToReplay) {
-          replayBufferedSnapshots(snapshotsToReplay);
-        }
         return;
       }
 
@@ -680,7 +617,6 @@ export function useSidebarSubscription() {
       markSectionSnapshotReceived,
       processSectionSnapshotData,
       processWorkspaceSnapshot,
-      replayBufferedSnapshots,
     ],
   );
 
@@ -868,8 +804,6 @@ export function useSidebarSubscription() {
     dispatch(resetSidebarState({ lspPort: port }));
     serverWorkspaceRootsRef.current = undefined;
     tasksSnapshotRef.current = null;
-    sectionStatusesRef.current = initialSectionStatuses();
-    postSettledSnapshotsRef.current = {};
     void prepareInitialHistory(generation);
 
     const onEvent = (envelope: SidebarEventEnvelope) => {
