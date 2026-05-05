@@ -17,7 +17,7 @@ use super::types::{session_idle_timeout, session_cleanup_interval};
 use super::config::limits;
 use super::trajectories::TrajectoryEvent;
 
-fn has_displayable_assistant_content(message: &ChatMessage) -> bool {
+pub(super) fn has_displayable_assistant_content(message: &ChatMessage) -> bool {
     let has_text_content = match &message.content {
         ChatContent::SimpleText(s) => !s.trim().is_empty(),
         ChatContent::Multimodal(v) => !v.is_empty(),

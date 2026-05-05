@@ -34,6 +34,7 @@ pub async fn atomic_write_file(tmp_path: &Path, dest_path: &Path) -> Result<(), 
         .map_err(|e| format!("Failed to rename: {}", e))
 }
 
+use super::session::has_displayable_assistant_content;
 use super::types::{ThreadParams, SessionState, ChatSession};
 use super::config::timeouts;
 use super::SessionsMap;
@@ -215,13 +216,22 @@ pub struct TrajectorySnapshot {
 
 impl TrajectorySnapshot {
     pub fn from_session(session: &ChatSession) -> Self {
+        let messages = session
+            .messages
+            .iter()
+            .filter(|message| {
+                message.role != "assistant" || has_displayable_assistant_content(message)
+            })
+            .cloned()
+            .collect();
+
         Self {
             chat_id: session.chat_id.clone(),
             title: session.thread.title.clone(),
             model: session.thread.model.clone(),
             mode: session.thread.mode.clone(),
             tool_use: session.thread.tool_use.clone(),
-            messages: session.messages.clone(),
+            messages,
             created_at: session.created_at.clone(),
             boost_reasoning: session.thread.boost_reasoning.unwrap_or(false),
             checkpoints_enabled: session.thread.checkpoints_enabled,
@@ -3496,6 +3506,32 @@ mod tests {
         session.thread.worktree = Some(worktree.clone());
         let snapshot = TrajectorySnapshot::from_session(&session);
         assert_eq!(snapshot.worktree, Some(worktree));
+    }
+
+    #[test]
+    fn trajectory_snapshot_from_session_filters_empty_assistant_messages() {
+        let mut session = ChatSession::new("empty-assistant-snapshot".to_string());
+        session.messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: ChatContent::SimpleText("hello".to_string()),
+            ..Default::default()
+        });
+        session.messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: ChatContent::SimpleText("   \n".to_string()),
+            ..Default::default()
+        });
+        session.messages.push(ChatMessage {
+            role: "error".to_string(),
+            content: ChatContent::SimpleText("LLM error".to_string()),
+            ..Default::default()
+        });
+
+        let snapshot = TrajectorySnapshot::from_session(&session);
+
+        assert_eq!(snapshot.messages.len(), 2);
+        assert_eq!(snapshot.messages[0].role, "user");
+        assert_eq!(snapshot.messages[1].role, "error");
     }
 
     #[test]

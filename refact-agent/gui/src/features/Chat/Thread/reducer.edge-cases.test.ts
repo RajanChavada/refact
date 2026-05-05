@@ -486,5 +486,39 @@ describe("Chat Thread Reducer - Edge Cases", () => {
       expect(runtime.thread.messages).toHaveLength(1);
       expect(runtime.thread.messages[0].role).toBe("user");
     });
+
+    test("should remove empty assistant placeholder when runtime enters error", () => {
+      let state = chatReducer(
+        initialState,
+        applyChatEvent(createSnapshot([{ role: "user", content: "Hello" }])),
+      );
+
+      state = chatReducer(
+        state,
+        applyChatEvent({
+          chat_id: chatId,
+          seq: "2",
+          type: "stream_started",
+          message_id: "msg-error",
+        }),
+      );
+
+      state = chatReducer(
+        state,
+        applyChatEvent({
+          chat_id: chatId,
+          seq: "3",
+          type: "runtime_updated",
+          state: "error",
+          error: "LLM error",
+        }),
+      );
+
+      const runtime = state.threads[chatId]!;
+      expect(runtime.thread.messages).toHaveLength(1);
+      expect(runtime.thread.messages[0].role).toBe("user");
+      expect(runtime.session_state).toBe("error");
+      expect(runtime.streaming).toBe(false);
+    });
   });
 });
