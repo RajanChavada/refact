@@ -636,6 +636,32 @@ pub fn start_generation(
                     network_retry_attempt,
                     &abort_flag,
                 );
+                let retry_reason = match retry_decision {
+                    super::retry_policy::RetryDecision::Retry { reason } => reason,
+                    super::retry_policy::RetryDecision::DoNotRetry { reason } => reason,
+                };
+                if should_retry_network {
+                    let delay = super::retry_policy::retry_delay_for_attempt(network_retry_attempt);
+                    network_retry_attempt += 1;
+                    {
+                        let mut session = session_arc.lock().await;
+                        if !session.abort_flag.load(Ordering::SeqCst) {
+                            session.clear_stream_for_retry();
+                        }
+                    }
+                    warn!(
+                        "Retrying chat generation after retryable LLM error in {}s (attempt {}/{}, reason={})",
+                        delay.as_secs(),
+                        network_retry_attempt,
+                        super::retry_policy::MAX_LLM_RETRY_ATTEMPTS,
+                        retry_reason,
+                    );
+                    if super::retry_policy::sleep_or_abort(delay, abort_flag.clone()).await {
+                        break;
+                    }
+                    continue;
+                }
+
                 let task_meta_opt = {
                     let mut session = session_arc.lock().await;
                     if !session.abort_flag.load(Ordering::SeqCst) {
@@ -695,25 +721,6 @@ pub fn start_generation(
                         )
                         .await;
                     }
-                }
-                if should_retry_network {
-                    let delay = super::retry_policy::retry_delay_for_attempt(network_retry_attempt);
-                    network_retry_attempt += 1;
-                    let retry_reason = match retry_decision {
-                        super::retry_policy::RetryDecision::Retry { reason } => reason,
-                        super::retry_policy::RetryDecision::DoNotRetry { reason } => reason,
-                    };
-                    warn!(
-                        "Retrying chat generation after retryable LLM error in {}s (attempt {}/{}, reason={})",
-                        delay.as_secs(),
-                        network_retry_attempt,
-                        super::retry_policy::MAX_LLM_RETRY_ATTEMPTS,
-                        retry_reason,
-                    );
-                    if super::retry_policy::sleep_or_abort(delay, abort_flag.clone()).await {
-                        break;
-                    }
-                    continue;
                 }
                 break;
             }

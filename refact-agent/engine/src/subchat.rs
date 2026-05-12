@@ -20,6 +20,10 @@ use crate::llm::params::CacheControl;
 use crate::chat::stream_core::{
     run_llm_stream, StreamRunParams, ChoiceFinal, StreamCollector, normalize_tool_call,
 };
+use crate::chat::retry_policy::{
+    classify_llm_error_for_retry, retry_delay_for_attempt, should_retry_llm_error, sleep_or_abort,
+    MAX_LLM_RETRY_ATTEMPTS, RetryDecision,
+};
 use crate::chat::tools::{execute_tools, resolve_tool_call_aliases, ExecuteToolsOptions};
 use crate::chat::types::{TaskMeta, ThreadParams};
 use crate::worktrees::types::WorktreeMeta;
@@ -245,6 +249,10 @@ impl SubchatProgressCollector {
 
         self.last_sent = progress;
         self.last_sent_at = now;
+    }
+
+    fn has_sent_progress(&self) -> bool {
+        !self.last_sent.is_empty()
     }
 }
 
@@ -1479,17 +1487,7 @@ async fn subchat_stream(
     .await?;
 
     let t1 = std::time::Instant::now();
-
-    let params = StreamRunParams {
-        llm_request: prepared.llm_request,
-        model_rec: model_rec.base.clone(),
-        chat_id: None,
-        abort_flag: Some(abort_flag),
-        supports_tools: model_rec.supports_tools,
-        supports_reasoning: model_rec.has_reasoning_support(),
-        reasoning_type: model_rec.reasoning_type_string(),
-        supports_temperature: model_rec.supports_temperature,
-    };
+    let llm_request = prepared.llm_request;
 
     let progress_sender: Option<mpsc::UnboundedSender<Value>> = if progress_tool_call_id.is_some() {
         let subchat_tx_arc = ccx.lock().await.subchat_tx.clone();
@@ -1498,105 +1496,152 @@ async fn subchat_stream(
     } else {
         None
     };
+    let progress_tool_call_id = progress_tool_call_id.map(|s| s.to_string());
 
-    let mut collector = SubchatProgressCollector::new(
-        progress_sender,
-        progress_tool_call_id.map(|s| s.to_string()),
-    );
+    let mut attempt = 0usize;
+    let mut last_retry_reason: Option<String> = None;
+    let results = loop {
+        attempt += 1;
+        let params = StreamRunParams {
+            llm_request: llm_request.clone(),
+            model_rec: model_rec.base.clone(),
+            chat_id: None,
+            abort_flag: Some(abort_flag.clone()),
+            supports_tools: model_rec.supports_tools,
+            supports_reasoning: model_rec.has_reasoning_support(),
+            reasoning_type: model_rec.reasoning_type_string(),
+            supports_temperature: model_rec.supports_temperature,
+        };
 
-    let call_ts_start = chrono::Utc::now().to_rfc3339();
-    let call_start = std::time::Instant::now();
+        let mut collector = SubchatProgressCollector::new(
+            progress_sender.clone(),
+            progress_tool_call_id.clone(),
+        );
 
-    let results = run_llm_stream(gcx.clone(), params, &mut collector).await;
+        let call_ts_start = chrono::Utc::now().to_rfc3339();
+        let call_start = std::time::Instant::now();
+        let attempt_result = run_llm_stream(gcx.clone(), params, &mut collector).await;
+        let attempt_sent_progress = collector.has_sent_progress();
+        let duration_ms = call_start.elapsed().as_millis() as u64;
+        let call_ts_end = chrono::Utc::now().to_rfc3339();
 
-    let duration_ms = call_start.elapsed().as_millis() as u64;
-    let call_ts_end = chrono::Utc::now().to_rfc3339();
+        let (provider, model_short) = split_model_provider(model_id);
 
-    let (provider, model_short) = split_model_provider(model_id);
+        match &attempt_result {
+            Err(e) => {
+                let retry_decision = classify_llm_error_for_retry(e);
+                let retry_reason = match retry_decision {
+                    RetryDecision::Retry { reason } => Some(reason.to_string()),
+                    RetryDecision::DoNotRetry { .. } => None,
+                };
+                let event = LlmCallEvent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    ts_start: call_ts_start,
+                    ts_end: call_ts_end,
+                    duration_ms,
+                    chat_id: stats_chat_id.clone(),
+                    root_chat_id: Some(stats_root_chat_id.clone()),
+                    mode: mode_for_stats.clone(),
+                    task_id: stats_task_id.clone(),
+                    task_role: stats_task_role.clone(),
+                    agent_id: stats_agent_id.clone(),
+                    card_id: stats_card_id.clone(),
+                    model_id: model_id.to_string(),
+                    provider,
+                    model: model_short,
+                    messages_count,
+                    tools_count,
+                    max_tokens: max_new_tokens,
+                    temperature,
+                    success: false,
+                    error_message: Some(e.chars().take(200).collect()),
+                    finish_reason: None,
+                    attempt_n: attempt,
+                    retry_reason: retry_reason.clone(),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
+                    total_tokens: 0,
+                    cost_usd: None,
+                };
+                if let Some(sender) = &gcx.read().await.llm_stats_sender {
+                    if sender.try_send(event).is_err() {
+                        tracing::warn!("stats: channel full, dropping LLM call event");
+                    }
+                }
 
-    match &results {
-        Err(e) => {
-            let event = LlmCallEvent {
-                id: uuid::Uuid::new_v4().to_string(),
-                ts_start: call_ts_start,
-                ts_end: call_ts_end,
-                duration_ms,
-                chat_id: stats_chat_id,
-                root_chat_id: Some(stats_root_chat_id),
-                mode: mode_for_stats.clone(),
-                task_id: stats_task_id,
-                task_role: stats_task_role,
-                agent_id: stats_agent_id,
-                card_id: stats_card_id,
-                model_id: model_id.to_string(),
-                provider,
-                model: model_short,
-                messages_count,
-                tools_count,
-                max_tokens: max_new_tokens,
-                temperature,
-                success: false,
-                error_message: Some(e.chars().take(200).collect()),
-                finish_reason: None,
-                attempt_n: 1,
-                retry_reason: None,
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                cache_read_tokens: None,
-                cache_creation_tokens: None,
-                total_tokens: 0,
-                cost_usd: None,
-            };
-            if let Some(sender) = &gcx.read().await.llm_stats_sender {
-                if sender.try_send(event).is_err() {
-                    tracing::warn!("stats: channel full, dropping LLM call event");
+                let retry_attempt = attempt.saturating_sub(1);
+                if should_retry_llm_error(e, retry_attempt, &abort_flag) {
+                    if attempt_sent_progress {
+                        warn!(
+                            "Not retrying subchat generation after stream sent partial progress (attempt {}, reason={})",
+                            attempt,
+                            retry_reason.as_deref().unwrap_or("retryable_error"),
+                        );
+                    } else {
+                        let delay = retry_delay_for_attempt(retry_attempt);
+                        let retry_reason_for_log = retry_reason.as_deref().unwrap_or("retryable_error");
+                        last_retry_reason = Some(retry_reason_for_log.to_string());
+                        warn!(
+                            "Retrying subchat generation after retryable LLM error in {}s (attempt {}/{}, reason={})",
+                            delay.as_secs(),
+                            attempt,
+                            MAX_LLM_RETRY_ATTEMPTS,
+                            retry_reason_for_log,
+                        );
+                        if sleep_or_abort(delay, abort_flag.clone()).await {
+                            break Err("aborted".to_string());
+                        }
+                        continue;
+                    }
+                }
+            }
+            Ok(ref results_ok) => {
+                let usage = results_ok.first().and_then(|r| r.usage.as_ref());
+                let event = LlmCallEvent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    ts_start: call_ts_start,
+                    ts_end: call_ts_end,
+                    duration_ms,
+                    chat_id: stats_chat_id.clone(),
+                    root_chat_id: Some(stats_root_chat_id.clone()),
+                    mode: mode_for_stats.clone(),
+                    task_id: stats_task_id.clone(),
+                    task_role: stats_task_role.clone(),
+                    agent_id: stats_agent_id.clone(),
+                    card_id: stats_card_id.clone(),
+                    model_id: model_id.to_string(),
+                    provider,
+                    model: model_short,
+                    messages_count,
+                    tools_count,
+                    max_tokens: max_new_tokens,
+                    temperature,
+                    success: true,
+                    error_message: None,
+                    finish_reason: results_ok.first().and_then(|r| r.finish_reason.clone()),
+                    attempt_n: attempt,
+                    retry_reason: last_retry_reason.clone(),
+                    prompt_tokens: usage.map(|u| u.prompt_tokens).unwrap_or(0),
+                    completion_tokens: usage.map(|u| u.completion_tokens).unwrap_or(0),
+                    cache_read_tokens: usage.and_then(|u| u.cache_read_tokens),
+                    cache_creation_tokens: usage.and_then(|u| u.cache_creation_tokens),
+                    total_tokens: usage.map(|u| u.total_tokens).unwrap_or(0),
+                    cost_usd: usage
+                        .and_then(|u| u.metering_usd.as_ref())
+                        .map(|m| m.total_usd),
+                };
+                if let Some(sender) = &gcx.read().await.llm_stats_sender {
+                    if sender.try_send(event).is_err() {
+                        tracing::warn!("stats: channel full, dropping LLM call event");
+                    }
                 }
             }
         }
-        Ok(ref results_ok) => {
-            let usage = results_ok.first().and_then(|r| r.usage.as_ref());
-            let event = LlmCallEvent {
-                id: uuid::Uuid::new_v4().to_string(),
-                ts_start: call_ts_start,
-                ts_end: call_ts_end,
-                duration_ms,
-                chat_id: stats_chat_id,
-                root_chat_id: Some(stats_root_chat_id),
-                mode: mode_for_stats.clone(),
-                task_id: stats_task_id,
-                task_role: stats_task_role,
-                agent_id: stats_agent_id,
-                card_id: stats_card_id,
-                model_id: model_id.to_string(),
-                provider,
-                model: model_short,
-                messages_count,
-                tools_count,
-                max_tokens: max_new_tokens,
-                temperature,
-                success: true,
-                error_message: None,
-                finish_reason: results_ok.first().and_then(|r| r.finish_reason.clone()),
-                attempt_n: 1,
-                retry_reason: None,
-                prompt_tokens: usage.map(|u| u.prompt_tokens).unwrap_or(0),
-                completion_tokens: usage.map(|u| u.completion_tokens).unwrap_or(0),
-                cache_read_tokens: usage.and_then(|u| u.cache_read_tokens),
-                cache_creation_tokens: usage.and_then(|u| u.cache_creation_tokens),
-                total_tokens: usage.map(|u| u.total_tokens).unwrap_or(0),
-                cost_usd: usage
-                    .and_then(|u| u.metering_usd.as_ref())
-                    .map(|m| m.total_usd),
-            };
-            if let Some(sender) = &gcx.read().await.llm_stats_sender {
-                if sender.try_send(event).is_err() {
-                    tracing::warn!("stats: channel full, dropping LLM call event");
-                }
-            }
-        }
-    }
 
-    let results = results?;
+        break attempt_result;
+    }?;
 
     info!(
         "stream generation took {:?}ms",

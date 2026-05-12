@@ -583,6 +583,17 @@ impl ChatSession {
         self.touch();
     }
 
+    pub fn clear_stream_for_retry(&mut self) {
+        if let Some(draft) = self.draft_message.take() {
+            self.emit(ChatEvent::MessageRemoved {
+                message_id: draft.message_id,
+            });
+        }
+        self.draft_usage = None;
+        self.set_runtime_state(SessionState::Idle, None);
+        self.touch();
+    }
+
     pub fn finish_stream_with_error(&mut self, error: String) {
         if let Some(mut draft) = self.draft_message.take() {
             if has_displayable_assistant_content(&draft) {

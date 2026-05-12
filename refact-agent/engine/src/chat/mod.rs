@@ -10,7 +10,7 @@ pub mod prepare;
 pub mod prompt_snippets;
 pub mod prompts;
 mod queue;
-mod retry_policy;
+pub(crate) mod retry_policy;
 mod session;
 pub mod stream_core;
 pub mod system_context;

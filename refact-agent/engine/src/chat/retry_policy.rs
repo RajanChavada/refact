@@ -17,13 +17,14 @@ pub const LLM_RETRY_DELAYS: [Duration; MAX_LLM_RETRY_ATTEMPTS] = [
     Duration::from_secs(300),
 ];
 
-const NON_RETRYABLE_STATUS_CODES: [&str; 10] = [
-    "400", "401", "403", "404", "408", "409", "422", "423", "424", "426",
+const NON_RETRYABLE_STATUS_CODES: &[&str] = &[
+    "400", "401", "402", "403", "404", "405", "409", "413", "415", "422", "423", "424",
+    "426", "451",
 ];
 
-const RETRYABLE_STATUS_CODES: [&str; 8] = ["408", "425", "429", "500", "502", "503", "504", "529"];
+const RETRYABLE_STATUS_CODES: &[&str] = &["408", "425", "429", "500", "502", "503", "504", "529"];
 
-const NON_RETRYABLE_PATTERNS: [&str; 36] = [
+const HARD_NON_RETRYABLE_PATTERNS: &[&str] = &[
     "aborted",
     "cancelled",
     "canceled",
@@ -35,20 +36,34 @@ const NON_RETRYABLE_PATTERNS: [&str; 36] = [
     "token limit",
     "prompt is too long",
     "input is too long",
-    "invalid request",
-    "bad request",
-    "malformed",
-    "schema",
-    "json problem",
-    "serialize",
-    "deserialize",
-    "authentication",
-    "unauthorized",
+    "request too large",
+    "payload too large",
     "invalid api key",
     "invalid key",
+    "invalid_api_key",
     "api key",
+    "authentication",
+    "unauthorized",
     "forbidden",
     "permission denied",
+    "permission_error",
+    "insufficient_scope",
+    "invalid_scope",
+    "access_denied",
+    "access denied",
+    "invalid_grant",
+    "expired_token",
+    "token expired",
+    "expired token",
+    "codex login",
+    "refact does not refresh codex cli-managed tokens",
+    "openai codex provider settings",
+    "no authorization code received",
+    "missing state parameter",
+    "model_not_found",
+    "model not found",
+    "model does not exist",
+    "invalid model",
     "not found",
     "unsupported",
     "does not support",
@@ -58,14 +73,33 @@ const NON_RETRYABLE_PATTERNS: [&str; 36] = [
     "billing",
     "insufficient credits",
     "insufficient quota",
+    "insufficient_quota",
     "quota exceeded",
+    "quota_exceeded",
+    "usage limit reached",
+    "no credits remaining",
+    "payment required",
     "spend_limit_exceeded",
 ];
 
-const RETRYABLE_PATTERNS: [&str; 25] = [
+const REQUEST_NON_RETRYABLE_PATTERNS: &[&str] = &[
+    "invalid request",
+    "bad request",
+    "malformed",
+    "json problem",
+    "serialize",
+    "deserialize",
+    "no endpoint configured",
+    "invalid content-type header",
+    "invalid api_key for authorization header",
+    "streaming with n > 1 is not supported",
+];
+
+const RETRYABLE_PATTERNS: &[&str] = &[
     "network",
     "timeout",
     "timed out",
+    "deadline exceeded",
     "connection",
     "connect",
     "dns",
@@ -77,16 +111,31 @@ const RETRYABLE_PATTERNS: [&str; 25] = [
     "temporarily unavailable",
     "try again",
     "rate limit",
+    "rate_limit",
+    "rate_limit_exceeded",
     "too many requests",
+    "too_many_requests",
     "resource exhausted",
+    "resource_exhausted",
     "throttl",
     "overloaded",
     "overload",
+    "overloaded_error",
     "capacity",
     "server error",
+    "api_error",
+    "internal error",
     "service unavailable",
+    "unavailable",
     "bad gateway",
     "gateway timeout",
+    "slow_down",
+    "authorization_pending",
+    "websocket_connection_limit_reached",
+    "can't stream from",
+    "reading from socket",
+    "response.failed",
+    "error event",
     "stream ended unexpectedly",
 ];
 
@@ -123,13 +172,19 @@ pub fn classify_llm_error_for_retry(error: &str) -> RetryDecision {
         };
     }
 
+    if contains_any(&lower, &HARD_NON_RETRYABLE_PATTERNS) {
+        return RetryDecision::DoNotRetry {
+            reason: "non_retryable_error",
+        };
+    }
+
     if contains_retryable_status(&lower) {
         return RetryDecision::Retry {
             reason: "retryable_http_status",
         };
     }
 
-    if contains_non_retryable_status(&lower) || contains_any(&lower, &NON_RETRYABLE_PATTERNS) {
+    if contains_non_retryable_status(&lower) || contains_any(&lower, &REQUEST_NON_RETRYABLE_PATTERNS) {
         return RetryDecision::DoNotRetry {
             reason: "non_retryable_error",
         };
@@ -233,6 +288,45 @@ mod tests {
             classify_llm_error_for_retry("LLM error (429): ValidationException: rate limited"),
             RetryDecision::Retry { .. }
         ));
+    }
+
+    #[test]
+    fn classifies_provider_specific_retryable_errors() {
+        for error in [
+            "Anthropic overloaded_error: model overloaded",
+            "Gemini RESOURCE_EXHAUSTED",
+            "OpenAI response.failed: Internal server error (code=server_error)",
+            "Codex OAuth slow_down",
+            "authorization_pending",
+            "websocket_connection_limit_reached",
+            "reading from socket chatgpt.com: connection closed",
+        ] {
+            assert!(
+                matches!(classify_llm_error_for_retry(error), RetryDecision::Retry { .. }),
+                "expected retryable: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_provider_specific_non_retryable_errors() {
+        for error in [
+            "OpenAI model_not_found: model does not exist",
+            "Codex invalid_grant expired_token",
+            "Refact does not refresh Codex CLI-managed tokens; run codex login",
+            "insufficient_scope for ChatGPT backend",
+            "insufficient_quota: You exceeded your current quota",
+            "LLM error (402 Payment Required): no credits remaining",
+            "Streaming with n > 1 is not supported",
+        ] {
+            assert!(
+                matches!(
+                    classify_llm_error_for_retry(error),
+                    RetryDecision::DoNotRetry { .. }
+                ),
+                "expected non-retryable: {error}"
+            );
+        }
     }
 
     #[test]

@@ -256,13 +256,18 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         // Only treat errors as fatal when the event itself is a fatal error lifecycle event.
         if let Some(error) = json.get("error").filter(|e| !e.is_null()) {
             if event_type == "error" {
-                return Err(StreamParseError::FatalError(
-                    error
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("unknown error")
-                        .to_string(),
-                ));
+                let mut error_msg = error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+                    .to_string();
+                if let Some(code) = error.get("code").and_then(|c| c.as_str()) {
+                    error_msg = format!("{code}: {error_msg}");
+                }
+                if let Some(error_type) = error.get("type").and_then(|t| t.as_str()) {
+                    error_msg = format!("{error_type}: {error_msg}");
+                }
+                return Err(StreamParseError::FatalError(error_msg));
             }
         }
 
@@ -644,25 +649,38 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
             }
             // ── Error events ──
             "response.failed" => {
-                let error_msg = json
+                let error = json
                     .get("response")
                     .and_then(|r| r.get("error"))
+                    .or_else(|| json.get("error"));
+                let error_msg = error
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
-                    .or_else(|| {
-                        json.get("error")
-                            .and_then(|e| e.get("message"))
-                            .and_then(|m| m.as_str())
-                    })
                     .unwrap_or("response failed");
-                return Err(StreamParseError::FatalError(error_msg.to_string()));
+                let mut full_error = format!("response.failed: {error_msg}");
+                if let Some(error) = error {
+                    if let Some(code) = error.get("code").and_then(|c| c.as_str()) {
+                        full_error = format!("{full_error} (code={code})");
+                    }
+                    if let Some(error_type) = error.get("type").and_then(|t| t.as_str()) {
+                        full_error = format!("{full_error} (type={error_type})");
+                    }
+                }
+                return Err(StreamParseError::FatalError(full_error));
             }
             "error" => {
                 let error_msg = json
                     .get("message")
                     .and_then(|m| m.as_str())
                     .unwrap_or("stream error");
-                return Err(StreamParseError::FatalError(error_msg.to_string()));
+                let mut full_error = format!("error event: {error_msg}");
+                if let Some(code) = json.get("code").and_then(|c| c.as_str()) {
+                    full_error = format!("{full_error} (code={code})");
+                }
+                if let Some(error_type) = json.get("type").and_then(|t| t.as_str()) {
+                    full_error = format!("{full_error} (type={error_type})");
+                }
+                return Err(StreamParseError::FatalError(full_error));
             }
 
             // ── Unhandled events — preserve raw payload and make it visible ──
