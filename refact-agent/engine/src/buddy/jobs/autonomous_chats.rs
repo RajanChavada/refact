@@ -1779,10 +1779,36 @@ pub async fn run_autonomous_buddy_chat(
         workflow_id: Some(spec.workflow_id.clone()),
     });
 
-    let result = crate::subchat::run_subchat(gcx, messages, config).await?;
-    result
+    let result = crate::subchat::run_subchat(gcx.clone(), messages, config).await?;
+    let chat_id = result
         .chat_id
-        .ok_or_else(|| "autonomous buddy chat did not return a chat_id".to_string())
+        .clone()
+        .ok_or_else(|| "autonomous buddy chat did not return a chat_id".to_string())?;
+    let report_text = result
+        .messages
+        .iter()
+        .rev()
+        .find(|msg| msg.role == "assistant")
+        .map(|msg| msg.content.content_text_only())
+        .unwrap_or_default();
+    let persisted = crate::buddy::artifacts::persist_autonomous_report_artifacts(
+        gcx,
+        &spec.workflow_id,
+        &spec.title,
+        &spec.signal_hash,
+        &chat_id,
+        &report_text,
+    )
+    .await;
+    if persisted > 0 {
+        tracing::debug!(
+            "buddy: persisted {} artifact(s) for autonomous workflow {} chat {}",
+            persisted,
+            spec.workflow_id,
+            chat_id
+        );
+    }
+    Ok(chat_id)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -4215,6 +4241,8 @@ mod tests {
         assert!(system_prompt.contains("Evidence"));
         assert!(system_prompt.contains("Risk or opportunity"));
         assert!(system_prompt.contains("Suggested next steps"));
+        assert!(system_prompt.contains("Artifacts"));
+        assert!(system_prompt.contains("memories_to_add"));
     }
 
     #[test]

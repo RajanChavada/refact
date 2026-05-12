@@ -117,12 +117,13 @@ fn test_default_state_starts_egg() {
 }
 
 #[test]
-fn test_growth_points_do_not_level_without_care_gate() {
+fn test_growth_points_hatch_without_care_gate() {
     let mut state = default_buddy_state();
-    grant_xp(&mut state, 100);
-    assert_eq!(state.progression.level, 1);
-    assert_eq!(state.progression.stage, 0);
-    assert_eq!(state.progression.xp, 100);
+    grant_xp(&mut state, 20);
+    assert_eq!(state.progression.level, 2);
+    assert_eq!(state.progression.stage, 1);
+    assert_eq!(state.progression.stage_name, "Hatch");
+    assert_eq!(state.progression.xp, 0);
 }
 
 #[test]
@@ -138,10 +139,10 @@ fn test_grant_xp_updates_stage_when_care_gate_met() {
 }
 
 #[test]
-fn test_stage_transitions_require_runtime_and_care() {
+fn test_stage_transitions_require_runtime_and_care_after_hatch() {
     let mut state = default_buddy_state();
     grant_xp(&mut state, 100);
-    assert_eq!(state.progression.stage_name, "Egg");
+    assert_eq!(state.progression.stage_name, "Hatch");
     state.pet.evolution.open_seconds = 20 * 60;
     state.pet.evolution.care_score = 40;
     grant_xp(&mut state, 0);
@@ -236,7 +237,8 @@ async fn test_save_on_mutate_writes_file() {
     svc.grant_xp(25);
     super::state::save_state(root, &svc.state).await.unwrap();
     let loaded = super::state::load_state(root).await;
-    assert_eq!(loaded.progression.xp, 25);
+    assert_eq!(loaded.progression.stage_name, "Hatch");
+    assert_eq!(loaded.progression.xp, 5);
     assert_eq!(loaded.pet.needs.hunger, 80);
 }
 

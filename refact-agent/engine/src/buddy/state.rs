@@ -36,9 +36,9 @@ const STAGE_SPECS: &[StageSpec] = &[
     StageSpec {
         name: "Hatch",
         growth_goal: 20,
-        min_open_seconds: 5 * 60,
-        min_care_score: 10,
-        max_neglect_score: 18,
+        min_open_seconds: 0,
+        min_care_score: 0,
+        max_neglect_score: u64::MAX,
     },
     StageSpec {
         name: "Sprite",

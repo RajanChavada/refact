@@ -27,6 +27,8 @@ messages:
     - Evidence
     - Risk or opportunity
     - Suggested next steps
+    - Artifacts
+    In Artifacts, include a fenced JSON object with any durable outputs that should leave the chat. Use this shape and omit empty arrays: {"artifacts":{"memories_to_add":[{"title":"...","content":"...","tags":["..."],"kind":"domain"}],"insights":[{"title":"...","content":"..."}],"jokes":["..."],"memory_paths_to_review":["..."],"memory_paths_to_archive":["..."]}}.
     Keep the report short, practical, and evidence-only.
   user_template: |
     Workflow: {{workflow_id}}

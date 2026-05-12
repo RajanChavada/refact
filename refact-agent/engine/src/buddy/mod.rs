@@ -1,4 +1,5 @@
 pub mod actor;
+pub mod artifacts;
 pub mod autonomous_workflows;
 pub mod conversation_ledger;
 pub mod diagnostics;

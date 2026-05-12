@@ -1,7 +1,9 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use chrono::Utc;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
@@ -63,6 +65,122 @@ fn runtime_queue_path(project_root: &Path) -> PathBuf {
 
 fn memory_ops_path(project_root: &Path) -> PathBuf {
     project_root.join(".refact/buddy/memory_ops.jsonl")
+}
+
+fn memory_ops_bad_path(project_root: &Path) -> PathBuf {
+    project_root.join(".refact/buddy/memory_ops.jsonl.bad")
+}
+
+async fn rewrite_memory_ops_records(
+    path: &Path,
+    records: Vec<MemoryOpsRecord>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create dir {:?}: {}", parent, e))?;
+    }
+    let mut buf = String::new();
+    for record in records {
+        let line = serde_json::to_string(&record)
+            .map_err(|e| format!("Failed to serialize memory op record: {}", e))?;
+        buf.push_str(&line);
+        buf.push('\n');
+    }
+    let tmp = path.with_extension(format!("jsonl.{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&tmp, &buf)
+        .await
+        .map_err(|e| format!("Failed to write {:?}: {}", tmp, e))?;
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path)
+            .await
+            .map_err(|e| format!("Failed to remove existing file: {}", e))?;
+    }
+    fs::rename(&tmp, path)
+        .await
+        .map_err(|e| format!("Failed to rename {:?} to {:?}: {}", tmp, path, e))
+}
+
+fn memory_bad_line_hash(raw: &str, err: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(err.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+async fn existing_quarantine_hashes(path: &Path) -> HashSet<String> {
+    let Ok(content) = fs::read_to_string(path).await else {
+        return HashSet::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .filter_map(|value| {
+            value
+                .get("raw_hash")
+                .and_then(|hash| hash.as_str())
+                .map(|hash| hash.to_string())
+        })
+        .collect()
+}
+
+async fn quarantine_memory_ops_bad_lines(
+    project_root: &Path,
+    path: &Path,
+    malformed: &[(usize, String, String)],
+) -> Result<(), String> {
+    if malformed.is_empty() {
+        return Ok(());
+    }
+    let bad_path = memory_ops_bad_path(project_root);
+    let existing_hashes = existing_quarantine_hashes(&bad_path).await;
+    if let Some(parent) = bad_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create dir {:?}: {}", parent, e))?;
+    }
+    let mut buf = String::new();
+    for (line_number, raw, err) in malformed {
+        let raw = crate::llm::safe_truncate(raw.trim(), 2000).to_string();
+        let line_hash = memory_bad_line_hash(&raw, err);
+        if existing_hashes.contains(&line_hash) {
+            continue;
+        }
+        let record = serde_json::json!({
+            "quarantined_at": Utc::now().to_rfc3339(),
+            "source_path": path.to_string_lossy(),
+            "line": line_number,
+            "error": err,
+            "raw_hash": line_hash,
+            "raw": raw,
+        });
+        buf.push_str(&record.to_string());
+        buf.push('\n');
+    }
+    if buf.is_empty() {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&bad_path)
+        .await
+        .map_err(|e| format!("Failed to open memory ops quarantine {:?}: {}", bad_path, e))?;
+    file.write_all(buf.as_bytes()).await.map_err(|e| {
+        format!(
+            "Failed to append memory ops quarantine {:?}: {}",
+            bad_path, e
+        )
+    })?;
+    file.flush().await.map_err(|e| {
+        format!(
+            "Failed to flush memory ops quarantine {:?}: {}",
+            bad_path, e
+        )
+    })
 }
 
 /// Append-only persistence: every mutation writes one JSON record. The caller
@@ -240,11 +358,11 @@ pub async fn enqueue_memory_op(
             .map_err(|e| format!("Failed to create dir {:?}: {}", parent, e))?;
     }
     let record = MemoryOpsRecord::Op { op };
-    let line = format!(
-        "{}\n",
-        serde_json::to_string(&record)
-            .map_err(|e| format!("Failed to serialize memory op record: {}", e))?
-    );
+    let serialized = serde_json::to_string(&record)
+        .map_err(|e| format!("Failed to serialize memory op record: {}", e))?;
+    serde_json::from_str::<MemoryOpsRecord>(&serialized)
+        .map_err(|e| format!("Serialized memory op record did not round-trip: {}", e))?;
+    let line = format!("{}\n", serialized);
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -275,7 +393,7 @@ pub async fn load_memory_ops(project_root: &Path) -> MemoryOpsState {
     };
 
     let mut records = Vec::new();
-    let mut malformed_lines = 0u32;
+    let mut malformed = Vec::<(usize, String, String)>::new();
     for (idx, raw) in content.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() {
@@ -283,15 +401,20 @@ pub async fn load_memory_ops(project_root: &Path) -> MemoryOpsState {
         }
         match serde_json::from_str::<MemoryOpsRecord>(line) {
             Ok(record) => records.push(record),
-            Err(err) => {
-                malformed_lines = malformed_lines.saturating_add(1);
-                warn!(
-                    "buddy: failed to parse memory ops queue line {} in {:?}: {}",
-                    idx + 1,
-                    path,
-                    err
-                );
-            }
+            Err(err) => malformed.push((idx + 1, raw.to_string(), err.to_string())),
+        }
+    }
+    let malformed_lines = malformed.len().min(u32::MAX as usize) as u32;
+    if malformed_lines > 0 {
+        warn!(
+            "buddy: quarantining {} malformed memory ops queue line(s) from {:?}",
+            malformed_lines, path
+        );
+        if let Err(err) = quarantine_memory_ops_bad_lines(project_root, &path, &malformed).await {
+            warn!(
+                "buddy: failed to quarantine malformed memory ops lines: {}",
+                err
+            );
         }
     }
     MemoryOpsState::from_records_with_malformed(records, malformed_lines)
@@ -301,33 +424,7 @@ pub async fn load_memory_ops(project_root: &Path) -> MemoryOpsState {
 pub async fn compact_memory_ops(project_root: &Path) -> Result<MemoryOpsState, String> {
     let state = load_memory_ops(project_root).await;
     let path = memory_ops_path(project_root);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Failed to create dir {:?}: {}", parent, e))?;
-    }
-
-    let mut buf = String::new();
-    for record in state.canonical_records() {
-        let line = serde_json::to_string(&record)
-            .map_err(|e| format!("Failed to serialize memory op record: {}", e))?;
-        buf.push_str(&line);
-        buf.push('\n');
-    }
-
-    let tmp = path.with_extension("jsonl.tmp");
-    fs::write(&tmp, &buf)
-        .await
-        .map_err(|e| format!("Failed to write {:?}: {}", tmp, e))?;
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(&path)
-            .await
-            .map_err(|e| format!("Failed to remove existing file: {}", e))?;
-    }
-    fs::rename(&tmp, &path)
-        .await
-        .map_err(|e| format!("Failed to rename {:?} to {:?}: {}", tmp, path, e))?;
+    rewrite_memory_ops_records(&path, state.canonical_records()).await?;
     Ok(state)
 }
 
@@ -568,6 +665,26 @@ mod tests {
         assert_eq!(state.ops.len(), 1);
         assert_eq!(state.ops[0].op_id, "op-1");
         assert_eq!(state.malformed_lines, 2);
+        let unrepaired = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(unrepaired.lines().count(), 3);
+        let bad_content = tokio::fs::read_to_string(memory_ops_bad_path(root))
+            .await
+            .unwrap();
+        assert!(bad_content.contains("not json"));
+        let bad_line_count = bad_content.lines().count();
+        let _ = load_memory_ops(root).await;
+        let bad_content_second = tokio::fs::read_to_string(memory_ops_bad_path(root))
+            .await
+            .unwrap();
+        assert_eq!(bad_content_second.lines().count(), bad_line_count);
+
+        let compacted = compact_memory_ops(root).await.unwrap();
+        assert_eq!(compacted.ops.len(), 1);
+        let repaired = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(repaired.lines().count(), 1);
+        let reloaded = load_memory_ops(root).await;
+        assert_eq!(reloaded.ops.len(), 1);
+        assert_eq!(reloaded.malformed_lines, 0);
     }
 
     #[tokio::test]
