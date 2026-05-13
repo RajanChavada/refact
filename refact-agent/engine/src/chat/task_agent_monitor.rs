@@ -49,6 +49,7 @@ pub async fn handle_agent_streaming_error(
         &task_meta.task_id,
         card_id,
         task_meta.agent_id.as_deref(),
+        task_meta.planner_chat_id.as_deref(),
         &format!("Agent streaming error: {}", error_message),
     )
     .await
@@ -63,6 +64,7 @@ async fn mark_agent_as_failed(
     task_id: &str,
     card_id: &str,
     expected_agent_id: Option<&str>,
+    planner_chat_id: Option<&str>,
     reason: &str,
 ) -> Result<(), String> {
     let _ = update_card_heartbeat(gcx.clone(), task_id, card_id).await;
@@ -172,7 +174,15 @@ async fn mark_agent_as_failed(
         }
     }
 
-    notify_planner_agents_finished(gcx, task_id, &board, all_finished).await?;
+    if let Err(e) =
+        notify_planner_agents_finished(gcx, task_id, &board, all_finished, planner_chat_id).await
+    {
+        tracing::warn!(
+            "Marked agent for card {} as failed, but planner notification failed: {}",
+            card_id,
+            e
+        );
+    }
 
     Ok(())
 }
@@ -183,6 +193,7 @@ pub(crate) async fn notify_planner_agents_finished(
     task_id: &str,
     board: &crate::tasks::types::TaskBoard,
     all_finished: bool,
+    planner_chat_id: Option<&str>,
 ) -> Result<(), String> {
     let since = match storage::load_task_meta(gcx.clone(), task_id).await {
         Ok(meta) => meta
@@ -262,34 +273,49 @@ pub(crate) async fn notify_planner_agents_finished(
         gcx_locked.chat_sessions.clone()
     };
 
-    let agent_session_arcs = {
-        let sessions_guard = sessions.read().await;
-        board
-            .cards
-            .iter()
-            .filter(|card| card.column == "done" || card.column == "failed")
-            .filter_map(|card| card.agent_chat_id.as_deref())
-            .filter_map(|agent_chat_id| sessions_guard.get(agent_chat_id).cloned())
-            .collect::<Vec<_>>()
-    };
-    let mut planner_chat_id = None;
-    for session_arc in agent_session_arcs {
-        let session = session_arc.lock().await;
-        planner_chat_id = session
-            .thread
-            .task_meta
-            .as_ref()
-            .and_then(|meta| meta.planner_chat_id.clone());
-        if planner_chat_id.is_some() {
-            break;
+    let planner_chat_id = if let Some(id) = planner_chat_id {
+        id.to_string()
+    } else {
+        let agent_session_arcs = {
+            let sessions_guard = sessions.read().await;
+            board
+                .cards
+                .iter()
+                .filter(|card| card.column == "done" || card.column == "failed")
+                .filter_map(|card| card.agent_chat_id.as_deref())
+                .filter_map(|agent_chat_id| sessions_guard.get(agent_chat_id).cloned())
+                .collect::<Vec<_>>()
+        };
+        let mut planner_chat_id = None;
+        for session_arc in agent_session_arcs {
+            let session = session_arc.lock().await;
+            planner_chat_id = session
+                .thread
+                .task_meta
+                .as_ref()
+                .and_then(|meta| meta.planner_chat_id.clone());
+            if planner_chat_id.is_some() {
+                break;
+            }
         }
-    }
-    let planner_chat_id = match planner_chat_id {
-        Some(id) => id,
-        None => storage::get_planner_chat_id(gcx.clone(), task_id).await?,
+        planner_chat_id.ok_or_else(|| {
+            format!(
+                "Cannot notify task planner for task {}: finished agent has no planner_chat_id",
+                task_id
+            )
+        })?
     };
     let planner_session =
         get_or_create_session_with_trajectory(gcx.clone(), &sessions, &planner_chat_id).await;
+    {
+        let session = planner_session.lock().await;
+        if session.thread.task_meta.is_none() {
+            return Err(format!(
+                "Cannot notify task planner {}: trajectory is missing or deleted",
+                planner_chat_id
+            ));
+        }
+    }
 
     let request = CommandRequest {
         client_request_id: format!("task-agent-finished-{}", uuid::Uuid::new_v4()),
@@ -624,6 +650,7 @@ async fn check_for_stuck_agents(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), 
                                 task_id,
                                 &card.id,
                                 card.assignee.as_deref(),
+                                None,
                                 &format!(
                                     "Agent appears stuck (no agent_chat_id, no activity for {})",
                                     humantime::format_duration(AGENT_STUCK_TIMEOUT)
@@ -659,6 +686,7 @@ async fn check_for_stuck_agents(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), 
                             task_id,
                             &card.id,
                             card.assignee.as_deref(),
+                            None,
                             &format!(
                                 "Agent appears stuck (no activity for {})",
                                 humantime::format_duration(AGENT_STUCK_TIMEOUT)
@@ -680,6 +708,11 @@ async fn check_for_stuck_agents(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), 
                     .as_deref()
                     .unwrap_or("Unknown error")
                     .to_string();
+                let planner_chat_id = session
+                    .thread
+                    .task_meta
+                    .as_ref()
+                    .and_then(|meta| meta.planner_chat_id.clone());
 
                 drop(session);
 
@@ -694,6 +727,7 @@ async fn check_for_stuck_agents(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), 
                     task_id,
                     &card.id,
                     None,
+                    planner_chat_id.as_deref(),
                     &format!("Session error: {}", error_msg),
                 )
                 .await?;
@@ -703,6 +737,11 @@ async fn check_for_stuck_agents(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), 
             // Check for stuck agents (no activity for too long)
             let last_activity = session.last_activity;
             let elapsed = last_activity.elapsed();
+            let planner_chat_id = session
+                .thread
+                .task_meta
+                .as_ref()
+                .and_then(|meta| meta.planner_chat_id.clone());
 
             // If agent is idle and hasn't done anything in a long time, might be stuck
             if session.runtime.state == SessionState::Idle
@@ -722,6 +761,7 @@ async fn check_for_stuck_agents(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), 
                     task_id,
                     &card.id,
                     None,
+                    planner_chat_id.as_deref(),
                     &format!(
                         "Agent stuck (idle with no activity for {})",
                         humantime::format_duration(elapsed)

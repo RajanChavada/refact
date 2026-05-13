@@ -3264,7 +3264,6 @@ fn make_task_meta(id: &str, name: &str, status: TaskStatus, created_at: &str) ->
         is_name_generated: false,
         last_agents_summary_at: None,
         planner_session_state: None,
-        active_planner_chat_id: None,
     }
 }
 

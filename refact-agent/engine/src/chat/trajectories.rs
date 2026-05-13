@@ -3894,7 +3894,6 @@ mod tests {
             is_name_generated: true,
             last_agents_summary_at: None,
             planner_session_state: None,
-            active_planner_chat_id: None,
         };
         tokio::fs::write(
             task_dir.join("meta.yaml"),
@@ -4026,7 +4025,6 @@ mod tests {
             is_name_generated: true,
             last_agents_summary_at: None,
             planner_session_state: None,
-            active_planner_chat_id: None,
         };
         tokio::fs::write(
             task_dir.join("meta.yaml"),

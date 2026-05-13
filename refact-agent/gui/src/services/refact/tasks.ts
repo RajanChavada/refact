@@ -20,8 +20,9 @@ export interface TaskMeta {
     | "executing_tools"
     | "paused"
     | "waiting_ide"
+    | "waiting_user_input"
+    | "completed"
     | "error";
-  active_planner_chat_id?: string;
 }
 
 export interface BoardColumn {

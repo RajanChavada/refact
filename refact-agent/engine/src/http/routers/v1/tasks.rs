@@ -14,6 +14,7 @@ use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 use crate::tasks::types::{TaskMeta, TaskBoard, BoardCard, StatusUpdate, TaskStatus, TrajectoryInfo};
 use crate::chat::trajectories::TrajectoryEvent;
+use crate::chat::types::SessionState;
 use crate::tasks::events::{TaskEvent, TaskEventEnvelope};
 use crate::tasks::storage;
 
@@ -82,14 +83,64 @@ pub enum BoardPatch {
 }
 
 async fn enrich_task_with_session_state(gcx: Arc<ARwLock<GlobalContext>>, task: &mut TaskMeta) {
-    if let Ok(planner_chat_id) = storage::get_planner_chat_id(gcx.clone(), &task.id).await {
+    let planner_chat_ids = storage::list_task_trajectories(gcx.clone(), &task.id, "planner", None)
+        .await
+        .map(|trajectories| {
+            trajectories
+                .into_iter()
+                .map(|trajectory| trajectory.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if planner_chat_ids.is_empty() {
+        task.planner_session_state = None;
+        return;
+    }
+
+    let session_arcs = {
         let gcx_locked = gcx.read().await;
         let sessions = gcx_locked.chat_sessions.read().await;
-        if let Some(session_arc) = sessions.get(&planner_chat_id) {
-            let session = session_arc.lock().await;
-            task.planner_session_state = Some(session.runtime.state.to_string());
+        planner_chat_ids
+            .iter()
+            .filter_map(|planner_chat_id| sessions.get(planner_chat_id).cloned())
+            .collect::<Vec<_>>()
+    };
+
+    let mut has_paused = false;
+    let mut has_waiting_ide = false;
+    let mut has_waiting_user_input = false;
+    let mut has_generating = false;
+    let mut has_executing_tools = false;
+    let mut has_error = false;
+    for session_arc in session_arcs {
+        let session = session_arc.lock().await;
+        match session.runtime.state {
+            SessionState::Paused => has_paused = true,
+            SessionState::WaitingIde => has_waiting_ide = true,
+            SessionState::WaitingUserInput => has_waiting_user_input = true,
+            SessionState::Generating => has_generating = true,
+            SessionState::ExecutingTools => has_executing_tools = true,
+            SessionState::Error => has_error = true,
+            SessionState::Idle | SessionState::Completed => {}
         }
     }
+
+    task.planner_session_state = if has_paused {
+        Some(SessionState::Paused.to_string())
+    } else if has_waiting_ide {
+        Some(SessionState::WaitingIde.to_string())
+    } else if has_waiting_user_input {
+        Some(SessionState::WaitingUserInput.to_string())
+    } else if has_generating {
+        Some(SessionState::Generating.to_string())
+    } else if has_executing_tools {
+        Some(SessionState::ExecutingTools.to_string())
+    } else if has_error {
+        Some(SessionState::Error.to_string())
+    } else {
+        None
+    };
 }
 
 pub async fn list_tasks_with_session_state(
@@ -536,71 +587,63 @@ pub async fn handle_create_planner_chat(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path(task_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let mut meta = storage::load_task_meta(gcx.clone(), &task_id)
+    storage::load_task_meta(gcx.clone(), &task_id)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
 
-    let existing_active = match meta.active_planner_chat_id.clone() {
-        Some(chat_id)
-            if crate::chat::trajectories::find_trajectory_path(gcx.clone(), &chat_id)
-                .await
-                .is_some() =>
-        {
-            Some(chat_id)
-        }
-        _ => None,
-    };
-    let chat_id = if let Some(chat_id) = existing_active {
-        chat_id
-    } else if let Some(chat_id) = storage::latest_existing_planner_chat_id(gcx.clone(), &task_id)
+    let chat_id = storage::next_planner_chat_id(gcx.clone(), &task_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-    {
-        meta.active_planner_chat_id = Some(chat_id.clone());
-        meta.updated_at = Utc::now().to_rfc3339();
-        storage::save_task_meta(gcx.clone(), &task_id, &meta)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        crate::tasks::events::emit_task_event(
-            gcx.clone(),
-            TaskEvent::TaskUpdated {
-                task_id: task_id.clone(),
-                meta: meta.clone(),
-            },
-        )
-        .await;
-        chat_id
-    } else {
-        let chat_id = storage::next_planner_chat_id(gcx.clone(), &task_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        crate::chat::trajectories::save_initial_planner_trajectory(gcx.clone(), &task_id, &chat_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        meta.active_planner_chat_id = Some(chat_id.clone());
-        meta.updated_at = Utc::now().to_rfc3339();
-        storage::save_task_meta(gcx.clone(), &task_id, &meta)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        crate::tasks::events::emit_task_event(
-            gcx.clone(),
-            TaskEvent::TaskUpdated {
-                task_id: task_id.clone(),
-                meta: meta.clone(),
-            },
-        )
-        .await;
-        chat_id
-    };
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    crate::chat::trajectories::save_initial_planner_trajectory(gcx.clone(), &task_id, &chat_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(json!({"chat_id": chat_id})))
+}
+
+async fn planner_agent_refs(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    task_id: &str,
+    planner_chat_id: &str,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let board = storage::load_board(gcx.clone(), task_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let sessions = {
+        let gcx_locked = gcx.read().await;
+        gcx_locked.chat_sessions.clone()
+    };
+    let mut refs = Vec::new();
+    for agent_chat_id in board
+        .cards
+        .iter()
+        .filter_map(|card| card.agent_chat_id.as_deref())
+    {
+        let session_arc = {
+            let sessions_guard = sessions.read().await;
+            sessions_guard.get(agent_chat_id).cloned()
+        };
+        if let Some(session_arc) = session_arc {
+            let session = session_arc.lock().await;
+            if session
+                .thread
+                .task_meta
+                .as_ref()
+                .and_then(|meta| meta.planner_chat_id.as_deref())
+                == Some(planner_chat_id)
+            {
+                refs.push(agent_chat_id.to_string());
+            }
+        }
+    }
+    Ok(refs)
 }
 
 pub async fn handle_delete_planner_chat(
     Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
     Path((task_id, chat_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let mut meta = storage::load_task_meta(gcx.clone(), &task_id)
+    storage::load_task_meta(gcx.clone(), &task_id)
         .await
         .map_err(|e| (StatusCode::NOT_FOUND, e))?;
     let file_path = crate::chat::trajectories::find_trajectory_path(gcx.clone(), &chat_id)
@@ -617,26 +660,39 @@ pub async fn handle_delete_planner_chat(
         ));
     }
 
+    let agent_refs = planner_agent_refs(gcx.clone(), &task_id, &chat_id).await?;
+
     tokio::fs::remove_file(&file_path)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    if meta.active_planner_chat_id.as_deref() == Some(&chat_id) {
-        meta.active_planner_chat_id = storage::latest_existing_planner_chat_id(gcx.clone(), &task_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        meta.updated_at = Utc::now().to_rfc3339();
-        storage::save_task_meta(gcx.clone(), &task_id, &meta)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        crate::tasks::events::emit_task_event(
-            gcx.clone(),
-            TaskEvent::TaskUpdated {
-                task_id: task_id.clone(),
-                meta,
-            },
-        )
-        .await;
+    if !agent_refs.is_empty() {
+        tracing::warn!(
+            "Deleted planner chat {} while {} task agent(s) still reference it",
+            chat_id,
+            agent_refs.len()
+        );
+    }
+
+    let removed_session = {
+        let gcx_locked = gcx.read().await;
+        let sessions = gcx_locked.chat_sessions.clone();
+        drop(gcx_locked);
+        let mut sessions_guard = sessions.write().await;
+        sessions_guard.remove(&chat_id)
+    };
+    if let Some(session_arc) = removed_session {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), session_arc.lock()).await
+        {
+            Ok(mut session) => {
+                session.abort_stream();
+                session.close_event_channel();
+                session.queue_notify.notify_waiters();
+            }
+            Err(_) => {
+                tracing::warn!("Timed out closing deleted planner chat session {}", chat_id);
+            }
+        }
     }
 
     if let Some(tx) = &gcx.read().await.trajectory_events_tx {

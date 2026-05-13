@@ -9,6 +9,7 @@ import {
   Card,
   Dialog,
   Checkbox,
+  Tooltip,
 } from "@radix-ui/themes";
 import {
   PlusIcon,
@@ -167,7 +168,6 @@ function resolveCardWorktree(
 interface PlannerPanelProps {
   plannerChats: PlannerInfo[];
   activeChat: ActiveChat;
-  activePlannerId: string | null;
   onSelectPlanner: (chatId: string) => void;
   onRemovePlanner: (chatId: string) => void;
 }
@@ -175,7 +175,6 @@ interface PlannerPanelProps {
 interface PlannerItemProps {
   planner: PlannerInfo;
   isSelected: boolean;
-  isActive: boolean;
   onSelect: () => void;
   onRemove: () => void;
 }
@@ -225,7 +224,6 @@ function defaultTaskWorkspaceLayout() {
 const PlannerItem: React.FC<PlannerItemProps> = ({
   planner,
   isSelected,
-  isActive,
   onSelect,
   onRemove,
 }) => {
@@ -245,11 +243,6 @@ const PlannerItem: React.FC<PlannerItemProps> = ({
       onClick={onSelect}
     >
       <Flex align="center" gap="1" className={styles.panelItemLead}>
-        {isActive && (
-          <Badge size="1" color="green" radius="full">
-            ●
-          </Badge>
-        )}
         <Badge size="1" color="violet">
           <FileTextIcon />
         </Badge>
@@ -259,17 +252,19 @@ const PlannerItem: React.FC<PlannerItemProps> = ({
           {displayTitle}
         </Text>
       </Box>
-      <Button
-        size="1"
-        variant="ghost"
-        color="gray"
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-      >
-        <Cross2Icon />
-      </Button>
+      <Tooltip content="Delete planner chat">
+        <Button
+          size="1"
+          variant="ghost"
+          color="gray"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+        >
+          <Cross2Icon />
+        </Button>
+      </Tooltip>
     </Box>
   );
 };
@@ -277,7 +272,6 @@ const PlannerItem: React.FC<PlannerItemProps> = ({
 const PlannerPanel: React.FC<PlannerPanelProps> = ({
   plannerChats,
   activeChat,
-  activePlannerId,
   onSelectPlanner,
   onRemovePlanner,
 }) => {
@@ -301,7 +295,6 @@ const PlannerPanel: React.FC<PlannerPanelProps> = ({
                     activeChat?.type === "planner" &&
                     activeChat.chatId === planner.id
                   }
-                  isActive={planner.id === activePlannerId}
                   onSelect={() => onSelectPlanner(planner.id)}
                   onRemove={() => onRemovePlanner(planner.id)}
                 />
@@ -653,10 +646,6 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     );
     return [...visible].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }, [currentTaskUI?.plannerChats]);
-  const activePlannerId = useMemo(() => {
-    if (plannerChats.length === 0) return null;
-    return plannerChats[0].id;
-  }, [plannerChats]);
   const activeChat = useAppSelector((state) =>
     selectTaskActiveChat(state, taskId),
   );
@@ -777,11 +766,12 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   }, [dispatch, taskId, savedPlanners, currentTaskUI, activeChat]);
 
   useEffect(() => {
-    if (!activeChat && activePlannerId) {
+    const fallbackPlannerId = plannerChats[0]?.id;
+    if (!activeChat && fallbackPlannerId) {
       dispatch(
         setTaskActiveChat({
           taskId,
-          activeChat: { type: "planner", chatId: activePlannerId },
+          activeChat: { type: "planner", chatId: fallbackPlannerId },
         }),
       );
       return;
@@ -791,36 +781,34 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       activeChat?.type === "planner" &&
       !plannerChats.some((p) => p.id === activeChat.chatId)
     ) {
-      if (activePlannerId) {
-        dispatch(
-          setTaskActiveChat({
-            taskId,
-            activeChat: { type: "planner", chatId: activePlannerId },
-          }),
-        );
-      } else {
-        dispatch(setTaskActiveChat({ taskId, activeChat: null }));
-      }
+      dispatch(
+        setTaskActiveChat({
+          taskId,
+          activeChat: fallbackPlannerId
+            ? { type: "planner", chatId: fallbackPlannerId }
+            : null,
+        }),
+      );
     }
-  }, [activeChat, plannerChats, activePlannerId, dispatch, taskId]);
+  }, [activeChat, plannerChats, dispatch, taskId]);
 
   useEffect(() => {
     if (activeChat?.type === "agent" && board) {
       const card = board.cards.find((c) => c.id === activeChat.cardId);
       if (!card || card.agent_chat_id !== activeChat.chatId) {
-        if (activePlannerId) {
-          dispatch(
-            setTaskActiveChat({
-              taskId,
-              activeChat: { type: "planner", chatId: activePlannerId },
-            }),
-          );
-        } else {
-          dispatch(setTaskActiveChat({ taskId, activeChat: null }));
-        }
+        const fallbackPlannerId = plannerChats[0]?.id;
+        dispatch(
+          setTaskActiveChat({
+            taskId,
+            activeChat: fallbackPlannerId
+              ? { type: "planner", chatId: fallbackPlannerId }
+              : null,
+          }),
+        );
       }
     }
-  }, [activeChat, board, dispatch, taskId, activePlannerId]);
+  }, [activeChat, board, dispatch, taskId, plannerChats]);
+
   useEffect(() => {
     if (!task) return;
 
@@ -899,19 +887,14 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
         .catch(() => undefined);
       if (activeChat?.type === "planner" && activeChat.chatId === chatId) {
         const remaining = plannerChats.filter((p) => p.id !== chatId);
-        if (remaining.length > 0) {
-          const mostRecent = remaining.reduce((latest, p) =>
-            p.updatedAt > latest.updatedAt ? p : latest,
-          );
-          dispatch(
-            setTaskActiveChat({
-              taskId,
-              activeChat: { type: "planner", chatId: mostRecent.id },
-            }),
-          );
-        } else {
-          dispatch(setTaskActiveChat({ taskId, activeChat: null }));
-        }
+        dispatch(
+          setTaskActiveChat({
+            taskId,
+            activeChat: remaining[0]
+              ? { type: "planner", chatId: remaining[0].id }
+              : null,
+          }),
+        );
       }
     },
     [dispatch, taskId, activeChat, plannerChats, deletePlannerChat],
@@ -941,7 +924,6 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
             task_id: taskId,
             role: "agents",
             card_id: cardId,
-            planner_chat_id: activePlannerId ?? undefined,
           },
           model: task?.default_agent_model,
         }),
@@ -954,7 +936,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
         }),
       );
     },
-    [board, taskId, dispatch, task?.default_agent_model, activePlannerId],
+    [board, taskId, dispatch, task?.default_agent_model],
   );
 
   const handleCardAgentClick = useCallback(
@@ -998,7 +980,6 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
               task_id: taskId,
               role: "agents",
               card_id: cardId,
-              planner_chat_id: activePlannerId ?? undefined,
             },
             model: task?.default_agent_model,
           }),
@@ -1015,7 +996,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
 
       return false;
     },
-    [board, taskId, dispatch, task?.default_agent_model, activePlannerId],
+    [board, taskId, dispatch, task?.default_agent_model],
   );
 
   const handleToggleChatExpanded = useCallback(() => {
@@ -1190,7 +1171,9 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const handleAskRefactForMerge = useCallback(
     async (files: string[], response: MergeWorktreeResponse) => {
       if (!mergeTarget) throw new Error("No task worktree is selected.");
-      const chatId = mergeTarget.card.agent_chat_id ?? activePlannerId;
+      const fallbackPlannerId =
+        activeChat?.type === "planner" ? activeChat.chatId : plannerChats[0]?.id;
+      const chatId = mergeTarget.card.agent_chat_id ?? fallbackPlannerId;
       if (!chatId) throw new Error("No agent or planner chat is available.");
       if (!config.lspPort) throw new Error("LSP port is unavailable.");
       const apiKey = config.apiKey ?? undefined;
@@ -1216,7 +1199,6 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
               task_id: taskId,
               role: "agents",
               card_id: mergeTarget.card.id,
-              planner_chat_id: activePlannerId ?? undefined,
             },
             model: task?.default_agent_model,
             worktree: mergeTarget.worktree.meta ?? null,
@@ -1256,7 +1238,8 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       showNotification("Conflict resolution request sent to Refact.");
     },
     [
-      activePlannerId,
+      activeChat,
+      plannerChats,
       config.apiKey,
       config.lspPort,
       dispatch,
@@ -1362,7 +1345,6 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
               <PlannerPanel
                 plannerChats={plannerChats}
                 activeChat={activeChat}
-                activePlannerId={activePlannerId}
                 onSelectPlanner={handleSelectPlanner}
                 onRemovePlanner={handleRemovePlanner}
               />

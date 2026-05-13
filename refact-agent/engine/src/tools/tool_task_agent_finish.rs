@@ -248,6 +248,12 @@ impl Tool for ToolTaskAgentFinish {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let task_id = get_task_id(&ccx).await?;
         let card_id = get_card_id(&ccx).await?;
+        let planner_chat_id = ccx
+            .lock()
+            .await
+            .task_meta
+            .as_ref()
+            .and_then(|meta| meta.planner_chat_id.clone());
 
         let success = match args.get("success") {
             Some(Value::Bool(b)) => *b,
@@ -418,18 +424,36 @@ impl Tool for ToolTaskAgentFinish {
             report.chars().take(100).collect::<String>()
         );
 
-        crate::chat::task_agent_monitor::notify_planner_agents_finished(
+        let notify_error = crate::chat::task_agent_monitor::notify_planner_agents_finished(
             gcx.clone(),
             &task_id,
             &board,
             all_finished,
+            planner_chat_id.as_deref(),
         )
-        .await?;
+        .await
+        .err();
+        if let Some(ref error) = notify_error {
+            tracing::warn!(
+                "Agent finished card {}, but planner notification failed: {}",
+                card_id,
+                error
+            );
+        }
 
         {
             let ccx_lock = ccx.lock().await;
             ccx_lock.abort_flag.store(true, Ordering::SeqCst);
         }
+
+        let result_message = if let Some(error) = notify_error {
+            format!(
+                "{}\n\n⚠️ Planner notification failed: {}",
+                result_message, error
+            )
+        } else {
+            result_message
+        };
 
         Ok((
             false,
