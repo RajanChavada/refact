@@ -337,6 +337,15 @@ async fn get_builtin_tools(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<ToolGroup> {
                 config_path: config_path.clone(),
             },
         ),
+        Box::new(crate::tools::buddy::surface::ToolBuddyLogActivity {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::buddy::surface::ToolBuddySpeak {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::buddy::surface::ToolBuddyRuntimeEvent {
+            config_path: config_path.clone(),
+        }),
         Box::new(crate::tools::buddy::memory::ToolBuddyMemorySearch {
             config_path: config_path.clone(),
         }),
