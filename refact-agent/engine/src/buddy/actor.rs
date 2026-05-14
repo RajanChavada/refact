@@ -35,6 +35,8 @@ const SUGGESTION_RATE_LIMIT_SECS: u64 = 300;
 const SUGGESTION_EXPIRY_SECS: i64 = 300;
 const PET_DECAY_INTERVAL_SECS: u64 = 15;
 const OBSERVER_CONCURRENCY: usize = 4;
+const MEMORY_OPS_ARCHIVE_THRESHOLD_BYTES: u64 = 32 * 1024 * 1024;
+const MEMORY_OPS_COMPACT_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 pub(crate) async fn observe_buddy_facts_parallel(
     due_observers: Vec<Arc<dyn BuddyObserver>>,
@@ -1341,6 +1343,16 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
         warn!("buddy: failed to bootstrap storage: {}", e);
         return;
     }
+    match super::storage::archive_memory_ops_if_oversized(
+        &project_root,
+        MEMORY_OPS_ARCHIVE_THRESHOLD_BYTES,
+    )
+    .await
+    {
+        Ok(true) => info!("buddy: archived oversized memory ops queue"),
+        Ok(false) => {}
+        Err(err) => warn!("buddy: failed to archive oversized memory ops queue: {}", err),
+    }
 
     let state = super::state::load_state(&project_root).await;
     let settings = super::settings::load_settings(&project_root).await;
@@ -1661,6 +1673,17 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
                 if let Some(tx) = &svc.queue_writer {
                     let _ = tx.send(RuntimeQueueWriteOp::Compact(svc.runtime_queue.clone()));
                 }
+            }
+        }
+        if expiry_tick % MEMORY_OPS_COMPACT_INTERVAL_SECS == 0 {
+            match super::storage::compact_memory_ops(&project_root).await {
+                Ok(memory_ops) => {
+                    let mut buddy = buddy_arc.lock().await;
+                    if let Some(svc) = buddy.as_mut() {
+                        svc.memory_ops = memory_ops;
+                    }
+                }
+                Err(err) => warn!("buddy: failed to compact memory ops queue: {}", err),
             }
         }
     }

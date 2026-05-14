@@ -1,9 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
@@ -14,7 +14,7 @@ use tracing::warn;
 use super::diagnostics::DiagnosticContext;
 use super::memory_lifecycle::{
     apply_memory_lifecycle_op_status, memory_op_duplicate_should_replace, MemoryLifecycleOp,
-    MemoryOpStatus, MemoryOpsRecord, MemoryOpsState,
+    MemoryOpStatus, MemoryOpsRecord, MemoryOpsState, MemorySource,
 };
 use super::runtime_queue::RuntimeQueue;
 use super::state::default_buddy_state;
@@ -23,6 +23,7 @@ use crate::global_context::GlobalContext;
 
 /// Maximum number of items kept after replay+cap on load. Mirrors the in-memory cap.
 const RUNTIME_QUEUE_MAX_ITEMS: usize = 100;
+const MEMORY_OPS_COMPACT_KEEP_DAYS: i64 = 7;
 
 /// One line of the runtime queue JSONL log. The tagged enum lets the writer
 /// record more than just events: removals (eviction or coalescing wipeout) and
@@ -67,6 +68,10 @@ fn memory_ops_path(project_root: &Path) -> PathBuf {
     project_root.join(".refact/buddy/memory_ops.jsonl")
 }
 
+fn memory_ops_backup_path(project_root: &Path) -> PathBuf {
+    project_root.join(".refact/buddy/memory_ops.jsonl.bak")
+}
+
 fn memory_ops_bad_path(project_root: &Path) -> PathBuf {
     project_root.join(".refact/buddy/memory_ops.jsonl.bad")
 }
@@ -100,6 +105,112 @@ async fn rewrite_memory_ops_records(
     fs::rename(&tmp, path)
         .await
         .map_err(|e| format!("Failed to rename {:?} to {:?}: {}", tmp, path, e))
+}
+
+fn memory_op_timestamp(op: &MemoryLifecycleOp) -> DateTime<Utc> {
+    op.applied_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .or_else(|| DateTime::parse_from_rfc3339(&op.created_at).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| DateTime::<Utc>::from(std::time::UNIX_EPOCH))
+}
+
+fn memory_op_is_final_status(status: MemoryOpStatus) -> bool {
+    matches!(
+        status,
+        MemoryOpStatus::Applied
+            | MemoryOpStatus::Rejected
+            | MemoryOpStatus::Failed
+            | MemoryOpStatus::Skipped
+    )
+}
+
+fn memory_op_survives_compaction(op: &MemoryLifecycleOp, now: DateTime<Utc>) -> bool {
+    if op.source != MemorySource::MemoryGarden {
+        return true;
+    }
+    if !memory_op_is_final_status(op.status) {
+        return true;
+    }
+    let cutoff = now - chrono::Duration::days(MEMORY_OPS_COMPACT_KEEP_DAYS);
+    memory_op_timestamp(op) >= cutoff
+}
+
+fn compact_memory_ops_records(
+    records: impl IntoIterator<Item = MemoryOpsRecord>,
+    now: DateTime<Utc>,
+) -> MemoryOpsState {
+    let mut by_op_id: BTreeMap<String, MemoryLifecycleOp> = BTreeMap::new();
+    let mut without_op_id = Vec::new();
+    for record in records {
+        let op = record.into_op();
+        let op = op.normalized();
+        if !memory_op_survives_compaction(&op, now) {
+            continue;
+        }
+        if op.op_id.trim().is_empty() {
+            without_op_id.push(MemoryOpsRecord::Op { op });
+            continue;
+        }
+        by_op_id
+            .entry(op.op_id.clone())
+            .and_modify(|existing| {
+                if memory_op_timestamp(&op) >= memory_op_timestamp(existing) {
+                    *existing = op.clone();
+                }
+            })
+            .or_insert(op);
+    }
+    let mut records = without_op_id;
+    records.extend(
+        by_op_id
+            .into_values()
+            .map(|op| MemoryOpsRecord::Op { op }),
+    );
+    MemoryOpsState::from_records(records)
+}
+
+async fn read_memory_ops_records(project_root: &Path) -> (Vec<MemoryOpsRecord>, u32) {
+    let path = memory_ops_path(project_root);
+    let content = match fs::read_to_string(&path).await {
+        Ok(content) => content,
+        Err(err) if err.kind() == ErrorKind::NotFound => return (Vec::new(), 0),
+        Err(err) => {
+            warn!(
+                "buddy: failed to read memory ops queue at {:?}: {}, starting empty",
+                path, err
+            );
+            return (Vec::new(), 0);
+        }
+    };
+
+    let mut records = Vec::new();
+    let mut malformed = Vec::<(usize, String, String)>::new();
+    for (idx, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<MemoryOpsRecord>(line) {
+            Ok(record) => records.push(record),
+            Err(err) => malformed.push((idx + 1, raw.to_string(), err.to_string())),
+        }
+    }
+    let malformed_lines = malformed.len().min(u32::MAX as usize) as u32;
+    if malformed_lines > 0 {
+        warn!(
+            "buddy: quarantining {} malformed memory ops queue line(s) from {:?}",
+            malformed_lines, path
+        );
+        if let Err(err) = quarantine_memory_ops_bad_lines(project_root, &path, &malformed).await {
+            warn!(
+                "buddy: failed to quarantine malformed memory ops lines: {}",
+                err
+            );
+        }
+    }
+    (records, malformed_lines)
 }
 
 fn memory_bad_line_hash(raw: &str, err: &str) -> String {
@@ -379,53 +490,48 @@ pub async fn enqueue_memory_op(
 }
 
 pub async fn load_memory_ops(project_root: &Path) -> MemoryOpsState {
-    let path = memory_ops_path(project_root);
-    let content = match fs::read_to_string(&path).await {
-        Ok(content) => content,
-        Err(err) if err.kind() == ErrorKind::NotFound => return MemoryOpsState::default(),
-        Err(err) => {
-            warn!(
-                "buddy: failed to read memory ops queue at {:?}: {}, starting empty",
-                path, err
-            );
-            return MemoryOpsState::default();
-        }
-    };
-
-    let mut records = Vec::new();
-    let mut malformed = Vec::<(usize, String, String)>::new();
-    for (idx, raw) in content.lines().enumerate() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<MemoryOpsRecord>(line) {
-            Ok(record) => records.push(record),
-            Err(err) => malformed.push((idx + 1, raw.to_string(), err.to_string())),
-        }
-    }
-    let malformed_lines = malformed.len().min(u32::MAX as usize) as u32;
-    if malformed_lines > 0 {
-        warn!(
-            "buddy: quarantining {} malformed memory ops queue line(s) from {:?}",
-            malformed_lines, path
-        );
-        if let Err(err) = quarantine_memory_ops_bad_lines(project_root, &path, &malformed).await {
-            warn!(
-                "buddy: failed to quarantine malformed memory ops lines: {}",
-                err
-            );
-        }
-    }
+    let (records, malformed_lines) = read_memory_ops_records(project_root).await;
     MemoryOpsState::from_records_with_malformed(records, malformed_lines)
 }
 
 #[allow(dead_code)]
 pub async fn compact_memory_ops(project_root: &Path) -> Result<MemoryOpsState, String> {
-    let state = load_memory_ops(project_root).await;
+    let (records, _) = read_memory_ops_records(project_root).await;
+    let state = compact_memory_ops_records(records, Utc::now());
     let path = memory_ops_path(project_root);
     rewrite_memory_ops_records(&path, state.canonical_records()).await?;
     Ok(state)
+}
+
+pub async fn archive_memory_ops_if_oversized(
+    project_root: &Path,
+    threshold_bytes: u64,
+) -> Result<bool, String> {
+    let path = memory_ops_path(project_root);
+    let metadata = match fs::metadata(&path).await {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(format!("Failed to stat memory ops queue {:?}: {}", path, err)),
+    };
+    if metadata.len() <= threshold_bytes {
+        return Ok(false);
+    }
+    let (records, _) = read_memory_ops_records(project_root).await;
+    let compacted = compact_memory_ops_records(records, Utc::now());
+    let backup = memory_ops_backup_path(project_root);
+    if fs::try_exists(&backup)
+        .await
+        .map_err(|e| format!("Failed to check backup {:?}: {}", backup, e))?
+    {
+        fs::remove_file(&backup)
+            .await
+            .map_err(|e| format!("Failed to remove existing backup {:?}: {}", backup, e))?;
+    }
+    fs::rename(&path, &backup)
+        .await
+        .map_err(|e| format!("Failed to rename {:?} to {:?}: {}", path, backup, e))?;
+    rewrite_memory_ops_records(&path, compacted.canonical_records()).await?;
+    Ok(true)
 }
 
 #[allow(dead_code)]
@@ -590,7 +696,7 @@ pub async fn bootstrap_buddy_storage(project_root: &Path) -> Result<(), String> 
 mod tests {
     use super::*;
     use crate::buddy::memory_lifecycle::{
-        MemoryLifecycleOp, MemoryOpStatus, MemoryOpType, MemorySource, MEMORY_OP_EVIDENCE_MAX_CHARS,
+        MemoryLifecycleOp, MemoryOpStatus, MemoryOpType, MEMORY_OP_EVIDENCE_MAX_CHARS,
     };
 
     fn test_op(op_id: &str, evidence: &str, status: MemoryOpStatus) -> MemoryLifecycleOp {
@@ -601,7 +707,7 @@ mod tests {
             vec![".refact/knowledge/item.md".to_string()],
             evidence,
             0.91,
-            "2026-05-02T00:00:00Z",
+            Utc::now().to_rfc3339(),
         );
         op.status = status;
         op
@@ -617,7 +723,7 @@ mod tests {
         op.confidence = 0.91;
         op.requires_approval = false;
         op.status = status;
-        op.created_at = "2026-05-02T00:00:00Z".to_string();
+        op.created_at = Utc::now().to_rfc3339();
         op
     }
 
@@ -625,6 +731,29 @@ mod tests {
         let mut op = test_op(op_id, key, status);
         op.idempotency_key = key.to_string();
         op
+    }
+
+    fn op_with_time(
+        op_id: &str,
+        source: MemorySource,
+        status: MemoryOpStatus,
+        created_at: DateTime<Utc>,
+    ) -> MemoryLifecycleOp {
+        let mut op = test_op(op_id, op_id, status);
+        op.source = source;
+        op.created_at = created_at.to_rfc3339();
+        op.idempotency_key = format!("key-{op_id}");
+        op
+    }
+
+    async fn write_memory_ops_records_for_test(root: &Path, ops: Vec<MemoryLifecycleOp>) {
+        let records = ops
+            .into_iter()
+            .map(|op| MemoryOpsRecord::Op { op })
+            .collect::<Vec<_>>();
+        rewrite_memory_ops_records(&memory_ops_path(root), records)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -841,6 +970,186 @@ mod tests {
         assert_eq!(content.lines().count(), 2);
         assert_eq!(replayed.failed_count, 1);
         assert_eq!(replayed.applied_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compact_memory_ops_dedups_by_op_id_keeping_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let now = Utc::now();
+        let mut latest = op_with_time(
+            "op-same",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Pending,
+            now,
+        );
+        latest.evidence = "latest".to_string();
+        latest.idempotency_key = "latest-key".to_string();
+        let mut older = op_with_time(
+            "op-same",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Pending,
+            now - chrono::Duration::hours(1),
+        );
+        older.evidence = "older".to_string();
+        older.idempotency_key = "older-key".to_string();
+        write_memory_ops_records_for_test(root, vec![latest.clone(), older]).await;
+
+        let state = compact_memory_ops(root).await.unwrap();
+
+        assert_eq!(state.ops, vec![latest.normalized()]);
+        let content = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+        assert_eq!(content.lines().count(), 1);
+        assert!(content.contains("latest"));
+    }
+
+    #[tokio::test]
+    async fn compact_memory_ops_preserves_pending_regardless_of_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pending = op_with_time(
+            "op-pending-old",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Pending,
+            Utc::now() - chrono::Duration::days(30),
+        );
+        write_memory_ops_records_for_test(root, vec![pending.clone()]).await;
+
+        let state = compact_memory_ops(root).await.unwrap();
+
+        assert_eq!(state.ops, vec![pending.normalized()]);
+        assert_eq!(state.pending_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compact_memory_ops_drops_old_applied_garden_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let old = op_with_time(
+            "op-old-applied",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Applied,
+            Utc::now() - chrono::Duration::days(30),
+        );
+        write_memory_ops_records_for_test(root, vec![old]).await;
+
+        let state = compact_memory_ops(root).await.unwrap();
+
+        assert!(state.is_empty());
+        let content = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+        assert_eq!(content, "");
+    }
+
+    #[tokio::test]
+    async fn compact_memory_ops_keeps_non_garden_op_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let op = op_with_time(
+            "op-manual-old",
+            MemorySource::Manual,
+            MemoryOpStatus::Applied,
+            Utc::now() - chrono::Duration::days(30),
+        );
+        write_memory_ops_records_for_test(root, vec![op.clone()]).await;
+
+        let state = compact_memory_ops(root).await.unwrap();
+
+        assert_eq!(state.ops, vec![op.normalized()]);
+        assert_eq!(state.applied_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compact_memory_ops_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let now = Utc::now();
+        let keep = op_with_time(
+            "op-keep",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Pending,
+            now - chrono::Duration::days(30),
+        );
+        let drop = op_with_time(
+            "op-drop",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Skipped,
+            now - chrono::Duration::days(30),
+        );
+        write_memory_ops_records_for_test(root, vec![keep.clone(), drop]).await;
+
+        let first = compact_memory_ops(root).await.unwrap();
+        let first_content = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+        let second = compact_memory_ops(root).await.unwrap();
+        let second_content = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first_content, second_content);
+        assert_eq!(second.ops, vec![keep.normalized()]);
+    }
+
+    #[tokio::test]
+    async fn archive_memory_ops_renames_to_bak_when_oversized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let keep = op_with_time(
+            "op-keep",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Pending,
+            Utc::now() - chrono::Duration::days(30),
+        );
+        let drop = op_with_time(
+            "op-drop",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Applied,
+            Utc::now() - chrono::Duration::days(30),
+        );
+        write_memory_ops_records_for_test(root, vec![keep.clone(), drop]).await;
+        let before = tokio::fs::read_to_string(memory_ops_path(root))
+            .await
+            .unwrap();
+
+        let archived = archive_memory_ops_if_oversized(root, 1).await.unwrap();
+
+        assert!(archived);
+        assert_eq!(
+            tokio::fs::read_to_string(memory_ops_backup_path(root))
+                .await
+                .unwrap(),
+            before
+        );
+        let state = load_memory_ops(root).await;
+        assert_eq!(state.ops, vec![keep.normalized()]);
+    }
+
+    #[tokio::test]
+    async fn archive_memory_ops_no_op_when_under_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let op = op_with_time(
+            "op-small",
+            MemorySource::MemoryGarden,
+            MemoryOpStatus::Pending,
+            Utc::now(),
+        );
+        write_memory_ops_records_for_test(root, vec![op.clone()]).await;
+        let size = tokio::fs::metadata(memory_ops_path(root))
+            .await
+            .unwrap()
+            .len();
+
+        let archived = archive_memory_ops_if_oversized(root, size + 1).await.unwrap();
+
+        assert!(!archived);
+        assert!(!memory_ops_backup_path(root).exists());
+        assert_eq!(load_memory_ops(root).await.ops, vec![op.normalized()]);
     }
 
     #[tokio::test]

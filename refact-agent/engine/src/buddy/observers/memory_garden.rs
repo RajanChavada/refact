@@ -10,18 +10,27 @@ use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
-use crate::buddy::types::{BuddyFact, BuddyFactKind};
+use crate::buddy::types::{BuddyFact, BuddyFactKind, BuddyJobState};
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::global_context::GlobalContext;
 use crate::knowledge_graph::kg_structs::KnowledgeFrontmatter;
 
 pub struct MemoryGardenObserver;
 
-const MAX_ORPHAN_IDS: usize = 50;
+pub(crate) const MAX_PROPOSALS_PER_TICK: usize = 5;
+pub(crate) const MAX_PROPOSALS_PER_DAY: usize = 50;
+const MAX_ORPHAN_IDS: usize = MAX_PROPOSALS_PER_TICK;
 const MAX_MEMORY_FILES: usize = 500;
 const MAX_KNOWLEDGE_SCAN_ENTRIES: usize = 5_000;
 const MAX_FILE_BYTES: u64 = 256 * 1024;
 const MAX_FRONTMATTER_BYTES: usize = 32 * 1024;
+const MEMORY_GARDEN_DAILY_COUNTER_JOB_ID: &str = "memory_garden";
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct MemoryGardenDailyCounter {
+    day: String,
+    count: usize,
+}
 
 struct KnowledgeEntry {
     id: String,
@@ -50,6 +59,40 @@ struct KnowledgeScanStats {
 struct KnowledgeReferenceScan {
     referenced: HashSet<String>,
     stats: KnowledgeScanStats,
+}
+
+async fn memory_garden_job_state(gcx: Arc<RwLock<GlobalContext>>) -> BuddyJobState {
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy = buddy_arc.lock().await;
+    buddy
+        .as_ref()
+        .and_then(|svc| {
+            svc.state
+                .job_cooldowns
+                .get(MEMORY_GARDEN_DAILY_COUNTER_JOB_ID)
+                .cloned()
+        })
+        .unwrap_or_default()
+}
+
+async fn persist_memory_garden_daily_counter(
+    gcx: Arc<RwLock<GlobalContext>>,
+    counter: &MemoryGardenDailyCounter,
+) {
+    let Ok(last_result) = serde_json::to_string(counter) else {
+        return;
+    };
+    let buddy_arc = gcx.read().await.buddy.clone();
+    let mut buddy = buddy_arc.lock().await;
+    if let Some(svc) = buddy.as_mut() {
+        let state = svc
+            .state
+            .job_cooldowns
+            .entry(MEMORY_GARDEN_DAILY_COUNTER_JOB_ID.to_string())
+            .or_default();
+        state.last_result = Some(last_result);
+        svc.dirty = true;
+    }
 }
 
 async fn knowledge_dirs(gcx: Arc<RwLock<GlobalContext>>) -> Vec<PathBuf> {
@@ -395,6 +438,55 @@ fn has_negation_conflict(a_title: &str, b_title: &str) -> Option<String> {
     None
 }
 
+fn memory_garden_fact_priority(kind: BuddyFactKind) -> u8 {
+    if kind == BuddyFactKind::MemoryStaleConflict {
+        0
+    } else if kind == BuddyFactKind::MemoryRecurringLesson {
+        1
+    } else {
+        2
+    }
+}
+
+fn sort_and_truncate_memory_garden_facts(facts: &mut Vec<BuddyFact>, limit: usize) {
+    facts.sort_by(|a, b| {
+        memory_garden_fact_priority(a.kind)
+            .cmp(&memory_garden_fact_priority(b.kind))
+            .then_with(|| b.seen_at.cmp(&a.seen_at))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+    facts.truncate(limit);
+}
+
+fn daily_counter_from_job_state(
+    job_state: &BuddyJobState,
+    now: DateTime<Utc>,
+) -> MemoryGardenDailyCounter {
+    let day = now.date_naive().to_string();
+    let mut counter = job_state
+        .last_result
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<MemoryGardenDailyCounter>(value).ok())
+        .unwrap_or_default();
+    if counter.day != day {
+        counter = MemoryGardenDailyCounter { day, count: 0 };
+    }
+    counter
+}
+
+fn apply_daily_cap_to_memory_garden_facts(
+    mut facts: Vec<BuddyFact>,
+    job_state: &BuddyJobState,
+    now: DateTime<Utc>,
+) -> (Vec<BuddyFact>, MemoryGardenDailyCounter) {
+    sort_and_truncate_memory_garden_facts(&mut facts, MAX_PROPOSALS_PER_TICK);
+    let mut counter = daily_counter_from_job_state(job_state, now);
+    let remaining = MAX_PROPOSALS_PER_DAY.saturating_sub(counter.count);
+    facts.truncate(remaining);
+    counter.count = counter.count.saturating_add(facts.len());
+    (facts, counter)
+}
+
 #[cfg(test)]
 fn memory_garden_facts_from_entries(
     entries: &[KnowledgeEntry],
@@ -597,7 +689,11 @@ impl BuddyObserver for MemoryGardenObserver {
         gcx: Arc<RwLock<GlobalContext>>,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
-        detect_memory_garden(gcx, ctx.now).await
+        let facts = detect_memory_garden(gcx.clone(), ctx.now).await;
+        let job_state = memory_garden_job_state(gcx.clone()).await;
+        let (facts, counter) = apply_daily_cap_to_memory_garden_facts(facts, &job_state, ctx.now);
+        persist_memory_garden_daily_counter(gcx, &counter).await;
+        facts
     }
 }
 
@@ -637,6 +733,22 @@ mod tests {
             format!("---\n{frontmatter}\n---\nBody must not be needed\n"),
         )
         .unwrap();
+    }
+
+    fn fact(idx: usize, kind: BuddyFactKind) -> BuddyFact {
+        BuddyFact {
+            kind,
+            key: format!("fact-{idx}"),
+            source: "memory_garden",
+            payload: serde_json::json!({ "idx": idx }),
+            seen_at: DateTime::parse_from_rfc3339(&format!(
+                "2026-05-02T00:{:02}:00Z",
+                idx % 60
+            ))
+            .unwrap()
+            .with_timezone(&Utc),
+            confidence: 0.9,
+        }
     }
 
     #[test]
@@ -809,5 +921,62 @@ mod tests {
 
         assert_eq!(references.stats.matching_files_considered, 1);
         assert!(!references.referenced.contains("target"));
+    }
+
+    #[test]
+    fn memory_garden_observer_truncates_to_per_tick_cap() {
+        let now = DateTime::parse_from_rfc3339("2026-05-02T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let facts = (0..10)
+            .map(|idx| fact(idx, BuddyFactKind::MemoryOrphan))
+            .collect::<Vec<_>>();
+
+        let (capped, counter) =
+            apply_daily_cap_to_memory_garden_facts(facts, &BuddyJobState::default(), now);
+
+        assert_eq!(capped.len(), MAX_PROPOSALS_PER_TICK);
+        assert_eq!(counter.count, MAX_PROPOSALS_PER_TICK);
+    }
+
+    #[test]
+    fn memory_garden_observer_enforces_per_day_cap() {
+        let now = DateTime::parse_from_rfc3339("2026-05-02T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let previous = MemoryGardenDailyCounter {
+            day: "2026-05-02".to_string(),
+            count: MAX_PROPOSALS_PER_DAY - 2,
+        };
+        let job_state = BuddyJobState {
+            last_result: Some(serde_json::to_string(&previous).unwrap()),
+            ..Default::default()
+        };
+        let facts = (0..MAX_PROPOSALS_PER_TICK)
+            .map(|idx| fact(idx, BuddyFactKind::MemoryRecurringLesson))
+            .collect::<Vec<_>>();
+
+        let (capped, counter) = apply_daily_cap_to_memory_garden_facts(facts, &job_state, now);
+
+        assert_eq!(capped.len(), 2);
+        assert_eq!(counter.day, "2026-05-02");
+        assert_eq!(counter.count, MAX_PROPOSALS_PER_DAY);
+
+        let reset_state = BuddyJobState {
+            last_result: Some(serde_json::to_string(&counter).unwrap()),
+            ..Default::default()
+        };
+        let next_day = DateTime::parse_from_rfc3339("2026-05-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let facts = (0..MAX_PROPOSALS_PER_TICK)
+            .map(|idx| fact(idx, BuddyFactKind::MemoryRecurringLesson))
+            .collect::<Vec<_>>();
+        let (reset_capped, reset_counter) =
+            apply_daily_cap_to_memory_garden_facts(facts, &reset_state, next_day);
+
+        assert_eq!(reset_capped.len(), MAX_PROPOSALS_PER_TICK);
+        assert_eq!(reset_counter.day, "2026-05-03");
+        assert_eq!(reset_counter.count, MAX_PROPOSALS_PER_TICK);
     }
 }
