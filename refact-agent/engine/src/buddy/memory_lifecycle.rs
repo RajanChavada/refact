@@ -2875,6 +2875,25 @@ async fn apply_merge_archive(
     Ok(MemoryApplyOutcome::applied(paths))
 }
 
+pub async fn archive_memory_file_checked(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    path: &Path,
+    superseded_by: Option<&str>,
+) -> Result<bool, String> {
+    let roots = knowledge_roots(gcx.clone()).await;
+    reject_unsafe_path(&path.to_string_lossy())?;
+    validate_memory_extension(path)?;
+    let canonical = canonical_existing_file_no_symlink(path).await?;
+    let canonical_roots = canonicalize_existing_roots(&roots).await?;
+    if !canonical_roots
+        .iter()
+        .any(|root| canonical.starts_with(root))
+    {
+        return Err("memory path is outside knowledge directories".to_string());
+    }
+    archive_memory_file(gcx, &canonical, superseded_by).await
+}
+
 async fn archive_memory_file(
     gcx: Arc<ARwLock<GlobalContext>>,
     path: &Path,
@@ -4765,5 +4784,32 @@ mod tests {
 
         assert_eq!(outcome.status, MemoryOpStatus::Applied);
         assert!(dir.path().join(KNOWLEDGE_FOLDER_NAME).read_dir().is_err());
+    }
+}
+
+#[cfg(test)]
+mod buddy_memory_tools_checked_tests {
+    use super::*;
+    use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
+
+    #[tokio::test]
+    async fn archive_memory_file_checked_rejects_dotdot() {
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_read = gcx.read().await;
+            *gcx_read.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+        let path = knowledge_dir
+            .join("..")
+            .join("knowledge")
+            .join("missing.md");
+        let err = archive_memory_file_checked(gcx, &path, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains(".."));
     }
 }

@@ -113,6 +113,33 @@ impl KnowledgeIndex {
         retain_cards_not_at_path(&mut self.by_related_entity, file_path);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.by_filename.is_empty()
+            && self.by_tag.is_empty()
+            && self.by_entity.is_empty()
+            && self.by_related_filename.is_empty()
+            && self.by_related_entity.is_empty()
+    }
+
+    pub fn all_cards(&self) -> Vec<KnowledgeCard> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for cards in [
+            &self.by_filename,
+            &self.by_tag,
+            &self.by_entity,
+            &self.by_related_filename,
+            &self.by_related_entity,
+        ] {
+            for card in cards.values().flatten() {
+                if seen.insert(card.file_path.clone()) {
+                    out.push(card.clone());
+                }
+            }
+        }
+        out
+    }
+
     pub fn add_card(&mut self, card: KnowledgeCard) {
         for filename in &card.filenames {
             self.by_filename

@@ -163,11 +163,7 @@ fn compact_memory_ops_records(
             .or_insert(op);
     }
     let mut records = without_op_id;
-    records.extend(
-        by_op_id
-            .into_values()
-            .map(|op| MemoryOpsRecord::Op { op }),
-    );
+    records.extend(by_op_id.into_values().map(|op| MemoryOpsRecord::Op { op }));
     MemoryOpsState::from_records(records)
 }
 
@@ -511,7 +507,12 @@ pub async fn archive_memory_ops_if_oversized(
     let metadata = match fs::metadata(&path).await {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(format!("Failed to stat memory ops queue {:?}: {}", path, err)),
+        Err(err) => {
+            return Err(format!(
+                "Failed to stat memory ops queue {:?}: {}",
+                path, err
+            ))
+        }
     };
     if metadata.len() <= threshold_bytes {
         return Ok(false);
@@ -1145,7 +1146,9 @@ mod tests {
             .unwrap()
             .len();
 
-        let archived = archive_memory_ops_if_oversized(root, size + 1).await.unwrap();
+        let archived = archive_memory_ops_if_oversized(root, size + 1)
+            .await
+            .unwrap();
 
         assert!(!archived);
         assert!(!memory_ops_backup_path(root).exists());

@@ -1109,9 +1109,10 @@ pub async fn process_tool_calls_once(
             .iter()
             .any(|r| r.tool_call_id == tool_call.id && r.tool_failed == Some(true));
         if !failed {
-            let tool_name = crate::llm::adapters::claude_code_compat::cc_normalize_internal_tool_name(
-                &tool_call.function.name,
-            );
+            let tool_name =
+                crate::llm::adapters::claude_code_compat::cc_normalize_internal_tool_name(
+                    &tool_call.function.name,
+                );
             match tool_name.as_str() {
                 "ask_questions" | "task_wait_for_agents" => {
                     final_state = SessionState::WaitingUserInput
@@ -1202,10 +1203,7 @@ fn compute_final_action(
     tool_name: &str,
 ) -> &'static str {
     use crate::tools::tools_description::MatchConfirmDenyResult;
-    const ALWAYS_ASK_TOOLS: &[&str] = &[
-        "compress_chat_probe",
-        "compress_chat_apply",
-    ];
+    const ALWAYS_ASK_TOOLS: &[&str] = &["compress_chat_probe", "compress_chat_apply"];
     if *tool_result == MatchConfirmDenyResult::DENY {
         return "deny";
     }
@@ -1334,10 +1332,10 @@ pub async fn check_tools_confirmation(
                     continue;
                 }
 
-                let is_auto_approved = should_auto_approve_confirmation(
-                    thread,
-                    &tool_call.function.name,
-                ) || (!allowed_tools.is_empty() && allowed_tools.contains(&tool_call.function.name));
+                let is_auto_approved =
+                    should_auto_approve_confirmation(thread, &tool_call.function.name)
+                        || (!allowed_tools.is_empty()
+                            && allowed_tools.contains(&tool_call.function.name));
                 let final_action = compute_final_action(
                     &result.result,
                     mode_action.as_deref(),

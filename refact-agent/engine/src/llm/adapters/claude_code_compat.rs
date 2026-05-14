@@ -813,7 +813,9 @@ mod tests {
 
     #[test]
     fn test_sanitize_system_strips_extended_mode_tags_and_renames_task_tools() {
-        let sys = json!("[mode3planner] Use task_agent_finish(), task_wait_for_agents(), and buddy_say().");
+        let sys = json!(
+            "[mode3planner] Use task_agent_finish(), task_wait_for_agents(), and buddy_say()."
+        );
         let out = sanitize_system_for_cc(sys);
         let text = out.as_str().unwrap();
         assert!(!text.contains("[mode3planner]"));
@@ -892,17 +894,32 @@ mod tests {
         assert_eq!(cc_resolve_tool_name("t_agent_finish"), "task_agent_finish");
         assert_eq!(cc_resolve_tool_name("t_task_mem_save"), "task_memory_save");
         assert_eq!(cc_resolve_tool_name("t_task_mem_get"), "task_memories_get");
-        assert_eq!(cc_resolve_tool_name("t_wait_agents"), "task_wait_for_agents");
+        assert_eq!(
+            cc_resolve_tool_name("t_wait_agents"),
+            "task_wait_for_agents"
+        );
         assert_eq!(cc_resolve_tool_name("t_spawn_agent"), "task_spawn_agent");
         assert_eq!(cc_resolve_tool_name("t_check_agents"), "task_check_agents");
         assert_eq!(cc_resolve_tool_name("t_merge_agent"), "task_merge_agent");
-        assert_eq!(cc_resolve_tool_name("t_board_create"), "task_board_create_card");
-        assert_eq!(cc_resolve_tool_name("t_board_update"), "task_board_update_card");
-        assert_eq!(cc_resolve_tool_name("t_board_delete"), "task_board_delete_card");
+        assert_eq!(
+            cc_resolve_tool_name("t_board_create"),
+            "task_board_create_card"
+        );
+        assert_eq!(
+            cc_resolve_tool_name("t_board_update"),
+            "task_board_update_card"
+        );
+        assert_eq!(
+            cc_resolve_tool_name("t_board_delete"),
+            "task_board_delete_card"
+        );
         assert_eq!(cc_resolve_tool_name("t_board_move"), "task_board_move_card");
         assert_eq!(cc_resolve_tool_name("t_board_get"), "task_board_get");
         assert_eq!(cc_resolve_tool_name("t_mark_done"), "task_mark_card_done");
-        assert_eq!(cc_resolve_tool_name("t_mark_failed"), "task_mark_card_failed");
+        assert_eq!(
+            cc_resolve_tool_name("t_mark_failed"),
+            "task_mark_card_failed"
+        );
         assert_eq!(cc_resolve_tool_name("t_say"), "buddy_say");
         assert_eq!(cc_resolve_tool_name("t_merge_worktree"), "worktree_merge");
         assert_eq!(cc_resolve_tool_name("t_review"), "code_review");

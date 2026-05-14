@@ -741,12 +741,9 @@ mod tests {
             key: format!("fact-{idx}"),
             source: "memory_garden",
             payload: serde_json::json!({ "idx": idx }),
-            seen_at: DateTime::parse_from_rfc3339(&format!(
-                "2026-05-02T00:{:02}:00Z",
-                idx % 60
-            ))
-            .unwrap()
-            .with_timezone(&Utc),
+            seen_at: DateTime::parse_from_rfc3339(&format!("2026-05-02T00:{:02}:00Z", idx % 60))
+                .unwrap()
+                .with_timezone(&Utc),
             confidence: 0.9,
         }
     }

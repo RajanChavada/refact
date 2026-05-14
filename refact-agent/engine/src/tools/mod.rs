@@ -34,6 +34,7 @@ mod tool_tree;
 mod tool_web;
 mod tool_web_search;
 
+pub mod buddy;
 pub mod file_edit;
 mod tool_ask_questions;
 pub(crate) mod tool_buddy_create_draft;

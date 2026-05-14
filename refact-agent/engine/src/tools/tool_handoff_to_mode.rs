@@ -157,7 +157,9 @@ impl Tool for ToolHandoffToMode {
             },
             experimental: false,
             allow_parallel: false,
-            description: "Create a new chat in another mode using the current conversation context.".to_string(),
+            description:
+                "Create a new chat in another mode using the current conversation context."
+                    .to_string(),
             input_schema,
             output_schema: None,
             annotations: None,

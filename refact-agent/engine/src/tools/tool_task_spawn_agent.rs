@@ -972,7 +972,12 @@ mod tests {
         assert_eq!(thread.mode, "task_agent");
         assert_eq!(thread.task_meta.as_ref().unwrap().role, "agents");
         assert_eq!(
-            thread.task_meta.as_ref().unwrap().planner_chat_id.as_deref(),
+            thread
+                .task_meta
+                .as_ref()
+                .unwrap()
+                .planner_chat_id
+                .as_deref(),
             Some("planner-task-1-1")
         );
         assert_eq!(thread.parent_id.as_deref(), Some("planner-task-1-1"));

@@ -1533,10 +1533,8 @@ async fn subchat_stream(
             supports_temperature: model_rec.supports_temperature,
         };
 
-        let mut collector = SubchatProgressCollector::new(
-            progress_sender.clone(),
-            progress_tool_call_id.clone(),
-        );
+        let mut collector =
+            SubchatProgressCollector::new(progress_sender.clone(), progress_tool_call_id.clone());
 
         let call_ts_start = chrono::Utc::now().to_rfc3339();
         let call_start = std::time::Instant::now();
@@ -1601,7 +1599,8 @@ async fn subchat_stream(
                         );
                     } else {
                         let delay = retry_delay_for_attempt(retry_attempt);
-                        let retry_reason_for_log = retry_reason.as_deref().unwrap_or("retryable_error");
+                        let retry_reason_for_log =
+                            retry_reason.as_deref().unwrap_or("retryable_error");
                         last_retry_reason = Some(retry_reason_for_log.to_string());
                         warn!(
                             "Retrying subchat generation after retryable LLM error in {}s (attempt {}/{}, reason={})",

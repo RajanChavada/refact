@@ -18,8 +18,8 @@ pub const LLM_RETRY_DELAYS: [Duration; MAX_LLM_RETRY_ATTEMPTS] = [
 ];
 
 const NON_RETRYABLE_STATUS_CODES: &[&str] = &[
-    "400", "401", "402", "403", "404", "405", "409", "413", "415", "422", "423", "424",
-    "426", "451",
+    "400", "401", "402", "403", "404", "405", "409", "413", "415", "422", "423", "424", "426",
+    "451",
 ];
 
 const RETRYABLE_STATUS_CODES: &[&str] = &["408", "425", "429", "500", "502", "503", "504", "529"];
@@ -184,7 +184,9 @@ pub fn classify_llm_error_for_retry(error: &str) -> RetryDecision {
         };
     }
 
-    if contains_non_retryable_status(&lower) || contains_any(&lower, &REQUEST_NON_RETRYABLE_PATTERNS) {
+    if contains_non_retryable_status(&lower)
+        || contains_any(&lower, &REQUEST_NON_RETRYABLE_PATTERNS)
+    {
         return RetryDecision::DoNotRetry {
             reason: "non_retryable_error",
         };
@@ -302,7 +304,10 @@ mod tests {
             "reading from socket chatgpt.com: connection closed",
         ] {
             assert!(
-                matches!(classify_llm_error_for_retry(error), RetryDecision::Retry { .. }),
+                matches!(
+                    classify_llm_error_for_retry(error),
+                    RetryDecision::Retry { .. }
+                ),
                 "expected retryable: {error}"
             );
         }

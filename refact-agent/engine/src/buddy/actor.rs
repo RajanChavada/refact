@@ -1357,7 +1357,10 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
     {
         Ok(true) => info!("buddy: archived oversized memory ops queue"),
         Ok(false) => {}
-        Err(err) => warn!("buddy: failed to archive oversized memory ops queue: {}", err),
+        Err(err) => warn!(
+            "buddy: failed to archive oversized memory ops queue: {}",
+            err
+        ),
     }
 
     let state = super::state::load_state(&project_root).await;
