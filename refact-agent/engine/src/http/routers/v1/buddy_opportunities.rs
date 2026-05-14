@@ -1026,6 +1026,7 @@ async fn create_investigation_chat(
         is_title_generated: false,
         auto_approve_editing_tools: false,
         auto_approve_dangerous_commands: false,
+        autonomous_no_confirm: false,
         version: 1,
         task_meta: None,
         worktree: None,

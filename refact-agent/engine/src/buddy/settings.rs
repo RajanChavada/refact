@@ -78,6 +78,8 @@ pub struct BuddySettings {
     pub auto_issue_creation: bool,
     pub personality_prompt: Option<String>,
     #[serde(default = "default_true")]
+    pub autonomous_chats_enabled: bool,
+    #[serde(default = "default_true")]
     pub proactive_enabled: bool,
     #[serde(default)]
     pub message_observation_enabled: bool,
@@ -106,6 +108,7 @@ impl Default for BuddySettings {
             auto_diagnostics: true,
             auto_issue_creation: false,
             personality_prompt: None,
+            autonomous_chats_enabled: true,
             proactive_enabled: true,
             message_observation_enabled: false,
             housekeeping_enabled: true,

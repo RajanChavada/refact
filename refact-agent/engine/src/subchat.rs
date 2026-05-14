@@ -107,6 +107,7 @@ pub struct WrapUpConfig {
 pub struct SubchatConfig {
     pub tool_name: String,
     pub stateful: bool,
+    pub autonomous_no_confirm: bool,
     pub chat_id: Option<String>,
     pub title: Option<String>,
     pub parent_id: Option<String>,
@@ -734,6 +735,8 @@ pub async fn resolve_subchat_config_with_parent(
 
     let params = resolve_subchat_params(gcx.clone(), tool_name).await?;
     let model = resolve_subchat_model_for_tool(gcx.clone(), tool_name, &params).await?;
+    let autonomous_no_confirm =
+        resolve_subagent_autonomous_no_confirm(gcx.clone(), tool_name).await;
 
     let caps = try_load_caps_quickly_if_not_present(gcx.clone(), 0)
         .await
@@ -752,6 +755,7 @@ pub async fn resolve_subchat_config_with_parent(
     Ok(SubchatConfig {
         tool_name: tool_name.to_string(),
         stateful,
+        autonomous_no_confirm,
         chat_id,
         title,
         parent_id,
@@ -808,9 +812,20 @@ fn stateful_thread_from_config(chat_id: &str, config: &SubchatConfig) -> ThreadP
         parent_id: config.parent_id.clone(),
         link_type: config.link_type.clone(),
         root_chat_id: config.root_chat_id.clone(),
+        autonomous_no_confirm: config.autonomous_no_confirm,
         buddy_meta: config.buddy_meta.clone(),
         ..Default::default()
     }
+}
+
+async fn resolve_subagent_autonomous_no_confirm(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    tool_name: &str,
+) -> bool {
+    crate::yaml_configs::customization_registry::get_subagent_config(gcx, tool_name, None)
+        .await
+        .and_then(|config| config.subchat.autonomous_no_confirm)
+        .unwrap_or(false)
 }
 
 fn is_subagentic_link_type(link_type: &str) -> bool {
@@ -1091,6 +1106,7 @@ async fn run_subchat_loop(
             step,
             config.max_steps,
             config.parent_tool_call_id.clone(),
+            config.autonomous_no_confirm,
         )
         .await?;
 
@@ -1173,6 +1189,7 @@ async fn run_subchat_with_wrap_up(
             step_n,
             config.max_steps,
             config.parent_tool_call_id.clone(),
+            config.autonomous_no_confirm,
         )
         .await?;
 
@@ -1196,6 +1213,7 @@ async fn run_subchat_with_wrap_up(
         step_n,
         config.max_steps,
         config.parent_tool_call_id.clone(),
+        config.autonomous_no_confirm,
     )
     .await?;
 
@@ -1247,6 +1265,7 @@ async fn execute_pending_tool_calls(
     step_idx: usize,
     max_steps: usize,
     tx_toolid_mb: Option<String>,
+    autonomous_no_confirm: bool,
 ) -> Result<Vec<ChatMessage>, String> {
     let (gcx, n_ctx, task_meta, worktree) = {
         let ccx_locked = ccx.lock().await;
@@ -1296,6 +1315,7 @@ async fn execute_pending_tool_calls(
         context_tokens_cap: Some(n_ctx),
         task_meta,
         worktree,
+        autonomous_no_confirm,
         ..Default::default()
     };
 
@@ -1895,6 +1915,7 @@ mod subchat_tests {
         let config = SubchatConfig {
             tool_name: "subagent".to_string(),
             stateful: true,
+            autonomous_no_confirm: false,
             chat_id: None,
             title: Some("Subchat".to_string()),
             parent_id: Some("parent".to_string()),
@@ -1941,6 +1962,7 @@ mod subchat_tests {
         let config = SubchatConfig {
             tool_name: "strategic_planning_gather_files".to_string(),
             stateful: true,
+            autonomous_no_confirm: false,
             chat_id: None,
             title: Some("Strategic Planning: Gathering Files".to_string()),
             parent_id: Some("planner-task-1-1".to_string()),
@@ -1993,6 +2015,7 @@ mod subchat_tests {
         let config = SubchatConfig {
             tool_name: "subagent".to_string(),
             stateful: false,
+            autonomous_no_confirm: false,
             chat_id: None,
             title: None,
             parent_id: None,
@@ -2181,6 +2204,7 @@ mod subchat_tests {
         let config = SubchatConfig {
             tool_name: "subagent".to_string(),
             stateful: true,
+            autonomous_no_confirm: false,
             chat_id: Some("child-ref-chat".to_string()),
             title: Some("Subchat".to_string()),
             parent_id: Some("parent-ref-chat".to_string()),

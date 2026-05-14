@@ -258,6 +258,7 @@ fn build_agent_thread_params(
         is_title_generated: true,
         auto_approve_editing_tools: true,
         auto_approve_dangerous_commands: false,
+        autonomous_no_confirm: false,
         task_meta: Some(TaskMeta {
             task_id: task_id.to_string(),
             role: "agents".to_string(),

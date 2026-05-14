@@ -406,6 +406,8 @@ pub struct SubchatConfig {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub tokens_for_rag: Option<usize>,
+    #[serde(default)]
+    pub autonomous_no_confirm: Option<bool>,
 }
 
 fn default_context_mode() -> String {

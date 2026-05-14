@@ -22,6 +22,7 @@ use crate::buddy::autonomous_workflows::{
 use crate::buddy::diagnostics::{DiagnosticContext, DiagnosticSeverity};
 use crate::buddy::memory_lifecycle::{MemoryCandidate, MemoryCandidateStatus, MemorySource};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
+use crate::buddy::settings::load_settings;
 use crate::buddy::types::{BuddyActivity, BuddyFact, BuddyFactKind, BuddyRuntimeEvent, BuddyThreadMeta};
 use crate::call_validation::ChatMessage;
 use crate::global_context::GlobalContext;
@@ -1741,6 +1742,15 @@ fn cap_text(text: &str, max_chars: usize) -> String {
     format!("{}{}", prefix, TRUNCATED_MARKER)
 }
 
+async fn autonomous_chats_enabled(gcx: Arc<ARwLock<GlobalContext>>) -> Result<bool, String> {
+    let project_root = crate::files_correction::get_project_dirs(gcx)
+        .await
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no project root".to_string())?;
+    Ok(load_settings(&project_root).await.autonomous_chats_enabled)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub async fn run_autonomous_buddy_chat(
     gcx: Arc<ARwLock<GlobalContext>>,
@@ -1751,6 +1761,10 @@ pub async fn run_autonomous_buddy_chat(
             "invalid autonomous buddy workflow id: {}",
             spec.workflow_id
         ));
+    }
+
+    if !autonomous_chats_enabled(gcx.clone()).await? {
+        return Err("autonomous chats disabled".to_string());
     }
 
     let (messages, max_steps) = build_autonomous_messages(gcx.clone(), &spec).await?;
@@ -1772,6 +1786,7 @@ pub async fn run_autonomous_buddy_chat(
     )
     .await?;
 
+    config.autonomous_no_confirm = true;
     config.mode = "buddy".to_string();
     config.buddy_meta = Some(BuddyThreadMeta {
         is_buddy_chat: true,
@@ -3253,7 +3268,7 @@ mod tests {
     use super::*;
     use crate::buddy::autonomous_workflows::AUTONOMOUS_BUDDY_WORKFLOWS;
     use crate::buddy::scheduler::BuddyJobContext;
-    use crate::buddy::settings::BuddySettings;
+    use crate::buddy::settings::{save_settings, BuddySettings};
     use crate::buddy::types::{BuddyFact, BuddyJobState, BuddyOnboarding, BuddyPetState, BuddyPulse};
     use crate::call_validation::ChatContent;
     use crate::stats::event::LlmCallEvent;
@@ -4628,6 +4643,32 @@ mod tests {
         assert!(result.speech.is_none());
         assert!(result.suggestion.is_none());
         assert_eq!(result.last_result.as_deref(), Some(stored.as_str()));
+    }
+
+    #[tokio::test]
+    async fn autonomous_chat_disabled_when_kill_switch_off() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::buddy::storage::bootstrap_buddy_storage(dir.path())
+            .await
+            .unwrap();
+        let mut settings = BuddySettings::default();
+        settings.autonomous_chats_enabled = false;
+        save_settings(dir.path(), &settings).await.unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let gcx_lock = gcx.read().await;
+            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+                vec![dir.path().to_path_buf()];
+        }
+        let spec = AutonomousBuddyChatSpec::new(
+            "buddy_security_whisperer",
+            "Security Whisperer",
+            "Prompt",
+            "Evidence",
+        );
+        let err = run_autonomous_buddy_chat(gcx, spec).await.unwrap_err();
+
+        assert_eq!(err, "autonomous chats disabled");
     }
 
     #[tokio::test]

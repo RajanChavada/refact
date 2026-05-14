@@ -260,6 +260,7 @@ impl Tool for ToolHandoffToMode {
             is_title_generated: false,
             auto_approve_editing_tools: thread.auto_approve_editing_tools,
             auto_approve_dangerous_commands: thread.auto_approve_dangerous_commands,
+            autonomous_no_confirm: thread.autonomous_no_confirm,
             version: 1,
             task_meta,
             worktree: thread.worktree.clone(),

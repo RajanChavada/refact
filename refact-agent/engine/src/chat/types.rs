@@ -158,6 +158,8 @@ pub struct ThreadParams {
     pub auto_approve_editing_tools: bool,
     #[serde(default)]
     pub auto_approve_dangerous_commands: bool,
+    #[serde(default)]
+    pub autonomous_no_confirm: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_meta: Option<TaskMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,6 +208,7 @@ impl Default for ThreadParams {
             is_title_generated: false,
             auto_approve_editing_tools: false,
             auto_approve_dangerous_commands: false,
+            autonomous_no_confirm: false,
             task_meta: None,
             worktree: None,
             parent_id: None,

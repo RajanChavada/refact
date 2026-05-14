@@ -195,6 +195,7 @@ pub struct TrajectorySnapshot {
     pub is_title_generated: bool,
     pub auto_approve_editing_tools: bool,
     pub auto_approve_dangerous_commands: bool,
+    pub autonomous_no_confirm: bool,
     pub version: u64,
     pub task_meta: Option<super::types::TaskMeta>,
     pub worktree: Option<WorktreeMeta>,
@@ -240,6 +241,7 @@ impl TrajectorySnapshot {
             is_title_generated: session.thread.is_title_generated,
             auto_approve_editing_tools: session.thread.auto_approve_editing_tools,
             auto_approve_dangerous_commands: session.thread.auto_approve_dangerous_commands,
+            autonomous_no_confirm: session.thread.autonomous_no_confirm,
             version: session.trajectory_version,
             task_meta: session.thread.task_meta.clone(),
             worktree: session.thread.worktree.clone(),
@@ -697,6 +699,10 @@ pub async fn load_trajectory_for_chat(
             .get("auto_approve_dangerous_commands")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        autonomous_no_confirm: t
+            .get("autonomous_no_confirm")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         task_meta,
         worktree,
         parent_id: t
@@ -855,6 +861,7 @@ I'm your **Task Planner**. I handle the complete task lifecycle - from investiga
         is_title_generated: false,
         auto_approve_editing_tools: true,
         auto_approve_dangerous_commands: true,
+        autonomous_no_confirm: false,
         auto_enrichment_enabled: Some(false),
         task_meta: Some(task_meta),
         worktree: None,
@@ -899,6 +906,7 @@ pub async fn save_trajectory_as(
         is_title_generated: thread.is_title_generated,
         auto_approve_editing_tools: thread.auto_approve_editing_tools,
         auto_approve_dangerous_commands: thread.auto_approve_dangerous_commands,
+        autonomous_no_confirm: thread.autonomous_no_confirm,
         version: 1,
         task_meta: thread.task_meta.clone(),
         worktree: thread.worktree.clone(),
@@ -951,6 +959,7 @@ pub async fn save_trajectory_snapshot(
         "isTitleGenerated": snapshot.is_title_generated,
         "auto_approve_editing_tools": snapshot.auto_approve_editing_tools,
         "auto_approve_dangerous_commands": snapshot.auto_approve_dangerous_commands,
+        "autonomous_no_confirm": snapshot.autonomous_no_confirm,
     });
 
     if let Some(ref effort) = snapshot.reasoning_effort {
@@ -3368,6 +3377,7 @@ mod tests {
                 is_title_generated: true,
                 auto_approve_editing_tools: false,
                 auto_approve_dangerous_commands: false,
+                autonomous_no_confirm: false,
                 task_meta: None,
                 worktree: None,
                 parent_id: Some("parent-chat-id".to_string()),
@@ -3648,6 +3658,7 @@ mod tests {
             is_title_generated: true,
             auto_approve_editing_tools: false,
             auto_approve_dangerous_commands: false,
+            autonomous_no_confirm: false,
             version: 1,
             task_meta: None,
             worktree: Some(worktree.clone()),
@@ -3717,6 +3728,7 @@ mod tests {
                 is_title_generated: true,
                 auto_approve_editing_tools: false,
                 auto_approve_dangerous_commands: false,
+                autonomous_no_confirm: false,
                 version: 1,
                 task_meta: None,
                 worktree: None,

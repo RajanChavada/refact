@@ -236,6 +236,9 @@ fn is_editing_tool(tool_name: &str) -> bool {
 }
 
 fn should_auto_approve_confirmation(thread: &ThreadParams, tool_name: &str) -> bool {
+    if thread.autonomous_no_confirm {
+        return true;
+    }
     thread.auto_approve_dangerous_commands
         || (thread.auto_approve_editing_tools && is_editing_tool(tool_name))
 }
@@ -526,6 +529,26 @@ mod tests {
         assert!(should_auto_approve_confirmation(&thread, "mv"));
         assert!(!should_auto_approve_confirmation(&thread, "cat"));
         assert!(!should_auto_approve_confirmation(&thread, "shell"));
+    }
+
+    #[test]
+    fn test_autonomous_no_confirm_bypasses_confirmation() {
+        let thread = ThreadParams {
+            autonomous_no_confirm: true,
+            ..Default::default()
+        };
+
+        assert!(should_auto_approve_confirmation(&thread, "shell"));
+        assert!(should_auto_approve_confirmation(&thread, "cat"));
+        assert!(should_auto_approve_confirmation(&thread, "apply_patch"));
+    }
+
+    #[test]
+    fn test_user_chat_still_requires_approval() {
+        let thread = ThreadParams::default();
+
+        assert!(!should_auto_approve_confirmation(&thread, "apply_patch"));
+        assert!(!should_auto_approve_confirmation(&thread, "mv"));
     }
 
     #[test]
@@ -1311,8 +1334,10 @@ pub async fn check_tools_confirmation(
                     continue;
                 }
 
-                let is_auto_approved =
-                    !allowed_tools.is_empty() && allowed_tools.contains(&tool_call.function.name);
+                let is_auto_approved = should_auto_approve_confirmation(
+                    thread,
+                    &tool_call.function.name,
+                ) || (!allowed_tools.is_empty() && allowed_tools.contains(&tool_call.function.name));
                 let final_action = compute_final_action(
                     &result.result,
                     mode_action.as_deref(),
