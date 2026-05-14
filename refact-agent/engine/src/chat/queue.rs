@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use chrono::Utc;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::warn;
 use uuid::Uuid;
 
 use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
+use crate::buddy::user_activity::UserAction;
 use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
 use crate::ext::hooks::HookEvent;
@@ -21,6 +23,13 @@ use crate::ext::slash_expand::expand_slash_command;
 use crate::ext::skills_context::{expand_skill_includes, SKILLS_CONTEXT_MARKER};
 use crate::worktrees::service::WorktreeService;
 use crate::worktrees::types::{WorktreeMeta, WorktreeReference};
+
+async fn push_user_activity(gcx: Arc<ARwLock<GlobalContext>>, action: UserAction) {
+    let user_activity = gcx.read().await.user_activity.clone();
+    if let Ok(mut ring) = user_activity.try_lock() {
+        ring.push(action);
+    };
+}
 
 fn apply_manual_context_files(
     session: &mut super::types::ChatSession,
@@ -1017,11 +1026,30 @@ pub async fn process_command_queue(
                     let user_message = ChatMessage {
                         message_id: Uuid::new_v4().to_string(),
                         role: "user".to_string(),
-                        content: parsed_content,
+                        content: parsed_content.clone(),
                         checkpoints,
                         ..Default::default()
                     };
                     session.add_message(user_message);
+                    if session.messages.iter().filter(|m| m.role == "user").count() == 1 {
+                        let chat_id = session.chat_id.clone();
+                        let first_user_text_preview = parsed_content
+                            .content_text_only()
+                            .chars()
+                            .take(80)
+                            .collect();
+                        drop(session);
+                        push_user_activity(
+                            gcx.clone(),
+                            UserAction::ChatStarted {
+                                chat_id,
+                                first_user_text_preview,
+                                ts: Utc::now(),
+                            },
+                        )
+                        .await;
+                        session = session_arc.lock().await;
+                    }
 
                     if suppress_auto_enrichment && context_files.is_empty() {
                         session.suppress_auto_enrichment_for_next_turn = true;
@@ -1812,6 +1840,28 @@ mod tests {
     fn test_find_allowed_command_empty_queue() {
         let queue = VecDeque::new();
         assert!(find_allowed_command_while_paused(&queue).is_none());
+    }
+
+    #[tokio::test]
+    async fn chat_started_pushed_on_first_user_message() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        push_user_activity(
+            gcx.clone(),
+            UserAction::ChatStarted {
+                chat_id: "chat-1".to_string(),
+                first_user_text_preview: "hello from first user message".chars().take(80).collect(),
+                ts: Utc::now(),
+            },
+        )
+        .await;
+
+        let user_activity = gcx.read().await.user_activity.clone();
+        let ring = user_activity.lock().await;
+        assert!(ring.snapshot().iter().any(|action| matches!(
+            action,
+            UserAction::ChatStarted { chat_id, first_user_text_preview, .. }
+                if chat_id == "chat-1" && first_user_text_preview == "hello from first user message"
+        )));
     }
 
     #[test]

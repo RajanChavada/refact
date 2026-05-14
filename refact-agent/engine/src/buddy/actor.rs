@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 use chrono::{DateTime, Utc};
 use tokio::sync::{broadcast, mpsc, RwLock as ARwLock};
@@ -9,6 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::global_context::GlobalContext;
+use super::user_activity::UserAction;
 use super::drafts::{
     validate_draft_payload, DraftCreateError, DraftStore, DraftTarget, DraftValidationError,
 };
@@ -140,6 +142,97 @@ pub(crate) fn redact_sensitive(text: &str) -> String {
         out = re.replace_all(&out, *replacement).into_owned();
     }
     out
+}
+
+fn parse_commit_activity_from_log(output: &str) -> Vec<UserAction> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            let sha = parts.next()?.trim();
+            let _subject_slug = parts.next()?;
+            let message = parts.next()?.trim();
+            if sha.is_empty() {
+                return None;
+            }
+            Some(UserAction::CommitMade {
+                sha: sha.to_string(),
+                message_first_line: message.chars().take(80).collect(),
+                files: 0,
+                ts: Utc::now(),
+            })
+        })
+        .collect()
+}
+
+async fn poll_commit_activity_once(gcx: Arc<ARwLock<GlobalContext>>, project_root: PathBuf) {
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("git")
+            .arg("log")
+            .arg("-10")
+            .arg("--since=1h ago")
+            .arg("--pretty=format:%H|%f|%s")
+            .current_dir(project_root)
+            .output()
+    })
+    .await;
+    let Ok(Ok(output)) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let actions = parse_commit_activity_from_log(&text);
+    if actions.is_empty() {
+        return;
+    }
+    let user_activity = gcx.read().await.user_activity.clone();
+    if let Ok(mut ring) = user_activity.try_lock() {
+        let mut existing = ring
+            .snapshot()
+            .iter()
+            .filter_map(|action| match action {
+                UserAction::CommitMade { sha, .. } => Some(sha.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        for action in actions {
+            if let UserAction::CommitMade { sha, .. } = &action {
+                if existing.contains(sha) {
+                    continue;
+                }
+                existing.insert(sha.clone());
+            }
+            ring.push(action);
+        }
+    };
+}
+
+async fn commit_activity_poller(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    project_root: PathBuf,
+    shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(300)) => {
+                if shutdown_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                poll_commit_activity_once(gcx.clone(), project_root.clone()).await;
+            }
+            _ = wait_for_shutdown(shutdown_flag.clone()) => {
+                break;
+            }
+        }
+    }
+}
+
+async fn wait_for_shutdown(shutdown_flag: Arc<std::sync::atomic::AtomicBool>) {
+    while !shutdown_flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 }
 
 pub(crate) fn redact_diagnostic_metadata(value: &str) -> Option<String> {
@@ -1438,6 +1531,11 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
 
     let scheduler = super::scheduler::BuddyScheduler::new();
     let shutdown_flag = gcx.read().await.shutdown_flag.clone();
+    let commit_poller_handle = tokio::spawn(commit_activity_poller(
+        gcx.clone(),
+        project_root.clone(),
+        shutdown_flag.clone(),
+    ));
     let mut expiry_tick: u64 = 0;
 
     loop {
@@ -1699,6 +1797,57 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
     }
     *buddy_arc.lock().await = None;
     let _ = writer_handle.await;
+    let _ = commit_poller_handle.await;
 
     info!("buddy: background task stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_made_poller_pushes_new_shas() {
+        let mut ring =
+            crate::buddy::user_activity::UserActivityRing::new(PathBuf::from("/tmp/project"), 200);
+        ring.push(UserAction::CommitMade {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            message_first_line: "old".to_string(),
+            files: 0,
+            ts: Utc::now(),
+        });
+        let existing = ring
+            .snapshot()
+            .iter()
+            .filter_map(|action| match action {
+                UserAction::CommitMade { sha, .. } => Some(sha.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+
+        for action in parse_commit_activity_from_log(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|old|old\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|new|new commit",
+        ) {
+            if let UserAction::CommitMade { sha, .. } = &action {
+                if existing.contains(sha) {
+                    continue;
+                }
+            }
+            ring.push(action);
+        }
+
+        let actions = ring.snapshot();
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| matches!(action, UserAction::CommitMade { .. }))
+                .count(),
+            2
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            UserAction::CommitMade { sha, message_first_line, .. }
+                if sha == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" && message_first_line == "new commit"
+        )));
+    }
 }

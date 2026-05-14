@@ -13,6 +13,8 @@ mod tool_add_workspace_folder;
 mod tool_ast_definition;
 mod tool_cat;
 mod tool_chrome;
+#[cfg(test)]
+pub mod tool_cmdline;
 mod tool_code_review;
 mod tool_compress_chat;
 pub mod tool_config_subagent;

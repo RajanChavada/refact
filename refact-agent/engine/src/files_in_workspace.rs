@@ -12,7 +12,9 @@ use tokio::sync::{RwLock as ARwLock, Mutex as AMutex};
 use walkdir::WalkDir;
 use which::which;
 use tracing::info;
+use chrono::Utc;
 
+use crate::buddy::user_activity::UserAction;
 use crate::files_correction::{canonical_path, CommandSimplifiedDirExt};
 use crate::git::operations::git_ls_files;
 use crate::global_context::{get_app_searchable_id, GlobalContext};
@@ -1236,6 +1238,14 @@ pub async fn file_watcher_event(event: Event, gcx_weak: Weak<ARwLock<GlobalConte
 }
 
 pub async fn files_in_workspace_init_task(gcx: Arc<ARwLock<GlobalContext>>) {
+    let previous_folders = gcx
+        .read()
+        .await
+        .documents_state
+        .workspace_folders
+        .lock()
+        .unwrap()
+        .clone();
     let ev = crate::buddy::actor::make_runtime_event(
         "indexing",
         "Indexing project files...",
@@ -1246,6 +1256,34 @@ pub async fn files_in_workspace_init_task(gcx: Arc<ARwLock<GlobalContext>>) {
     );
     crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
     let file_count = enqueue_all_files_from_workspace_folders(gcx.clone(), true, false).await;
+    let current_folders = gcx
+        .read()
+        .await
+        .documents_state
+        .workspace_folders
+        .lock()
+        .unwrap()
+        .clone();
+    let added = current_folders
+        .iter()
+        .filter(|folder| !previous_folders.contains(folder))
+        .map(|folder| folder.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let removed = previous_folders
+        .iter()
+        .filter(|folder| !current_folders.contains(folder))
+        .map(|folder| folder.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    if !added.is_empty() || !removed.is_empty() {
+        let user_activity = gcx.read().await.user_activity.clone();
+        if let Ok(mut ring) = user_activity.try_lock() {
+            ring.push(UserAction::WorkspaceChanged {
+                folders_added: added,
+                folders_removed: removed,
+                ts: Utc::now(),
+            });
+        };
+    }
     enqueue_all_docs_from_jsonl_but_read_first(gcx.clone(), true, false).await;
     crate::git::checkpoints::enqueue_init_shadow_repos(gcx.clone()).await;
     let ev = crate::buddy::actor::make_runtime_event(

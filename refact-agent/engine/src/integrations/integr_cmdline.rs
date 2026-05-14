@@ -6,6 +6,7 @@ use tokio::sync::RwLock as ARwLock;
 use serde::Deserialize;
 use serde::Serialize;
 use async_trait::async_trait;
+use chrono::Utc;
 use tokio::process::Command;
 use tracing::info;
 
@@ -13,6 +14,7 @@ use tracing::info;
 use shell_escape::escape;
 
 use crate::files_correction::CommandSimplifiedDirExt;
+use crate::buddy::user_activity::UserAction;
 use crate::global_context::GlobalContext;
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::integrations::process_io_utils::{execute_command, AnsiStrippable};
@@ -325,7 +327,21 @@ impl Tool for ToolCmdline {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let (command, workdir) = _parse_command_args(args, &self.cfg)?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let (gcx, chat_id) = {
+            let ccx_locked = ccx.lock().await;
+            (
+                ccx_locked.global_context.clone(),
+                ccx_locked.chat_id.clone(),
+            )
+        };
+        let user_activity = gcx.read().await.user_activity.clone();
+        if let Ok(mut ring) = user_activity.try_lock() {
+            ring.push(UserAction::CommandRun {
+                command_preview: command.chars().take(80).collect(),
+                chat_id,
+                ts: Utc::now(),
+            });
+        };
         let mut error_log = Vec::<YamlError>::new();
         let env_variables =
             crate::integrations::setting_up_integrations::get_vars_for_replacements(

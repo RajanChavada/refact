@@ -8,6 +8,7 @@ use tracing::warn;
 use uuid::Uuid;
 use chrono::Utc;
 
+use crate::buddy::user_activity::UserAction;
 use crate::global_context::GlobalContext;
 use crate::files_correction::get_project_dirs;
 use super::types::{TaskMeta, TaskBoard, TaskStatus, TrajectoryInfo};
@@ -217,9 +218,48 @@ where
     let _guard = lock.lock().await;
 
     let mut board = load_board(gcx.clone(), task_id).await?;
+    let failed_before: HashSet<String> = board
+        .cards
+        .iter()
+        .filter(|card| card.column == "failed")
+        .map(|card| card.id.clone())
+        .collect();
     let result = updater(&mut board)?;
+    let new_failed = board
+        .cards
+        .iter()
+        .filter(|card| card.column == "failed" && !failed_before.contains(&card.id))
+        .map(|card| {
+            let reason_short = card
+                .final_report
+                .as_deref()
+                .filter(|report| !report.trim().is_empty())
+                .or_else(|| {
+                    card.status_updates
+                        .last()
+                        .map(|update| update.message.as_str())
+                })
+                .unwrap_or(&card.title)
+                .chars()
+                .take(80)
+                .collect::<String>();
+            UserAction::TaskFailed {
+                task_id: task_id.to_string(),
+                reason_short,
+                ts: Utc::now(),
+            }
+        })
+        .collect::<Vec<_>>();
     board.rev += 1;
     save_board(gcx.clone(), task_id, &board).await?;
+    if !new_failed.is_empty() {
+        let user_activity = gcx.read().await.user_activity.clone();
+        if let Ok(mut ring) = user_activity.try_lock() {
+            for action in new_failed {
+                ring.push(action);
+            }
+        };
+    }
     emit_task_event(
         gcx,
         TaskEvent::BoardChanged {
@@ -544,8 +584,92 @@ pub fn infer_task_id_from_chat_id(chat_id: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_list_task_trajectory;
+    use super::{save_board, save_task_meta, should_list_task_trajectory, update_board_atomic};
+    use crate::buddy::user_activity::UserAction;
+    use crate::tasks::types::{BoardCard, StatusUpdate, TaskBoard, TaskMeta, TaskStatus};
+    use chrono::Utc;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn task_failed_pushed_on_status_transition() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        {
+            let gcx_locked = gcx.read().await;
+            *gcx_locked.documents_state.workspace_folders.lock().unwrap() =
+                vec![temp.path().to_path_buf()];
+        }
+        let task_id = "task-failed-ring";
+        let task_dir = temp.path().join(".refact/tasks").join(task_id);
+        tokio::fs::create_dir_all(&task_dir).await.unwrap();
+        let now = Utc::now().to_rfc3339();
+        let meta = TaskMeta {
+            schema_version: 1,
+            id: task_id.to_string(),
+            name: "Task".to_string(),
+            status: TaskStatus::Active,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            cards_total: 1,
+            cards_done: 0,
+            cards_failed: 0,
+            agents_active: 0,
+            base_branch: None,
+            base_commit: None,
+            default_agent_model: None,
+            is_name_generated: false,
+            last_agents_summary_at: None,
+            planner_session_state: None,
+        };
+        save_task_meta(gcx.clone(), task_id, &meta).await.unwrap();
+        save_board(
+            gcx.clone(),
+            task_id,
+            &TaskBoard {
+                cards: vec![BoardCard {
+                    id: "card-1".to_string(),
+                    title: "Card".to_string(),
+                    column: "doing".to_string(),
+                    priority: "P1".to_string(),
+                    depends_on: Vec::new(),
+                    instructions: String::new(),
+                    assignee: None,
+                    agent_chat_id: None,
+                    status_updates: vec![StatusUpdate {
+                        timestamp: now.clone(),
+                        message: "failure reason with details".to_string(),
+                    }],
+                    final_report: None,
+                    created_at: now.clone(),
+                    started_at: None,
+                    last_heartbeat_at: None,
+                    completed_at: None,
+                    agent_branch: None,
+                    agent_worktree: None,
+                    agent_worktree_name: None,
+                    target_files: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        update_board_atomic(gcx.clone(), task_id, |board| {
+            board.cards[0].column = "failed".to_string();
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let user_activity = gcx.read().await.user_activity.clone();
+        let ring = user_activity.lock().await;
+        assert!(ring.snapshot().iter().any(|action| matches!(
+            action,
+            UserAction::TaskFailed { task_id, reason_short, .. }
+                if task_id == "task-failed-ring" && reason_short == "failure reason with details"
+        )));
+    }
 
     #[test]
     fn planner_listing_hides_subagentic_child_links() {

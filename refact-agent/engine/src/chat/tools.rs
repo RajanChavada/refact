@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use chrono::Utc;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, Semaphore};
 use tracing::info;
 use uuid::Uuid;
@@ -8,6 +9,7 @@ use futures::future::join_all;
 use indexmap::IndexMap;
 
 use crate::at_commands::at_commands::AtCommandsContext;
+use crate::buddy::user_activity::UserAction;
 use crate::call_validation::{
     ChatContent, ChatMessage, ChatToolCall, ContextFile, PostprocessSettings, SubchatParameters,
 };
@@ -241,6 +243,36 @@ fn should_auto_approve_confirmation(thread: &ThreadParams, tool_name: &str) -> b
     }
     thread.auto_approve_dangerous_commands
         || (thread.auto_approve_editing_tools && is_editing_tool(tool_name))
+}
+
+async fn record_tool_activity(
+    gcx: Arc<ARwLock<GlobalContext>>,
+    tool_calls: &[ChatToolCall],
+    chat_id: &str,
+    approved_ids: &std::collections::HashSet<String>,
+    denied_ids: &std::collections::HashSet<String>,
+) {
+    if approved_ids.is_empty() && denied_ids.is_empty() {
+        return;
+    }
+    let user_activity = gcx.read().await.user_activity.clone();
+    if let Ok(mut ring) = user_activity.try_lock() {
+        for tc in tool_calls {
+            if denied_ids.contains(&tc.id) {
+                ring.push(UserAction::ToolRejected {
+                    tool_name: tc.function.name.clone(),
+                    chat_id: chat_id.to_string(),
+                    ts: Utc::now(),
+                });
+            } else if approved_ids.contains(&tc.id) {
+                ring.push(UserAction::ToolApproved {
+                    tool_name: tc.function.name.clone(),
+                    chat_id: chat_id.to_string(),
+                    ts: Utc::now(),
+                });
+            }
+        }
+    };
 }
 
 fn get_context_files_from_messages(messages: &[ChatMessage]) -> Vec<String> {
@@ -868,6 +900,28 @@ source:
             "auto"
         );
     }
+
+    #[tokio::test]
+    async fn tool_approved_pushed_on_decision() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        {
+            let user_activity = gcx.read().await.user_activity.clone();
+            let mut ring = user_activity.lock().await;
+            ring.push(UserAction::ToolApproved {
+                tool_name: "cat".to_string(),
+                chat_id: "chat-1".to_string(),
+                ts: Utc::now(),
+            });
+        }
+
+        let user_activity = gcx.read().await.user_activity.clone();
+        let ring = user_activity.lock().await;
+        assert!(ring.snapshot().iter().any(|action| matches!(
+            action,
+            UserAction::ToolApproved { tool_name, chat_id, .. }
+                if tool_name == "cat" && chat_id == "chat-1"
+        )));
+    }
 }
 
 pub async fn process_tool_calls_once(
@@ -984,10 +1038,17 @@ pub async fn process_tool_calls_once(
         }
     }
 
+    let mut approved_activity_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
     if !confirmations.is_empty() {
         let (auto_approved, remaining): (Vec<_>, Vec<_>) = confirmations
             .into_iter()
             .partition(|c| should_auto_approve_confirmation(&thread, &c.tool_name));
+
+        for confirmation in &auto_approved {
+            approved_activity_ids.insert(confirmation.tool_call_id.clone());
+        }
 
         if !remaining.is_empty() {
             let mut auto_approved_ids: Vec<String> = auto_approved
@@ -1005,6 +1066,17 @@ pub async fn process_tool_calls_once(
                 }
             }
 
+            let approved_set: std::collections::HashSet<String> =
+                auto_approved_ids.iter().cloned().collect();
+            record_tool_activity(
+                gcx.clone(),
+                &tool_calls,
+                &thread.id,
+                &approved_set,
+                &denied_ids,
+            )
+            .await;
+
             let mut session = session_arc.lock().await;
             session.set_paused_with_reasons_and_auto_approved(
                 remaining,
@@ -1014,6 +1086,20 @@ pub async fn process_tool_calls_once(
             return ToolStepOutcome::Paused;
         }
     }
+
+    for tc in &tool_calls {
+        if !denied_ids.contains(&tc.id) {
+            approved_activity_ids.insert(tc.id.clone());
+        }
+    }
+    record_tool_activity(
+        gcx.clone(),
+        &tool_calls,
+        &thread.id,
+        &approved_activity_ids,
+        &denied_ids,
+    )
+    .await;
 
     let mut tools_to_execute: Vec<_> = tool_calls
         .iter()
