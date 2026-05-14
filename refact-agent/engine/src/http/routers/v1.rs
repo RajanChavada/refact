@@ -745,6 +745,10 @@ pub fn make_v1_router() -> Router {
             "/buddy/user_activity",
             get(buddy::handle_v1_buddy_user_activity),
         )
+        .route(
+            "/buddy/pulse_preview",
+            get(buddy::handle_v1_buddy_pulse_preview),
+        )
         .route("/buddy/settings", get(buddy::handle_v1_buddy_settings_get))
         .route(
             "/buddy/settings",

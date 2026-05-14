@@ -9,6 +9,7 @@ use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::diagnostics::DiagnosticContext;
 use crate::buddy::events::BuddyEvent;
+use crate::buddy::pulse_inject::build_buddy_pulse_payload;
 use crate::buddy::settings::MAX_PALETTE_INDEX;
 use crate::buddy::types::{BuddyActivity, BuddyCareAction, BuddyConversationEntry, BuddySuggestion};
 use crate::buddy::user_activity::{time_of_day_pattern, UserAction};
@@ -58,6 +59,14 @@ pub async fn handle_v1_buddy_user_activity(
     Ok(axum::Json(serde_json::json!({
         "actions": actions,
         "time_of_day_pattern": pattern,
+    })))
+}
+
+pub async fn handle_v1_buddy_pulse_preview(
+    Extension(gcx): Extension<Arc<ARwLock<GlobalContext>>>,
+) -> Result<axum::Json<serde_json::Value>, ScratchError> {
+    Ok(axum::Json(serde_json::json!({
+        "payload": build_buddy_pulse_payload(gcx).await
     })))
 }
 

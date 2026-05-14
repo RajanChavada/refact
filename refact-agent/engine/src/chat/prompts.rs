@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use tokio::sync::Mutex as AMutex;
 use tokio::sync::RwLock as ARwLock;
 
+use crate::buddy::pulse_inject::{build_buddy_pulse_message, BUDDY_PULSE_MARKER};
 use crate::call_validation;
 use crate::files_correction::get_project_dirs;
 use crate::global_context::GlobalContext;
@@ -838,6 +839,21 @@ async fn gather_and_inject_system_context(
                 context.memories.len(),
                 insert_pos
             );
+        }
+    }
+
+    let have_buddy_pulse = messages
+        .iter()
+        .any(|m| m.role == "context_file" && m.tool_call_id == BUDDY_PULSE_MARKER);
+    if !have_buddy_pulse {
+        if let Some(pulse_msg) = build_buddy_pulse_message(gcx.clone()).await {
+            let insert_pos = messages
+                .iter()
+                .position(|m| m.role == "user" || m.role == "assistant")
+                .unwrap_or(messages.len());
+            stream_back_to_user.push_in_json(serde_json::json!(pulse_msg));
+            messages.insert(insert_pos, pulse_msg);
+            tracing::info!("Injected Buddy pulse at position {}", insert_pos);
         }
     }
 

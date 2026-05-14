@@ -14,6 +14,7 @@ pub mod observers;
 pub mod opportunities;
 pub mod policy;
 pub mod pulse;
+pub mod pulse_inject;
 pub mod runtime_queue;
 pub mod scheduler;
 pub mod settings;
