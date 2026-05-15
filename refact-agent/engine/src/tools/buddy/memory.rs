@@ -425,7 +425,10 @@ async fn find_duplicate_content(gcx: Arc<ARwLock<GlobalContext>>, hash: &str) ->
     for dir in knowledge_dirs(gcx).await {
         for entry in WalkDir::new(&dir).into_iter().filter_map(Result::ok) {
             let path = entry.path();
-            if !path.is_file() {
+            let Ok(metadata) = path.symlink_metadata() else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
                 continue;
             }
             let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
@@ -1017,6 +1020,35 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn find_duplicate_content_rejects_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let knowledge_dir = dir.path().join(KNOWLEDGE_FOLDER_NAME);
+        tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
+        tokio::fs::write(
+            knowledge_dir.join("real.md"),
+            "---\ntitle: Real\n---\n\nreal body\n",
+        )
+        .await
+        .unwrap();
+
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_body = format!("outside symlink body {}", uuid::Uuid::new_v4());
+        let outside_file = outside_dir.path().join("outside.md");
+        tokio::fs::write(
+            &outside_file,
+            format!("---\ntitle: Outside\n---\n\n{outside_body}\n"),
+        )
+        .await
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_file, knowledge_dir.join("link.md")).unwrap();
+
+        let gcx = test_gcx(dir.path()).await;
+        let found = find_duplicate_content(gcx, &compute_content_hash(&outside_body)).await;
+        assert!(found.is_none());
     }
 
     #[tokio::test]

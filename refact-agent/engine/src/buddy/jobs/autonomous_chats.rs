@@ -2489,8 +2489,8 @@ fn git_index_content(repo: &git2::Repository, path: &str) -> Result<Option<Strin
 }
 
 fn read_file_to_string_capped(path: &Path, max_bytes: u64) -> Result<Option<String>, String> {
-    let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    if !metadata.is_file() || metadata.len() > max_bytes {
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max_bytes {
         return Ok(None);
     }
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
