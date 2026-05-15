@@ -28,6 +28,7 @@ use crate::tools::tool_name_alias::build_registry_from_names;
 pub struct ExecuteToolsOptions {
     pub subchat_tool_parameters: Option<IndexMap<String, SubchatParameters>>,
     pub postprocess_settings: Option<PostprocessSettings>,
+    pub allowed_tools: Vec<String>,
 }
 
 pub enum ToolStepOutcome {
@@ -574,6 +575,22 @@ mod tests {
         assert!(should_auto_approve_confirmation(&thread, "shell"));
         assert!(should_auto_approve_confirmation(&thread, "cat"));
         assert!(should_auto_approve_confirmation(&thread, "apply_patch"));
+    }
+
+    #[test]
+    fn test_autonomous_allowlist_rejects_unlisted_tool() {
+        let result = compute_final_action(
+            &crate::tools::tools_description::MatchConfirmDenyResult::CONFIRMATION,
+            None,
+            false,
+            "unsafe_tool",
+        );
+        assert_eq!(result, "ask");
+        let thread = ThreadParams {
+            autonomous_no_confirm: true,
+            ..Default::default()
+        };
+        assert!(should_auto_approve_confirmation(&thread, "any_tool"));
     }
 
     #[test]
@@ -1240,7 +1257,10 @@ pub async fn process_tool_calls_once(
         &thread,
         mode_id,
         model_id,
-        ExecuteToolsOptions::default(),
+        ExecuteToolsOptions {
+            allowed_tools: allowed_tools.clone(),
+            ..Default::default()
+        },
     );
     let (tool_results, _) = tokio::select! {
         result = tool_execution => result,
@@ -1448,6 +1468,29 @@ pub async fn check_tools_confirmation(
             }
         };
 
+        if thread.autonomous_no_confirm && !allowed_tools.is_empty() {
+            let resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(
+                &tool_call.function.name,
+            );
+            let in_allowlist = allowed_tools
+                .iter()
+                .any(|t| t == &tool_call.function.name || t == &resolved);
+            if !in_allowlist {
+                denials.push(PauseReason {
+                    reason_type: "denial".to_string(),
+                    tool_name: tool_call.function.name.clone(),
+                    command: tool_call.function.name.clone(),
+                    rule: format!(
+                        "Tool `{}` is not allowed in this autonomous workflow",
+                        tool_call.function.name
+                    ),
+                    tool_call_id: tool_call.id.clone(),
+                    integr_config_path: tool.has_config_path(),
+                });
+                continue;
+            }
+        }
+
         let args: std::collections::HashMap<String, serde_json::Value> =
             match tool_call.function.parse_args() {
                 Ok(a) => a,
@@ -1545,21 +1588,28 @@ pub async fn execute_tools_with_session(
     thread: &ThreadParams,
     mode_id: &str,
     model_id: Option<&str>,
-    options: ExecuteToolsOptions,
+    mut options: ExecuteToolsOptions,
 ) -> (Vec<ChatMessage>, bool) {
     if tool_calls.is_empty() {
         return (vec![], false);
     }
 
-    let (prompt_messages, session_abort_flag) = {
+    let (prompt_messages, session_abort_flag, session_allowed_tools) = {
         let session = session_arc.lock().await;
         let msgs = if session.last_prompt_messages.is_empty() {
             messages.to_vec()
         } else {
             session.last_prompt_messages.clone()
         };
-        (msgs, session.abort_flag.clone())
+        (
+            msgs,
+            session.abort_flag.clone(),
+            session.active_command.allowed_tools.clone(),
+        )
     };
+    if options.allowed_tools.is_empty() {
+        options.allowed_tools = session_allowed_tools;
+    }
 
     let n_ctx = get_effective_n_ctx(gcx.clone(), thread).await;
     let budget = match ToolBudget::try_from_n_ctx(n_ctx) {
@@ -1956,6 +2006,36 @@ async fn execute_tools_inner(
         };
         if is_aborted {
             break;
+        }
+
+        let options_allowed_tools = &options.allowed_tools;
+        if !options_allowed_tools.is_empty() {
+            let resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(
+                &tool_call.function.name,
+            );
+            let in_allowlist = options_allowed_tools
+                .iter()
+                .any(|t| t == &tool_call.function.name || t == &resolved);
+            if !in_allowlist {
+                all_results.push((
+                    idx,
+                    false,
+                    vec![ChatMessage {
+                        message_id: Uuid::new_v4().to_string(),
+                        role: "tool".to_string(),
+                        content: ChatContent::SimpleText(format!(
+                            "Tool `{}` is not allowed in this autonomous workflow. Allowed: {}",
+                            tool_call.function.name,
+                            options_allowed_tools.join(", ")
+                        )),
+                        tool_call_id: tool_call.id.clone(),
+                        tool_failed: Some(true),
+                        ..Default::default()
+                    }],
+                    vec![],
+                ));
+                continue;
+            }
         }
 
         let resolved_name = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(

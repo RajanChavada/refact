@@ -325,6 +325,7 @@ pub async fn handle_v1_tools_execute(
     let options = ExecuteToolsOptions {
         subchat_tool_parameters: Some(tools_execute_post.subchat_tool_parameters.clone()),
         postprocess_settings: Some(tools_execute_post.postprocess_parameters.clone()),
+        ..Default::default()
     };
 
     let (messages, tools_ran) = execute_tools(
