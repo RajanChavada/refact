@@ -24,6 +24,7 @@ import { UserInput } from "./UserInput";
 import { ScrollArea } from "../ScrollArea";
 import { Flex, Container, Button, Box } from "@radix-ui/themes";
 import styles from "./ChatContent.module.css";
+import { BuddyPulseContent } from "./BuddyPulseContent";
 import { ContextFiles } from "./ContextFiles";
 import { SystemPrompt } from "./SystemPrompt";
 import { AssistantInput } from "./AssistantInput";
@@ -303,6 +304,12 @@ export const ChatContent: React.FC<ChatContentProps> = ({
           );
 
         case "context_files": {
+          if (item.toolCallId === "buddy_project_memory_pulse") {
+            return (
+              <BuddyPulseContent key={item.key} rawExtra={item.rawExtra} />
+            );
+          }
+
           const stateKey = `context_files:${item.toolCallId ?? item.key}`;
           return (
             <ContextFiles
@@ -525,6 +532,7 @@ type DisplayItemContextFiles = {
   messageIndex: number;
   files: ChatContextFile[];
   toolCallId?: string;
+  rawExtra?: unknown;
 };
 
 type DisplayItemDiffGroup = {
@@ -828,6 +836,7 @@ function buildDisplayItemsFromIndex(
               messageIndex: j,
               files: nextMsg.content,
               toolCallId: nextMsg.tool_call_id,
+              rawExtra: (nextMsg as { extra?: unknown }).extra,
             });
           }
           j++;
@@ -919,6 +928,7 @@ function buildDisplayItemsFromIndex(
         messageIndex: i,
         files: head.content,
         toolCallId: head.tool_call_id,
+        rawExtra: (head as { extra?: unknown }).extra,
       });
       continue;
     }
@@ -1166,6 +1176,7 @@ function buildDisplayItems(
               messageIndex: j,
               files: nextMsg.content,
               toolCallId: nextMsg.tool_call_id,
+              rawExtra: (nextMsg as { extra?: unknown }).extra,
             });
           }
           j++;
@@ -1255,6 +1266,7 @@ function buildDisplayItems(
         messageIndex: i,
         files: head.content,
         toolCallId: head.tool_call_id,
+        rawExtra: (head as { extra?: unknown }).extra,
       });
       continue;
     }

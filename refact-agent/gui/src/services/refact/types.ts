@@ -808,3 +808,57 @@ export function isSuccess(data: unknown): data is SuccessResponse {
     data.success
   );
 }
+
+export type BuddyPulsePreference = {
+  statement: string;
+  confidence: number;
+  last_updated: string;
+};
+
+export type BuddyPulseLesson = {
+  title: string;
+  preview: string;
+  tags: string[];
+  updated: string;
+};
+
+export type BuddyPulseFriction = {
+  top_error_types: { type: string; count: number }[];
+  stuck_tasks: number;
+};
+
+export type BuddyPulseReport = {
+  workflow_id: string;
+  title: string;
+  preview: string;
+  chat_id: string;
+};
+
+export type BuddyPulseActivity = {
+  grouped: { type: string; count: number; details?: string[] }[];
+  time_of_day_pattern: string;
+};
+
+export type BuddyPulsePayload = {
+  preferences: BuddyPulsePreference[];
+  lessons: BuddyPulseLesson[];
+  friction: BuddyPulseFriction;
+  recent_reports: BuddyPulseReport[];
+  user_activity: BuddyPulseActivity;
+  generated_at: string;
+};
+
+export function isBuddyPulsePayload(
+  value: unknown,
+): value is BuddyPulsePayload {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Array.isArray(v.preferences) &&
+    Array.isArray(v.lessons) &&
+    typeof v.friction === "object" &&
+    Array.isArray(v.recent_reports) &&
+    typeof v.user_activity === "object" &&
+    typeof v.generated_at === "string"
+  );
+}
