@@ -190,6 +190,17 @@ impl BuddyScheduler {
         s.jobs.push(Box::new(
             super::jobs::autonomous_chats::ArchitectureDriftWatcherJob,
         ));
+        s.jobs
+            .push(Box::new(super::jobs::buddy_onboarding::BuddyOnboardingJob));
+        s.jobs.push(Box::new(
+            super::jobs::buddy_refactor_hunter::BuddyRefactorHunterJob,
+        ));
+        s.jobs.push(Box::new(
+            super::jobs::buddy_skill_author::BuddySkillAuthorJob,
+        ));
+        s.jobs.push(Box::new(
+            super::jobs::buddy_test_coverage_watcher::BuddyTestCoverageWatcherJob,
+        ));
         s.jobs.push(Box::new(
             super::jobs::proactive_suggestions::ProactiveSuggestionsJob,
         ));

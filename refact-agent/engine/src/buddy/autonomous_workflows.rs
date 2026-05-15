@@ -14,7 +14,11 @@ pub const REFACT_COMPILE_SNIFFER_WORKFLOW_ID: &str = "refact_compile_sniffer";
 pub const BUDDY_DAILY_DIGEST_WORKFLOW_ID: &str = "buddy_daily_digest";
 pub const BUDDY_FRIDAY_RETRO_WORKFLOW_ID: &str = "buddy_friday_retro";
 pub const BUDDY_IDLE_SUGGESTER_WORKFLOW_ID: &str = "buddy_idle_suggester";
+pub const BUDDY_ONBOARDING_WORKFLOW_ID: &str = "buddy_onboarding";
 pub const BUDDY_PR_ISSUE_MATCHMAKER_WORKFLOW_ID: &str = "buddy_pr_issue_matchmaker";
+pub const BUDDY_REFACTOR_HUNTER_WORKFLOW_ID: &str = "buddy_refactor_hunter";
+pub const BUDDY_SKILL_AUTHOR_WORKFLOW_ID: &str = "buddy_skill_author";
+pub const BUDDY_TEST_COVERAGE_WATCHER_WORKFLOW_ID: &str = "buddy_test_coverage_watcher";
 pub const SECURITY_WHISPERER_WORKFLOW_ID: &str = "buddy_security_whisperer";
 pub const SETUP_COACH_WORKFLOW_ID: &str = "buddy_setup_coach";
 pub const DEPENDENCY_RADAR_WORKFLOW_ID: &str = "buddy_dependency_radar";
@@ -76,10 +80,42 @@ pub const AUTONOMOUS_BUDDY_WORKFLOWS: &[AutonomousWorkflowMeta] = &[
         kind: "system",
     },
     AutonomousWorkflowMeta {
+        id: BUDDY_ONBOARDING_WORKFLOW_ID,
+        title: "Onboarding",
+        icon: "🧭",
+        badge: "Onboarding",
+        priority: "normal",
+        kind: "system",
+    },
+    AutonomousWorkflowMeta {
         id: BUDDY_PR_ISSUE_MATCHMAKER_WORKFLOW_ID,
         title: "PR/Issue Matchmaker",
         icon: "🔗",
         badge: "PR Matchmaker",
+        priority: "normal",
+        kind: "system",
+    },
+    AutonomousWorkflowMeta {
+        id: BUDDY_REFACTOR_HUNTER_WORKFLOW_ID,
+        title: "Refactor Hunter",
+        icon: "🛠️",
+        badge: "Refactor",
+        priority: "normal",
+        kind: "system",
+    },
+    AutonomousWorkflowMeta {
+        id: BUDDY_SKILL_AUTHOR_WORKFLOW_ID,
+        title: "Skill Author",
+        icon: "✍️",
+        badge: "Skills",
+        priority: "normal",
+        kind: "system",
+    },
+    AutonomousWorkflowMeta {
+        id: BUDDY_TEST_COVERAGE_WATCHER_WORKFLOW_ID,
+        title: "Test Coverage Watcher",
+        icon: "🧪",
+        badge: "Coverage",
         priority: "normal",
         kind: "system",
     },
