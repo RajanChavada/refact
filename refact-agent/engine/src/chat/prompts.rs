@@ -29,6 +29,7 @@ const BUDDY_PERSONALITY_MARKER: &str = "%BUDDY_PERSONALITY%";
 #[derive(Clone)]
 struct BuddyPersonaCacheEntry {
     version: u64,
+    identity_name: String,
     rendered: String,
 }
 
@@ -372,12 +373,13 @@ async fn buddy_persona_block(gcx: Arc<ARwLock<GlobalContext>>, mode_id: &str) ->
     };
     let mode_id = buddy_persona_cache_mode_id(mode_id);
     let archetype_id = snapshot.state.personality.archetype_id.clone();
+    let identity_name = snapshot.state.identity.name.clone();
     let version = crate::buddy::state::persona_cache_version();
     let cache_key = (archetype_id, mode_id);
     let cache = buddy_persona_cache();
     let mut cache = cache.lock().await;
     if let Some(entry) = cache.get(&cache_key) {
-        if entry.version == version {
+        if entry.version == version && entry.identity_name == identity_name {
             return entry.rendered.clone();
         }
     }
@@ -386,6 +388,7 @@ async fn buddy_persona_block(gcx: Arc<ARwLock<GlobalContext>>, mode_id: &str) ->
         cache_key,
         BuddyPersonaCacheEntry {
             version,
+            identity_name,
             rendered: rendered.clone(),
         },
     );
@@ -594,8 +597,38 @@ mod tests {
         .await;
 
         assert!(first.contains("You are Pixel"));
-        assert!(cached_same_mode.contains("You are Pixel"));
+        assert!(cached_same_mode.contains("You are Nova"));
         assert!(uncached_other_mode.contains("You are Nova"));
+    }
+
+    #[tokio::test]
+    async fn persona_cache_invalidates_on_identity_name_change() {
+        let _guard = prompt_test_lock().lock().await;
+        let gcx = make_gcx_with_buddy().await;
+        let prompt = format!("{}", BUDDY_PERSONALITY_MARKER);
+        let first = system_prompt_add_extra_instructions(
+            gcx.clone(),
+            prompt.clone(),
+            HashSet::new(),
+            &ChatMeta::default(),
+            &None,
+            "agent",
+        )
+        .await;
+
+        set_buddy_name(&gcx, "Nova").await;
+        let second = system_prompt_add_extra_instructions(
+            gcx.clone(),
+            prompt,
+            HashSet::new(),
+            &ChatMeta::default(),
+            &None,
+            "agent",
+        )
+        .await;
+
+        assert!(first.contains("You are Pixel"));
+        assert!(second.contains("You are Nova"));
     }
 
     #[tokio::test]

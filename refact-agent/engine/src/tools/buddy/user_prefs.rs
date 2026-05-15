@@ -1,13 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AMutex;
-use tokio::sync::RwLock as ARwLock;
+use tokio::sync::{OwnedMutexGuard, RwLock as ARwLock};
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::buddy::jobs::autonomous_chats::redact_and_cap_text;
@@ -138,6 +138,21 @@ async fn profile_path(gcx: Arc<ARwLock<GlobalContext>>) -> Result<PathBuf, Strin
         .join(".refact")
         .join("buddy")
         .join("user_profile.md"))
+}
+
+fn profile_locks() -> &'static AMutex<HashMap<PathBuf, Arc<AMutex<()>>>> {
+    static LOCKS: OnceLock<AMutex<HashMap<PathBuf, Arc<AMutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| AMutex::new(HashMap::new()))
+}
+
+async fn lock_for(path: &Path) -> OwnedMutexGuard<()> {
+    let mut map = profile_locks().lock().await;
+    let lock = map
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(AMutex::new(())))
+        .clone();
+    drop(map);
+    lock.lock_owned().await
 }
 
 fn clean_value(value: &str) -> String {
@@ -291,6 +306,7 @@ async fn upsert_user_pref_at(
     if !(0.0..=1.0).contains(&confidence) {
         return Err("argument `confidence` must be between 0.0 and 1.0".to_string());
     }
+    let _guard = lock_for(path).await;
     let statement = clean_value(statement);
     let evidence = clean_value(evidence);
     let mut prefs = read_profile(path).await?;
@@ -320,6 +336,7 @@ async fn upsert_user_pref_at(
 }
 
 async fn remove_user_prefs(path: &Path, substring_match: &str) -> Result<usize, String> {
+    let _guard = lock_for(path).await;
     let needle = normalized(substring_match);
     let mut prefs = read_profile(path).await?;
     let before = prefs.len();
@@ -529,6 +546,37 @@ mod tests {
         assert_eq!(prefs.len(), 1);
         assert_eq!(prefs[0].updates, 2);
         assert_eq!(prefs[0].statement, "prefers rust over python");
+    }
+
+    #[tokio::test]
+    async fn upsert_user_pref_serializes_concurrent_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Arc::new(dir.path().join("user_profile.md"));
+        let mut handles = Vec::new();
+        for index in 0..5 {
+            let path = path.clone();
+            handles.push(tokio::spawn(async move {
+                upsert_user_pref_at(
+                    path.as_ref(),
+                    &format!("Preference {index}"),
+                    "Concurrent write",
+                    0.80,
+                    &format!("2026-05-14T10:00:0{index}Z"),
+                )
+                .await
+                .unwrap();
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        let prefs = read_profile(path.as_ref()).await.unwrap();
+        assert_eq!(prefs.len(), 5);
+        for index in 0..5 {
+            assert!(prefs
+                .iter()
+                .any(|pref| pref.statement == format!("Preference {index}")));
+        }
     }
 
     #[tokio::test]

@@ -801,7 +801,7 @@ impl Tool for ToolBuddyMemoryMerge {
                     "canonical_content": {"type": "string"},
                     "superseded_paths": {"type": "array", "items": {"type": "string"}},
                     "tags": {"type": "array", "items": {"type": "string"}},
-                    "kind": {"type": "string", "enum": MEMORY_KINDS}
+                    "kind": {"type": "string", "enum": WRITABLE_KINDS}
                 },
                 "required": ["canonical_title", "canonical_content", "superseded_paths", "tags", "kind"]
             }),
@@ -958,6 +958,31 @@ mod tests {
 
     fn args(pairs: Vec<(&str, Value)>) -> HashMap<String, Value> {
         pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    }
+
+    fn merge_schema_kind_enum() -> Vec<String> {
+        ToolBuddyMemoryMerge {
+            config_path: String::new(),
+        }
+        .tool_description()
+        .input_schema
+        .get("properties")
+        .and_then(|properties| properties.get("kind"))
+        .and_then(|kind| kind.get("enum"))
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect()
+    }
+
+    #[test]
+    fn merge_schema_kind_enum_matches_writable_kinds() {
+        let writable_kinds = WRITABLE_KINDS
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(merge_schema_kind_enum(), writable_kinds);
     }
 
     async fn write_memory(
