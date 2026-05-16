@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::caps::{
     BaseModelRecord, ChatModelRecord, CodeAssistantCaps, CompletionModelRecord, DefaultModels,
-    EmbeddingModelRecord, HasBaseModelRecord, default_embedding_batch, default_rejection_threshold,
-    strip_model_from_finetune, normalize_string,
+    EmbeddingModelRecord, HasBaseModelRecord, strip_model_from_finetune, normalize_string,
 };
 use crate::custom_error::YamlError;
 use crate::llm::adapter::WireFormat;
