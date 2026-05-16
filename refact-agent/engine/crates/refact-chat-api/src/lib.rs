@@ -157,6 +157,12 @@ pub struct ThreadParams {
     pub buddy_meta: Option<BuddyThreadMeta>,
 }
 
+impl refact_core::worktree_meta::WorktreeThread for ThreadParams {
+    fn worktree(&self) -> Option<&WorktreeMeta> {
+        self.worktree.as_ref()
+    }
+}
+
 impl Default for ThreadParams {
     fn default() -> Self {
         Self {

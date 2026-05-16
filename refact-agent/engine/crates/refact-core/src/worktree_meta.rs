@@ -2,6 +2,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::chat_types::{serialize_path, deserialize_path};
 
+pub trait WorktreeThread {
+    fn worktree(&self) -> Option<&WorktreeMeta>;
+}
+
 fn default_enforce() -> bool {
     false
 }

@@ -51,11 +51,6 @@ pub fn stream_heartbeat() -> std::time::Duration {
     timeouts().stream_heartbeat
 }
 
-impl crate::worktrees::scope::WorktreeThread for ThreadParams {
-    fn worktree(&self) -> Option<&WorktreeMeta> {
-        self.worktree.as_ref()
-    }
-}
 
 pub struct ChatSession {
     pub chat_id: String,
