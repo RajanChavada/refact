@@ -6,7 +6,7 @@
 //! appropriate API primitives; the functions here produce the canonical text
 //! representation so every adapter formats it the same way.
 
-use crate::call_validation::{ChatContent, ChatMessage};
+use refact_core::chat_types::{ChatContent, ChatMessage};
 
 /// Returns `true` for message roles that carry supplemental context and must
 /// be rendered into wire messages by each adapter rather than silently dropped.

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex as AMutex;
 use tracing::info;
 
-use crate::caps::EmbeddingModelRecord;
+use refact_core::llm_types::EmbeddingModelRecord;
 
 #[derive(serde::Serialize)]
 struct EmbeddingsPayloadOpenAI {
@@ -125,7 +125,7 @@ pub async fn get_embedding_openai_style(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::caps::BaseModelRecord;
+    use refact_core::llm_types::BaseModelRecord;
 
     fn make_test_model_rec() -> EmbeddingModelRecord {
         EmbeddingModelRecord {

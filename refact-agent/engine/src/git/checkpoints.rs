@@ -13,7 +13,7 @@ use crate::ast::chunk_utils::official_text_hashing_function;
 use crate::custom_error::MapErrToString;
 use crate::files_blocklist::reload_indexing_everywhere_if_needed;
 use crate::files_correction::{
-    deserialize_path, get_active_workspace_folder, get_project_dirs, serialize_path,
+    get_active_workspace_folder, get_project_dirs,
 };
 use crate::global_context::GlobalContext;
 use crate::git::{FileChange, FileChangeStatus, from_unix_glob_pattern_to_gitignore};
@@ -23,21 +23,7 @@ use crate::git::operations::{
 };
 use crate::git::cleanup::RECENT_COMMITS_DURATION;
 
-#[derive(Default, Serialize, Deserialize, Clone, Debug)]
-pub struct Checkpoint {
-    #[serde(
-        serialize_with = "serialize_path",
-        deserialize_with = "deserialize_path"
-    )]
-    pub workspace_folder: PathBuf,
-    pub commit_hash: String,
-}
-
-impl Checkpoint {
-    pub fn workspace_hash(&self) -> String {
-        workspace_folder_hash(&self.workspace_folder)
-    }
-}
+pub use refact_core::chat_types::Checkpoint;
 
 async fn open_shadow_repo_and_nested_repos(
     gcx: Arc<ARwLock<GlobalContext>>,
@@ -295,7 +281,7 @@ pub async fn create_workspace_checkpoint_for_root(
     let workspace_folder = resolve_checkpoint_workspace_folder(workspace_folder)?;
     let workspace_folder_hash = workspace_folder_hash(&workspace_folder);
     if let Some(prev_checkpoint) = prev_checkpoint {
-        if prev_checkpoint.workspace_hash() != workspace_folder_hash {
+        if prev_checkpoint.workspace_folder != workspace_folder {
             return Err("Can not create checkpoint for different workspace folder".to_string());
         }
     }
@@ -454,7 +440,7 @@ pub async fn restore_workspace_checkpoint_for_root(
 ) -> Result<(), String> {
     let workspace_folder = resolve_checkpoint_workspace_folder(workspace_folder)?;
     let workspace_folder_hash = workspace_folder_hash(&workspace_folder);
-    if checkpoint_to_restore.workspace_hash() != workspace_folder_hash {
+    if checkpoint_to_restore.workspace_folder != workspace_folder {
         return Err("Can not restore checkpoint for different workspace folder".to_string());
     }
 

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::call_validation::{ChatMessage, ChatUsage};
-use crate::llm::params::{CacheControl, CommonParams, ReasoningIntent};
+use refact_core::chat_types::{ChatMessage, ChatUsage};
+use crate::params::{CacheControl, CommonParams, ReasoningIntent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmRequest {

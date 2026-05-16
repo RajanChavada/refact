@@ -52,7 +52,7 @@ pub mod vecdb;
 
 pub mod fetch_embedding;
 pub mod forward_to_openai_endpoint;
-pub mod llm;
+pub use refact_llm as llm;
 pub mod providers;
 pub mod restream;
 pub mod worktrees;

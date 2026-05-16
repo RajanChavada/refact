@@ -1,13 +1,13 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{json, Value};
 
-use crate::call_validation::ChatUsage;
-use crate::llm::adapter::{
+use refact_core::chat_types::ChatUsage;
+use crate::adapter::{
     AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, extract_extra_fields,
     insert_extra_headers,
 };
-use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat};
-use crate::llm::params::CacheControl;
+use crate::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat};
+use crate::params::CacheControl;
 
 const PROTECTED_FIELDS: &[&str] = &[
     "model",
@@ -119,7 +119,7 @@ impl LlmWireAdapter for OpenAiChatAdapter {
         );
 
         insert_extra_headers(&mut headers, &settings.extra_headers);
-        crate::llm::provider_quirks::apply_github_copilot_request_headers(
+        crate::provider_quirks::apply_github_copilot_request_headers(
             &mut headers,
             req,
             settings,
@@ -205,7 +205,7 @@ impl LlmWireAdapter for OpenAiChatAdapter {
         }
 
         if settings.supports_reasoning {
-            if !crate::llm::provider_quirks::uses_openai_provider_reasoning_controls(req) {
+            if !crate::provider_quirks::uses_openai_provider_reasoning_controls(req) {
                 if let Some(effort) = req.reasoning.to_openai_effort() {
                     body["reasoning_effort"] = json!(effort);
                 }
@@ -233,7 +233,7 @@ impl LlmWireAdapter for OpenAiChatAdapter {
             }
         }
 
-        crate::llm::provider_quirks::apply_openai_chat_body_quirks(&mut body, req, settings);
+        crate::provider_quirks::apply_openai_chat_body_quirks(&mut body, req, settings);
 
         tracing::info!(
             model = %settings.model_name,
@@ -393,7 +393,7 @@ impl LlmWireAdapter for OpenAiChatAdapter {
     }
 }
 
-fn convert_messages_to_openai(messages: &[crate::call_validation::ChatMessage]) -> Vec<Value> {
+fn convert_messages_to_openai(messages: &[refact_core::chat_types::ChatMessage]) -> Vec<Value> {
     use super::render_extra::{append_text_to_tool_json, is_context_role, render_context_message};
 
     let mut result: Vec<Value> = Vec::new();
@@ -446,7 +446,7 @@ fn convert_messages_to_openai(messages: &[crate::call_validation::ChatMessage]) 
         let mut obj = json!({"role": role});
 
         match &msg.content {
-            crate::call_validation::ChatContent::SimpleText(text) => {
+            refact_core::chat_types::ChatContent::SimpleText(text) => {
                 if role == "user" && !pending_user_content.is_empty() {
                     let mut content = std::mem::take(&mut pending_user_content);
                     if !text.is_empty() {
@@ -457,7 +457,7 @@ fn convert_messages_to_openai(messages: &[crate::call_validation::ChatMessage]) 
                     obj["content"] = json!(text);
                 }
             }
-            crate::call_validation::ChatContent::Multimodal(elements) => {
+            refact_core::chat_types::ChatContent::Multimodal(elements) => {
                 // Only use array format when content actually contains images.
                 // Text-only multimodal (e.g. from trajectory deserialization or clients
                 // sending [{"type":"text","text":"..."}]) must be normalized to plain string —
@@ -497,7 +497,7 @@ fn convert_messages_to_openai(messages: &[crate::call_validation::ChatMessage]) 
                     obj["content"] = json!(msg.content.content_text_only());
                 }
             }
-            crate::call_validation::ChatContent::ContextFiles(_) => {
+            refact_core::chat_types::ChatContent::ContextFiles(_) => {
                 obj["content"] = json!(msg.content.content_text_only());
             }
         }
@@ -540,7 +540,7 @@ fn convert_messages_to_openai(messages: &[crate::call_validation::ChatMessage]) 
         result.push(obj);
 
         if role == "tool" {
-            if let crate::call_validation::ChatContent::Multimodal(elements) = &msg.content {
+            if let refact_core::chat_types::ChatContent::Multimodal(elements) = &msg.content {
                 for el in elements.iter().filter(|el| el.is_image()) {
                     pending_user_content.push(json!({
                         "type": "image_url",
@@ -757,7 +757,7 @@ fn parse_openai_usage(usage: &Value) -> Option<ChatUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call_validation::ChatMessage;
+    use refact_core::chat_types::ChatMessage;
 
     fn default_settings() -> AdapterSettings {
         AdapterSettings {
@@ -799,8 +799,8 @@ mod tests {
 
     #[test]
     fn github_copilot_openai_chat_adds_vision_header_only_for_images() {
-        use crate::call_validation::ChatContent;
-        use crate::scratchpads::multimodality::MultimodalElement;
+        use refact_core::chat_types::ChatContent;
+        use refact_core::chat_types::MultimodalElement;
 
         let adapter = OpenAiChatAdapter;
         let image_message = ChatMessage {
@@ -884,7 +884,7 @@ mod tests {
             "github_copilot/gpt-4.1".to_string(),
             vec![ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("done".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("done".to_string()),
                 tool_call_id: "call_1".to_string(),
                 ..Default::default()
             }],
@@ -923,7 +923,7 @@ mod tests {
 
     #[test]
     fn test_qwen_reasoning_enabled_body_contains_thinking_budget() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
 
         let adapter = OpenAiChatAdapter;
         let req = LlmRequest::new(
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn test_non_qwen_openai_model_never_gets_qwen_fields() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
 
         let adapter = OpenAiChatAdapter;
         let req = LlmRequest::new(
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn test_zhipu_reasoning_enabled_uses_glm_thinking_body() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
 
         let adapter = OpenAiChatAdapter;
         let req = LlmRequest::new(
@@ -1329,13 +1329,13 @@ mod tests {
 
     #[test]
     fn test_server_executed_tools_filtered() {
-        use crate::call_validation::{ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("user".to_string(), "Search for something".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("".to_string()),
                 tool_calls: Some(vec![
                     ChatToolCall {
                         id: "srvtoolu_123".to_string(), // Server-executed
@@ -1362,7 +1362,7 @@ mod tests {
             },
             ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText(
+                content: refact_core::chat_types::ChatContent::SimpleText(
                     "search results".to_string(),
                 ),
                 tool_call_id: "srvtoolu_123".to_string(), // Server-executed result
@@ -1370,7 +1370,7 @@ mod tests {
             },
             ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText(
+                content: refact_core::chat_types::ChatContent::SimpleText(
                     "file content".to_string(),
                 ),
                 tool_call_id: "call_456".to_string(), // Regular tool result
@@ -1424,8 +1424,8 @@ mod tests {
 
     #[test]
     fn test_text_only_multimodal_normalized_to_string() {
-        use crate::call_validation::ChatContent;
-        use crate::scratchpads::multimodality::MultimodalElement;
+        use refact_core::chat_types::ChatContent;
+        use refact_core::chat_types::MultimodalElement;
 
         let messages = vec![
             ChatMessage {
@@ -1467,8 +1467,8 @@ mod tests {
 
     #[test]
     fn test_multimodal_with_image_stays_array() {
-        use crate::call_validation::ChatContent;
-        use crate::scratchpads::multimodality::MultimodalElement;
+        use refact_core::chat_types::ChatContent;
+        use refact_core::chat_types::MultimodalElement;
 
         let messages = vec![ChatMessage {
             role: "user".to_string(),
@@ -1504,7 +1504,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Solve this".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("The answer".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("The answer".to_string()),
                 reasoning_content: Some("Let me reason through this...".to_string()),
                 ..Default::default()
             },
@@ -1524,7 +1524,7 @@ mod tests {
     fn test_reasoning_content_not_included_when_absent() {
         let messages = vec![ChatMessage {
             role: "assistant".to_string(),
-            content: crate::call_validation::ChatContent::SimpleText("Hi".to_string()),
+            content: refact_core::chat_types::ChatContent::SimpleText("Hi".to_string()),
             reasoning_content: None,
             ..Default::default()
         }];

@@ -5,9 +5,12 @@ use axum::http::StatusCode;
 use ropey::Rope;
 
 use crate::custom_error::ScratchError;
-use crate::git::checkpoints::Checkpoint;
-use crate::scratchpads::multimodality::MultimodalElement;
 use crate::worktrees::types::WorktreeMeta;
+
+pub use refact_core::chat_types::{
+    Checkpoint, ContextEnum, ContextFile, ChatContent, ChatMessage, ChatToolCall, ChatToolFunction,
+    ChatUsage, MeteringUsd, MultimodalElement, OutputFilter, deserialize_path, serialize_path,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CursorPosition {
@@ -135,170 +138,7 @@ pub fn code_completion_post_validate(
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct ContextFile {
-    pub file_name: String,
-    pub file_content: String,
-    pub line1: usize, // starts from 1, zero means non-valid
-    pub line2: usize, // starts from 1
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_rev: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub symbols: Vec<String>,
-    #[serde(default = "default_gradient_type_value", skip_serializing)]
-    pub gradient_type: i32,
-    #[serde(default, skip_serializing)]
-    pub usefulness: f32, // higher is better
-    #[serde(default, skip_serializing)]
-    pub skip_pp: bool, // if true, skip postprocessing compression for this file
-}
 
-impl Default for ContextFile {
-    fn default() -> Self {
-        Self {
-            file_name: String::new(),
-            file_content: String::new(),
-            line1: 0,
-            line2: 0,
-            file_rev: None,
-            symbols: Vec::new(),
-            gradient_type: -1,
-            usefulness: 0.0,
-            skip_pp: false,
-        }
-    }
-}
-
-fn default_gradient_type_value() -> i32 {
-    -1
-}
-
-#[derive(Debug, Clone)]
-pub enum ContextEnum {
-    ContextFile(ContextFile),
-    ChatMessage(ChatMessage),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ChatToolFunction {
-    pub arguments: String,
-    pub name: String,
-}
-
-impl ChatToolFunction {
-    /// Parse arguments as a JSON object, normalizing empty/non-object values to `{}`.
-    ///
-    /// LLMs sometimes emit empty strings, `""`, `null`, or other non-object JSON
-    /// as tool arguments (especially on truncated responses). This method treats any
-    /// arguments string that doesn't look like a JSON object as equivalent to `{}`.
-    pub fn parse_args(
-        &self,
-    ) -> Result<std::collections::HashMap<String, serde_json::Value>, serde_json::Error> {
-        let trimmed = self.arguments.trim();
-        let args_str = if trimmed.starts_with('{') {
-            trimmed
-        } else {
-            "{}"
-        };
-        serde_json::from_str(args_str)
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ChatToolCall {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index: Option<usize>,
-    pub function: ChatToolFunction,
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_content: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(untagged)]
-pub enum ChatContent {
-    SimpleText(String),
-    Multimodal(Vec<MultimodalElement>),
-    ContextFiles(Vec<ContextFile>),
-}
-
-impl Default for ChatContent {
-    fn default() -> Self {
-        ChatContent::SimpleText(String::new())
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct MeteringUsd {
-    pub prompt_usd: f64,
-    pub generated_usd: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read_usd: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_creation_usd: Option<f64>,
-    pub total_usd: f64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct ChatUsage {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "cache_creation_input_tokens",
-        alias = "cache_creation_tokens"
-    )]
-    pub cache_creation_tokens: Option<usize>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        rename = "cache_read_input_tokens",
-        alias = "cache_read_tokens"
-    )]
-    pub cache_read_tokens: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metering_usd: Option<MeteringUsd>,
-}
-
-#[derive(Debug, Serialize, Clone, Default)]
-pub struct ChatMessage {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub message_id: String,
-    pub role: String,
-    pub content: ChatContent,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finish_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ChatToolCall>>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub tool_call_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_failed: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<ChatUsage>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub checkpoints: Vec<Checkpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_blocks: Option<Vec<serde_json::Value>>,
-    /// Citations from web search results
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub citations: Vec<serde_json::Value>,
-    /// Server-executed content blocks (e.g., server_tool_use, web_search_tool_result)
-    /// that must be passed back verbatim in multi-turn conversations.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub server_content_blocks: Vec<serde_json::Value>,
-    /// Extra provider-specific fields that should be preserved round-trip
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty", flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-    #[serde(skip)]
-    pub output_filter: Option<crate::postprocessing::pp_command_output::OutputFilter>,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[serde(rename_all = "lowercase")]

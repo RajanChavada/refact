@@ -1,12 +1,12 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{json, Value};
 
-use crate::call_validation::ChatUsage;
-use crate::llm::adapter::{
+use refact_core::chat_types::ChatUsage;
+use crate::adapter::{
     AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, extract_extra_fields,
     insert_extra_headers,
 };
-use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat};
+use crate::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta, ResponseFormat};
 
 /// Fields that cannot be overridden via extra_body for security
 const PROTECTED_FIELDS: &[&str] = &[
@@ -60,7 +60,7 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
         );
 
         insert_extra_headers(&mut headers, &settings.extra_headers);
-        crate::llm::provider_quirks::apply_github_copilot_request_headers(
+        crate::provider_quirks::apply_github_copilot_request_headers(
             &mut headers,
             req,
             settings,
@@ -722,7 +722,7 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
 }
 
 fn convert_to_responses_format(
-    messages: &[crate::call_validation::ChatMessage],
+    messages: &[refact_core::chat_types::ChatMessage],
 ) -> (Value, Option<String>) {
     use super::render_extra::{is_context_role, render_context_message};
 
@@ -834,7 +834,7 @@ fn convert_to_responses_format(
                         "output": msg.content.content_text_only()
                     }));
 
-                    if let crate::call_validation::ChatContent::Multimodal(elements) = &msg.content
+                    if let refact_core::chat_types::ChatContent::Multimodal(elements) = &msg.content
                     {
                         for el in elements.iter().filter(|el| el.is_image()) {
                             pending_user_content.push(json!({
@@ -866,12 +866,12 @@ fn convert_to_responses_format(
     (input, instructions)
 }
 
-fn msg_content_to_responses(content: &crate::call_validation::ChatContent) -> Vec<Value> {
+fn msg_content_to_responses(content: &refact_core::chat_types::ChatContent) -> Vec<Value> {
     match content {
-        crate::call_validation::ChatContent::SimpleText(text) => {
+        refact_core::chat_types::ChatContent::SimpleText(text) => {
             vec![json!({"type": "input_text", "text": text})]
         }
-        crate::call_validation::ChatContent::Multimodal(elements) => elements
+        refact_core::chat_types::ChatContent::Multimodal(elements) => elements
             .iter()
             .map(|el| {
                 if el.is_image() {
@@ -884,7 +884,7 @@ fn msg_content_to_responses(content: &crate::call_validation::ChatContent) -> Ve
                 }
             })
             .collect(),
-        crate::call_validation::ChatContent::ContextFiles(_) => {
+        refact_core::chat_types::ChatContent::ContextFiles(_) => {
             vec![json!({"type": "input_text", "text": content.content_text_only()})]
         }
     }
@@ -1118,7 +1118,7 @@ fn extract_usage(json: &Value) -> Option<ChatUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call_validation::ChatMessage;
+    use refact_core::chat_types::ChatMessage;
 
     fn default_settings() -> AdapterSettings {
         AdapterSettings {
@@ -1264,7 +1264,7 @@ mod tests {
         );
         let mut settings = chatgpt_backend_settings();
         settings.extra_headers.insert(
-            crate::providers::openai_codex::CODEX_WEBSOCKET_ENDPOINT_HEADER.to_string(),
+            "x-refact-internal-openai-codex-websocket-endpoint".to_string(),
             "wss://chatgpt.com/backend-api/codex/responses".to_string(),
         );
 
@@ -1272,7 +1272,7 @@ mod tests {
 
         assert!(http
             .headers
-            .get(crate::providers::openai_codex::CODEX_WEBSOCKET_ENDPOINT_HEADER)
+            .get("x-refact-internal-openai-codex-websocket-endpoint")
             .is_none());
         assert_eq!(
             http.headers
@@ -1379,8 +1379,8 @@ mod tests {
 
     #[test]
     fn github_copilot_openai_responses_adds_vision_header_only_for_images() {
-        use crate::call_validation::ChatContent;
-        use crate::scratchpads::multimodality::MultimodalElement;
+        use refact_core::chat_types::ChatContent;
+        use refact_core::chat_types::MultimodalElement;
 
         let adapter = OpenAiResponsesAdapter;
         let image_message = ChatMessage {
@@ -1423,7 +1423,7 @@ mod tests {
     fn test_build_http_with_reasoning() {
         let adapter = OpenAiResponsesAdapter;
         let mut req = LlmRequest::new("gpt-4.1".to_string(), vec![])
-            .with_reasoning(crate::llm::params::ReasoningIntent::Medium);
+            .with_reasoning(crate::params::ReasoningIntent::Medium);
         req.params.temperature = Some(0.5);
         let settings = default_settings();
 
@@ -1515,13 +1515,13 @@ mod tests {
 
     #[test]
     fn test_convert_tool_loop_history() {
-        use crate::call_validation::{ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("user".to_string(), "Get the weather".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("".to_string()),
                 tool_calls: Some(vec![ChatToolCall {
                     id: "call_123".to_string(),
                     tool_type: "function".to_string(),
@@ -1536,7 +1536,7 @@ mod tests {
             },
             ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Sunny, 72F".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Sunny, 72F".to_string()),
                 tool_call_id: "call_123".to_string(),
                 ..Default::default()
             },
@@ -1743,7 +1743,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Hi there".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Hi there".to_string()),
                 tool_calls: None,
                 ..Default::default()
             },
@@ -1880,13 +1880,13 @@ mod tests {
 
     #[test]
     fn test_reasoning_items_resent_in_multi_turn() {
-        use crate::call_validation::{ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("user".to_string(), "What's the weather?".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("".to_string()),
                 thinking_blocks: Some(vec![json!({
                     "id": "rs_abc123",
                     "type": "reasoning",
@@ -1907,7 +1907,7 @@ mod tests {
             },
             ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("20°C sunny".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("20°C sunny".to_string()),
                 tool_call_id: "call_weather".to_string(),
                 ..Default::default()
             },
@@ -1945,7 +1945,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Hi".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Hi".to_string()),
                 thinking_blocks: Some(vec![json!({
                     "type": "thinking",
                     "thinking": "Let me think...",
@@ -1973,7 +1973,7 @@ mod tests {
             "o4-mini".to_string(),
             vec![ChatMessage::new("user".to_string(), "Hi".to_string())],
         )
-        .with_reasoning(crate::llm::params::ReasoningIntent::Medium);
+        .with_reasoning(crate::params::ReasoningIntent::Medium);
 
         let http = adapter.build_http(&req, &default_settings()).unwrap();
 

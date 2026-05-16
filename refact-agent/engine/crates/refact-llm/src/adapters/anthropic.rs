@@ -1,12 +1,12 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 
-use crate::call_validation::ChatUsage;
-use crate::llm::adapter::{
+use refact_core::chat_types::ChatUsage;
+use crate::adapter::{
     AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, extract_extra_fields,
     insert_extra_headers,
 };
-use crate::llm::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta};
+use crate::canonical::{CanonicalToolChoice, LlmRequest, LlmStreamDelta};
 use super::claude_code_compat;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -36,7 +36,7 @@ impl LlmWireAdapter for AnthropicAdapter {
 
         let is_cc = claude_code_compat::is_claude_code_oauth(&settings.auth_token);
         let is_github_copilot =
-            crate::llm::provider_quirks::is_github_copilot_request(req, settings);
+            crate::provider_quirks::is_github_copilot_request(req, settings);
         if is_cc {
             claude_code_compat::apply_oauth_headers(&mut headers, &settings.auth_token)?;
             claude_code_compat::apply_stainless_headers(&mut headers)?;
@@ -62,7 +62,7 @@ impl LlmWireAdapter for AnthropicAdapter {
         let is_effort_mode = settings.reasoning_type.as_deref() == Some("anthropic_effort");
 
         insert_extra_headers(&mut headers, &settings.extra_headers);
-        crate::llm::provider_quirks::apply_github_copilot_request_headers(
+        crate::provider_quirks::apply_github_copilot_request_headers(
             &mut headers,
             req,
             settings,
@@ -158,7 +158,7 @@ impl LlmWireAdapter for AnthropicAdapter {
         if settings.supports_reasoning {
             if is_effort_mode {
                 match &req.reasoning {
-                    crate::llm::params::ReasoningIntent::BudgetTokens(_n) => {
+                    crate::params::ReasoningIntent::BudgetTokens(_n) => {
                         body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
                         body["output_config"] = json!({"effort": "high"});
                     }
@@ -208,7 +208,7 @@ impl LlmWireAdapter for AnthropicAdapter {
             }
         }
 
-        crate::llm::provider_quirks::remove_anthropic_unsupported_fields(&mut body, settings);
+        crate::provider_quirks::remove_anthropic_unsupported_fields(&mut body, settings);
 
         {
             let mut betas: Vec<&str> = Vec::new();
@@ -453,7 +453,7 @@ impl LlmWireAdapter for AnthropicAdapter {
 }
 
 fn convert_to_anthropic(
-    messages: &[crate::call_validation::ChatMessage],
+    messages: &[refact_core::chat_types::ChatMessage],
     context_sanitizer: Option<&dyn Fn(&str) -> String>,
 ) -> (Option<Value>, Vec<Value>) {
     use super::render_extra::{is_context_role, render_context_message};
@@ -748,7 +748,7 @@ fn convert_to_anthropic(
                     // an array of content blocks.  Build an array when images are present
                     // so the model can see them as part of the tool output.
                     let content_value = match &msg.content {
-                        crate::call_validation::ChatContent::Multimodal(elements)
+                        refact_core::chat_types::ChatContent::Multimodal(elements)
                             if elements.iter().any(|el| el.is_image()) =>
                         {
                             let mut blocks = vec![json!({"type": "text", "text": tool_text})];
@@ -820,10 +820,10 @@ fn sanitize_anthropic_content(mut blocks: Vec<Value>) -> Vec<Value> {
     blocks
 }
 
-fn msg_content_to_anthropic(content: &crate::call_validation::ChatContent) -> Vec<Value> {
+fn msg_content_to_anthropic(content: &refact_core::chat_types::ChatContent) -> Vec<Value> {
     match content {
-        crate::call_validation::ChatContent::SimpleText(text) => vec![json!({"type": "text", "text": text})],
-        crate::call_validation::ChatContent::Multimodal(elements) => {
+        refact_core::chat_types::ChatContent::SimpleText(text) => vec![json!({"type": "text", "text": text})],
+        refact_core::chat_types::ChatContent::Multimodal(elements) => {
             elements.iter().map(|el| {
                 if el.is_image() {
                     json!({"type": "image", "source": {"type": "base64", "media_type": el.m_type, "data": el.m_content}})
@@ -832,7 +832,7 @@ fn msg_content_to_anthropic(content: &crate::call_validation::ChatContent) -> Ve
                 }
             }).collect()
         }
-        crate::call_validation::ChatContent::ContextFiles(_) => {
+        refact_core::chat_types::ChatContent::ContextFiles(_) => {
             vec![json!({"type": "text", "text": content.content_text_only()})]
         }
     }
@@ -887,8 +887,8 @@ fn parse_anthropic_usage(usage: &Value) -> Option<ChatUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call_validation::ChatMessage;
-    use crate::llm::params::CacheControl;
+    use refact_core::chat_types::ChatMessage;
+    use crate::params::CacheControl;
 
     fn settings() -> AdapterSettings {
         AdapterSettings {
@@ -919,8 +919,8 @@ mod tests {
 
     #[test]
     fn github_copilot_anthropic_messages_uses_bearer_auth_and_copilot_headers() {
-        use crate::call_validation::ChatContent;
-        use crate::scratchpads::multimodality::MultimodalElement;
+        use refact_core::chat_types::ChatContent;
+        use refact_core::chat_types::MultimodalElement;
 
         let adapter = AnthropicAdapter;
         let req = LlmRequest::new(
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn test_interleaved_thinking_beta_header() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
 
         let adapter = AnthropicAdapter;
 
@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn test_anthropic_supported_flags_keep_cache_control_tools_and_reasoning() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
 
         let adapter = AnthropicAdapter;
         let req = LlmRequest::new(
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn test_no_beta_header_when_reasoning_not_supported() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
 
         let adapter = AnthropicAdapter;
         let mut no_reasoning_settings = settings();
@@ -1228,13 +1228,13 @@ mod tests {
 
     #[test]
     fn test_multi_tool_results_grouped() {
-        use crate::call_validation::{ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("user".to_string(), "Do two things".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("".to_string()),
                 tool_calls: Some(vec![
                     ChatToolCall {
                         id: "call_1".to_string(),
@@ -1261,13 +1261,13 @@ mod tests {
             },
             ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Result A".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Result A".to_string()),
                 tool_call_id: "call_1".to_string(),
                 ..Default::default()
             },
             ChatMessage {
                 role: "tool".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Result B".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Result B".to_string()),
                 tool_call_id: "call_2".to_string(),
                 ..Default::default()
             },
@@ -1290,7 +1290,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_merged_into_following_user() {
-        use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatContent, ChatToolCall, ChatToolFunction};
 
         // Simulates post-linearization input: tool reply followed by user message
         // (linearizer folds cf into tool; real user message stays separate)
@@ -1343,12 +1343,12 @@ mod tests {
             ChatMessage::new("user".to_string(), "Edit file".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("".to_string()),
-                tool_calls: Some(vec![crate::call_validation::ChatToolCall {
+                content: refact_core::chat_types::ChatContent::SimpleText("".to_string()),
+                tool_calls: Some(vec![refact_core::chat_types::ChatToolCall {
                     id: "call_edit".to_string(),
                     tool_type: "function".to_string(),
                     extra_content: None,
-                    function: crate::call_validation::ChatToolFunction {
+                    function: refact_core::chat_types::ChatToolFunction {
                         name: "file_edit".to_string(),
                         arguments: "{}".to_string(),
                     },
@@ -1358,7 +1358,7 @@ mod tests {
             },
             ChatMessage {
                 role: "diff".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("@@ -1 +1 @@".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("@@ -1 +1 @@".to_string()),
                 tool_call_id: "call_edit".to_string(),
                 ..Default::default()
             },
@@ -1442,8 +1442,8 @@ mod tests {
 
     #[test]
     fn test_thinking_max_tokens_adjustment() {
-        use crate::llm::adapter::LlmWireAdapter;
-        use crate::llm::params::ReasoningIntent;
+        use crate::adapter::LlmWireAdapter;
+        use crate::params::ReasoningIntent;
 
         let adapter = AnthropicAdapter;
 
@@ -1494,7 +1494,7 @@ mod tests {
     #[test]
     fn test_no_block_level_cache_breakpoints_on_messages() {
         // After linearization: user, assistant+tool_use, tool_result, user
-        use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatContent, ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("system".to_string(), "Be helpful".to_string()),
@@ -1607,7 +1607,7 @@ mod tests {
 
     #[test]
     fn test_no_block_level_cache_breakpoint_on_tool_use_last_block() {
-        use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatContent, ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("user".to_string(), "Do something".to_string()),
@@ -1657,7 +1657,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Solve this".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText(
+                content: refact_core::chat_types::ChatContent::SimpleText(
                     "The answer is 42".to_string(),
                 ),
                 thinking_blocks: Some(vec![json!({
@@ -1687,7 +1687,7 @@ mod tests {
 
     #[test]
     fn test_thinking_blocks_before_tool_use() {
-        use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatContent, ChatToolCall, ChatToolFunction};
 
         let messages = vec![
             ChatMessage::new("user".to_string(), "Search for X".to_string()),
@@ -1736,7 +1736,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Test".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Response".to_string()),
                 thinking_blocks: Some(vec![
                     json!({
                         "type": "thinking",
@@ -1768,7 +1768,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "What color is the grass?".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText(
+                content: refact_core::chat_types::ChatContent::SimpleText(
                     "The grass is green.".to_string(),
                 ),
                 citations: vec![json!({
@@ -1802,7 +1802,7 @@ mod tests {
     fn test_empty_citations_not_included_in_resend() {
         let messages = vec![ChatMessage {
             role: "assistant".to_string(),
-            content: crate::call_validation::ChatContent::SimpleText("Hello".to_string()),
+            content: refact_core::chat_types::ChatContent::SimpleText("Hello".to_string()),
             citations: vec![],
             ..Default::default()
         }];
@@ -1822,7 +1822,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Hi there".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Hi there".to_string()),
                 thinking_blocks: None,
                 ..Default::default()
             },
@@ -1837,7 +1837,7 @@ mod tests {
 
     #[test]
     fn test_thinking_blocks_no_block_level_cache_breakpoint_on_last_block() {
-        use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
+        use refact_core::chat_types::{ChatContent, ChatToolCall, ChatToolFunction};
 
         // Simulate call 2: user + assistant(thinking+tool_use) + tool_result
         let messages = vec![
@@ -1890,7 +1890,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Search for something".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Found it.".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Found it.".to_string()),
                 citations: vec![json!({
                     "type": "web_search_result_location",
                     "url": "https://example.com",
@@ -1943,7 +1943,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "What's the weather?".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("It's sunny.".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("It's sunny.".to_string()),
                 server_content_blocks: vec![
                     json!({
                         "type": "server_tool_use",
@@ -2094,7 +2094,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Response".to_string()),
                 thinking_blocks: Some(vec![json!({
                     "type": "thinking",
                     "thinking": "",
@@ -2126,7 +2126,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Response".to_string()),
                 thinking_blocks: Some(vec![json!({
                     "type": "thinking",
                     "thinking": "   \n\t  ",
@@ -2156,7 +2156,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Response".to_string()),
                 thinking_blocks: Some(vec![json!({
                     "type": "thinking",
                     "signature": "sig_no_text"
@@ -2185,7 +2185,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Hello".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText("Response".to_string()),
+                content: refact_core::chat_types::ChatContent::SimpleText("Response".to_string()),
                 thinking_blocks: Some(vec![
                     json!({
                         "type": "thinking",
@@ -2235,7 +2235,7 @@ mod tests {
             ChatMessage::new("user".to_string(), "Search for X".to_string()),
             ChatMessage {
                 role: "assistant".to_string(),
-                content: crate::call_validation::ChatContent::SimpleText(
+                content: refact_core::chat_types::ChatContent::SimpleText(
                     "Found results.".to_string(),
                 ),
                 thinking_blocks: Some(vec![
@@ -2462,7 +2462,7 @@ mod tests {
 
     #[test]
     fn test_effort_mode_medium_sends_adaptive() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
         let adapter = AnthropicAdapter;
         let req = LlmRequest::new(
             "claude-opus-4-7".to_string(),
@@ -2479,7 +2479,7 @@ mod tests {
 
     #[test]
     fn test_effort_mode_budget_tokens_sends_adaptive() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
         let adapter = AnthropicAdapter;
         let req = LlmRequest::new(
             "claude-opus-4-7".to_string(),
@@ -2496,7 +2496,7 @@ mod tests {
 
     #[test]
     fn test_effort_mode_extra_body_thinking_override_updates_betas() {
-        use crate::llm::params::ReasoningIntent;
+        use crate::params::ReasoningIntent;
         use std::collections::HashMap;
         let adapter = AnthropicAdapter;
         let mut extra = HashMap::new();

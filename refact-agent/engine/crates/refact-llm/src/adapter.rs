@@ -1,36 +1,11 @@
 use std::collections::HashMap;
 
 use reqwest::header::HeaderMap;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::llm::canonical::{LlmRequest, LlmStreamDelta};
+use crate::canonical::{LlmRequest, LlmStreamDelta};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WireFormat {
-    OpenaiChatCompletions,
-    OpenaiResponses,
-    AnthropicMessages,
-    OllamaNative,
-}
-
-impl Default for WireFormat {
-    fn default() -> Self {
-        Self::OpenaiChatCompletions
-    }
-}
-
-impl std::fmt::Display for WireFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OpenaiChatCompletions => write!(f, "openai_chat_completions"),
-            Self::OpenaiResponses => write!(f, "openai_responses"),
-            Self::AnthropicMessages => write!(f, "anthropic_messages"),
-            Self::OllamaNative => write!(f, "ollama_native"),
-        }
-    }
-}
+pub use refact_core::llm_types::WireFormat;
 
 pub struct HttpParts {
     pub url: String,
@@ -70,27 +45,27 @@ pub enum StreamParseError {
 
 use std::sync::OnceLock;
 
-static OPENAI_CHAT_ADAPTER: OnceLock<crate::llm::adapters::openai_chat::OpenAiChatAdapter> =
+static OPENAI_CHAT_ADAPTER: OnceLock<crate::adapters::openai_chat::OpenAiChatAdapter> =
     OnceLock::new();
 static OPENAI_RESPONSES_ADAPTER: OnceLock<
-    crate::llm::adapters::openai_responses::OpenAiResponsesAdapter,
+    crate::adapters::openai_responses::OpenAiResponsesAdapter,
 > = OnceLock::new();
-static ANTHROPIC_ADAPTER: OnceLock<crate::llm::adapters::anthropic::AnthropicAdapter> =
+static ANTHROPIC_ADAPTER: OnceLock<crate::adapters::anthropic::AnthropicAdapter> =
     OnceLock::new();
-static OLLAMA_ADAPTER: OnceLock<crate::llm::adapters::ollama::OllamaAdapter> = OnceLock::new();
+static OLLAMA_ADAPTER: OnceLock<crate::adapters::ollama::OllamaAdapter> = OnceLock::new();
 
 pub fn get_adapter(format: WireFormat) -> &'static dyn LlmWireAdapter {
     match format {
         WireFormat::OpenaiChatCompletions => {
-            OPENAI_CHAT_ADAPTER.get_or_init(|| crate::llm::adapters::openai_chat::OpenAiChatAdapter)
+            OPENAI_CHAT_ADAPTER.get_or_init(|| crate::adapters::openai_chat::OpenAiChatAdapter)
         }
         WireFormat::OpenaiResponses => OPENAI_RESPONSES_ADAPTER
-            .get_or_init(|| crate::llm::adapters::openai_responses::OpenAiResponsesAdapter),
+            .get_or_init(|| crate::adapters::openai_responses::OpenAiResponsesAdapter),
         WireFormat::AnthropicMessages => {
-            ANTHROPIC_ADAPTER.get_or_init(|| crate::llm::adapters::anthropic::AnthropicAdapter)
+            ANTHROPIC_ADAPTER.get_or_init(|| crate::adapters::anthropic::AnthropicAdapter)
         }
         WireFormat::OllamaNative => {
-            OLLAMA_ADAPTER.get_or_init(|| crate::llm::adapters::ollama::OllamaAdapter)
+            OLLAMA_ADAPTER.get_or_init(|| crate::adapters::ollama::OllamaAdapter)
         }
     }
 }

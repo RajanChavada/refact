@@ -1,79 +1,8 @@
 use std::collections::HashMap;
-use serde::Serialize;
-use serde::Deserialize;
 use serde_json::Value;
 use regex::Regex;
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct OutputFilter {
-    #[serde(default = "default_limit_lines")]
-    pub limit_lines: usize,
-    #[serde(default = "default_limit_chars")]
-    pub limit_chars: usize,
-    #[serde(default = "default_valuable_top_or_bottom")]
-    pub valuable_top_or_bottom: String,
-    #[serde(default = "default_grep")]
-    pub grep: String,
-    #[serde(default = "default_grep_context_lines")]
-    pub grep_context_lines: usize,
-    #[serde(default = "default_remove_from_output")]
-    pub remove_from_output: String,
-    #[serde(default = "default_limit_tokens")]
-    pub limit_tokens: Option<usize>,
-    #[serde(default)]
-    pub skip: bool,
-}
-
-impl Default for OutputFilter {
-    fn default() -> Self {
-        OutputFilter {
-            limit_lines: default_limit_lines(),
-            limit_chars: default_limit_chars(),
-            valuable_top_or_bottom: default_valuable_top_or_bottom(),
-            grep: default_grep(),
-            grep_context_lines: default_grep_context_lines(),
-            remove_from_output: default_remove_from_output(),
-            limit_tokens: default_limit_tokens(),
-            skip: false,
-        }
-    }
-}
-
-impl OutputFilter {
-    pub fn no_limits() -> Self {
-        OutputFilter {
-            limit_lines: usize::MAX,
-            limit_chars: usize::MAX,
-            limit_tokens: None,
-            grep: String::new(),
-            remove_from_output: String::new(),
-            skip: true,
-            ..Default::default()
-        }
-    }
-}
-
-fn default_limit_lines() -> usize {
-    50
-}
-fn default_limit_chars() -> usize {
-    8000
-}
-fn default_valuable_top_or_bottom() -> String {
-    "top".to_string()
-}
-fn default_grep() -> String {
-    "(?i)(error|failed|exception|warning|fatal|panic|traceback)".to_string()
-}
-fn default_grep_context_lines() -> usize {
-    3
-}
-fn default_remove_from_output() -> String {
-    String::new()
-}
-fn default_limit_tokens() -> Option<usize> {
-    Some(8000)
-}
+pub use refact_core::chat_types::OutputFilter;
 
 pub fn parse_output_filter_args(
     args: &HashMap<String, Value>,

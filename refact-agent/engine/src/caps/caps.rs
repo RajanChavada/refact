@@ -16,77 +16,12 @@ use crate::providers::config::{ModelTypeDefaults, ProviderDefaults, is_legacy_re
 use crate::caps::model_caps::{
     get_model_caps, model_caps_pricing_metadata, resolve_model_caps, ModelCapabilities,
 };
-use crate::llm::WireFormat;
 use crate::providers::traits::AvailableModel;
 
-#[derive(Debug, Serialize, Clone, Deserialize, Default, PartialEq)]
-pub struct BaseModelRecord {
-    #[serde(default)]
-    pub n_ctx: usize,
-
-    /// Actual model name, e.g. "gpt-4o"
-    #[serde(default)]
-    pub name: String,
-    /// provider/model_name, e.g. "openai/gpt-4o"
-    #[serde(skip_deserializing)]
-    pub id: String,
-
-    #[serde(default, skip_serializing)]
-    pub endpoint: String,
-    #[serde(default, skip_serializing)]
-    pub endpoint_style: String,
-    #[serde(default, skip_serializing)]
-    pub wire_format: WireFormat,
-    #[serde(default, skip_serializing)]
-    pub api_key: String,
-    #[serde(default, skip_serializing)]
-    pub auth_token: String,
-    #[serde(default, skip_serializing)]
-    pub tokenizer_api_key: String,
-    #[serde(default, skip_serializing)]
-    pub extra_headers: std::collections::HashMap<String, String>,
-    #[serde(default, skip_serializing)]
-    pub similar_models: Vec<String>,
-    #[serde(default)]
-    pub tokenizer: String,
-
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub experimental: bool,
-
-    /// Use max_completion_tokens instead of max_tokens (required for OpenAI o1/o3 models)
-    #[serde(default)]
-    pub supports_max_completion_tokens: bool,
-
-    /// Treat stream EOF as completion (for endpoints that don't send explicit Done signal)
-    #[serde(default)]
-    pub eof_is_done: bool,
-
-    /// Enable Anthropic's server-side web_search tool
-    #[serde(default)]
-    pub supports_web_search: bool,
-
-    /// Whether this provider supports Anthropic-style prompt cache_control.
-    /// False for providers like vLLM that reject unknown message fields.
-    #[serde(default = "default_true")]
-    pub supports_cache_control: bool,
-
-    // Fields used for Config/UI management
-    #[serde(skip_deserializing)]
-    pub removable: bool,
-    #[serde(skip_deserializing)]
-    pub user_configured: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-pub trait HasBaseModelRecord {
-    fn base(&self) -> &BaseModelRecord;
-    fn base_mut(&mut self) -> &mut BaseModelRecord;
-}
+pub use refact_core::llm_types::{
+    BaseModelRecord, EmbeddingModelRecord, HasBaseModelRecord, WireFormat,
+    default_embedding_batch, default_rejection_threshold, default_true,
+};
 
 #[derive(Debug, Serialize, Clone, Deserialize, Default)]
 pub struct ChatModelRecord {
@@ -209,40 +144,6 @@ impl HasBaseModelRecord for CompletionModelRecord {
     }
     fn base_mut(&mut self) -> &mut BaseModelRecord {
         &mut self.base
-    }
-}
-
-#[derive(Debug, Serialize, Clone, Default, PartialEq)]
-pub struct EmbeddingModelRecord {
-    #[serde(flatten)]
-    pub base: BaseModelRecord,
-
-    pub embedding_size: i32,
-    pub rejection_threshold: f32,
-    pub embedding_batch: usize,
-}
-
-pub fn default_rejection_threshold() -> f32 {
-    0.63
-}
-
-pub fn default_embedding_batch() -> usize {
-    64
-}
-
-impl HasBaseModelRecord for EmbeddingModelRecord {
-    fn base(&self) -> &BaseModelRecord {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut BaseModelRecord {
-        &mut self.base
-    }
-}
-
-impl EmbeddingModelRecord {
-    pub fn is_configured(&self) -> bool {
-        !self.base.name.is_empty()
-            && (self.embedding_size > 0 || self.embedding_batch > 0 || self.base.n_ctx > 0)
     }
 }
 

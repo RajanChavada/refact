@@ -1,12 +1,12 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{json, Map, Value};
 
-use crate::call_validation::{ChatContent, ChatMessage, ChatUsage};
-use crate::llm::adapter::{
+use refact_core::chat_types::{ChatContent, ChatMessage, ChatUsage};
+use crate::adapter::{
     AdapterSettings, HttpParts, LlmWireAdapter, StreamParseError, insert_extra_headers,
 };
-use crate::llm::canonical::{LlmRequest, LlmStreamDelta};
-use crate::llm::params::ReasoningIntent;
+use crate::canonical::{LlmRequest, LlmStreamDelta};
+use crate::params::ReasoningIntent;
 
 pub const OLLAMA_NUM_CTX_HEADER: &str = "x-refact-internal-ollama-num-ctx";
 pub const OLLAMA_KEEP_ALIVE_HEADER: &str = "x-refact-internal-ollama-keep-alive";
@@ -525,8 +525,8 @@ fn format_ollama_error(error: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call_validation::{ChatToolCall, ChatToolFunction};
-    use crate::scratchpads::multimodality::MultimodalElement;
+    use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
+    use refact_core::chat_types::MultimodalElement;
 
     fn default_settings() -> AdapterSettings {
         AdapterSettings {

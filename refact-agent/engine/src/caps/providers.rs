@@ -10,8 +10,9 @@ use crate::caps::{
     strip_model_from_finetune, normalize_string,
 };
 use crate::custom_error::YamlError;
-
 use crate::llm::adapter::WireFormat;
+
+use refact_core::llm_types::default_true;
 use crate::providers::identity::provider_identity_from_yaml;
 use crate::providers::traits::{extra_headers_mapping_to_hash_map, parse_extra_headers_value};
 
@@ -224,55 +225,7 @@ fn default_endpoint_style() -> String {
     "openai".to_string()
 }
 
-fn default_true() -> bool {
-    true
-}
 
-impl<'de> serde::Deserialize<'de> for EmbeddingModelRecord {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Input {
-            String(String),
-            Full(EmbeddingModelRecordHelper),
-        }
-
-        #[derive(Deserialize)]
-        struct EmbeddingModelRecordHelper {
-            #[serde(flatten)]
-            base: BaseModelRecord,
-            #[serde(default)]
-            embedding_size: i32,
-            #[serde(default = "default_rejection_threshold")]
-            rejection_threshold: f32,
-            #[serde(default = "default_embedding_batch")]
-            embedding_batch: usize,
-        }
-
-        match Input::deserialize(deserializer)? {
-            Input::String(name) => Ok(EmbeddingModelRecord {
-                base: BaseModelRecord {
-                    name,
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            Input::Full(mut helper) => {
-                if helper.embedding_batch > 256 {
-                    tracing::warn!("embedding_batch can't be higher than 256");
-                    helper.embedding_batch = default_embedding_batch();
-                }
-
-                Ok(EmbeddingModelRecord {
-                    base: helper.base,
-                    embedding_batch: helper.embedding_batch,
-                    rejection_threshold: helper.rejection_threshold,
-                    embedding_size: helper.embedding_size,
-                })
-            }
-        }
-    }
-}
 
 const PROVIDER_TEMPLATES: &[(&str, &str)] = &[
     (

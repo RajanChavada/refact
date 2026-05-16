@@ -1,10 +1,10 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{json, Value};
 
-use crate::call_validation::ChatContent;
-use crate::llm::adapter::AdapterSettings;
-use crate::llm::canonical::LlmRequest;
-use crate::llm::params::ReasoningIntent;
+use refact_core::chat_types::ChatContent;
+use crate::adapter::AdapterSettings;
+use crate::canonical::LlmRequest;
+use crate::params::ReasoningIntent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefactProvider {
@@ -200,7 +200,7 @@ pub fn remove_anthropic_unsupported_fields(body: &mut Value, settings: &AdapterS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::adapter::AdapterSettings;
+    use crate::adapter::AdapterSettings;
 
     fn settings() -> AdapterSettings {
         AdapterSettings {
