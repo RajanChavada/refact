@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use indexmap::IndexMap;
 use async_trait::async_trait;
 
+use crate::llm_types::EmbeddingModelRecord;
+
 pub type FileReader = Arc<dyn Fn(PathBuf) -> Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send + Sync>;
 
 #[async_trait]
@@ -85,4 +87,19 @@ pub struct SimpleTextHashVector {
 pub struct SearchResult {
     pub query_text: String,
     pub results: Vec<VecdbRecord>,
+}
+
+impl From<&EmbeddingModelRecord> for EmbeddingModelConfig {
+    fn from(model: &EmbeddingModelRecord) -> Self {
+        Self {
+            endpoint: model.base.endpoint.clone(),
+            endpoint_style: model.base.endpoint_style.clone(),
+            api_key: model.base.api_key.clone(),
+            model_name: model.base.name.clone(),
+            embedding_size: model.embedding_size,
+            rejection_threshold: model.rejection_threshold,
+            embedding_batch: model.embedding_batch,
+            n_ctx: model.base.n_ctx,
+        }
+    }
 }
