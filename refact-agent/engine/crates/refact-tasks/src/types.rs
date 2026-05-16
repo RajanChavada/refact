@@ -227,3 +227,124 @@ impl TaskBoard {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(id: &str, title: &str, column: &str, depends_on: Vec<&str>) -> BoardCard {
+        BoardCard {
+            id: id.into(),
+            title: title.into(),
+            column: column.into(),
+            priority: default_priority(),
+            depends_on: depends_on.into_iter().map(String::from).collect(),
+            instructions: String::new(),
+            assignee: None,
+            agent_chat_id: None,
+            status_updates: vec![],
+            final_report: None,
+            created_at: "2026-05-16T00:00:00Z".into(),
+            started_at: None,
+            last_heartbeat_at: None,
+            completed_at: None,
+            agent_branch: None,
+            agent_worktree: None,
+            agent_worktree_name: None,
+            target_files: vec![],
+        }
+    }
+
+    #[test]
+    fn default_board_has_schema_and_columns() {
+        let board = TaskBoard::default();
+
+        assert_eq!(board.schema_version, 1);
+        assert_eq!(board.rev, 0);
+        assert!(board.cards.is_empty());
+        assert_eq!(
+            board
+                .columns
+                .iter()
+                .map(|column| (column.id.as_str(), column.title.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("planned", "Planned"),
+                ("doing", "Doing"),
+                ("done", "Done"),
+                ("failed", "Failed")
+            ]
+        );
+    }
+
+    #[test]
+    fn serde_defaults_preserve_schema_values() {
+        let meta: TaskMeta = serde_json::from_str(
+            r#"{
+                "id": "task-1",
+                "name": "Task One",
+                "status": "active",
+                "created_at": "created",
+                "updated_at": "updated"
+            }"#,
+        )
+        .unwrap();
+        let board: TaskBoard = serde_json::from_str(r#"{"cards": []}"#).unwrap();
+
+        assert_eq!(meta.schema_version, 1);
+        assert_eq!(meta.cards_total, 0);
+        assert_eq!(meta.cards_done, 0);
+        assert_eq!(meta.cards_failed, 0);
+        assert_eq!(meta.agents_active, 0);
+        assert!(!meta.is_name_generated);
+        assert_eq!(board.schema_version, 1);
+        assert_eq!(board.rev, 0);
+        assert_eq!(board.columns.len(), 4);
+    }
+
+    #[test]
+    fn ready_cards_separate_ready_blocked_and_terminal_columns() {
+        let board = TaskBoard {
+            cards: vec![
+                card("dep-done", "Dependency done", "done", vec![]),
+                card("dep-failed", "Dependency failed", "failed", vec![]),
+                card("ready", "Ready", "planned", vec!["dep-done"]),
+                card("blocked", "Blocked", "planned", vec!["dep-failed"]),
+                card("blocked-missing", "Blocked missing", "planned", vec!["missing"]),
+                card("in-progress", "In progress", "doing", vec![]),
+            ],
+            ..TaskBoard::default()
+        };
+
+        let result = board.get_ready_cards();
+
+        assert_eq!(result.ready, vec!["ready"]);
+        assert_eq!(result.blocked, vec!["blocked", "blocked-missing"]);
+        assert_eq!(result.in_progress, vec!["in-progress"]);
+        assert_eq!(result.completed, vec!["dep-done"]);
+        assert_eq!(result.failed, vec!["dep-failed"]);
+    }
+
+    #[test]
+    fn dependency_reports_include_only_dependencies_with_reports() {
+        let mut reported = card("dep-reported", "Reported dependency", "done", vec![]);
+        reported.final_report = Some("finished cleanly".into());
+        let unreported = card("dep-unreported", "Unreported dependency", "done", vec![]);
+        let consumer = card(
+            "consumer",
+            "Consumer",
+            "planned",
+            vec!["dep-reported", "dep-unreported", "missing"],
+        );
+        let board = TaskBoard {
+            cards: vec![reported, unreported, consumer],
+            ..TaskBoard::default()
+        };
+
+        assert_eq!(
+            board.get_dependency_reports("consumer"),
+            vec![("Reported dependency".into(), "finished cleanly".into())]
+        );
+        assert!(board.get_dependency_reports("missing").is_empty());
+    }
+}
