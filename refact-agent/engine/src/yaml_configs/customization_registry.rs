@@ -669,8 +669,9 @@ mod tests {
     fn read_default_mode_file(filename: &str) -> String {
         std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates")
+                .join("refact-yaml-configs")
                 .join("src")
-                .join("yaml_configs")
                 .join("defaults")
                 .join("modes")
                 .join(filename),
