@@ -43,9 +43,9 @@ async fn invalidate_caps(gcx: Arc<ARwLock<GlobalContext>>) {
 }
 use crate::providers::config::ProviderDefaults;
 use crate::providers::config_store;
-use crate::providers::identity::{provider_identity_from_yaml, validate_provider_instance_id};
+use refact_providers::identity::{provider_identity_from_yaml, validate_provider_instance_id};
 use crate::providers::instance::ProviderInstance;
-use crate::providers::registry::{create_provider, delete_provider_config, PROVIDER_NAMES};
+use crate::providers::{create_provider, delete_provider_config, PROVIDER_NAMES};
 use crate::providers::traits::{
     AvailableModel, CustomModelConfig, ModelSource, ProviderModel, ProviderRuntime, ProviderTrait,
     extra_headers_mapping_to_hash_map, parse_extra_headers_value,

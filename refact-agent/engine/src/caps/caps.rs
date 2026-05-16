@@ -12,11 +12,11 @@ use crate::caps::providers::{
     add_models_to_caps, post_process_provider, read_providers_d, resolve_provider_api_key,
     CapsProvider,
 };
-use crate::providers::config::{ModelTypeDefaults, ProviderDefaults, is_legacy_refact_model};
+use refact_core::provider_types::{ModelTypeDefaults, ProviderDefaults, is_legacy_refact_model};
 use crate::caps::model_caps::{
     get_model_caps, model_caps_pricing_metadata, resolve_model_caps, ModelCapabilities,
 };
-use crate::providers::traits::AvailableModel;
+use refact_core::provider_types::AvailableModel;
 
 pub use refact_core::llm_types::{
     BaseModelRecord, EmbeddingModelRecord, HasBaseModelRecord, WireFormat,

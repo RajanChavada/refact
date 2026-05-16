@@ -13,8 +13,8 @@ use crate::custom_error::YamlError;
 use crate::llm::adapter::WireFormat;
 
 use refact_core::llm_types::default_true;
-use crate::providers::identity::provider_identity_from_yaml;
-use crate::providers::traits::{extra_headers_mapping_to_hash_map, parse_extra_headers_value};
+use refact_providers::identity::provider_identity_from_yaml;
+use refact_core::provider_types::{extra_headers_mapping_to_hash_map, parse_extra_headers_value};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct CapsProvider {

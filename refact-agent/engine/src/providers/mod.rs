@@ -1,37 +1,40 @@
-pub mod config;
-pub(crate) mod config_store;
 pub mod http;
-pub mod identity;
-pub mod instance;
-pub mod models_dev_provider;
-pub mod pricing;
-mod registry;
-pub mod traits;
-
-mod anthropic;
-pub mod claude_code;
-pub mod claude_code_oauth;
-mod custom;
-mod deepseek;
-mod doubao;
-pub mod github_copilot;
-pub mod github_copilot_oauth;
-mod google_gemini;
-mod groq;
-mod kimi;
-mod lmstudio;
-mod minimax;
 pub mod oauth_refresh;
-mod ollama;
-mod openai;
-pub(crate) mod openai_codex;
-pub mod openai_codex_oauth;
-mod openai_responses;
-mod openrouter;
-mod qwen;
-mod vllm;
-mod xai;
-mod xai_responses;
-mod zhipu;
+pub mod pricing;
 
-pub use registry::*;
+pub use refact_providers::config;
+pub use refact_providers::config_store;
+pub use refact_providers::identity;
+pub use refact_providers::instance;
+pub use refact_providers::models_dev_provider;
+pub use refact_providers::traits;
+
+pub use refact_providers::anthropic;
+pub use refact_providers::claude_code;
+pub use refact_providers::claude_code_oauth;
+pub use refact_providers::custom;
+pub use refact_providers::deepseek;
+pub use refact_providers::doubao;
+pub use refact_providers::github_copilot;
+pub use refact_providers::github_copilot_oauth;
+pub use refact_providers::google_gemini;
+pub use refact_providers::groq;
+pub use refact_providers::kimi;
+pub use refact_providers::lmstudio;
+pub use refact_providers::minimax;
+pub use refact_providers::ollama;
+pub use refact_providers::openai;
+pub use refact_providers::openai_codex;
+pub use refact_providers::openai_codex_oauth;
+pub use refact_providers::openai_responses;
+pub use refact_providers::openrouter;
+pub use refact_providers::qwen;
+pub use refact_providers::vllm;
+pub use refact_providers::xai;
+pub use refact_providers::xai_responses;
+pub use refact_providers::zhipu;
+
+pub use refact_providers::{
+    create_provider, delete_provider_config, load_providers_from_config, ProviderRegistry,
+    PROVIDER_NAMES,
+};
