@@ -21,6 +21,7 @@ members = [
     "crates/refact-agentic",
     "crates/refact-files",
     "crates/refact-tasks",
+    "crates/refact-file-edit-core",
 ]
 resolver = "2"
 
@@ -119,6 +120,7 @@ refact-worktrees = { path = "crates/refact-worktrees" }
 refact-agentic = { path = "crates/refact-agentic" }
 refact-files = { path = "crates/refact-files" }
 refact-tasks = { path = "crates/refact-tasks" }
+refact-file-edit-core = { path = "crates/refact-file-edit-core" }
 
 astral-tokio-tar = "0.5.2"
 axum = { version = "0.6.20", features = ["default", "http2"] }
