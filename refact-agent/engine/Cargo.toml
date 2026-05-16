@@ -16,6 +16,7 @@ members = [
     "crates/refact-chat-history",
     "crates/refact-integrations",
     "crates/refact-ext",
+    "crates/refact-yaml-configs",
 ]
 resolver = "2"
 
@@ -109,6 +110,7 @@ refact-tool-api = { path = "crates/refact-tool-api" }
 refact-chat-history = { path = "crates/refact-chat-history" }
 refact-integrations = { path = "crates/refact-integrations" }
 refact-ext = { path = "crates/refact-ext" }
+refact-yaml-configs = { path = "crates/refact-yaml-configs" }
 
 astral-tokio-tar = "0.5.2"
 axum = { version = "0.6.20", features = ["default", "http2"] }
