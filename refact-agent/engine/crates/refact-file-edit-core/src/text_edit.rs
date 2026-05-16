@@ -47,7 +47,7 @@ pub fn edit_result_summary(before: &str, after: &str, path: &PathBuf) -> String 
 }
 
 pub fn normalize_line_endings(content: &str) -> String {
-    content.replace("\r\n", "\n")
+    normalize_all_line_endings(content)
 }
 
 fn normalize_all_line_endings(content: &str) -> String {
@@ -345,6 +345,7 @@ mod tests {
     #[test]
     fn normalizes_and_restores_line_endings() {
         assert_eq!(normalize_line_endings("a\r\nb\r\n"), "a\nb\n");
+        assert_eq!(normalize_line_endings("a\rb\r"), "a\nb\n");
         assert_eq!(normalize_line_endings("a\nb\n"), "a\nb\n");
         assert_eq!(restore_line_endings("a\nb\n", true), "a\r\nb\r\n");
         assert_eq!(restore_line_endings("a\nb\n", false), "a\nb\n");
