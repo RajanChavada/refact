@@ -26,6 +26,7 @@ pub use refact_buddy_api;
 pub use refact_buddy_core;
 pub use refact_file_edit_core;
 pub use refact_files;
+pub use refact_pricing_core;
 pub use refact_tasks;
 pub use refact_chat_api;
 pub use refact_chat_history;

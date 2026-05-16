@@ -25,6 +25,7 @@ members = [
     "crates/refact-buddy-core",
     "crates/refact-file-edit-core",
     "crates/refact-at-web",
+    "crates/refact-pricing-core",
 ]
 resolver = "2"
 
@@ -127,6 +128,7 @@ refact-buddy-api = { path = "crates/refact-buddy-api" }
 refact-buddy-core = { path = "crates/refact-buddy-core" }
 refact-file-edit-core = { path = "crates/refact-file-edit-core" }
 refact-at-web = { path = "crates/refact-at-web" }
+refact-pricing-core = { path = "crates/refact-pricing-core" }
 
 astral-tokio-tar = "0.5.2"
 axum = { version = "0.6.20", features = ["default", "http2"] }
