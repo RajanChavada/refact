@@ -1,6 +1,6 @@
 use crate::ast::ast_indexer_thread::{ast_indexer_block_until_finished, ast_indexer_enqueue_files};
 use crate::at_commands::at_file::{file_repair_candidates, return_one_candidate_or_a_good_error};
-use crate::call_validation::{ChatContent, ChatMessage, ContextEnum, DiffChunk};
+use crate::call_validation::DiffChunk;
 use crate::files_correction::{
     canonicalize_normalized_path, check_if_its_inside_a_workspace_or_config,
     correct_to_nearest_dir_path, get_project_dirs, preprocess_path_for_normalization,
@@ -8,7 +8,7 @@ use crate::files_correction::{
 use crate::files_in_workspace::get_file_text_from_memory_or_disk;
 use crate::global_context::GlobalContext;
 use crate::privacy::{check_file_privacy, FilePrivacyLevel, PrivacySettings};
-use crate::worktrees::scope::{ExecutionScope, ScopedPath};
+use crate::worktrees::scope::ExecutionScope;
 use regex::{Match, Regex};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 use tracing::warn;
+
+pub use refact_scope_utils::{
+    append_scope_warnings, scope_warnings_to_tool_message, scoped_path_warnings,
+};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedToolPath {
@@ -25,57 +29,6 @@ pub struct ResolvedToolPath {
 
 pub fn active_execution_scope(scope: Option<&ExecutionScope>) -> Option<&ExecutionScope> {
     scope.filter(|scope| scope.is_enforced())
-}
-
-pub fn scoped_path_warnings(scoped: &ScopedPath, scope: &ExecutionScope) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if let Some(source_path) = &scoped.remapped_from {
-        warnings.push(format!(
-            "⚠️ Worktree scope: absolute source path '{}' was mapped to active worktree: '{}' -> '{}'",
-            source_path.display(),
-            source_path.display(),
-            scoped.path.display()
-        ));
-    } else if scoped.outside_absolute_path {
-        warnings.push(format!(
-            "⚠️ Worktree scope: strong warning: operation targeted privacy-permitted absolute path outside active worktree '{}': '{}'",
-            scope.effective_root().display(),
-            scoped.path.display()
-        ));
-    } else if scoped.used_absolute_path {
-        warnings.push(format!(
-            "⚠️ Worktree scope: absolute path was used in a worktree-scoped chat and resolved under active worktree '{}': '{}'",
-            scope.effective_root().display(),
-            scoped.path.display()
-        ));
-    }
-    warnings
-}
-
-pub fn append_scope_warnings(summary: String, warnings: &[String]) -> String {
-    if warnings.is_empty() {
-        summary
-    } else {
-        format!("{}\n{}", warnings.join("\n"), summary)
-    }
-}
-
-pub fn scope_warnings_to_tool_message(summary: &str, tool_call_id: &str) -> Option<ContextEnum> {
-    let warnings = summary
-        .lines()
-        .filter(|line| line.contains("Worktree scope:"))
-        .collect::<Vec<_>>();
-    if warnings.is_empty() {
-        None
-    } else {
-        Some(ContextEnum::ChatMessage(ChatMessage {
-            role: "tool".to_string(),
-            content: ChatContent::SimpleText(warnings.join("\n")),
-            tool_calls: None,
-            tool_call_id: tool_call_id.to_string(),
-            ..Default::default()
-        }))
-    }
 }
 
 pub fn resolve_path_with_scope(

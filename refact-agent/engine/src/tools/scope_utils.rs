@@ -3,31 +3,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock as ARwLock;
 
+pub use refact_scope_utils::{
+    dedup_notices, format_scope_notices, path_with_sep, scoped_path_notices, ScopedFiles,
+    ScopedResolvedPath, ScopedScopeFilter,
+};
+
 use crate::at_commands::at_file::{file_repair_candidates, return_one_candidate_or_a_good_error};
 use crate::call_validation::ContextFile;
 use crate::files_correction::{canonical_path, correct_to_nearest_dir_path, get_project_dirs};
 use crate::files_in_workspace::{check_file_privacy_for_send, filter_privacy_allowed_files, ls_files};
 use crate::global_context::GlobalContext;
-use crate::worktrees::scope::{ExecutionScope, ScopedPath};
-
-#[derive(Debug, Clone)]
-pub struct ScopedFiles {
-    pub files: Vec<String>,
-    pub notices: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScopedScopeFilter {
-    pub filter: Option<String>,
-    pub notices: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScopedResolvedPath {
-    pub path: PathBuf,
-    pub notices: Vec<String>,
-    pub outside_absolute_path: bool,
-}
+use crate::worktrees::scope::ExecutionScope;
 
 async fn get_workspace_files(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<PathBuf> {
     gcx.read()
@@ -37,54 +23,6 @@ async fn get_workspace_files(gcx: Arc<ARwLock<GlobalContext>>) -> Vec<PathBuf> {
         .lock()
         .unwrap()
         .clone()
-}
-
-fn path_with_sep(path: &Path) -> String {
-    let path = path.to_string_lossy().to_string();
-    if path.ends_with(std::path::MAIN_SEPARATOR) {
-        path
-    } else {
-        format!("{}{}", path, std::path::MAIN_SEPARATOR)
-    }
-}
-
-fn dedup_notices(notices: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    notices
-        .into_iter()
-        .filter(|notice| seen.insert(notice.clone()))
-        .collect()
-}
-
-pub fn format_scope_notices(notices: &[String]) -> String {
-    let notices = dedup_notices(notices.to_vec());
-    if notices.is_empty() {
-        String::new()
-    } else {
-        format!("Worktree scope notices:\n{}\n\n", notices.join("\n"))
-    }
-}
-
-pub fn scoped_path_notices(scoped: &ScopedPath) -> Vec<String> {
-    if let Some(source) = &scoped.remapped_from {
-        vec![format!(
-            "⚠️ Absolute source path was mapped to active worktree: {} -> {}",
-            source.display(),
-            scoped.path.display()
-        )]
-    } else if scoped.outside_absolute_path {
-        vec![format!(
-            "⚠️ STRONG NOTICE: absolute path is outside active worktree; content comes from outside active worktree: {}",
-            scoped.path.display()
-        )]
-    } else if scoped.used_absolute_path {
-        vec![format!(
-            "⚠️ Absolute path used in active worktree: {}",
-            scoped.path.display()
-        )]
-    } else {
-        vec![]
-    }
 }
 
 pub async fn resolve_existing_path_with_execution_scope(
