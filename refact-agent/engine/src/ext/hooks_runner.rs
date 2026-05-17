@@ -1,14 +1,13 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock as ARwLock;
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
 
+use crate::app_state::AppState;
 use crate::ext::config_dirs::{get_ext_dirs, CommandSource, ExtDirs};
-use crate::ext::hooks::{HookConfig, HookEvent, load_hooks};
-use crate::global_context::GlobalContext;
+use crate::ext::hooks::{load_hooks, HookConfig, HookEvent};
 
 const HOOK_MAX_OUTPUT_BYTES: usize = 10 * 1024;
 const HOOK_DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -115,8 +114,8 @@ async fn get_compiled_hooks_from_ext_dirs(ext_dirs: &ExtDirs) -> Vec<CompiledHoo
     compiled
 }
 
-pub async fn get_project_dir_string(gcx: Arc<ARwLock<GlobalContext>>) -> String {
-    let dirs = crate::files_correction::get_project_dirs(gcx).await;
+pub async fn get_project_dir_string(app: AppState) -> String {
+    let dirs = crate::files_correction::get_project_dirs(app.gcx.clone()).await;
     dirs.into_iter()
         .next()
         .map(|p| p.to_string_lossy().into_owned())
@@ -131,11 +130,11 @@ pub fn is_global_source(source: &CommandSource) -> bool {
 }
 
 pub async fn get_hooks_for_event(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     event: HookEvent,
     tool_name: Option<&str>,
 ) -> Vec<HookConfig> {
-    let ext_dirs = get_ext_dirs(gcx).await;
+    let ext_dirs = get_ext_dirs(app).await;
     let compiled_hooks = get_compiled_hooks_from_ext_dirs(&ext_dirs).await;
     compiled_hooks
         .into_iter()
@@ -165,12 +164,12 @@ async fn run_hooks_from_list(hooks: &[HookConfig], payload: &HookPayload) -> Vec
 }
 
 pub async fn run_hooks(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     event: HookEvent,
     payload: HookPayload,
 ) -> Vec<HookResult> {
     let tool_name = payload.tool_name.clone();
-    let matching_hooks = get_hooks_for_event(gcx, event, tool_name.as_deref()).await;
+    let matching_hooks = get_hooks_for_event(app, event, tool_name.as_deref()).await;
     run_hooks_from_list(&matching_hooks, &payload).await
 }
 

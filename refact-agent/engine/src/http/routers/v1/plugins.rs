@@ -26,9 +26,8 @@ pub struct InstallPluginRequest {
 pub async fn handle_list_marketplaces(
     State(app): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let gcx = app.gcx.clone();
-    let _ = ensure_default_marketplaces(gcx.clone()).await;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let _ = ensure_default_marketplaces(app.clone()).await;
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let db = load_plugins_db(&config_dir)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -50,10 +49,9 @@ pub async fn handle_add_marketplace(
     State(app): State<AppState>,
     body_bytes: hyper::body::Bytes,
 ) -> Result<Json<Value>, ScratchError> {
-    let gcx = app.gcx.clone();
     let req = serde_json::from_slice::<AddMarketplaceRequest>(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("JSON: {}", e)))?;
-    let mj = add_marketplace(gcx, &req.source).await.map_err(|e| {
+    let mj = add_marketplace(app, &req.source).await.map_err(|e| {
         if e.contains("invalid") || e.contains("cannot") || e.contains("must match") {
             ScratchError::new(StatusCode::BAD_REQUEST, e)
         } else {
@@ -70,11 +68,10 @@ pub async fn handle_delete_marketplace(
     State(app): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let gcx = app.gcx.clone();
     if let Err(e) = validate_plugin_name(&name) {
         return Err((StatusCode::BAD_REQUEST, e));
     }
-    remove_marketplace(gcx, &name)
+    remove_marketplace(app, &name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!({ "deleted": true })))
@@ -84,11 +81,10 @@ pub async fn handle_list_marketplace_plugins(
     State(app): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let gcx = app.gcx.clone();
     if let Err(e) = validate_plugin_name(&name) {
         return Err((StatusCode::BAD_REQUEST, e));
     }
-    let plugins = list_marketplace_plugins(gcx, &name).await.map_err(|e| {
+    let plugins = list_marketplace_plugins(app, &name).await.map_err(|e| {
         if e.contains("not found") {
             (StatusCode::NOT_FOUND, e)
         } else {
@@ -114,7 +110,6 @@ pub async fn handle_install_plugin(
     State(app): State<AppState>,
     body_bytes: hyper::body::Bytes,
 ) -> Result<Json<Value>, ScratchError> {
-    let gcx = app.gcx.clone();
     let req = serde_json::from_slice::<InstallPluginRequest>(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("JSON: {}", e)))?;
     if let Err(e) = validate_plugin_name(&req.plugin) {
@@ -123,7 +118,7 @@ pub async fn handle_install_plugin(
     if let Err(e) = validate_plugin_name(&req.marketplace) {
         return Err(ScratchError::new(StatusCode::BAD_REQUEST, e));
     }
-    let entry = install_plugin(gcx, &req.plugin, &req.marketplace)
+    let entry = install_plugin(app, &req.plugin, &req.marketplace)
         .await
         .map_err(|e| {
             if e.contains("not found") {
@@ -148,8 +143,7 @@ pub async fn handle_install_plugin(
 pub async fn handle_list_installed(
     State(app): State<AppState>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let gcx = app.gcx.clone();
-    let config_dir = gcx.read().await.config_dir.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let db = load_plugins_db(&config_dir)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -160,11 +154,10 @@ pub async fn handle_uninstall_plugin(
     State(app): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let gcx = app.gcx.clone();
     if let Err(e) = validate_plugin_name(&name) {
         return Err((StatusCode::BAD_REQUEST, e));
     }
-    uninstall_plugin(gcx, &name)
+    uninstall_plugin(app, &name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(json!({ "deleted": true })))

@@ -312,8 +312,8 @@ impl Tool for ToolSubagent {
             config.model
         );
 
-        let gcx_hook = gcx.clone();
-        let project_dir = crate::ext::hooks_runner::get_project_dir_string(gcx_hook.clone()).await;
+        let app_hook = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+        let project_dir = crate::ext::hooks_runner::get_project_dir_string(app_hook.clone()).await;
         let task_hook = task.clone();
 
         let subchat_result = run_subchat(gcx, messages, config).await;
@@ -339,7 +339,7 @@ impl Tool for ToolSubagent {
                     extra,
                 };
                 crate::ext::hooks_runner::run_hooks(
-                    gcx_hook,
+                    app_hook,
                     crate::ext::hooks::HookEvent::SubagentStop,
                     payload,
                 )

@@ -1,18 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 use url::Url;
 
+use crate::app_state::AppState;
 use crate::ext::plugins::{load_marketplace_json, marketplace_cache_dir};
 use crate::ext::config_dirs::collect_md_files_recursive;
 use crate::ext::slash_commands::parse_frontmatter_and_body;
 use crate::ext::yaml_util::{yaml_str, yaml_str_list};
 use crate::files_correction::get_project_dirs;
-use crate::global_context::GlobalContext;
 use crate::http::routers::v1::at_commands::invalidate_slash_cache;
 
 const MARKETPLACE_SIZE_LIMIT: u64 = 50 * 1024 * 1024;
@@ -1325,15 +1323,13 @@ fn source_to_listed(
 }
 
 pub async fn list_marketplace_items(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     kind: MarketplaceKind,
 ) -> Result<(Vec<MarketplaceItem>, Vec<ListedMarketplaceSource>), String> {
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     let sources = load_all_sources(&config_dir).await?;
-    let installed = installed_scopes_by_kind(gcx.clone(), kind).await?;
+    let installed = installed_scopes_by_kind(app.clone(), kind).await?;
 
     let relevant: Vec<ExtensionsMarketplaceSource> = sources
         .into_iter()
@@ -1386,11 +1382,11 @@ pub async fn list_marketplace_items(
 }
 
 pub async fn installed_scopes_by_kind(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     kind: MarketplaceKind,
 ) -> Result<HashMap<String, Vec<String>>, String> {
     use crate::ext::config_dirs::get_ext_dirs;
-    let ext_dirs = get_ext_dirs(gcx.clone()).await;
+    let ext_dirs = get_ext_dirs(app.clone()).await;
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     match kind {
         MarketplaceKind::Skill => {
@@ -1418,10 +1414,10 @@ pub async fn installed_scopes_by_kind(
             }
         }
         MarketplaceKind::Subagent => {
-            let config_dir = gcx.read().await.config_dir.clone();
-            let locals = get_project_dirs(gcx.clone()).await;
+            let config_dir = app.paths.config_dir.read().unwrap().clone();
+            let locals = get_project_dirs(app.gcx.clone()).await;
             if let Some(registry) =
-                crate::yaml_configs::customization_registry::get_project_registry(gcx.clone()).await
+                crate::yaml_configs::customization_registry::get_project_registry(app.gcx.clone()).await
             {
                 for (id, _cfg) in registry.subagents {
                     let global_path = config_dir.join("subagents").join(format!("{}.yaml", id));
@@ -1450,15 +1446,13 @@ pub async fn installed_scopes_by_kind(
 }
 
 pub async fn resolve_marketplace_item(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     kind: MarketplaceKind,
     source_id: &str,
     item_id: &str,
 ) -> Result<ResolvedMarketplaceItem, String> {
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     let sources = load_all_sources(&config_dir).await?;
     let source = sources
         .into_iter()
@@ -1479,11 +1473,11 @@ pub async fn resolve_marketplace_item(
 }
 
 async fn resolve_scope_dir(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     scope: &str,
 ) -> Result<(PathBuf, String), String> {
-    let config_dir = gcx.read().await.config_dir.clone();
-    let project_root = get_project_dirs(gcx.clone()).await.into_iter().next();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let project_root = get_project_dirs(app.gcx.clone()).await.into_iter().next();
     match scope {
         "global" => Ok((config_dir, "global".to_string())),
         "local" => match project_root {
@@ -1498,13 +1492,13 @@ async fn resolve_scope_dir(
 }
 
 pub async fn install_marketplace_item(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     kind: MarketplaceKind,
     req: InstallMarketplaceItemRequest,
 ) -> Result<InstallMarketplaceItemResponse, String> {
     let ResolvedMarketplaceItem { item, abs_path } =
-        resolve_marketplace_item(gcx.clone(), kind, &req.source_id, &req.item_id).await?;
-    let (base_dir, scope_name) = resolve_scope_dir(gcx.clone(), &req.scope).await?;
+        resolve_marketplace_item(app.clone(), kind, &req.source_id, &req.item_id).await?;
+    let (base_dir, scope_name) = resolve_scope_dir(app.clone(), &req.scope).await?;
 
     let (target, file_path) = match kind {
         MarketplaceKind::Skill => {
@@ -1659,14 +1653,13 @@ pub async fn install_marketplace_item(
                 .await
                 .map_err(|e| format!("rename install file: {}", e))?;
             crate::yaml_configs::customization_registry::invalidate_all_registry_caches(
-                gcx.clone(),
+                app.gcx.clone(),
             )
             .await;
         }
     }
 
-    gcx.read()
-        .await
+    app.integrations
         .ext_cache_generation
         .fetch_add(1, Ordering::Relaxed);
     invalidate_slash_cache().await;

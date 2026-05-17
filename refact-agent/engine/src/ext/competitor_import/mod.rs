@@ -1,10 +1,8 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use tokio::sync::RwLock as ARwLock;
-
+use crate::app_state::AppState;
 use crate::buddy::types::{BuddyControl, BuddyRuntimeEvent};
-use crate::global_context::GlobalContext;
 
 pub use refact_ext::competitor_import::converters;
 pub use refact_ext::competitor_import::manifest;
@@ -26,33 +24,23 @@ pub use refact_ext::competitor_import::{
 
 use types::{ImportIssue, ImportPrivacyFilter, ImportReport, ImportStatus, ImportSummary};
 
-pub async fn run_global_import(gcx: Arc<ARwLock<GlobalContext>>) -> ImportSummary {
-    let (refact_config_dir, privacy_settings) = {
-        let gcx_locked = gcx.read().await;
-        (
-            gcx_locked.config_dir.clone(),
-            gcx_locked.privacy_settings.clone(),
-        )
-    };
+pub async fn run_global_import(app: AppState) -> ImportSummary {
+    let refact_config_dir = app.paths.config_dir.read().unwrap().clone();
+    let privacy_settings = app.workspace.privacy_settings.clone();
     let home_dir = home::home_dir();
     let filter = privacy_filter_from_settings(privacy_settings);
     let summary =
         run_global_import_with_paths_and_filter(&refact_config_dir, home_dir.as_deref(), &filter)
             .await;
-    apply_cache_invalidation(gcx.clone(), &summary).await;
+    apply_cache_invalidation(app.clone(), &summary).await;
     log_import_summary("global", &summary);
-    emit_buddy_import_events(gcx, &summary).await;
+    emit_buddy_import_events(app, &summary).await;
     summary
 }
 
-pub async fn run_project_import(gcx: Arc<ARwLock<GlobalContext>>) -> ImportSummary {
-    let (workspace_folders, privacy_settings) = {
-        let gcx_locked = gcx.read().await;
-        (
-            gcx_locked.documents_state.workspace_folders.clone(),
-            gcx_locked.privacy_settings.clone(),
-        )
-    };
+pub async fn run_project_import(app: AppState) -> ImportSummary {
+    let workspace_folders = app.workspace.documents_state.workspace_folders.clone();
+    let privacy_settings = app.workspace.privacy_settings.clone();
     let workspace_roots_result = workspace_folders
         .lock()
         .map(|workspace_folders| workspace_folders.clone())
@@ -70,15 +58,15 @@ pub async fn run_project_import(gcx: Arc<ARwLock<GlobalContext>>) -> ImportSumma
                 message: format!("workspace folders unavailable: {err}"),
             });
             log_import_summary("project", &summary);
-            emit_buddy_import_events(gcx, &summary).await;
+            emit_buddy_import_events(app, &summary).await;
             return summary;
         }
     };
     let filter = privacy_filter_from_settings(privacy_settings);
     let summary = run_project_import_with_paths_and_filter(&workspace_roots, &filter).await;
-    apply_cache_invalidation(gcx.clone(), &summary).await;
+    apply_cache_invalidation(app.clone(), &summary).await;
     log_import_summary("project", &summary);
-    emit_buddy_import_events(gcx, &summary).await;
+    emit_buddy_import_events(app, &summary).await;
     summary
 }
 
@@ -94,32 +82,27 @@ fn privacy_filter_from_settings(
     }))
 }
 
-async fn apply_cache_invalidation(gcx: Arc<ARwLock<GlobalContext>>, summary: &ImportSummary) {
+async fn apply_cache_invalidation(app: AppState, summary: &ImportSummary) {
     if !summary.has_imported_changes() {
         return;
     }
-    let generation = {
-        let gcx_locked = gcx.read().await;
-        gcx_locked.ext_cache_generation.clone()
-    };
-    generation.fetch_add(1, Ordering::Relaxed);
+    app.integrations
+        .ext_cache_generation
+        .fetch_add(1, Ordering::Relaxed);
     if summary.has_command_or_skill_changes() {
         crate::http::routers::v1::at_commands::invalidate_slash_cache().await;
     }
     if summary.has_subagent_changes() {
-        crate::yaml_configs::customization_registry::invalidate_all_registry_caches(gcx).await;
+        crate::yaml_configs::customization_registry::invalidate_all_registry_caches(app.gcx).await;
     }
 }
 
-async fn emit_buddy_import_events(gcx: Arc<ARwLock<GlobalContext>>, summary: &ImportSummary) {
+async fn emit_buddy_import_events(app: AppState, summary: &ImportSummary) {
     let reports = import_reports_for_runtime_events(summary);
     if reports.is_empty() {
         return;
     }
-    let buddy_arc = {
-        let gcx_locked = gcx.read().await;
-        gcx_locked.buddy.clone()
-    };
+    let buddy_arc = app.buddy.buddy.clone();
     let mut buddy = buddy_arc.lock().await;
     let Some(service) = buddy.as_mut() else {
         return;
@@ -334,21 +317,25 @@ mod tests {
         assert!(!label.contains("private-project"));
     }
 
-    async fn set_allow_all_privacy(gcx: Arc<ARwLock<GlobalContext>>) {
-        gcx.write().await.privacy_settings = Arc::new(PrivacySettings {
-            privacy_rules: FilePrivacySettings {
-                only_send_to_servers_I_control: Vec::new(),
-                blocked: Vec::new(),
-            },
-            loaded_ts: 0,
-        });
+    async fn set_allow_all_privacy(gcx: crate::global_context::SharedGlobalContext) -> AppState {
+        let app = AppState::from_gcx(gcx.clone()).await;
+        let config_dir = app.paths.config_dir.read().unwrap().clone();
+        tokio::fs::write(
+            config_dir.join("privacy.yaml"),
+            "privacy_rules:\n  only_send_to_servers_I_control: []\n  blocked: []\n",
+        )
+        .await
+        .unwrap();
+        crate::privacy::load_privacy_if_needed(gcx.clone()).await;
+        AppState::from_gcx(gcx).await
     }
 
     #[tokio::test]
     async fn project_import_without_workspaces_is_empty_noop() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx).await;
 
-        let summary = run_project_import(gcx).await;
+        let summary = run_project_import(app).await;
 
         assert!(summary.is_empty());
     }
@@ -869,7 +856,7 @@ mod tests {
     #[tokio::test]
     async fn import_changes_drive_cache_invalidation_flags() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        set_allow_all_privacy(gcx.clone()).await;
+        let app = set_allow_all_privacy(gcx.clone()).await;
         let workspace = tempfile::tempdir().unwrap();
         write(
             &workspace
@@ -887,22 +874,17 @@ mod tests {
                 .join("reviewer.md"),
             "---\nname: Reviewer\ndescription: Reviews code\n---\nReview code.",
         );
-        {
-            let gcx_locked = gcx.read().await;
-            *gcx_locked.documents_state.workspace_folders.lock().unwrap() =
-                vec![workspace.path().to_path_buf()];
-        }
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
+            vec![workspace.path().to_path_buf()];
 
-        let summary = run_project_import(gcx.clone()).await;
-        let generation_after_first = gcx
-            .read()
-            .await
+        let summary = run_project_import(app.clone()).await;
+        let generation_after_first = app
+            .integrations
             .ext_cache_generation
             .load(Ordering::Relaxed);
-        let repeated = run_project_import(gcx.clone()).await;
-        let generation_after_second = gcx
-            .read()
-            .await
+        let repeated = run_project_import(app.clone()).await;
+        let generation_after_second = app
+            .integrations
             .ext_cache_generation
             .load(Ordering::Relaxed);
 
@@ -916,23 +898,19 @@ mod tests {
     #[tokio::test]
     async fn stale_project_import_does_not_drive_cache_invalidation() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        set_allow_all_privacy(gcx.clone()).await;
+        let app = set_allow_all_privacy(gcx.clone()).await;
         let workspace = tempfile::tempdir().unwrap();
         let source_path = workspace.path().join(".claude/commands/review.md");
         let dest_path = workspace.path().join(".refact/commands/review.md");
         write(&source_path, "Review.");
-        {
-            let gcx_locked = gcx.read().await;
-            *gcx_locked.documents_state.workspace_folders.lock().unwrap() =
-                vec![workspace.path().to_path_buf()];
-        }
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
+            vec![workspace.path().to_path_buf()];
 
-        let first = run_project_import(gcx.clone()).await;
+        let first = run_project_import(app.clone()).await;
         fs::remove_file(&source_path).unwrap();
-        let stale = run_project_import(gcx.clone()).await;
-        let generation = gcx
-            .read()
-            .await
+        let stale = run_project_import(app.clone()).await;
+        let generation = app
+            .integrations
             .ext_cache_generation
             .load(Ordering::Relaxed);
 
@@ -1062,11 +1040,12 @@ mod tests {
     #[tokio::test]
     async fn runtime_event_emit_is_noop_without_buddy_service() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx.clone()).await;
         let summary = runtime_event_summary(ImportStatus::Created, ImportScope::Global);
 
-        emit_buddy_import_events(gcx.clone(), &summary).await;
+        emit_buddy_import_events(app.clone(), &summary).await;
 
-        assert!(gcx.read().await.buddy.lock().await.is_none());
+        assert!(app.buddy.buddy.lock().await.is_none());
     }
 
     #[tokio::test]
@@ -1082,12 +1061,13 @@ mod tests {
             tx,
             None,
         );
-        *gcx.read().await.buddy.lock().await = Some(service);
+        let app = AppState::from_gcx(gcx.clone()).await;
+        *app.buddy.buddy.lock().await = Some(service);
         let summary = runtime_event_summary(ImportStatus::Created, ImportScope::Global);
 
-        emit_buddy_import_events(gcx.clone(), &summary).await;
+        emit_buddy_import_events(app.clone(), &summary).await;
 
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         let service = lock.as_ref().unwrap();
         assert_eq!(service.runtime_queue.items.len(), 1);
@@ -1100,6 +1080,7 @@ mod tests {
     #[tokio::test]
     async fn cache_invalidation_ignores_unchanged_outcomes() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx.clone()).await;
         let mut summary = ImportSummary::default();
         summary.add_outcome(ImportOutcome {
             candidate: ImportCandidateSummary {
@@ -1116,11 +1097,10 @@ mod tests {
             message: "unchanged".to_string(),
         });
 
-        apply_cache_invalidation(gcx.clone(), &summary).await;
+        apply_cache_invalidation(app.clone(), &summary).await;
 
         assert_eq!(
-            gcx.read()
-                .await
+            app.integrations
                 .ext_cache_generation
                 .load(Ordering::Relaxed),
             0

@@ -413,7 +413,7 @@ pub(crate) async fn dispatch_action(
             market_kind,
             item_id,
         } => {
-            install_marketplace_action(app.gcx.clone(), *market_kind, item_id)
+            install_marketplace_action(app.clone(), *market_kind, item_id)
                 .await
                 .map_err(|e| {
                     ScratchError::new(
@@ -466,7 +466,8 @@ async fn read_effective_ext_file<F>(
 where
     F: Fn(&StdPath) -> PathBuf,
 {
-    let ext_dirs = get_ext_dirs(gcx.clone()).await;
+    let app = AppState::from_gcx(gcx.clone()).await;
+    let ext_dirs = get_ext_dirs(app).await;
     let mut found = None;
     for dir in ext_dirs.all_dirs_in_order() {
         if let Ok(content) = tokio::fs::read_to_string(relative_path(dir)).await {
@@ -708,7 +709,7 @@ fn render_pulse_to_markdown(pulse: &BuddyPulse, scope: PulseScope) -> String {
 }
 
 async fn install_marketplace_action(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     market_kind: MarketKind,
     item_id: &str,
 ) -> Result<Value, String> {
@@ -717,7 +718,7 @@ async fn install_marketplace_action(
             let body = serde_json::to_vec(&serde_json::json!({ "server_id": item_id }))
                 .map_err(|e| e.to_string())?;
             crate::http::routers::v1::mcp_marketplace::install_mcp_marketplace_server(
-                gcx,
+                app.gcx.clone(),
                 hyper::body::Bytes::from(body),
             )
             .await
@@ -731,7 +732,7 @@ async fn install_marketplace_action(
                 MarketKind::Delegate => MarketplaceKind::Subagent,
                 MarketKind::Mcp => unreachable!(),
             };
-            let (items, _) = list_marketplace_items(gcx.clone(), kind).await?;
+            let (items, _) = list_marketplace_items(app.clone(), kind).await?;
             let item = items
                 .into_iter()
                 .find(|item| item.id == item_id)
@@ -743,7 +744,7 @@ async fn install_marketplace_action(
                 overwrite: false,
                 params: HashMap::new(),
             };
-            install_marketplace_item(gcx, kind, req)
+            install_marketplace_item(app, kind, req)
                 .await
                 .and_then(|response| serde_json::to_value(response).map_err(|e| e.to_string()))
         }

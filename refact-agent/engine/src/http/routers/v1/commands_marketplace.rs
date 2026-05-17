@@ -23,8 +23,7 @@ pub async fn handle_v1_commands_marketplace_get(
     State(app): State<AppState>,
     Query(params): Query<CommandsMarketplaceQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let gcx = app.gcx.clone();
-    let (items, sources) = list_marketplace_items(gcx.clone(), MarketplaceKind::Command)
+    let (items, sources) = list_marketplace_items(app.clone(), MarketplaceKind::Command)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let q = params.q.unwrap_or_default().to_lowercase();
@@ -50,10 +49,9 @@ pub async fn handle_v1_commands_marketplace_install(
     State(app): State<AppState>,
     body_bytes: hyper::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
     let req = serde_json::from_slice::<InstallMarketplaceItemRequest>(&body_bytes)
         .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("JSON: {}", e)))?;
-    let installed = install_marketplace_item(gcx, MarketplaceKind::Command, req)
+    let installed = install_marketplace_item(app, MarketplaceKind::Command, req)
         .await
         .map_err(|e| {
             let status = if e.contains("not found") {

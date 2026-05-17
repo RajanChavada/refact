@@ -149,7 +149,7 @@ async fn build_customization_pulse(gcx: AppState) -> CustomizationPulse {
         pulse.commands = reg.toolbox_commands.len() as u32;
     }
 
-    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx.gcx.clone()).await;
+    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx.clone()).await;
     let skills = crate::ext::skills::load_skill_indices(&ext_dirs).await;
     pulse.skills = skills.len() as u32;
     let hooks = crate::ext::hooks::load_hooks(&ext_dirs).await;

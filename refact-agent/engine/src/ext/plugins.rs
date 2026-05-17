@@ -1,11 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 const PLUGIN_SIZE_LIMIT: u64 = 50 * 1024 * 1024;
 
@@ -322,13 +321,11 @@ async fn add_marketplace_impl(
 }
 
 pub async fn add_marketplace(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     source: &str,
 ) -> Result<MarketplaceJson, String> {
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     add_marketplace_impl(&config_dir, &cache_dir, source).await
 }
 
@@ -349,11 +346,9 @@ async fn ensure_default_marketplaces_with_source(
     Ok(())
 }
 
-pub async fn ensure_default_marketplaces(gcx: Arc<ARwLock<GlobalContext>>) -> Result<(), String> {
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
+pub async fn ensure_default_marketplaces(app: AppState) -> Result<(), String> {
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     ensure_default_marketplaces_with_source(
         &config_dir,
         &cache_dir,
@@ -372,25 +367,23 @@ pub async fn ensure_default_marketplaces(gcx: Arc<ARwLock<GlobalContext>>) -> Re
 }
 
 pub async fn remove_marketplace(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     name: &str,
 ) -> Result<(), String> {
     validate_plugin_name(name)?;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let mut db = load_plugins_db(&config_dir).await?;
     db.marketplaces.retain(|m| m.name != name);
     save_plugins_db(&config_dir, &db).await
 }
 
 pub async fn list_marketplace_plugins(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     name: &str,
 ) -> Result<Vec<MarketplacePluginEntry>, String> {
     validate_plugin_name(name)?;
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     let db = load_plugins_db(&config_dir).await?;
     let entry = db
         .marketplaces
@@ -407,16 +400,14 @@ pub async fn list_marketplace_plugins(
 }
 
 pub async fn install_plugin(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     plugin_name: &str,
     marketplace_name: &str,
 ) -> Result<InstalledPluginEntry, String> {
     validate_plugin_name(plugin_name)?;
     validate_plugin_name(marketplace_name)?;
-    let (config_dir, cache_dir) = {
-        let g = gcx.read().await;
-        (g.config_dir.clone(), g.cache_dir.clone())
-    };
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     let db = load_plugins_db(&config_dir).await?;
     let market_entry = db
         .marketplaces
@@ -469,8 +460,7 @@ pub async fn install_plugin(
     db.installed.retain(|i| i.name != plugin_name);
     db.installed.push(entry.clone());
     save_plugins_db(&config_dir, &db).await?;
-    gcx.read()
-        .await
+    app.integrations
         .ext_cache_generation
         .fetch_add(1, Ordering::Relaxed);
     Ok(entry)
@@ -541,11 +531,11 @@ fn resolve_plugin_source_dir(
 }
 
 pub async fn uninstall_plugin(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     plugin_name: &str,
 ) -> Result<(), String> {
     validate_plugin_name(plugin_name)?;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let mut db = load_plugins_db(&config_dir).await?;
     let was_installed = db.installed.iter().any(|i| i.name == plugin_name);
     db.installed.retain(|i| i.name != plugin_name);
@@ -557,8 +547,7 @@ pub async fn uninstall_plugin(
             .map_err(|e| format!("remove install dir {:?}: {}", install_dir, e))?;
     }
     if was_installed {
-        gcx.read()
-            .await
+        app.integrations
             .ext_cache_generation
             .fetch_add(1, Ordering::Relaxed);
     }

@@ -622,14 +622,13 @@ pub struct ExtRegistryResponse {
 pub async fn handle_v1_ext_registry(
     State(app): State<AppState>,
 ) -> Result<Response<Body>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let config_dir = gcx.read().await.config_dir.clone();
-    let ext_dirs = get_ext_dirs(gcx.clone()).await;
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let ext_dirs = get_ext_dirs(app.clone()).await;
 
     let skill_indices = load_skill_indices(&ext_dirs).await;
     let commands = load_slash_commands(&ext_dirs).await;
     let hooks = load_hooks(&ext_dirs).await;
-    let has_project_root = !get_project_dirs(gcx.clone()).await.is_empty();
+    let has_project_root = !get_project_dirs(app.gcx.clone()).await.is_empty();
 
     let skills: Vec<RegistrySkillEntry> = skill_indices
         .iter()
@@ -782,7 +781,7 @@ pub async fn handle_v1_ext_skill_get(
         };
     }
 
-    let config_dir = gcx.read().await.config_dir.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let ext_dirs = match query.scope.as_deref() {
         Some(s @ "global") | Some(s @ "local") => {
             match resolve_scope_dir(gcx.clone(), Some(s), true).await {
@@ -790,7 +789,7 @@ pub async fn handle_v1_ext_skill_get(
                 Err(e) => return json_error(StatusCode::BAD_REQUEST, &e),
             }
         }
-        _ => get_ext_dirs(gcx.clone()).await,
+        _ => get_ext_dirs(app.clone()).await,
     };
 
     let skill = load_skill_full(&ext_dirs, &name).await;
@@ -1188,7 +1187,7 @@ pub async fn handle_v1_ext_command_get(
                 Err(e) => return json_error(StatusCode::BAD_REQUEST, &e),
             }
         }
-        _ => get_ext_dirs(gcx.clone()).await,
+        _ => get_ext_dirs(app.clone()).await,
     };
 
     let commands = load_slash_commands(&ext_dirs).await;

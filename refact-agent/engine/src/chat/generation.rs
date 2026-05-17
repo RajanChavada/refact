@@ -795,10 +795,10 @@ pub fn start_generation(
                     if should_continue {
                         continue;
                     }
-                    let gcx_stop = gcx.clone();
+                    let app_stop = AppState::from_gcx(gcx.clone()).await;
                     let session_id_stop = chat_id.clone();
                     let handle = tokio::spawn(async move {
-                        let project_dir = get_project_dir_string(gcx_stop.clone()).await;
+                        let project_dir = get_project_dir_string(app_stop.clone()).await;
                         let payload = HookPayload {
                             hook_event_name: "Stop".to_string(),
                             session_id: session_id_stop,
@@ -809,7 +809,7 @@ pub fn start_generation(
                             user_prompt: None,
                             extra: std::collections::HashMap::new(),
                         };
-                        run_hooks(gcx_stop, HookEvent::Stop, payload).await;
+                        run_hooks(app_stop, HookEvent::Stop, payload).await;
                     });
                     session_arc.lock().await.stop_hook_handle = Some(handle);
                     {

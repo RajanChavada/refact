@@ -1197,7 +1197,7 @@ pub async fn process_tool_calls_once(
         let session = session_arc.lock().await;
         let id = session.chat_id.clone();
         drop(session);
-        let pd = get_project_dir_string(app.gcx.clone()).await;
+        let pd = get_project_dir_string(app.clone()).await;
         (id, pd)
     };
 
@@ -1219,7 +1219,7 @@ pub async fn process_tool_calls_once(
             user_prompt: None,
             extra: std::collections::HashMap::new(),
         };
-        let results = run_hooks(app.gcx.clone(), HookEvent::PreToolUse, payload).await;
+        let results = run_hooks(app.clone(), HookEvent::PreToolUse, payload).await;
         if let Some(reason) = first_block_reason(&results) {
             pre_hook_blocked_ids.insert(tc.id.clone());
             let block_message = ChatMessage {
@@ -1764,7 +1764,7 @@ async fn execute_single_tool(
         let ccx_locked = ccx.lock().await;
         let sid = ccx_locked.chat_id.clone();
         drop(ccx_locked);
-        let pd = get_project_dir_string(app.gcx.clone()).await;
+        let pd = get_project_dir_string(app.clone()).await;
         (sid, pd)
     };
 
@@ -1930,7 +1930,7 @@ async fn execute_single_tool(
         user_prompt: None,
         extra: std::collections::HashMap::new(),
     };
-    let post_results = run_hooks(app.gcx.clone(), HookEvent::PostToolUse, post_payload).await;
+    let post_results = run_hooks(app.clone(), HookEvent::PostToolUse, post_payload).await;
     if let Some(reason) = first_block_reason(&post_results) {
         return (
             idx,

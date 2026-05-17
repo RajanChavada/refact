@@ -143,7 +143,8 @@ impl Tool for ToolActivateSkill {
             }
         }
 
-        let ext_dirs = get_ext_dirs(gcx.clone()).await;
+        let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+        let ext_dirs = get_ext_dirs(app).await;
         let activated = activate_skill_inner(&ext_dirs, &name).await?;
 
         {

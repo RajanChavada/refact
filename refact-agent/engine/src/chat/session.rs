@@ -894,10 +894,10 @@ pub async fn get_or_create_session_with_trajectory(
     };
 
     if inserted && is_new {
-        let gcx_clone = gcx.clone();
+        let app_hook = AppState::from_gcx(gcx.clone()).await;
         let chat_id_clone = chat_id.to_string();
         tokio::spawn(async move {
-            let project_dir = get_project_dir_string(gcx_clone.clone()).await;
+            let project_dir = get_project_dir_string(app_hook.clone()).await;
             let payload = HookPayload {
                 hook_event_name: "SessionStart".to_string(),
                 session_id: chat_id_clone,
@@ -908,7 +908,7 @@ pub async fn get_or_create_session_with_trajectory(
                 user_prompt: None,
                 extra: std::collections::HashMap::new(),
             };
-            run_hooks(gcx_clone, HookEvent::SessionStart, payload).await;
+            run_hooks(app_hook, HookEvent::SessionStart, payload).await;
         });
     }
 
@@ -988,10 +988,10 @@ pub fn start_session_cleanup_task(app: AppState) {
             info!("Cleaning up {} idle sessions", to_cleanup.len());
 
             for (chat_id, session_arc) in &to_cleanup {
-                let gcx_hook = app.gcx.clone();
+                let app_hook = app.clone();
                 let chat_id_hook = chat_id.clone();
                 tokio::spawn(async move {
-                    let project_dir = get_project_dir_string(gcx_hook.clone()).await;
+                    let project_dir = get_project_dir_string(app_hook.clone()).await;
                     let payload = HookPayload {
                         hook_event_name: "SessionEnd".to_string(),
                         session_id: chat_id_hook,
@@ -1002,7 +1002,7 @@ pub fn start_session_cleanup_task(app: AppState) {
                         user_prompt: None,
                         extra: std::collections::HashMap::new(),
                     };
-                    run_hooks(gcx_hook, HookEvent::SessionEnd, payload).await;
+                    run_hooks(app_hook, HookEvent::SessionEnd, payload).await;
                 });
 
                 {

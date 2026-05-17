@@ -135,7 +135,7 @@ async fn detect_skill_trigger_weak(
     now: DateTime<Utc>,
     facts: &mut Vec<BuddyFact>,
 ) {
-    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx.gcx.clone()).await;
+    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx.clone()).await;
     let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
     for idx in indices {
         let skill_id = idx.name.clone();

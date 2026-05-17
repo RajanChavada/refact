@@ -100,7 +100,7 @@ pub async fn inject_priority_messages_if_any(
                 let session = session_arc.lock().await;
                 let sid = session.chat_id.clone();
                 drop(session);
-                let pd = get_project_dir_string(app.gcx.clone()).await;
+                let pd = get_project_dir_string(app.clone()).await;
                 (sid, pd)
             };
             let prompt_text = match &content {
@@ -108,7 +108,7 @@ pub async fn inject_priority_messages_if_any(
                 other => serde_json::to_string(other).unwrap_or_default(),
             };
             let hook_results = run_hooks(
-                app.gcx.clone(),
+                app.clone(),
                 HookEvent::UserPromptSubmit,
                 HookPayload {
                     hook_event_name: "UserPromptSubmit".to_string(),
@@ -763,7 +763,7 @@ pub async fn process_command_queue(
             } => {
                 let mut skill_activation_info = None;
                 if let Some(text) = content.as_str() {
-                    match expand_slash_command(app.gcx.clone(), text).await {
+                    match expand_slash_command(app.clone(), text).await {
                         Ok(Some(expanded)) => {
                             skill_activation_info = expanded.skill_to_activate;
                             content = serde_json::Value::String(expanded.expanded_text);
@@ -878,7 +878,7 @@ pub async fn process_command_queue(
                     let session = session_arc.lock().await;
                     let sid = session.chat_id.clone();
                     drop(session);
-                    let pd = get_project_dir_string(app.gcx.clone()).await;
+                    let pd = get_project_dir_string(app.clone()).await;
                     (sid, pd)
                 };
                 let prompt_text = match &content {
@@ -896,7 +896,7 @@ pub async fn process_command_queue(
                     extra: std::collections::HashMap::new(),
                 };
                 let prompt_results =
-                    run_hooks(app.gcx.clone(), HookEvent::UserPromptSubmit, prompt_payload).await;
+                    run_hooks(app.clone(), HookEvent::UserPromptSubmit, prompt_payload).await;
                 if let Some(reason) = first_block_reason(&prompt_results) {
                     let mut session = session_arc.lock().await;
                     session.emit(super::types::ChatEvent::RuntimeUpdated {
@@ -922,7 +922,7 @@ pub async fn process_command_queue(
                             continue;
                         };
                         let add_results = run_hooks(
-                            app.gcx.clone(),
+                            app.clone(),
                             HookEvent::UserPromptSubmit,
                             HookPayload {
                                 hook_event_name: "UserPromptSubmit".to_string(),

@@ -1,13 +1,11 @@
 use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::RwLock as ARwLock;
 use serde::{Deserialize, Serialize};
 
+use crate::app_state::AppState;
 use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
 use crate::ext::config_dirs::{get_ext_dirs, ExtDirs};
 use crate::ext::skills::{load_skill_full, load_skill_indices, load_skill_linked_file, SkillFull};
 use crate::ext::skills_matcher::select_relevant_skills;
-use crate::global_context::GlobalContext;
 
 pub const SKILLS_CONTEXT_MARKER: &str = "skills_context";
 
@@ -32,8 +30,8 @@ pub struct SkillsConfig {
     pub auto_trigger: SkillsAutoTrigger,
 }
 
-pub async fn load_skills_config(gcx: Arc<ARwLock<GlobalContext>>) -> SkillsConfig {
-    let project_dirs = crate::files_correction::get_project_dirs(gcx).await;
+pub async fn load_skills_config(app: AppState) -> SkillsConfig {
+    let project_dirs = crate::files_correction::get_project_dirs(app.gcx.clone()).await;
     let Some(project_dir) = project_dirs.first() else {
         return SkillsConfig::default();
     };
@@ -143,15 +141,15 @@ fn build_skills_prompt_markdown(
 }
 
 pub async fn build_skills_prompt_text(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     has_activate_skill: bool,
     has_deactivate_skill: bool,
 ) -> String {
-    let config = load_skills_config(gcx.clone()).await;
+    let config = load_skills_config(app.clone()).await;
     if matches!(config.auto_trigger, SkillsAutoTrigger::Off) {
         return "## Skills\n\nSkills system is disabled by configuration.".to_string();
     }
-    let ext_dirs = get_ext_dirs(gcx).await;
+    let ext_dirs = get_ext_dirs(app).await;
     let indices = load_skill_indices(&ext_dirs).await;
     let displayable: Vec<_> = indices
         .iter()
@@ -246,12 +244,12 @@ async fn build_context_messages_from_dirs(
 }
 
 pub async fn build_skills_context_messages_tracked(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     user_message: &str,
     explicit_skill: Option<&str>,
 ) -> (Vec<ChatMessage>, SkillsTrackingInfo) {
-    let config = load_skills_config(gcx.clone()).await;
-    let ext_dirs = get_ext_dirs(gcx).await;
+    let config = load_skills_config(app.clone()).await;
+    let ext_dirs = get_ext_dirs(app).await;
     build_context_messages_from_dirs(&ext_dirs, user_message, explicit_skill, config.auto_trigger)
         .await
 }

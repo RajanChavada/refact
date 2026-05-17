@@ -1,16 +1,13 @@
-use std::sync::Arc;
-use tokio::sync::RwLock as ARwLock;
-
+use crate::app_state::AppState;
 use crate::files_correction::get_project_dirs;
-use crate::global_context::GlobalContext;
 
 pub use refact_ext::config_dirs::{
     collect_md_files_recursive, is_claude_dir, source_for_dir, CommandSource, ExtDirs,
 };
 
-pub async fn get_ext_dirs(gcx: Arc<ARwLock<GlobalContext>>) -> ExtDirs {
-    let config_dir = gcx.read().await.config_dir.clone();
-    let workspace_dirs = get_project_dirs(gcx.clone()).await;
+pub async fn get_ext_dirs(app: AppState) -> ExtDirs {
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
+    let workspace_dirs = get_project_dirs(app.gcx.clone()).await;
 
     let mut global_dirs = Vec::new();
     if let Some(home) = home::home_dir() {
