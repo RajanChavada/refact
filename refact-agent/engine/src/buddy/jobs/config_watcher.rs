@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::BuddySuggestion;
 
@@ -21,7 +21,7 @@ impl BuddyJob for ConfigWatcherJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         _ctx: &BuddyJobContext,
     ) -> bool {
         true
@@ -29,7 +29,7 @@ impl BuddyJob for ConfigWatcherJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         if ctx.project_root.join("AGENTS.md").exists() {

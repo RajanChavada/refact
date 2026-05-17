@@ -1,12 +1,10 @@
-use std::sync::Arc;
 
 use chrono::{Datelike, Timelike, Utc, Weekday};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{autonomous_workflow_meta, BUDDY_FRIDAY_RETRO_WORKFLOW_ID};
 use crate::buddy::jobs::autonomous_chats::{execute_autonomous_spec, AutonomousBuddyChatSpec};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct BuddyFridayRetroJob;
 
@@ -56,13 +54,13 @@ impl BuddyJob for BuddyFridayRetroJob {
         PRIORITY
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         should_run_now(ctx)
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         execute_autonomous_spec(gcx, &ctx, build_friday_retro_spec(&ctx)).await
@@ -99,7 +97,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_friday_retro_should_run_only_on_friday() {
         let dir = tempfile::tempdir().unwrap();
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let now = Utc::now();
         let mut ctx = test_context(dir.path());
         ctx.settings.daily_digest_hour = Some(now.hour() as u8);

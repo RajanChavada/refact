@@ -1,12 +1,11 @@
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::process::Command;
-use tokio::sync::RwLock as ARwLock;
 use tracing::info;
 use tokio::sync::Mutex as AMutex;
 
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use super::actor::redact_sensitive;
 use super::diagnostics::DiagnosticContext;
 use super::types::BuddyActivity;
@@ -253,12 +252,12 @@ pub(crate) async fn detect_repo_from_git(project_root: &Path) -> Option<RepoInfo
 }
 
 async fn detect_provider(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     repo: &RepoInfo,
 ) -> Result<Option<IssueProvider>, String> {
-    let active = crate::files_correction::get_active_project_path(gcx.clone()).await;
+    let active = crate::files_correction::get_active_project_path(gcx.gcx.clone()).await;
     let (config_dirs, global_config_dir) =
-        crate::integrations::setting_up_integrations::get_config_dirs(gcx.clone(), &active).await;
+        crate::integrations::setting_up_integrations::get_config_dirs(gcx.gcx.clone(), &active).await;
     let mut search_dirs: Vec<PathBuf> = config_dirs;
     search_dirs.push(global_config_dir);
 
@@ -280,8 +279,8 @@ async fn detect_provider(
     })
 }
 
-async fn github_mcp_issue_tool(gcx: Arc<ARwLock<GlobalContext>>) -> Option<String> {
-    let groups = crate::tools::tools_list::get_integration_tools(gcx).await;
+async fn github_mcp_issue_tool(gcx: AppState) -> Option<String> {
+    let groups = crate::tools::tools_list::get_integration_tools(gcx.gcx.clone()).await;
     groups
         .into_iter()
         .flat_map(|group| group.tools)
@@ -298,18 +297,18 @@ async fn github_mcp_issue_tool(gcx: Arc<ARwLock<GlobalContext>>) -> Option<Strin
         })
 }
 
-pub async fn has_github_mcp(gcx: Arc<ARwLock<GlobalContext>>) -> bool {
+pub async fn has_github_mcp(gcx: AppState) -> bool {
     github_mcp_issue_tool(gcx).await.is_some()
 }
 
 pub async fn investigation_logs(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     error: &str,
     collected_at: Option<&str>,
 ) -> Result<String, String> {
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new(
-            gcx,
+            gcx.gcx.clone(),
             4000,
             20,
             false,
@@ -354,11 +353,11 @@ pub async fn investigation_logs(
 }
 
 pub async fn investigation_internal_context(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Result<String, String> {
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new(
-            gcx,
+            gcx.gcx.clone(),
             4000,
             20,
             false,
@@ -410,14 +409,14 @@ pub(crate) fn mcp_issue_args(
 }
 
 pub async fn create_issue_via_mcp(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     context: &DiagnosticContext,
     title: &str,
     body: &str,
     labels: Vec<String>,
     manual: bool,
 ) -> Result<BuddyIssueCreateResult, String> {
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+    let project_root = crate::files_correction::get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -446,7 +445,7 @@ pub async fn create_issue_via_mcp(
 
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new(
-            gcx.clone(),
+            gcx.gcx.clone(),
             4000,
             20,
             false,
@@ -494,7 +493,7 @@ pub async fn create_issue_via_mcp(
 }
 
 pub async fn resolve_issue_context(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     diagnostic_index: Option<usize>,
     diagnostic_id: Option<String>,
     collected_at: Option<String>,
@@ -523,7 +522,7 @@ pub async fn resolve_issue_context(
 }
 
 async fn issue_control_snapshot(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Result<
     (
         bool,
@@ -532,7 +531,7 @@ async fn issue_control_snapshot(
     ),
     String,
 > {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let svc = lock
         .as_ref()
@@ -546,7 +545,7 @@ async fn issue_control_snapshot(
 }
 
 pub async fn create_issue_via_native(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     diagnostic_index: Option<usize>,
     diagnostic_id: Option<String>,
     collected_at: Option<String>,
@@ -572,7 +571,7 @@ pub async fn create_issue_via_native(
         &recent_errors,
     )
     .await?;
-    let project_root = crate::files_correction::get_project_dirs(gcx)
+    let project_root = crate::files_correction::get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -740,11 +739,11 @@ pub(crate) fn prepare_issue_content(
 }
 
 pub(crate) async fn record_issue_success(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     dedupe_text: String,
     activity: BuddyActivity,
 ) {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(svc) = lock.as_mut() {
         svc.record_issue_created(dedupe_text);
@@ -753,14 +752,14 @@ pub(crate) async fn record_issue_success(
 }
 
 pub async fn create_issue(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     context: &DiagnosticContext,
     auto_creation_enabled: bool,
     manual: bool,
     last_issue_at: Option<std::time::Instant>,
     recent_errors: &[(String, chrono::DateTime<chrono::Utc>)],
 ) -> Result<(String, BuddyActivity), String> {
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+    let project_root = crate::files_correction::get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .next()

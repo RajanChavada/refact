@@ -476,7 +476,7 @@ pub async fn handle_update_task_status(
         match meta.status {
             TaskStatus::Completed => {
                 crate::buddy::actor::buddy_apply(
-                    gcx.clone(),
+                    crate::app_state::AppState::from_gcx(gcx.clone()).await,
                     crate::buddy::actor::BuddyMutation {
                         runtime_event: Some(crate::buddy::actor::make_runtime_event(
                             "task_completed",
@@ -502,7 +502,7 @@ pub async fn handle_update_task_status(
             }
             TaskStatus::Abandoned => {
                 crate::buddy::actor::buddy_apply(
-                    gcx.clone(),
+                    crate::app_state::AppState::from_gcx(gcx.clone()).await,
                     crate::buddy::actor::BuddyMutation {
                         runtime_event: Some(crate::buddy::actor::make_runtime_event(
                             "task_abandoned",

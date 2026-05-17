@@ -5,11 +5,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 use chrono::{DateTime, Utc};
-use tokio::sync::{broadcast, mpsc, RwLock as ARwLock};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use super::user_activity::UserAction;
 use super::drafts::{
     validate_draft_payload, DraftCreateError, DraftStore, DraftTarget, DraftValidationError,
@@ -43,7 +43,7 @@ const MEMORY_OPS_COMPACT_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 pub(crate) async fn observe_buddy_facts_parallel(
     due_observers: Vec<Arc<dyn BuddyObserver>>,
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     project_root: std::path::PathBuf,
     now: DateTime<Utc>,
 ) -> Vec<BuddyFact> {
@@ -109,7 +109,7 @@ fn parse_commit_activity_from_log(output: &str) -> Vec<UserAction> {
         .collect()
 }
 
-async fn poll_commit_activity_once(gcx: Arc<ARwLock<GlobalContext>>, project_root: PathBuf) {
+async fn poll_commit_activity_once(gcx: AppState, project_root: PathBuf) {
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("git")
             .arg("log")
@@ -131,7 +131,7 @@ async fn poll_commit_activity_once(gcx: Arc<ARwLock<GlobalContext>>, project_roo
     if actions.is_empty() {
         return;
     }
-    let user_activity = gcx.read().await.user_activity.clone();
+    let user_activity = gcx.buddy.user_activity.clone();
     if let Ok(mut ring) = user_activity.try_lock() {
         let mut existing = ring
             .snapshot()
@@ -154,7 +154,7 @@ async fn poll_commit_activity_once(gcx: Arc<ARwLock<GlobalContext>>, project_roo
 }
 
 async fn commit_activity_poller(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     project_root: PathBuf,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -247,7 +247,7 @@ pub struct BuddyService {
 }
 
 pub async fn render_buddy_speech(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     persona: BuddyPersonalityProfile,
     identity_name: String,
     pulse: BuddyPulse,
@@ -278,7 +278,7 @@ pub async fn render_buddy_speech(
 }
 
 pub async fn render_buddy_runtime_event(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     persona: BuddyPersonalityProfile,
     identity_name: String,
     pulse: BuddyPulse,
@@ -314,7 +314,7 @@ pub async fn render_buddy_runtime_event(
 }
 
 pub async fn render_buddy_activity_title(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     persona: BuddyPersonalityProfile,
     identity_name: String,
     pulse: BuddyPulse,
@@ -1296,33 +1296,33 @@ pub fn make_runtime_event(
 }
 
 pub async fn buddy_complete_event(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     dedupe_key: &str,
     status: &str,
 ) {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(svc) = lock.as_mut() {
         svc.complete_runtime_event(dedupe_key, status);
     }
 }
 
-pub async fn buddy_enqueue_event(gcx: Arc<ARwLock<GlobalContext>>, event: BuddyRuntimeEvent) {
-    let buddy_arc = gcx.read().await.buddy.clone();
+pub async fn buddy_enqueue_event(gcx: AppState, event: BuddyRuntimeEvent) {
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(svc) = lock.as_mut() {
         svc.enqueue_runtime_event(event);
     }
 }
 
-pub async fn buddy_snapshot(gcx: Arc<ARwLock<GlobalContext>>) -> Option<BuddySnapshot> {
-    let buddy_arc = gcx.read().await.buddy.clone();
+pub async fn buddy_snapshot(gcx: AppState) -> Option<BuddySnapshot> {
+    let buddy_arc = gcx.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     lock.as_ref().map(|svc| svc.snapshot())
 }
 
-pub async fn buddy_update_speech(gcx: Arc<ARwLock<GlobalContext>>, speech: BuddySpeechItem) {
-    let buddy_arc = gcx.read().await.buddy.clone();
+pub async fn buddy_update_speech(gcx: AppState, speech: BuddySpeechItem) {
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(svc) = lock.as_mut() {
         svc.update_speech(speech);
@@ -1335,7 +1335,7 @@ pub struct CompletedQuestVoice {
 }
 
 pub async fn complete_quest_with_voice(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     quest: BuddyQuest,
     persona: BuddyPersonalityProfile,
     identity_name: String,
@@ -1409,13 +1409,13 @@ pub async fn complete_quest_with_voice(
 }
 
 pub async fn report_error_persisted(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     error_type: &str,
     error_msg: &str,
     source: Option<&str>,
     chat_id: Option<&str>,
 ) {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(svc) = lock.as_mut() {
         svc.report_error(error_type, error_msg, source, chat_id);
@@ -1423,9 +1423,9 @@ pub async fn report_error_persisted(
 }
 
 pub async fn latest_project_root(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Result<std::path::PathBuf, String> {
-    crate::files_correction::get_project_dirs(gcx)
+    crate::files_correction::get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -1445,14 +1445,14 @@ pub async fn load_diagnostics_for_service(
 }
 
 pub async fn resolve_diagnostic(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     diagnostic_index: Option<usize>,
     diagnostic_id: Option<&str>,
     collected_at: Option<&str>,
     fallback: Option<super::diagnostics::DiagnosticContext>,
 ) -> Result<super::diagnostics::DiagnosticContext, String> {
     let project_root = latest_project_root(gcx.clone()).await?;
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let svc = lock
         .as_ref()
@@ -1538,8 +1538,8 @@ impl Default for BuddyMutation {
     }
 }
 
-pub async fn buddy_apply(gcx: Arc<ARwLock<GlobalContext>>, m: BuddyMutation) {
-    let buddy_arc = gcx.read().await.buddy.clone();
+pub async fn buddy_apply(gcx: AppState, m: BuddyMutation) {
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     let Some(svc) = lock.as_mut() else { return };
     if let Some(ev) = m.runtime_event {
@@ -1560,12 +1560,12 @@ pub async fn buddy_apply(gcx: Arc<ARwLock<GlobalContext>>, m: BuddyMutation) {
     }
 }
 
-pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
+pub async fn buddy_background_task(gcx: AppState) {
     let project_root = loop {
-        if gcx.read().await.shutdown_flag.load(Ordering::SeqCst) {
+        if gcx.runtime.shutdown_flag.load(Ordering::SeqCst) {
             return;
         }
-        let dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+        let dirs = crate::files_correction::get_project_dirs(gcx.gcx.clone()).await;
         if let Some(root) = dirs.into_iter().next() {
             break root;
         }
@@ -1596,12 +1596,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
     let memory_ops = super::storage::load_memory_ops(&project_root).await;
     let runtime_queue = super::storage::load_runtime_queue(&project_root).await;
 
-    let events_tx = gcx
-        .read()
-        .await
-        .buddy_events_tx
-        .clone()
-        .expect("buddy_events_tx must be set");
+    let events_tx = gcx.buddy.buddy_events_tx.clone();
 
     // Spawn the single-writer task that owns runtime_queue.jsonl. All queue
     // mutations forward to this channel, which preserves on-disk write order.
@@ -1622,7 +1617,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
     );
     service.memory_ops = memory_ops;
 
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     *buddy_arc.lock().await = Some(service);
     let initial_pulse =
         super::pulse::build_pulse(gcx.clone(), &project_root, &FactStore::new()).await;
@@ -1664,7 +1659,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
     info!("buddy: service started for {:?}", project_root);
 
     let scheduler = super::scheduler::BuddyScheduler::new();
-    let shutdown_flag = gcx.read().await.shutdown_flag.clone();
+    let shutdown_flag = gcx.runtime.shutdown_flag.clone();
     let commit_poller_handle = tokio::spawn(commit_activity_poller(
         gcx.clone(),
         project_root.clone(),
@@ -1704,7 +1699,7 @@ pub async fn buddy_background_task(gcx: Arc<ARwLock<GlobalContext>>) {
                 for f in facts {
                     tmp_store.ingest(f);
                 }
-                let knowledge_dirs = crate::files_correction::get_project_dirs(gcx.clone())
+                let knowledge_dirs = crate::files_correction::get_project_dirs(gcx.gcx.clone())
                     .await
                     .into_iter()
                     .map(|dir| dir.join(crate::file_filter::KNOWLEDGE_FOLDER_NAME))

@@ -32,7 +32,7 @@ pub async fn handle_v1_voice_transcribe(
     if result.duration_ms >= 1000 && result.text.len() >= 5 {
         let duration_secs = result.duration_ms / 1000;
         crate::buddy::actor::buddy_apply(
-            gcx.clone(),
+            crate::app_state::AppState::from_gcx(gcx.clone()).await,
             crate::buddy::actor::BuddyMutation {
                 xp: 2,
                 activity: Some(crate::buddy::types::BuddyActivity {

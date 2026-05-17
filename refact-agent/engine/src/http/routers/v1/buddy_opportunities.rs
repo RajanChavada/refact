@@ -174,7 +174,7 @@ pub async fn handle_v1_buddy_opportunity_accept(
         action
     };
 
-    let outcome = match dispatch_action(gcx.clone(), &id, &action).await {
+    let outcome = match dispatch_action(app.clone(), &id, &action).await {
         Ok(outcome) => outcome,
         Err(err) => {
             clear_accept_claim(gcx.clone(), &id).await;
@@ -232,7 +232,7 @@ fn provider_defaults_patch(defaults_kind: DefaultsKind) -> serde_json::Value {
 }
 
 pub(crate) async fn dispatch_action(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     _opp_id: &str,
     action: &BuddyAction,
 ) -> Result<ActionOutcome, ScratchError> {
@@ -250,8 +250,8 @@ pub(crate) async fn dispatch_action(
         }
         BuddyAction::LaunchInvestigationChat { preload } => {
             let mut enriched_ctx = preload.clone();
-            enrich_investigation_context(&gcx, &mut enriched_ctx).await;
-            let chat_id = create_investigation_chat(gcx.clone(), &enriched_ctx).await?;
+            enrich_investigation_context(&app, &mut enriched_ctx).await;
+            let chat_id = create_investigation_chat(app.gcx.clone(), &enriched_ctx).await?;
             Ok(ActionOutcome {
                 result: serde_json::json!({
                     "kind": "launch_investigation_chat",
@@ -289,10 +289,10 @@ pub(crate) async fn dispatch_action(
                         label, label
                     ),
                 };
-                let draft = synthesize_draft(gcx.clone(), dk, label.to_string(), content).await?;
+                let draft = synthesize_draft(app.gcx.clone(), dk, label.to_string(), content).await?;
                 draft.id.clone()
             } else {
-                validate_existing_draft(gcx.clone(), draft_id, dk, DraftTarget::Any).await?;
+                validate_existing_draft(app.gcx.clone(), draft_id, dk, DraftTarget::Any).await?;
                 draft_id.clone()
             };
             let kind = dk;
@@ -313,7 +313,7 @@ pub(crate) async fn dispatch_action(
                 content.as_str()
             };
             let draft = synthesize_draft(
-                gcx.clone(),
+                app.gcx.clone(),
                 DraftKind::AgentsMd,
                 "AGENTS.md".to_string(),
                 draft_content.to_string(),
@@ -339,7 +339,7 @@ pub(crate) async fn dispatch_action(
                     .unwrap_or_default()
             };
             let draft = synthesize_draft(
-                gcx.clone(),
+                app.gcx.clone(),
                 DraftKind::DefaultsModel,
                 "Default Models".to_string(),
                 content,
@@ -361,14 +361,14 @@ pub(crate) async fn dispatch_action(
             patch,
         } => {
             let draft_kind = customization_kind_to_draft_kind(*customization_kind);
-            let existing = read_existing_customization(&gcx, *customization_kind, id)
+            let existing = read_existing_customization(&app.gcx, *customization_kind, id)
                 .await
                 .unwrap_or_else(|| default_customization_template(*customization_kind, id));
             let draft_content = merge_customization_content(*customization_kind, &existing, patch)
                 .map_err(|e| ScratchError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;
             let title_kind = customization_url_kind(*customization_kind);
             let draft = synthesize_draft(
-                gcx.clone(),
+                app.gcx.clone(),
                 draft_kind,
                 format!("{} {}", title_kind, id),
                 draft_content,
@@ -386,7 +386,7 @@ pub(crate) async fn dispatch_action(
         }
         BuddyAction::CreatePulseReport { scope } => {
             let pulse = {
-                let buddy_arc = gcx.read().await.buddy.clone();
+                let buddy_arc = app.buddy.buddy.clone();
                 let lock = buddy_arc.lock().await;
                 lock.as_ref()
                     .map(|svc| svc.pulse.clone())
@@ -394,7 +394,7 @@ pub(crate) async fn dispatch_action(
             };
             let content = render_pulse_to_markdown(&pulse, *scope);
             let draft = synthesize_draft(
-                gcx.clone(),
+                app.gcx.clone(),
                 DraftKind::PulseReport,
                 format!("Pulse Report ({})", scope_label(*scope)),
                 content,
@@ -413,7 +413,7 @@ pub(crate) async fn dispatch_action(
             market_kind,
             item_id,
         } => {
-            install_marketplace_action(gcx.clone(), *market_kind, item_id)
+            install_marketplace_action(app.gcx.clone(), *market_kind, item_id)
                 .await
                 .map_err(|e| {
                     ScratchError::new(
@@ -780,11 +780,11 @@ fn diagnostic_severity_label(
 }
 
 pub(crate) async fn enrich_investigation_context(
-    gcx: &Arc<ARwLock<GlobalContext>>,
+    app: &AppState,
     ctx: &mut InvestigationContext,
 ) {
     if !ctx.diagnostic_ids.is_empty() {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         if let Some(svc) = lock.as_ref() {
             let diagnostics: Vec<_> = ctx
@@ -807,7 +807,7 @@ pub(crate) async fn enrich_investigation_context(
         }
     }
 
-    if let Ok(log_tail) = read_recent_log_lines(gcx, 50).await {
+    if let Ok(log_tail) = read_recent_log_lines(app, 50).await {
         if !log_tail.is_empty() {
             ctx.log_excerpt = if ctx.log_excerpt.is_empty() {
                 log_tail
@@ -820,7 +820,7 @@ pub(crate) async fn enrich_investigation_context(
         }
     }
 
-    if let Some(config_summary) = render_caps_config_summary(gcx).await {
+    if let Some(config_summary) = render_caps_config_summary(app).await {
         ctx.config_summary = config_summary;
     }
 
@@ -828,8 +828,8 @@ pub(crate) async fn enrich_investigation_context(
     ctx.config_summary = cap_text_to_chars(&ctx.config_summary, 1000);
 }
 
-async fn render_caps_config_summary(gcx: &Arc<ARwLock<GlobalContext>>) -> Option<String> {
-    let caps = gcx.read().await.caps.clone()?;
+async fn render_caps_config_summary(app: &AppState) -> Option<String> {
+    let caps = app.model.caps.read().await.caps.clone()?;
     Some(format!(
         "default chat model: {}\ndefault buddy model: {}\ndefault thinking model: {}",
         caps.defaults.chat_default_model,
@@ -839,13 +839,11 @@ async fn render_caps_config_summary(gcx: &Arc<ARwLock<GlobalContext>>) -> Option
 }
 
 pub(crate) async fn read_recent_log_lines(
-    gcx: &Arc<ARwLock<GlobalContext>>,
+    app: &AppState,
     max_lines: usize,
 ) -> Result<String, String> {
-    let (logs_to_file, cache_dir) = {
-        let lock = gcx.read().await;
-        (lock.cmdline.logs_to_file.clone(), lock.cache_dir.clone())
-    };
+    let logs_to_file = app.runtime.cmdline.read().unwrap().logs_to_file.clone();
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     let log_path = if !logs_to_file.is_empty() {
         PathBuf::from(logs_to_file)
     } else {

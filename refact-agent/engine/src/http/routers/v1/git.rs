@@ -167,7 +167,7 @@ pub async fn handle_v1_git_commit(
                 }));
                 let buddy_title = format!("Committed: {}", pname);
                 crate::buddy::actor::buddy_apply(
-                    gcx.clone(),
+                    crate::app_state::AppState::from_gcx(gcx.clone()).await,
                     crate::buddy::actor::BuddyMutation {
                         runtime_event: Some(crate::buddy::actor::make_runtime_event(
                             "git_commit",

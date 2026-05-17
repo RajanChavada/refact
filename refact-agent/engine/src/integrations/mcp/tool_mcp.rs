@@ -87,7 +87,7 @@ impl Tool for ToolMCP {
             );
             tracing::error!("{}", msg);
             crate::buddy::actor::report_error_persisted(
-                gcx.clone(),
+                crate::app_state::AppState::from_gcx(gcx.clone()).await,
                 "mcp_no_session",
                 &msg,
                 Some("mcp/tool_mcp.rs"),
@@ -120,7 +120,7 @@ impl Tool for ToolMCP {
                         self.mcp_tool.name
                     );
                     crate::buddy::actor::report_error_persisted(
-                        gcx.clone(),
+                        crate::app_state::AppState::from_gcx(gcx.clone()).await,
                         "mcp_reconnecting",
                         &msg,
                         Some("mcp/tool_mcp.rs"),
@@ -135,7 +135,7 @@ impl Tool for ToolMCP {
                         self.mcp_tool.name, message
                     );
                     crate::buddy::actor::report_error_persisted(
-                        gcx.clone(),
+                        crate::app_state::AppState::from_gcx(gcx.clone()).await,
                         "mcp_connection_failed",
                         &msg,
                         Some("mcp/tool_mcp.rs"),
@@ -189,7 +189,7 @@ impl Tool for ToolMCP {
                 None => {
                     let msg = format!("MCP client for '{}' is not available", self.mcp_tool.name);
                     crate::buddy::actor::report_error_persisted(
-                        gcx.clone(),
+                        crate::app_state::AppState::from_gcx(gcx.clone()).await,
                         "mcp_client_unavailable",
                         &msg,
                         Some("mcp/tool_mcp.rs"),
@@ -232,7 +232,7 @@ impl Tool for ToolMCP {
                     }
                     {
                         crate::buddy::actor::report_error_persisted(
-                            gcx.clone(),
+                            crate::app_state::AppState::from_gcx(gcx.clone()).await,
                             "mcp_tool_error",
                             &error_msg,
                             Some("mcp/tool_mcp.rs"),
@@ -367,7 +367,7 @@ impl Tool for ToolMCP {
                 }
                 {
                     crate::buddy::actor::report_error_persisted(
-                        gcx.clone(),
+                        crate::app_state::AppState::from_gcx(gcx.clone()).await,
                         "mcp_tool_error",
                         &error_msg,
                         Some("mcp/tool_mcp.rs"),

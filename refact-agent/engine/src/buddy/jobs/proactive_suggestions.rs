@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::{BuddyControl, BuddySuggestion};
 
@@ -21,7 +21,7 @@ impl BuddyJob for ProactiveSuggestionsJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         _ctx: &BuddyJobContext,
     ) -> bool {
         true
@@ -29,7 +29,7 @@ impl BuddyJob for ProactiveSuggestionsJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         if ctx.job_state.run_count == 0 {
@@ -77,10 +77,10 @@ impl BuddyJob for ProactiveSuggestionsJob {
 }
 
 async fn worktree_cleanup_suggestion(
-    gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: AppState,
     project_root: &std::path::Path,
 ) -> Option<BuddySuggestion> {
-    let cache_dir = gcx.read().await.cache_dir.clone();
+    let cache_dir = gcx.paths.cache_dir.read().unwrap().clone();
     let service =
         crate::worktrees::service::WorktreeService::new(cache_dir, project_root.to_path_buf())
             .ok()?;

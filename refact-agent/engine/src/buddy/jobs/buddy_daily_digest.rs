@@ -1,13 +1,11 @@
-use std::sync::Arc;
 
 use chrono::{DateTime, Timelike, Utc};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{autonomous_workflow_meta, BUDDY_DAILY_DIGEST_WORKFLOW_ID};
 use crate::buddy::jobs::autonomous_chats::{execute_autonomous_spec, AutonomousBuddyChatSpec};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use crate::buddy::settings::BuddySettings;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct BuddyDailyDigestJob;
 
@@ -55,13 +53,13 @@ impl BuddyJob for BuddyDailyDigestJob {
         PRIORITY
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         should_run_at(ctx, Utc::now())
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         execute_autonomous_spec(gcx, &ctx, build_daily_digest_spec(&ctx, Utc::now())).await
@@ -110,7 +108,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_daily_digest_should_run_only_at_configured_hour() {
         let dir = tempfile::tempdir().unwrap();
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let hour = Utc::now().hour() as u8;
         let mut ctx = test_context(dir.path());
         let job = BuddyDailyDigestJob;

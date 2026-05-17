@@ -26,7 +26,7 @@ pub async fn generate_commit_message_by_diff(
     let commit_message_prompt = commit_message_prompt.clone();
     let gcx2 = gcx.clone();
     crate::buddy::workflows::buddy_wrap_workflow(
-        gcx,
+        crate::app_state::AppState::from_gcx(gcx).await,
         "commit_message",
         "📦",
         5,

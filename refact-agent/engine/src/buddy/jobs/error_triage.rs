@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 use std::collections::HashMap;
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::BuddySuggestion;
@@ -22,7 +22,7 @@ impl BuddyJob for ErrorTriageJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         ctx.recent_diagnostics.len() >= 3
@@ -30,7 +30,7 @@ impl BuddyJob for ErrorTriageJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let mut counts: HashMap<String, usize> = HashMap::new();

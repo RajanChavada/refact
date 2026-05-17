@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{autonomous_workflow_meta, BUDDY_SKILL_AUTHOR_WORKFLOW_ID};
 use crate::buddy::jobs::autonomous_chats::{
@@ -13,7 +11,7 @@ use crate::buddy::jobs::autonomous_chats::{
 };
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use crate::ext::competitor_import::markdown::sanitize_skill_id;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct BuddySkillAuthorJob;
 
@@ -205,7 +203,7 @@ impl BuddyJob for BuddySkillAuthorJob {
         PRIORITY
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(cache) = cached_scan(ctx) else {
             return true;
         };
@@ -221,7 +219,7 @@ impl BuddyJob for BuddySkillAuthorJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let scan = current_scan(&ctx).await;
@@ -300,7 +298,7 @@ mod tests {
         let scan = scan_skill_author(dir.path());
         let spec = build_skill_author_spec(&test_context(dir.path(), None), &scan).unwrap();
         let ctx = test_context(dir.path(), Some(serialize_scan(&spec.signal_hash, &scan)));
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         assert!(BuddySkillAuthorJob.should_run(gcx, &ctx).await);
         let candidate = scan.candidate.unwrap();

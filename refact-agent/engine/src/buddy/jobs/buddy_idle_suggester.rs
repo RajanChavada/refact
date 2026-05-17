@@ -1,14 +1,12 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{autonomous_workflow_meta, BUDDY_IDLE_SUGGESTER_WORKFLOW_ID};
 use crate::buddy::jobs::autonomous_chats::{execute_autonomous_spec, AutonomousBuddyChatSpec};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use crate::buddy::user_activity::UserAction;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct BuddyIdleSuggesterJob;
 
@@ -70,8 +68,8 @@ fn build_idle_suggester_spec(
     .with_project_root(project_root)
 }
 
-async fn latest_activity_ts(gcx: Arc<ARwLock<GlobalContext>>) -> Option<DateTime<Utc>> {
-    let ring_arc = gcx.read().await.user_activity.clone();
+async fn latest_activity_ts(gcx: AppState) -> Option<DateTime<Utc>> {
+    let ring_arc = gcx.buddy.user_activity.clone();
     let ring = ring_arc.lock().await;
     newest_action_ts(&ring.snapshot())
 }
@@ -94,7 +92,7 @@ impl BuddyJob for BuddyIdleSuggesterJob {
         false
     }
 
-    async fn should_run(&self, gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(last_ts) = latest_activity_ts(gcx).await else {
             return false;
         };
@@ -109,7 +107,7 @@ impl BuddyJob for BuddyIdleSuggesterJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(last_ts) = latest_activity_ts(gcx.clone()).await else {
@@ -165,8 +163,8 @@ mod tests {
         (dir, repo)
     }
 
-    async fn set_activity(gcx: Arc<ARwLock<GlobalContext>>, root: &Path, ts: DateTime<Utc>) {
-        let ring_arc = gcx.read().await.user_activity.clone();
+    async fn set_activity(gcx: AppState, root: &Path, ts: DateTime<Utc>) {
+        let ring_arc = gcx.buddy.user_activity.clone();
         let mut ring = ring_arc.lock().await;
         *ring = UserActivityRing::new(root.to_path_buf(), 200);
         ring.push(UserAction::FileOpened {
@@ -180,7 +178,7 @@ mod tests {
         let (dir, _repo) = init_temp_git_repo();
         let root = dir.path();
         std::fs::write(root.join("tracked.txt"), "changed\n").unwrap();
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         set_activity(gcx.clone(), root, Utc::now() - Duration::minutes(20)).await;
 
         assert!(
@@ -194,7 +192,7 @@ mod tests {
     async fn buddy_idle_suggester_no_fire_without_recent_activity() {
         let (dir, _repo) = init_temp_git_repo();
         std::fs::write(dir.path().join("tracked.txt"), "changed\n").unwrap();
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         assert!(
             !BuddyIdleSuggesterJob

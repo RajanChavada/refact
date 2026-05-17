@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::voice_service::{voice_service, SpeechIntent, VoiceCtx};
@@ -21,7 +21,7 @@ impl BuddyJob for SpeakerInsightJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         let seen = seen_count(ctx);
@@ -30,7 +30,7 @@ impl BuddyJob for SpeakerInsightJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let current = ctx.workflow_summaries.len();

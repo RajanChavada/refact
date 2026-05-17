@@ -1,13 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::diagnostics::DiagnosticContext;
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct DiagnosticClusterObserver;
 
@@ -120,10 +118,10 @@ impl BuddyObserver for DiagnosticClusterObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = gcx.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         let diagnostics = match lock.as_ref() {
             Some(svc) => svc.recent_diagnostics.clone(),

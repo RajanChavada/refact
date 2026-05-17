@@ -20,7 +20,7 @@ pub async fn generate_follow_up_message(
 ) -> Result<FollowUpResponse, String> {
     let gcx2 = gcx.clone();
     crate::buddy::workflows::buddy_wrap_workflow(
-        gcx,
+        crate::app_state::AppState::from_gcx(gcx).await,
         "follow_up",
         "💡",
         3,

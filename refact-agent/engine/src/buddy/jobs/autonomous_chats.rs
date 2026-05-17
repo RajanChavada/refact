@@ -1,14 +1,13 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock as ARwLock;
 use uuid::Uuid;
 
 use crate::buddy::actor::{
@@ -29,7 +28,7 @@ use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use crate::buddy::settings::load_settings;
 use crate::buddy::types::{BuddyActivity, BuddyFact, BuddyFactKind, BuddyRuntimeEvent, BuddyThreadMeta};
 use crate::call_validation::ChatMessage;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::stats::event::LlmCallEvent;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -427,7 +426,7 @@ fn build_spec(workflow_id: &str, evidence: AutonomousEvidence) -> AutonomousBudd
 }
 
 async fn autonomous_activity(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     spec: &AutonomousBuddyChatSpec,
     chat_id: &str,
     identity_name: &str,
@@ -464,7 +463,7 @@ async fn autonomous_activity(
 }
 
 async fn autonomous_runtime_event(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     spec: &AutonomousBuddyChatSpec,
     chat_id: &str,
     identity_name: &str,
@@ -544,7 +543,7 @@ fn default_autonomous_activity(
 }
 
 pub(crate) async fn execute_autonomous_spec(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     ctx: &BuddyJobContext,
     spec: AutonomousBuddyChatSpec,
 ) -> BuddyJobResult {
@@ -666,10 +665,10 @@ fn behavior_preference_candidates(snippets: &[TrajectoryUserSnippet]) -> Vec<Pre
 }
 
 async fn enqueue_behavior_preferences(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     candidates: &[PreferenceCandidate],
 ) -> usize {
-    let Some(project_root) = crate::files_correction::get_project_dirs(gcx)
+    let Some(project_root) = crate::files_correction::get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -1158,10 +1157,10 @@ fn collect_behavior_task_trajectory_dirs(
 }
 
 async fn collect_behavior_trajectory_metas(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Vec<BehaviorTrajectoryMeta> {
-    let mut dirs = crate::chat::trajectories::get_all_trajectories_dirs(gcx.clone()).await;
-    let tasks_dirs = crate::tasks::storage::get_all_tasks_dirs(gcx).await;
+    let mut dirs = crate::chat::trajectories::get_all_trajectories_dirs(gcx.gcx.clone()).await;
+    let tasks_dirs = crate::tasks::storage::get_all_tasks_dirs(gcx.gcx.clone()).await;
     tokio::task::spawn_blocking(move || {
         dirs.extend(collect_behavior_task_trajectory_dirs(
             &tasks_dirs,
@@ -1186,7 +1185,7 @@ async fn collect_behavior_trajectory_metas(
 }
 
 async fn collect_recent_user_snippets(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     max_snippets: usize,
 ) -> Vec<TrajectoryUserSnippet> {
     let metas = collect_behavior_trajectory_metas(gcx).await;
@@ -1261,7 +1260,7 @@ fn behavior_evidence_from_snippets(
 }
 
 async fn behavior_learner_evidence(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Option<(AutonomousEvidence, Vec<PreferenceCandidate>)> {
     let snippets = collect_recent_user_snippets(gcx, MAX_TRAJECTORY_SNIPPETS).await;
     let evidence = behavior_evidence_from_snippets(&snippets)?;
@@ -1545,8 +1544,8 @@ fn model_cost_evidence_from_events(events: &[LlmCallEvent]) -> Option<Autonomous
     })
 }
 
-async fn model_cost_evidence(gcx: Arc<ARwLock<GlobalContext>>) -> Option<AutonomousEvidence> {
-    let stats_dirs = crate::stats::get_stats_dirs_for_read(gcx).await;
+async fn model_cost_evidence(gcx: AppState) -> Option<AutonomousEvidence> {
+    let stats_dirs = crate::stats::get_stats_dirs_for_read(gcx.gcx.clone()).await;
     let events = tokio::task::spawn_blocking(move || {
         crate::stats::reader::read_recent_stats_events_from_dirs(
             &stats_dirs,
@@ -1572,7 +1571,7 @@ impl BuddyJob for BuddyMemoryGardenerJob {
         20
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(evidence) = memory_gardener_evidence(ctx) else {
             return false;
         };
@@ -1581,7 +1580,7 @@ impl BuddyJob for BuddyMemoryGardenerJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(evidence) = memory_gardener_evidence(&ctx) else {
@@ -1605,7 +1604,7 @@ impl BuddyJob for BuddyKnowledgeConflictResolverJob {
         21
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(evidence) = knowledge_conflict_evidence(ctx) else {
             return false;
         };
@@ -1614,7 +1613,7 @@ impl BuddyJob for BuddyKnowledgeConflictResolverJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(evidence) = knowledge_conflict_evidence(&ctx) else {
@@ -1642,13 +1641,13 @@ impl BuddyJob for BuddyBehaviorLearnerJob {
         false
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         ctx.pulse.trajectories.total >= 4
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some((evidence, candidates)) = behavior_learner_evidence(gcx.clone()).await else {
@@ -1690,7 +1689,7 @@ impl BuddyJob for BuddyUserHabitCoachJob {
         23
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(evidence) = habit_evidence(ctx) else {
             return false;
         };
@@ -1699,7 +1698,7 @@ impl BuddyJob for BuddyUserHabitCoachJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(evidence) = habit_evidence(&ctx) else {
@@ -1727,13 +1726,13 @@ impl BuddyJob for BuddyModelCostOptimizerJob {
         false
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         ctx.total_workflow_runs >= 5 || ctx.pulse.providers.quota_warnings > 0
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(evidence) = model_cost_evidence(gcx.clone()).await else {
@@ -1827,8 +1826,8 @@ fn cap_text(text: &str, max_chars: usize) -> String {
     format!("{}{}", prefix, TRUNCATED_MARKER)
 }
 
-async fn autonomous_chats_enabled(gcx: Arc<ARwLock<GlobalContext>>) -> Result<bool, String> {
-    let project_root = crate::files_correction::get_project_dirs(gcx)
+async fn autonomous_chats_enabled(gcx: AppState) -> Result<bool, String> {
+    let project_root = crate::files_correction::get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -1838,7 +1837,7 @@ async fn autonomous_chats_enabled(gcx: Arc<ARwLock<GlobalContext>>) -> Result<bo
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub async fn run_autonomous_buddy_chat(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     spec: AutonomousBuddyChatSpec,
 ) -> Result<String, String> {
     if !validate_workflow_id(&spec.workflow_id) {
@@ -1855,7 +1854,7 @@ pub async fn run_autonomous_buddy_chat(
     let (messages, max_steps, tools) = build_autonomous_messages(gcx.clone(), &spec).await?;
 
     let mut config = crate::subchat::resolve_subchat_config(
-        gcx.clone(),
+        gcx.gcx.clone(),
         &spec.workflow_id,
         true,
         Some(format!("buddy-{}-{}", spec.workflow_id, Uuid::new_v4())),
@@ -1879,7 +1878,7 @@ pub async fn run_autonomous_buddy_chat(
         workflow_id: Some(spec.workflow_id.clone()),
     });
 
-    let result = crate::subchat::run_subchat(gcx.clone(), messages, config).await?;
+    let result = crate::subchat::run_subchat(gcx.gcx.clone(), messages, config).await?;
     let chat_id = result
         .chat_id
         .clone()
@@ -1900,11 +1899,11 @@ pub async fn run_autonomous_buddy_chat(
 
 #[cfg_attr(not(test), allow(dead_code))]
 async fn build_autonomous_messages(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     spec: &AutonomousBuddyChatSpec,
 ) -> Result<(Vec<ChatMessage>, usize, Vec<String>), String> {
     let subagent_config = crate::yaml_configs::customization_registry::get_subagent_config(
-        gcx,
+        gcx.gcx.clone(),
         &spec.workflow_id,
         None,
     )
@@ -2108,7 +2107,7 @@ fn build_autonomous_job_spec(
 }
 
 async fn execute_autonomous_job(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     ctx: &BuddyJobContext,
     definition: AutonomousJobDefinition,
     evidence: String,
@@ -2118,7 +2117,7 @@ async fn execute_autonomous_job(
 }
 
 async fn execute_built_autonomous_job(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     ctx: &BuddyJobContext,
     definition: AutonomousJobDefinition,
     spec: AutonomousBuddyChatSpec,
@@ -3047,7 +3046,7 @@ impl BuddyJob for ErrorDetectiveJob {
         error_detective_definition().scheduler_priority
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(evidence) = diagnostic_evidence(ctx) else {
             return false;
         };
@@ -3060,7 +3059,7 @@ impl BuddyJob for ErrorDetectiveJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(evidence) = diagnostic_evidence(&ctx) else {
@@ -3094,7 +3093,7 @@ impl BuddyJob for SecurityWhispererJob {
         false
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         ctx.pulse.git.uncommitted_files > 0
             || ctx.pulse.git.diff_lines_4h > 0
             || !diagnostic_security_findings(&ctx.recent_diagnostics).is_empty()
@@ -3102,7 +3101,7 @@ impl BuddyJob for SecurityWhispererJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let root = ctx.project_root.clone();
@@ -3142,7 +3141,7 @@ impl BuddyJob for SetupCoachJob {
         setup_coach_definition().scheduler_priority
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(evidence) = setup_evidence(&ctx.project_root) else {
             return false;
         };
@@ -3152,7 +3151,7 @@ impl BuddyJob for SetupCoachJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(evidence) = setup_evidence(&ctx.project_root) else {
@@ -3180,13 +3179,13 @@ impl BuddyJob for DependencyRadarJob {
         false
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         ctx.pulse.git.uncommitted_files > 0 || ctx.pulse.git.diff_lines_4h > 0
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let root = ctx.project_root.clone();
@@ -3227,13 +3226,13 @@ impl BuddyJob for DocsGardenerJob {
         false
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         ctx.pulse.git.uncommitted_files > 0 || ctx.pulse.git.diff_lines_4h > 0
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let root = ctx.project_root.clone();
@@ -3274,13 +3273,13 @@ impl BuddyJob for ArchitectureDriftWatcherJob {
         false
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         ctx.pulse.git.uncommitted_files > 0 || ctx.pulse.git.diff_lines_4h > 0
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let root = ctx.project_root.clone();
@@ -3307,7 +3306,7 @@ impl BuddyJob for ArchitectureDriftWatcherJob {
 
 #[cfg(test)]
 async fn execute_dependency_radar_with_evidence(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     ctx: &BuddyJobContext,
     evidence: DependencyManifestEvidence,
 ) -> BuddyJobResult {
@@ -3491,7 +3490,7 @@ mod tests {
         }
     }
 
-    async fn make_gcx_with_buddy() -> Arc<ARwLock<GlobalContext>> {
+    async fn make_gcx_with_buddy() -> AppState {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let (tx, _) = tokio::sync::broadcast::channel(16);
         let mut state = crate::buddy::state::default_buddy_state();
@@ -3505,9 +3504,10 @@ mod tests {
             tx,
             None,
         );
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let app = AppState::from_gcx(gcx).await;
+        let buddy_arc = app.buddy.buddy.clone();
         *buddy_arc.lock().await = Some(service);
-        gcx
+        app
     }
 
     fn write_behavior_trajectory(path: &Path, id: &str, modified_secs: i64) {
@@ -3634,6 +3634,7 @@ mod tests {
         .with_display("🌱", "Memory", "normal");
 
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(gcx).await;
         let activity = autonomous_activity(gcx, &spec, "buddy-chat-1", "Buddy").await;
 
         assert_eq!(activity.activity_type, MEMORY_GARDENER_WORKFLOW_ID);
@@ -3651,6 +3652,7 @@ mod tests {
         )
         .with_display("🌱", "Memory", "normal");
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(gcx).await;
 
         let activity = autonomous_activity(gcx.clone(), &spec, "buddy-chat-1", "Pixel").await;
         let event = autonomous_runtime_event(gcx, &spec, "buddy-chat-1", "Pixel").await;
@@ -4706,7 +4708,7 @@ mod tests {
         let job = DependencyRadarJob;
         let mut ctx = context_with_last_result(None);
         ctx.pulse.git.uncommitted_files = 1;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         reset_local_git_evidence_scan_count(&ctx.project_root);
 
         assert!(job.should_run(gcx, &ctx).await);
@@ -4723,7 +4725,7 @@ mod tests {
         ctx.project_root = root.to_path_buf();
         ctx.pulse.git.uncommitted_files = 1;
         let job = DependencyRadarJob;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         assert!(job.should_run(gcx.clone(), &ctx).await);
         reset_local_git_evidence_scan_count(&ctx.project_root);
@@ -4753,7 +4755,7 @@ mod tests {
             completed_at: "2026-01-01T00:00:00Z".to_string(),
         });
         let ctx = context_with_last_result(Some(stored.clone()));
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         let result = execute_dependency_radar_with_evidence(gcx, &ctx, evidence).await;
 
@@ -4775,10 +4777,10 @@ mod tests {
         save_settings(dir.path(), &settings).await.unwrap();
         let gcx = crate::global_context::tests::make_test_gcx().await;
         {
-            let gcx_lock = gcx.read().await;
-            *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+            *crate::app_state::AppState::from_gcx(gcx.clone()).await.workspace.documents_state.workspace_folders.lock().unwrap() =
                 vec![dir.path().to_path_buf()];
         }
+        let gcx = AppState::from_gcx(gcx).await;
         let spec = AutonomousBuddyChatSpec::new(
             "buddy_security_whisperer",
             "Security Whisperer",
@@ -4792,7 +4794,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_autonomous_messages_render_safe_user_prompt() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let spec = AutonomousBuddyChatSpec::new(
             "buddy_security_whisperer",
             "Security Whisperer",
@@ -4814,7 +4816,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_autonomous_buddy_chat_rejects_invalid_workflow_id() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let spec = AutonomousBuddyChatSpec::new("../bad", "Bad", "Prompt", "Evidence");
         let err = run_autonomous_buddy_chat(gcx, spec).await.unwrap_err();
 

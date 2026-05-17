@@ -1,14 +1,12 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock as ARwLock;
 use tracing::warn;
 
 use super::diagnostics::DiagnosticContext;
@@ -19,7 +17,7 @@ use super::memory_lifecycle::{
 use super::runtime_queue::RuntimeQueue;
 use super::state::default_buddy_state;
 use super::types::BuddyRuntimeEvent;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 /// Maximum number of items kept after replay+cap on load. Mirrors the in-memory cap.
 const RUNTIME_QUEUE_MAX_ITEMS: usize = 100;
@@ -538,7 +536,7 @@ pub async fn archive_memory_ops_if_oversized(
 #[allow(dead_code)]
 pub async fn apply_queued_memory_ops(
     project_root: &Path,
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Result<MemoryOpsState, String> {
     let state = load_memory_ops(project_root).await;
     for op in state.ops {
@@ -1223,7 +1221,7 @@ mod tests {
         op.status = MemoryOpStatus::Pending;
 
         enqueue_memory_op(root, op.clone()).await.unwrap();
-        let state = apply_queued_memory_ops(root, gcx).await.unwrap();
+        let state = apply_queued_memory_ops(root, AppState::from_gcx(gcx).await).await.unwrap();
 
         assert_eq!(state.ops.len(), 1);
         assert_eq!(state.ops[0].status, MemoryOpStatus::Pending);

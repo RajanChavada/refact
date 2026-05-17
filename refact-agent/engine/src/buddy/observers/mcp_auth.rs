@@ -1,11 +1,9 @@
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::integrations::mcp::session_mcp::{MCPAuthStatus, SessionMCP};
 
 const FAILURE_THRESHOLD: u64 = 3;
@@ -85,11 +83,11 @@ impl BuddyObserver for McpAuthObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         _ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
         let session_entries = {
-            let integration_sessions = gcx.read().await.integration_sessions.clone();
+            let integration_sessions = gcx.integrations.integration_sessions.clone();
             let integration_sessions = integration_sessions.lock().await;
             integration_sessions
                 .iter()

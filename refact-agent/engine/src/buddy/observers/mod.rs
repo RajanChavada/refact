@@ -1,3 +1,4 @@
+use std::sync::Arc;
 pub mod chat_pattern;
 pub mod customization_drift;
 pub mod diagnostic_cluster;
@@ -9,13 +10,11 @@ pub mod task_health;
 pub mod trajectory_clutter;
 pub mod worktree_hygiene;
 
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::BuddyFact;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct ObserverContext {
     pub project_root: std::path::PathBuf,
@@ -29,7 +28,7 @@ pub trait BuddyObserver: Send + Sync {
     fn requires_setting(&self, settings: &BuddySettings) -> bool;
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact>;
 }

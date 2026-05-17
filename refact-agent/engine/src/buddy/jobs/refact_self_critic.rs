@@ -1,12 +1,10 @@
-use std::sync::Arc;
 
 use chrono::Utc;
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{autonomous_workflow_meta, REFACT_SELF_CRITIC_WORKFLOW_ID};
 use crate::buddy::jobs::autonomous_chats::{execute_autonomous_spec, AutonomousBuddyChatSpec};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct RefactSelfCriticJob;
 
@@ -45,13 +43,13 @@ impl BuddyJob for RefactSelfCriticJob {
         PRIORITY
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, _ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, _ctx: &BuddyJobContext) -> bool {
         true
     }
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         execute_autonomous_spec(gcx, &ctx, build_self_critic_spec(&ctx)).await
@@ -92,7 +90,7 @@ mod tests {
     #[tokio::test]
     async fn refact_self_critic_runs_on_24h_cooldown() {
         let dir = tempfile::tempdir().unwrap();
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let ctx = test_context(dir.path());
         let job = RefactSelfCriticJob;
 

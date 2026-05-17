@@ -692,10 +692,11 @@ impl Tool for ToolBuddyMemoryArchive {
             return Err("argument `reason` must be at most 240 chars".to_string());
         }
         let gcx = ccx.lock().await.global_context.clone();
+        let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
         let path = resolve_memory_path(gcx.clone(), string_arg(args, "path")?).await?;
         let superseded_by = optional_string_arg(args, "superseded_by");
         let changed =
-            archive_memory_file_checked(gcx.clone(), &path, superseded_by.as_deref()).await?;
+            archive_memory_file_checked(app, &path, superseded_by.as_deref()).await?;
         let mut op = MemoryLifecycleOp::pending(
             op_id("archive", &[&path.to_string_lossy(), reason]),
             MemorySource::Buddy,
@@ -821,6 +822,7 @@ impl Tool for ToolBuddyMemoryMerge {
             return Err("argument `superseded_paths` must be non-empty".to_string());
         }
         let gcx = ccx.lock().await.global_context.clone();
+        let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
         let source_id = hash_parts(&[
             string_arg(args, "canonical_title")?,
             string_arg(args, "canonical_content")?,
@@ -843,7 +845,7 @@ impl Tool for ToolBuddyMemoryMerge {
         for raw in &superseded {
             let path = resolve_memory_path(gcx.clone(), raw).await?;
             if archive_memory_file_checked(
-                gcx.clone(),
+                app.clone(),
                 &path,
                 Some(&canonical_path.to_string_lossy()),
             )

@@ -3,15 +3,13 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
 use crate::files_correction::get_project_dirs;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::git::operations::{
     GitCoChangePair, GitCommitClassification, GitCommitSummary, GitFileChangeStatus,
     GitHistoryReport, GitHotspot,
@@ -2493,7 +2491,7 @@ impl KnowledgeRoots {
 }
 
 pub async fn apply_memory_lifecycle_op(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
 ) -> Result<MemoryApplyOutcome, String> {
     let op = op.clone().normalized();
@@ -2532,7 +2530,7 @@ pub async fn apply_memory_lifecycle_op(
 }
 
 pub async fn apply_memory_lifecycle_op_status(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
 ) -> MemoryLifecycleOp {
     let mut updated = op.clone().normalized();
@@ -2574,7 +2572,7 @@ fn destructive_memory_op(op_type: MemoryOpType) -> bool {
 }
 
 async fn apply_create_memory(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
 ) -> Result<MemoryApplyOutcome, String> {
     let payload = op
@@ -2653,12 +2651,12 @@ async fn apply_create_memory(
             .unwrap_or_else(|| compute_content_hash(&content)),
     );
 
-    let path = memories_add(gcx, &frontmatter, &content).await?;
+    let path = memories_add(gcx.gcx.clone(), &frontmatter, &content).await?;
     Ok(MemoryApplyOutcome::applied(vec![path]))
 }
 
 async fn apply_retag(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
 ) -> Result<MemoryApplyOutcome, String> {
     let tags = op
@@ -2670,7 +2668,7 @@ async fn apply_retag(
     let mut paths = Vec::new();
     for target in &op.target_paths {
         let path = validate_existing_memory_path(target, &roots).await?;
-        let changed = update_memory_document_frontmatter(gcx.clone(), &path, |frontmatter| {
+        let changed = update_memory_document_frontmatter(gcx.gcx.clone(), &path, |frontmatter| {
             let new_tags = normalize_memory_tags(&tags, 16);
             if frontmatter.tags == new_tags {
                 return Ok(false);
@@ -2692,7 +2690,7 @@ async fn apply_retag(
 }
 
 async fn apply_repair_links(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
 ) -> Result<MemoryApplyOutcome, String> {
     if op.payload.filenames.is_none()
@@ -2705,7 +2703,7 @@ async fn apply_repair_links(
     let mut paths = Vec::new();
     for target in &op.target_paths {
         let path = validate_existing_memory_path(target, &roots).await?;
-        let changed = update_memory_document_frontmatter(gcx.clone(), &path, |frontmatter| {
+        let changed = update_memory_document_frontmatter(gcx.gcx.clone(), &path, |frontmatter| {
             let old = (
                 frontmatter.filenames.clone(),
                 frontmatter.related_files.clone(),
@@ -2744,7 +2742,7 @@ async fn apply_repair_links(
 }
 
 async fn apply_review_status(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
     status: &str,
 ) -> Result<MemoryApplyOutcome, String> {
@@ -2754,7 +2752,7 @@ async fn apply_review_status(
     let mut paths = Vec::new();
     for target in &op.target_paths {
         let path = validate_existing_memory_path(target, &roots).await?;
-        let changed = update_memory_document_frontmatter(gcx.clone(), &path, |frontmatter| {
+        let changed = update_memory_document_frontmatter(gcx.gcx.clone(), &path, |frontmatter| {
             if frontmatter.status.as_deref() == Some(status.as_str())
                 && frontmatter.review_after.as_deref() == Some(review_after.as_str())
                 && (status == "deprecated") == frontmatter.deprecated_at.is_some()
@@ -2786,7 +2784,7 @@ async fn apply_review_status(
 }
 
 async fn apply_archive(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
     superseded_by: Option<&str>,
 ) -> Result<MemoryApplyOutcome, String> {
@@ -2812,7 +2810,7 @@ async fn apply_archive(
 }
 
 async fn apply_merge_archive(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     op: &MemoryLifecycleOp,
 ) -> Result<MemoryApplyOutcome, String> {
     if op.status != MemoryOpStatus::Approved {
@@ -2858,7 +2856,7 @@ async fn apply_merge_archive(
     }
     frontmatter.source_tool = Some(format!("buddy_memory_lifecycle:{}", op.source.as_str()));
 
-    let canonical_path = memories_add(gcx.clone(), &frontmatter, canonical.content.trim()).await?;
+    let canonical_path = memories_add(gcx.gcx.clone(), &frontmatter, canonical.content.trim()).await?;
     let canonical_id = frontmatter
         .id
         .clone()
@@ -2876,7 +2874,7 @@ async fn apply_merge_archive(
 }
 
 pub async fn archive_memory_file_checked(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     path: &Path,
     superseded_by: Option<&str>,
 ) -> Result<bool, String> {
@@ -2895,11 +2893,11 @@ pub async fn archive_memory_file_checked(
 }
 
 async fn archive_memory_file(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     path: &Path,
     superseded_by: Option<&str>,
 ) -> Result<bool, String> {
-    update_memory_document_frontmatter(gcx, path, |frontmatter| {
+    update_memory_document_frontmatter(gcx.gcx.clone(), path, |frontmatter| {
         if frontmatter.is_archived() {
             return Ok(false);
         }
@@ -2914,13 +2912,13 @@ async fn archive_memory_file(
     .await
 }
 
-async fn knowledge_roots(gcx: Arc<ARwLock<GlobalContext>>) -> KnowledgeRoots {
-    let local = get_project_dirs(gcx.clone())
+async fn knowledge_roots(gcx: AppState) -> KnowledgeRoots {
+    let local = get_project_dirs(gcx.gcx.clone())
         .await
         .into_iter()
         .map(|dir| dir.join(KNOWLEDGE_FOLDER_NAME))
         .collect();
-    let global = get_global_knowledge_dir(gcx).await;
+    let global = get_global_knowledge_dir(gcx.gcx.clone()).await;
     KnowledgeRoots { local, global }
 }
 
@@ -3214,13 +3212,12 @@ mod tests {
         assert!(!text.contains("ghp_AbCdEfGhIj1234567890"));
     }
 
-    async fn test_gcx_with_workspace(dir: &Path) -> Arc<ARwLock<GlobalContext>> {
+    async fn test_gcx_with_workspace(dir: &Path) -> AppState {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         {
-            let gcx_lock = gcx.read().await;
-            *gcx_lock.documents_state.workspace_folders.lock().unwrap() = vec![dir.to_path_buf()];
+            *crate::app_state::AppState::from_gcx(gcx.clone()).await.workspace.documents_state.workspace_folders.lock().unwrap() = vec![dir.to_path_buf()];
         }
-        gcx
+        AppState::from_gcx(gcx).await
     }
 
     fn frontmatter_and_body(text: &str) -> (KnowledgeFrontmatter, String) {
@@ -4439,9 +4436,9 @@ mod tests {
         let (frontmatter, body) = frontmatter_and_body(&text);
         assert_eq!(frontmatter.status.as_deref(), Some("archived"));
         assert_eq!(body, "Archive body");
-        let kg = crate::knowledge_graph::build_knowledge_graph(gcx.clone()).await;
+        let kg = crate::knowledge_graph::build_knowledge_graph(gcx.gcx.clone()).await;
         assert!(kg.active_docs().all(|doc| doc.path != path));
-        let found = crate::memories::load_memories_by_tags(gcx, &["old"], 10)
+        let found = crate::memories::load_memories_by_tags(gcx.gcx.clone(), &["old"], 10)
             .await
             .unwrap();
         assert!(found.is_empty());
@@ -4799,10 +4796,10 @@ mod buddy_memory_tools_checked_tests {
         tokio::fs::create_dir_all(&knowledge_dir).await.unwrap();
         let gcx = crate::global_context::tests::make_test_gcx().await;
         {
-            let gcx_read = gcx.read().await;
-            *gcx_read.documents_state.workspace_folders.lock().unwrap() =
+            *crate::app_state::AppState::from_gcx(gcx.clone()).await.workspace.documents_state.workspace_folders.lock().unwrap() =
                 vec![dir.path().to_path_buf()];
         }
+        let gcx = AppState::from_gcx(gcx).await;
         let path = knowledge_dir
             .join("..")
             .join("knowledge")

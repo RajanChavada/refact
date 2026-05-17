@@ -1,6 +1,4 @@
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::memory_lifecycle::{
     detect_git_memory_ops, load_memory_doc_snapshots_from_knowledge_dirs, MemoryLifecycleOp,
@@ -9,7 +7,7 @@ use crate::buddy::memory_lifecycle::{
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::git::operations::{mine_git_history, GitHistoryOptions, GitHistoryReport};
 
 pub struct GitPressureObserver;
@@ -436,7 +434,7 @@ impl BuddyObserver for GitPressureObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
         let root = ctx.project_root.clone();
@@ -448,7 +446,7 @@ impl BuddyObserver for GitPressureObserver {
                 .unwrap_or_default();
         let git_ops = detect_and_enqueue_git_memory_ops(&root, now).await;
         if !git_ops.is_empty() {
-            let buddy_arc = gcx.read().await.buddy.clone();
+            let buddy_arc = gcx.buddy.buddy.clone();
             let updated_memory_ops = crate::buddy::storage::load_memory_ops(&root).await;
             let mut buddy = buddy_arc.lock().await;
             if let Some(svc) = buddy.as_mut() {

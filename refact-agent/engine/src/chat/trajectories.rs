@@ -1732,7 +1732,7 @@ fn spawn_title_generation_task(
         let gcx2 = gcx.clone();
         let messages2 = messages.clone();
         let generated_title = crate::buddy::workflows::buddy_wrap_workflow(
-            gcx.clone(),
+            crate::app_state::AppState::from_gcx(gcx.clone()).await,
             "title_generation",
             "📋",
             5,

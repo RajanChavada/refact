@@ -98,7 +98,7 @@ impl Tool for ToolBuddyLogActivity {
         }
         let chat_id = optional_str(args, "chat_id").map(|s| cap(&s, 120)).filter(|s| !s.is_empty()).or_else(|| (!context_chat_id.is_empty()).then_some(context_chat_id));
         let activity = BuddyActivity { icon, title: title.clone(), description, timestamp: chrono::Utc::now().to_rfc3339(), activity_type: "buddy_tool".to_string(), chat_id };
-        buddy_apply(gcx, BuddyMutation { activity: Some(activity), ..Default::default() }).await;
+        buddy_apply(crate::app_state::AppState::from_gcx(gcx).await, BuddyMutation { activity: Some(activity), ..Default::default() }).await;
         ok_message(tool_call_id, format!("Activity logged: {}", title))
     }
 
@@ -163,7 +163,7 @@ impl Tool for ToolBuddyRuntimeEvent {
             event.dedupe_key = None;
         }
         event.description = optional_str(args, "description").map(|s| cap(&s, 240));
-        buddy_enqueue_event(gcx, event).await;
+        buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx).await, event).await;
         ok_message(tool_call_id, format!("Runtime event enqueued: {}", title))
     }
 

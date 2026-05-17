@@ -1,12 +1,10 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::tasks::types::{TaskBoard, TaskMeta, TaskStatus};
 
 pub struct TaskHealthObserver;
@@ -168,16 +166,16 @@ impl BuddyObserver for TaskHealthObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
-        let tasks = match crate::tasks::storage::list_tasks(gcx.clone()).await {
+        let tasks = match crate::tasks::storage::list_tasks(gcx.gcx.clone()).await {
             Ok(t) => t,
             Err(_) => return vec![],
         };
         let mut entries = vec![];
         for meta in tasks {
-            let board = match crate::tasks::storage::load_board(gcx.clone(), &meta.id).await {
+            let board = match crate::tasks::storage::load_board(gcx.gcx.clone(), &meta.id).await {
                 Ok(b) => b,
                 Err(_) => continue,
             };
@@ -186,7 +184,7 @@ impl BuddyObserver for TaskHealthObserver {
                 if card.column == "doing" {
                     let live = if let Some(chat_id) = &card.agent_chat_id {
                         crate::chat::task_agent_monitor::get_last_agent_heartbeat(
-                            gcx.clone(),
+                            gcx.gcx.clone(),
                             chat_id,
                         )
                         .await

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::voice_service::{voice_service, SpeechIntent, VoiceCtx};
@@ -21,7 +21,7 @@ impl BuddyJob for SpeakerMemoryPulseCommentaryJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         ctx.pulse.memory.total > 0
@@ -32,7 +32,7 @@ impl BuddyJob for SpeakerMemoryPulseCommentaryJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let summary = memory_summary(&ctx);

@@ -383,7 +383,7 @@ pub async fn create_task(gcx: Arc<ARwLock<GlobalContext>>, name: &str) -> Result
             "completed",
             None,
         );
-        crate::buddy::actor::buddy_enqueue_event(gcx, ev).await;
+        crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx).await, ev).await;
     }
 
     Ok(meta)

@@ -1,11 +1,9 @@
 use std::future::Future;
-use std::sync::Arc;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 use tracing::warn;
 
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use super::types::BuddyActivity;
 
 pub fn workflow_label(workflow_id: &str) -> &str {
@@ -56,7 +54,7 @@ struct WorkflowTranscript {
 const MAX_ENTRIES: usize = 100;
 
 pub async fn buddy_wrap_workflow<T, F, Fut>(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     workflow_id: &str,
     icon: &str,
     xp: u64,
@@ -90,9 +88,9 @@ where
         Err(e) => (false, e.clone()),
     };
 
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let voice_gcx = gcx.clone();
-    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+    let project_dirs = crate::files_correction::get_project_dirs(gcx.gcx.clone()).await;
     let project_root = project_dirs.into_iter().next();
     let workflow_id_owned = workflow_id.to_string();
     let icon_owned = icon.to_string();
@@ -190,7 +188,7 @@ where
             crate::buddy::actor::buddy_update_speech(voice_gcx.clone(), completed.speech).await;
             crate::buddy::actor::buddy_apply(voice_gcx.clone(), completed.mutation).await;
             if reward > 0 {
-                let buddy_arc = voice_gcx.read().await.buddy.clone();
+                let buddy_arc = voice_gcx.buddy.buddy.clone();
                 let mut buddy = buddy_arc.lock().await;
                 if let Some(svc) = buddy.as_mut() {
                     svc.grant_xp(reward);

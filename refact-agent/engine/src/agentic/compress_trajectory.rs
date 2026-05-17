@@ -17,7 +17,7 @@ pub async fn compress_trajectory(
     let messages = messages.clone();
     let gcx2 = gcx.clone();
     crate::buddy::workflows::buddy_wrap_workflow(
-        gcx,
+        crate::app_state::AppState::from_gcx(gcx).await,
         "compress_trajectory",
         "🗜",
         10,

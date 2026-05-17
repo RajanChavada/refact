@@ -1,14 +1,13 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::buddy::types::{BuddyFactKind, BuddyPersonalityProfile, BuddyPulse};
 use crate::buddy::voice_service::{SpeechIntent, VoiceCtx, voice_service};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub const HUMOR_BUDGET_PER_HOUR: u32 = 5;
 pub const HUMOR_BATCH_TTL: Duration = Duration::hours(1);
@@ -29,7 +28,7 @@ pub trait HumorGenerator: Send + Sync {
         &self,
         kind: BuddyFactKind,
         summary: String,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
     ) -> Vec<String>;
 }
 
@@ -41,7 +40,7 @@ impl HumorGenerator for DefaultHumorGenerator {
         &self,
         kind: BuddyFactKind,
         summary: String,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
     ) -> Vec<String> {
         generate_via_voice_service(kind, summary, gcx).await
     }
@@ -68,7 +67,7 @@ pub enum HumorPlan {
 }
 
 impl HumorReservation {
-    pub async fn generate(&self, gcx: Arc<RwLock<GlobalContext>>) -> Vec<String> {
+    pub async fn generate(&self, gcx: AppState) -> Vec<String> {
         tokio::time::timeout(
             tokio::time::Duration::from_secs(HUMOR_TIMEOUT_SECS),
             self.generator
@@ -199,7 +198,7 @@ impl Default for HumorService {
 async fn generate_via_voice_service(
     kind: BuddyFactKind,
     pulse_summary: String,
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Vec<String> {
     let (persona, identity_name, pulse_one_liner) =
         match crate::buddy::actor::buddy_snapshot(gcx.clone()).await {
@@ -247,9 +246,10 @@ mod tests {
         );
         let _guard = crate::buddy::voice_service::install_test_voice_service(service).await;
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx).await;
 
         let lines = DefaultHumorGenerator
-            .generate(BuddyFactKind::TaskStuck, "tasks:1 stuck:1".to_string(), gcx)
+            .generate(BuddyFactKind::TaskStuck, "tasks:1 stuck:1".to_string(), app)
             .await;
 
         assert_eq!(lines, vec!["tiny joke".to_string()]);

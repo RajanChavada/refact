@@ -95,7 +95,7 @@ pub async fn vecdb_background_reload(gcx: Arc<ARwLock<GlobalContext>>) {
                     "started",
                     None,
                 );
-                crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+                crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
             }
             match initialize_vecdb_with_context(gcx.clone(), consts.unwrap(), Some(init_config)).await {
                 Ok(_) => {
@@ -109,7 +109,7 @@ pub async fn vecdb_background_reload(gcx: Arc<ARwLock<GlobalContext>>) {
                         "completed",
                         None,
                     );
-                    crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+                    crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
                 }
                 Err(refact_vecdb::vdb_init::VecDbInitError::ShutdownRequested) => break,
                 Err(err) => {

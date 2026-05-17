@@ -144,7 +144,7 @@ async fn mark_agent_as_failed(
             "failed",
             Some("high"),
         );
-        crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+        crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
     }
 
     if let Some(card) = board.get_card(card_id) {

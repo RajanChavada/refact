@@ -2176,7 +2176,7 @@ async fn tool_runtime_event_lines(
         "Using {} to help with '{}'...",
         tool_name, chat_label
     ));
-    let Some(snapshot) = crate::buddy::actor::buddy_snapshot(gcx.clone()).await else {
+    let Some(snapshot) = crate::buddy::actor::buddy_snapshot(crate::app_state::AppState::from_gcx(gcx.clone()).await).await else {
         return (fallback_title, fallback_speech);
     };
     let pulse_one_liner = format!(
@@ -2193,7 +2193,7 @@ async fn tool_runtime_event_lines(
     };
     let (title, speech) = voice_service()
         .await
-        .render_runtime_event_fast(gcx, voice_ctx, "started")
+        .render_runtime_event_fast(crate::app_state::AppState::from_gcx(gcx).await, voice_ctx, "started")
         .await;
     runtime_event_lines_with_fallback(title, speech, fallback_title, fallback_speech)
 }
@@ -2295,7 +2295,7 @@ pub async fn execute_tools(
         ev.speech_text = speech_text;
         ev.scene = Some("working".to_string());
         ev.chat_id = Some(chat_id.to_string());
-        crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+        crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
     }
 
     let (result_msgs, had_corrections) = execute_tools_inner(
@@ -2319,9 +2319,9 @@ pub async fn execute_tools(
                 None,
             );
             ev.chat_id = Some(chat_id.to_string());
-            crate::buddy::actor::buddy_enqueue_event(gcx2.clone(), ev).await;
+            crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx2.clone()).await, ev).await;
         } else {
-            crate::buddy::actor::buddy_complete_event(gcx2.clone(), dedupe_key, "completed").await;
+            crate::buddy::actor::buddy_complete_event(crate::app_state::AppState::from_gcx(gcx2.clone()).await, dedupe_key, "completed").await;
         }
     }
 

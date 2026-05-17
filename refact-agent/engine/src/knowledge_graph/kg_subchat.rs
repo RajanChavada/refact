@@ -59,7 +59,7 @@ pub async fn enrich_knowledge_metadata(
     let candidate_docs = candidate_docs.to_vec();
     let gcx2 = gcx.clone();
     crate::buddy::workflows::buddy_wrap_workflow(
-        gcx,
+        crate::app_state::AppState::from_gcx(gcx).await,
         "kg_enrich",
         "📚",
         12,
@@ -143,7 +143,7 @@ pub async fn check_deprecation(
     let candidates: Vec<KnowledgeDoc> = candidates.iter().map(|d| (*d).clone()).collect();
     let gcx2 = gcx.clone();
     crate::buddy::workflows::buddy_wrap_workflow(
-        gcx,
+        crate::app_state::AppState::from_gcx(gcx).await,
         "kg_deprecate",
         "🗑",
         5,

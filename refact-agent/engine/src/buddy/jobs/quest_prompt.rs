@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::{BuddyControl, BuddyQuest, BuddySuggestion};
@@ -138,7 +138,7 @@ fn pick_quest(ctx: &BuddyJobContext) -> Option<&'static str> {
 }
 
 async fn voice_quest_description(
-    gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: AppState,
     _ctx: &BuddyJobContext,
     kind: &str,
     fallback: &str,
@@ -184,7 +184,7 @@ impl BuddyJob for QuestPromptJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         pick_quest(ctx).is_some()
@@ -192,7 +192,7 @@ impl BuddyJob for QuestPromptJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(kind) = pick_quest(&ctx) else {

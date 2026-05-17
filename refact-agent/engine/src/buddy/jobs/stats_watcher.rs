@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::{BuddyActivity, BuddySpeechItem, BuddySuggestion};
@@ -29,7 +29,7 @@ impl BuddyJob for StatsWatcherJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         stats_watcher_has_visible_output(ctx)
@@ -37,7 +37,7 @@ impl BuddyJob for StatsWatcherJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let runs = ctx.total_workflow_runs;
@@ -244,7 +244,7 @@ mod tests {
     async fn stats_watcher_error_burst_returns_suggestion() {
         let job = StatsWatcherJob;
         let ctx = test_context(1, 5);
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         let result = job.execute(gcx, ctx).await;
 
@@ -255,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn stats_watcher_should_run_only_for_visible_suggestion_policy() {
         let job = StatsWatcherJob;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let quiet_ctx = test_context(12, 0);
         let milestone_ctx = test_context_with_state(
             12,
@@ -289,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn stats_watcher_suppresses_suggestion_when_proactive_is_disabled_but_keeps_milestones() {
         let job = StatsWatcherJob;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let mut error_ctx = test_context(1, 5);
         error_ctx.settings.proactive_enabled = false;
         let mut milestone_ctx = test_context_with_state(
@@ -325,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn stats_watcher_suppresses_suggestion_when_unread_cap_is_full() {
         let job = StatsWatcherJob;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let mut ctx = test_context(1, 5);
         ctx.suggestion_state = (0..crate::buddy::scheduler::MAX_UNREAD_SUGGESTIONS)
             .map(active_suggestion)

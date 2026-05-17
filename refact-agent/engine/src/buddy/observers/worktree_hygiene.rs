@@ -1,12 +1,10 @@
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde_json::json;
-use tokio::sync::RwLock;
 
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 use super::{BuddyObserver, ObserverContext};
 
@@ -28,10 +26,10 @@ impl BuddyObserver for WorktreeHygieneObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
-        let cache_dir = gcx.read().await.cache_dir.clone();
+        let cache_dir = gcx.paths.cache_dir.read().unwrap().clone();
         let Ok(service) =
             crate::worktrees::service::WorktreeService::new(cache_dir, ctx.project_root.clone())
         else {

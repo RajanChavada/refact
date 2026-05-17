@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ impl BuddyJob for SpeakerWinJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         crossed_milestone(ctx).is_some()
@@ -40,7 +40,7 @@ impl BuddyJob for SpeakerWinJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let Some(summary) = crossed_milestone(&ctx) else {

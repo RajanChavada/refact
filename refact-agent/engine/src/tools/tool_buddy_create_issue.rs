@@ -136,11 +136,12 @@ impl Tool for ToolBuddyCreateIssue {
             .unwrap_or_else(|| vec!["bug".to_string(), "buddy".to_string()]);
 
         let gcx = ccx.lock().await.global_context.clone();
+        let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
 
-        let has_mcp = crate::buddy::issues::has_github_mcp(gcx.clone()).await;
+        let has_mcp = crate::buddy::issues::has_github_mcp(app.clone()).await;
         let result = if has_mcp {
             let context = crate::buddy::issues::resolve_issue_context(
-                gcx.clone(),
+                app.clone(),
                 diagnostic_index,
                 diagnostic_id,
                 collected_at,
@@ -148,7 +149,7 @@ impl Tool for ToolBuddyCreateIssue {
             )
             .await?;
             crate::buddy::issues::create_issue_via_mcp(
-                gcx.clone(),
+                app.clone(),
                 &context,
                 title,
                 body,
@@ -158,7 +159,7 @@ impl Tool for ToolBuddyCreateIssue {
             .await
         } else {
             crate::buddy::issues::create_issue_via_native(
-                gcx.clone(),
+                app.clone(),
                 diagnostic_index,
                 diagnostic_id,
                 collected_at,

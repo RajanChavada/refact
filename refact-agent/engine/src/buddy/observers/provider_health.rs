@@ -1,12 +1,10 @@
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
 use crate::caps::DefaultModels;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct ProviderHealthObserver;
 
@@ -100,11 +98,11 @@ impl BuddyObserver for ProviderHealthObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         _ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
-        let gcx_read = gcx.read().await;
-        let caps = match &gcx_read.caps {
+        let caps_state = gcx.model.caps.read().await;
+        let caps = match &caps_state.caps {
             Some(c) => c.clone(),
             None => return vec![],
         };

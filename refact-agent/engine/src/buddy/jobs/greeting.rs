@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app_state::AppState;
 
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::{BuddyControl, BuddySpeechItem};
@@ -54,7 +54,7 @@ impl BuddyJob for GreetingJob {
 
     async fn should_run(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
         !ctx.onboarding.greeted || ctx.job_state.last_run.is_none()
@@ -62,7 +62,7 @@ impl BuddyJob for GreetingJob {
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let fallback_text = greeting_fallback_text(&ctx);
@@ -137,7 +137,7 @@ mod tests {
         }
     }
 
-    async fn make_gcx_with_buddy() -> Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>
+    async fn make_gcx_with_buddy() -> AppState
     {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let (tx, _) = tokio::sync::broadcast::channel(16);
@@ -155,9 +155,10 @@ mod tests {
             tx,
             None,
         );
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let app = AppState::from_gcx(gcx).await;
+        let buddy_arc = app.buddy.buddy.clone();
         *buddy_arc.lock().await = Some(service);
-        gcx
+        app
     }
 
     #[tokio::test]

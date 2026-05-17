@@ -1,17 +1,15 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{autonomous_workflow_meta, BUDDY_ONBOARDING_WORKFLOW_ID};
 use crate::buddy::jobs::autonomous_chats::{
     execute_autonomous_spec, same_signal, AutonomousBuddyChatSpec,
 };
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct BuddyOnboardingJob;
 
@@ -157,7 +155,7 @@ impl BuddyJob for BuddyOnboardingJob {
         PRIORITY
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let Some(cache) = cached_scan(ctx) else {
             return true;
         };
@@ -174,7 +172,7 @@ impl BuddyJob for BuddyOnboardingJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let scan = current_scan(&ctx).await;
@@ -251,7 +249,7 @@ mod tests {
         let scan = scan_onboarding(dir.path());
         let spec = build_onboarding_spec(&test_context(dir.path(), None), &scan);
         let ctx = test_context(dir.path(), Some(serialize_scan(&spec.signal_hash, &scan)));
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         assert!(BuddyOnboardingJob.should_run(gcx, &ctx).await);
         assert_eq!(scan.candidates.len(), 1);

@@ -1,18 +1,17 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::autonomous_workflows::{
     autonomous_workflow_meta, BUDDY_PR_ISSUE_MATCHMAKER_WORKFLOW_ID,
 };
 use crate::buddy::jobs::autonomous_chats::{execute_autonomous_spec, AutonomousBuddyChatSpec};
 use crate::buddy::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct BuddyPrIssueMatchmakerJob;
 
@@ -170,7 +169,7 @@ impl BuddyJob for BuddyPrIssueMatchmakerJob {
         PRIORITY
     }
 
-    async fn should_run(&self, _gcx: Arc<ARwLock<GlobalContext>>, ctx: &BuddyJobContext) -> bool {
+    async fn should_run(&self, _gcx: AppState, ctx: &BuddyJobContext) -> bool {
         let had_fresh_cache = fresh_cache(ctx).is_some();
         let cache = diff_cache_for_should_run(ctx).await;
         cache.changed_lines >= MIN_CHANGED_LINES || !had_fresh_cache
@@ -178,7 +177,7 @@ impl BuddyJob for BuddyPrIssueMatchmakerJob {
 
     async fn execute(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
         let cache = diff_cache_for_execute(&ctx).await;
@@ -288,7 +287,7 @@ mod tests {
         assert!(diff_changed_lines_counted(&stale_ctx).await >= 10);
         assert_eq!(DIFF_CHECKS.load(Ordering::SeqCst), 1);
         let job = BuddyPrIssueMatchmakerJob;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let small_cache = serialize_cache(&PrIssueMatchmakerCache {
             checked_at: Utc::now(),
             changed_lines: 0,

@@ -604,7 +604,7 @@ pub fn start_generation(
                     None,
                 );
                 ev.chat_id = Some(chat_id.to_string());
-                crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+                crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
                 let mut ev = crate::buddy::actor::make_runtime_event(
                     "streaming",
                     &format!("Generating reply in '{}'", chat_label),
@@ -617,7 +617,7 @@ pub fn start_generation(
                 ev.scene = Some("working".to_string());
                 ev.persistent = true;
                 ev.chat_id = Some(chat_id.to_string());
-                crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+                crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
             }
 
             let generation_result = run_llm_generation(
@@ -665,21 +665,21 @@ pub fn start_generation(
                 let task_meta_opt = {
                     let mut session = session_arc.lock().await;
                     if !session.abort_flag.load(Ordering::SeqCst) {
-                        let gcx2 = gcx.clone();
+                        let app2 = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+                        let buddy_svc = app2.buddy.buddy.clone();
                         let err_clone = e.clone();
                         let chat_id2 = chat_id.clone();
                         let chat_label2 = chat_label.clone();
                         tokio::spawn(async move {
                             crate::buddy::actor::report_error_persisted(
-                                gcx2.clone(),
+                                app2,
                                 "llm_error",
                                 &err_clone,
                                 Some("chat/generation.rs"),
                                 Some(&chat_id2),
                             )
                             .await;
-                            let buddy_arc = gcx2.read().await.buddy.clone();
-                            let mut lock = buddy_arc.lock().await;
+                            let mut lock = buddy_svc.lock().await;
                             if let Some(svc) = lock.as_mut() {
                                 let short_err: String = err_clone.chars().take(60).collect();
                                 let mut ev = crate::buddy::actor::make_runtime_event(
@@ -820,7 +820,7 @@ pub fn start_generation(
                         );
                         ev.chat_id = Some(chat_id.to_string());
                         crate::buddy::actor::buddy_apply(
-                            gcx.clone(),
+                            crate::app_state::AppState::from_gcx(gcx.clone()).await,
                             crate::buddy::actor::BuddyMutation {
                                 runtime_event: Some(ev),
                                 xp: 4,
@@ -843,7 +843,7 @@ pub fn start_generation(
                     );
                     ev.chat_id = Some(chat_id.to_string());
                     ev.persistent = true;
-                    crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+                    crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
                     break;
                 }
                 ToolStepOutcome::Stop => {
@@ -857,7 +857,7 @@ pub fn start_generation(
                     );
                     ev.chat_id = Some(chat_id.to_string());
                     crate::buddy::actor::buddy_apply(
-                        gcx.clone(),
+                        crate::app_state::AppState::from_gcx(gcx.clone()).await,
                         crate::buddy::actor::BuddyMutation {
                             runtime_event: Some(ev),
                             xp: 4,

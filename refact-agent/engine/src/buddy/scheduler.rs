@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::sync::Arc;
+use std::path::Path;
 use tokio::sync::Mutex as AMutex;
 
 use super::actor::BuddyService;
@@ -12,7 +12,7 @@ use super::types::{
 };
 use super::voice_service::SpeechIntent;
 use crate::buddy::autonomous_workflows::is_autonomous_workflow_id;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
@@ -105,12 +105,12 @@ pub trait BuddyJob: Send + Sync {
     }
     async fn should_run(
         &self,
-        gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool;
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult;
 }
@@ -227,7 +227,7 @@ impl BuddyScheduler {
 
     pub async fn tick(
         &self,
-        gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+        gcx: AppState,
         buddy_arc: Arc<AMutex<Option<BuddyService>>>,
         project_root: &Path,
     ) {
@@ -425,7 +425,7 @@ mod tests {
 
         async fn should_run(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: &BuddyJobContext,
         ) -> bool {
             true
@@ -433,7 +433,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: BuddyJobContext,
         ) -> BuddyJobResult {
             BuddyJobResult::default()
@@ -460,7 +460,7 @@ mod tests {
 
         async fn should_run(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: &BuddyJobContext,
         ) -> bool {
             true
@@ -468,7 +468,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: BuddyJobContext,
         ) -> BuddyJobResult {
             BuddyJobResult {
@@ -503,7 +503,7 @@ mod tests {
 
         async fn should_run(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: &BuddyJobContext,
         ) -> bool {
             true
@@ -511,7 +511,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: BuddyJobContext,
         ) -> BuddyJobResult {
             BuddyJobResult {
@@ -556,7 +556,7 @@ mod tests {
 
         async fn should_run(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: &BuddyJobContext,
         ) -> bool {
             true
@@ -564,7 +564,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _gcx: Arc<tokio::sync::RwLock<GlobalContext>>,
+            _gcx: AppState,
             _ctx: BuddyJobContext,
         ) -> BuddyJobResult {
             BuddyJobResult {
@@ -617,7 +617,7 @@ mod tests {
             jobs: vec![Box::new(NoIntentSpeechJob)],
         };
         let buddy_arc = test_service(&dir, crate::buddy::state::default_buddy_state()).await;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
 
@@ -646,7 +646,7 @@ mod tests {
             ],
         };
         let buddy_arc = test_service(&dir, crate::buddy::state::default_buddy_state()).await;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
 
@@ -674,7 +674,7 @@ mod tests {
                 .collect(),
         };
         let buddy_arc = test_service(&dir, crate::buddy::state::default_buddy_state()).await;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         for _ in 0..6 {
             scheduler
@@ -724,7 +724,7 @@ mod tests {
             ],
         };
         let buddy_arc = test_service(&dir, crate::buddy::state::default_buddy_state()).await;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
 
@@ -788,7 +788,7 @@ mod tests {
             jobs: vec![Box::new(NoOutputUnrecordedJob)],
         };
         let buddy_arc = Arc::new(AMutex::new(Some(service)));
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
 
@@ -818,7 +818,7 @@ mod tests {
                 .collect(),
         };
         let buddy_arc = test_service(&dir, crate::buddy::state::default_buddy_state()).await;
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
 
         scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
 

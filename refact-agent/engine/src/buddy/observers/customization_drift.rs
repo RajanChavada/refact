@@ -1,12 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct CustomizationDriftObserver;
 pub(crate) const MAX_MODE_OVERLAP_CANDIDATES: usize = 100;
@@ -68,7 +66,7 @@ fn project_root_hash(path: &std::path::Path) -> String {
 }
 
 async fn detect_customization_drift(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     ctx: &ObserverContext,
 ) -> Vec<BuddyFact> {
     let mut facts = vec![];
@@ -82,11 +80,11 @@ async fn detect_customization_drift(
 }
 
 async fn detect_mode_overlap(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     now: DateTime<Utc>,
     facts: &mut Vec<BuddyFact>,
 ) {
-    let registry = crate::yaml_configs::customization_registry::get_project_registry(gcx).await;
+    let registry = crate::yaml_configs::customization_registry::get_project_registry(gcx.gcx.clone()).await;
     let modes = match registry {
         Some(r) => r.modes,
         None => return,
@@ -133,11 +131,11 @@ async fn detect_mode_overlap(
 }
 
 async fn detect_skill_trigger_weak(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     now: DateTime<Utc>,
     facts: &mut Vec<BuddyFact>,
 ) {
-    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx).await;
+    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx.gcx.clone()).await;
     let indices = crate::ext::skills::load_skill_indices(&ext_dirs).await;
     for idx in indices {
         let skill_id = idx.name.clone();
@@ -227,7 +225,7 @@ impl BuddyObserver for CustomizationDriftObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
         detect_customization_drift(gcx, ctx).await

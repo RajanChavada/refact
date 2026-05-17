@@ -273,14 +273,14 @@ impl GlobalContext {
             gcx,
             runtime: RuntimeServices {
                 shutdown_flag: self.shutdown_flag.clone(),
-                cmdline: Arc::new(self.cmdline.clone()),
+                cmdline: Arc::new(StdRwLock::new(self.cmdline.clone())),
                 http_client: self.http_client.clone(),
                 http_client_slowdown: self.http_client_slowdown.clone(),
                 ask_shutdown_sender: self.ask_shutdown_sender.clone(),
             },
             paths: PathServices {
-                cache_dir: self.cache_dir.clone(),
-                config_dir: self.config_dir.clone(),
+                cache_dir: Arc::new(StdRwLock::new(self.cache_dir.clone())),
+                config_dir: Arc::new(StdRwLock::new(self.config_dir.clone())),
                 app_searchable_id: self.app_searchable_id.clone(),
             },
             model: ModelServices {

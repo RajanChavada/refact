@@ -1037,7 +1037,7 @@ pub async fn handle_v1_defaults_update(
         validate_defaults_draft(gcx.clone(), draft_id).await?;
     }
 
-    let config_dir = gcx.read().await.config_dir.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     req.defaults
         .save(&config_dir)
         .await

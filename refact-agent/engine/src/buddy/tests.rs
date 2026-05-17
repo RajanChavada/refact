@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use crate::app_state::AppState;
 use chrono::Duration;
 use tokio::sync::broadcast;
 use crate::tasks::types::{BoardCard, TaskBoard, TaskMeta, TaskStatus};
@@ -747,10 +748,11 @@ fn issue_provider_debug_redacts_tokens() {
 #[tokio::test]
 async fn issue_success_side_effects_are_centralized() {
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    *gcx.read().await.buddy.lock().await = Some(make_service());
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.buddy.buddy.lock().await = Some(make_service());
     for dedupe in ["native error", "mcp issue title"] {
         record_issue_success(
-            gcx.clone(),
+            app.clone(),
             dedupe.to_string(),
             BuddyActivity {
                 icon: "🐛".to_string(),
@@ -763,7 +765,7 @@ async fn issue_success_side_effects_are_centralized() {
         )
         .await;
     }
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let svc = lock.as_ref().unwrap();
     assert!(svc.last_issue_at.is_some());
@@ -887,8 +889,9 @@ async fn investigation_log_tail_reads_bounded_and_redacts() {
     tokio::fs::write(&log_path, content).await.unwrap();
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    gcx.write().await.cmdline.logs_to_file = log_path.to_string_lossy().into_owned();
-    let tail = read_recent_log_lines(&gcx, 5).await.unwrap();
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    app.runtime.cmdline.write().unwrap().logs_to_file = log_path.to_string_lossy().into_owned();
+    let tail = read_recent_log_lines(&app, 5).await.unwrap();
     assert!(!tail.contains("old secret"));
     assert!(!tail.contains("recent-secret"));
     assert!(tail.contains("token=[REDACTED]"));
@@ -1295,7 +1298,8 @@ async fn test_greeting_triggers_on_first_launch() {
     let job = GreetingJob;
     let ctx = make_job_context(BuddyOnboarding::default(), 0, BuddyJobState::default());
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    assert!(job.should_run(gcx, &ctx).await);
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    assert!(job.should_run(app, &ctx).await);
 }
 
 #[tokio::test]
@@ -1305,8 +1309,9 @@ async fn test_first_launch_greeting_has_short_ttl() {
     let job = GreetingJob;
     let ctx = make_job_context(BuddyOnboarding::default(), 0, BuddyJobState::default());
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
 
-    let result = job.execute(gcx, ctx).await;
+    let result = job.execute(app, ctx).await;
     let speech = result.speech.expect("greeting should produce speech");
 
     assert!(!speech.persistent);
@@ -1350,8 +1355,9 @@ async fn test_error_triage_clusters_by_type() {
     let job = ErrorTriageJob;
     let ctx = make_job_context(BuddyOnboarding::default(), 5, BuddyJobState::default());
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    assert!(job.should_run(gcx.clone(), &ctx).await);
-    let result = job.execute(gcx, ctx).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    assert!(job.should_run(app.clone(), &ctx).await);
+    let result = job.execute(app, ctx).await;
     assert!(
         result.suggestion.is_some(),
         "should produce suggestion for 5 repeated timeouts"
@@ -1370,7 +1376,8 @@ async fn test_config_watcher_detects_missing_agents_md() {
     let mut ctx = make_job_context(BuddyOnboarding::default(), 0, BuddyJobState::default());
     ctx.project_root = dir.path().to_path_buf();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let result = job.execute(gcx, ctx).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let result = job.execute(app, ctx).await;
     assert!(
         result.suggestion.is_some(),
         "should suggest setup when AGENTS.md missing"
@@ -1449,8 +1456,9 @@ async fn test_tour_job_runs_only_once() {
     };
     let fresh_ctx = make_job_context(onboarding.clone(), 0, BuddyJobState::default());
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     assert!(
-        job.should_run(gcx.clone(), &fresh_ctx).await,
+        job.should_run(app.clone(), &fresh_ctx).await,
         "tour must run on first tick"
     );
     let ran_state = BuddyJobState {
@@ -1462,7 +1470,7 @@ async fn test_tour_job_runs_only_once() {
     };
     let ran_ctx = make_job_context(onboarding, 0, ran_state);
     assert!(
-        !job.should_run(gcx, &ran_ctx).await,
+        !job.should_run(app, &ran_ctx).await,
         "tour must not run after first run"
     );
 }
@@ -1482,8 +1490,9 @@ async fn test_tour_speech_has_short_ttl() {
         BuddyJobState::default(),
     );
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
 
-    let result = job.execute(gcx, ctx).await;
+    let result = job.execute(app, ctx).await;
     let speech = result.speech.expect("tour should produce speech");
 
     assert!(!speech.persistent);
@@ -1527,8 +1536,9 @@ async fn test_proactive_disabled_still_allows_greeting() {
     );
     let ctx = make_job_context(BuddyOnboarding::default(), 0, BuddyJobState::default());
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     assert!(
-        job.should_run(gcx, &ctx).await,
+        job.should_run(app, &ctx).await,
         "greeting must run even when proactive_enabled=false"
     );
 }
@@ -1573,8 +1583,8 @@ async fn diagnostic_metadata_is_redacted_before_storage() {
     let mut svc = make_service();
     svc.add_diagnostic(DiagnosticContext {
         error_type: "frontend".to_string(),
-        error_message: "Bearer secret-token in /home/alice/project/app.ts".to_string(),
-        source_file: Some("/home/alice/project/app.ts?token=secret".to_string()),
+        error_message: "Bearer secret-token in /home/alice/project/gcx.ts".to_string(),
+        source_file: Some("/home/alice/project/gcx.ts?token=secret".to_string()),
         tool_name: Some("tool?api_key=secret".to_string()),
         chat_id: None,
         collected_at: chrono::Utc::now().to_rfc3339(),
@@ -2280,8 +2290,9 @@ async fn pulse_build_skeleton_sets_generated_at() {
     use super::facts::FactStore;
     use super::pulse::build_pulse;
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let store = FactStore::new();
-    let pulse = build_pulse(gcx, std::path::Path::new("/tmp"), &store).await;
+    let pulse = build_pulse(app, std::path::Path::new("/tmp"), &store).await;
     assert!(pulse.generated_at.is_some());
 }
 
@@ -3000,7 +3011,7 @@ impl super::humor::HumorGenerator for CountingGenerator {
         &self,
         _kind: BuddyFactKind,
         _summary: String,
-        _gcx: std::sync::Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
     ) -> Vec<String> {
         self.count.fetch_add(1, Ordering::SeqCst);
         self.lines.clone()
@@ -3015,7 +3026,7 @@ impl super::humor::HumorGenerator for EmptyGenerator {
         &self,
         _kind: BuddyFactKind,
         _summary: String,
-        _gcx: std::sync::Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
     ) -> Vec<String> {
         vec![]
     }
@@ -3026,7 +3037,7 @@ async fn apply_humor_plan(
     opp: &mut BuddyOpportunity,
     kind: BuddyFactKind,
     pulse: &BuddyPulse,
-    gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: AppState,
 ) {
     match service.plan_humor(kind, pulse) {
         super::humor::HumorPlan::Ready(line) => opp.humor = Some(line),
@@ -3055,12 +3066,13 @@ async fn humor_uses_cache_before_calling_generator() {
     });
     let mut svc = HumorService::new_with_generator(gen);
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let pulse = BuddyPulse::default();
     let kind = BuddyFactKind::TaskStuck;
 
     for i in 0..4 {
         let mut opp = make_opportunity(&format!("opp-h{}", i), &format!("ck-h{}", i));
-        apply_humor_plan(&mut svc, &mut opp, kind, &pulse, gcx.clone()).await;
+        apply_humor_plan(&mut svc, &mut opp, kind, &pulse, app.clone()).await;
         assert!(opp.humor.is_some(), "call {} must have humor", i);
     }
     assert_eq!(
@@ -3079,6 +3091,7 @@ async fn humor_budget_enforced() {
     });
     let mut svc = HumorService::new_with_generator(gen);
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let pulse = BuddyPulse::default();
 
     let kinds = [
@@ -3092,7 +3105,7 @@ async fn humor_budget_enforced() {
 
     for (i, &kind) in kinds.iter().enumerate() {
         let mut opp = make_opportunity(&format!("opp-b{}", i), &format!("ck-b{}", i));
-        apply_humor_plan(&mut svc, &mut opp, kind, &pulse, gcx.clone()).await;
+        apply_humor_plan(&mut svc, &mut opp, kind, &pulse, app.clone()).await;
         if i < 5 {
             assert!(opp.humor.is_some(), "call {} should have humor", i);
         } else {
@@ -3109,6 +3122,7 @@ async fn humor_no_fallback_on_empty_lines() {
     use super::humor::HumorService;
     let mut svc = HumorService::new_with_generator(std::sync::Arc::new(EmptyGenerator));
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let pulse = BuddyPulse::default();
     let mut opp = make_opportunity("opp-nf", "ck-nf");
     apply_humor_plan(
@@ -3116,7 +3130,7 @@ async fn humor_no_fallback_on_empty_lines() {
         &mut opp,
         BuddyFactKind::TaskStuck,
         &pulse,
-        gcx.clone(),
+        app.clone(),
     )
     .await;
     assert!(
@@ -3135,11 +3149,12 @@ async fn humor_cache_expiry() {
     });
     let mut svc = HumorService::new_with_generator(gen);
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let pulse = BuddyPulse::default();
     let kind = BuddyFactKind::TaskStuck;
 
     let mut opp1 = make_opportunity("opp-ex1", "ck-ex1");
-    apply_humor_plan(&mut svc, &mut opp1, kind, &pulse, gcx.clone()).await;
+    apply_humor_plan(&mut svc, &mut opp1, kind, &pulse, app.clone()).await;
     assert!(opp1.humor.is_some());
     assert_eq!(count.load(Ordering::SeqCst), 1, "one generation so far");
 
@@ -3147,7 +3162,7 @@ async fn humor_cache_expiry() {
     svc.cache_purge_expired(future);
 
     let mut opp2 = make_opportunity("opp-ex2", "ck-ex2");
-    apply_humor_plan(&mut svc, &mut opp2, kind, &pulse, gcx.clone()).await;
+    apply_humor_plan(&mut svc, &mut opp2, kind, &pulse, app.clone()).await;
     assert!(opp2.humor.is_some());
     assert_eq!(
         count.load(Ordering::SeqCst),
@@ -3164,7 +3179,7 @@ impl super::humor::HumorGenerator for SlowTimeoutGenerator {
         &self,
         _kind: BuddyFactKind,
         _summary: String,
-        _gcx: std::sync::Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
     ) -> Vec<String> {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         vec!["too late".to_string()]
@@ -3176,10 +3191,11 @@ async fn humor_timeout_returns_none_quickly() {
     use super::humor::{HumorService, HUMOR_TIMEOUT_SECS};
     let mut svc = HumorService::new_with_generator(std::sync::Arc::new(SlowTimeoutGenerator));
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let pulse = BuddyPulse::default();
     let mut opp = make_opportunity("opp-timeout", "ck-timeout");
     let start = std::time::Instant::now();
-    apply_humor_plan(&mut svc, &mut opp, BuddyFactKind::TaskStuck, &pulse, gcx).await;
+    apply_humor_plan(&mut svc, &mut opp, BuddyFactKind::TaskStuck, &pulse, app).await;
     let elapsed = start.elapsed();
     assert!(opp.humor.is_none(), "timed out humor must remain None");
     assert!(
@@ -3213,7 +3229,7 @@ impl super::observers::BuddyObserver for SleepObserver {
 
     async fn observe(
         &self,
-        _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        _gcx: AppState,
         _ctx: &super::observers::ObserverContext,
     ) -> Vec<BuddyFact> {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -3232,10 +3248,11 @@ async fn parallel_observer_execution_not_sequentially_additive() {
         Arc::new(SleepObserver { id: "sleep-b" }),
     ];
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let start = std::time::Instant::now();
     let facts = super::actor::observe_buddy_facts_parallel(
         observers,
-        gcx,
+        app,
         std::env::temp_dir(),
         chrono::Utc::now(),
     )
@@ -3765,11 +3782,11 @@ fn mcp_auth_failure_count() {
 }
 
 async fn make_tool_ccx(
-    gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: AppState,
 ) -> Arc<tokio::sync::Mutex<crate::at_commands::at_commands::AtCommandsContext>> {
     Arc::new(tokio::sync::Mutex::new(
         crate::at_commands::at_commands::AtCommandsContext::new(
-            gcx,
+            gcx.gcx.clone(),
             4000,
             20,
             false,
@@ -3789,7 +3806,8 @@ async fn buddy_open_view_errors_without_service() {
     use crate::tools::tool_buddy_open_view::ToolBuddyOpenView;
     use crate::tools::tools_description::Tool;
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let ccx = make_tool_ccx(gcx).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let ccx = make_tool_ccx(app.clone()).await;
     let mut tool = ToolBuddyOpenView {
         config_path: String::new(),
     };
@@ -3808,8 +3826,9 @@ async fn buddy_open_setup_flow_emits_setup_mode() {
     use crate::tools::tools_description::Tool;
     let (svc, mut rx) = make_service_with_events();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    *gcx.read().await.buddy.lock().await = Some(svc);
-    let ccx = make_tool_ccx(gcx).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.buddy.buddy.lock().await = Some(svc);
+    let ccx = make_tool_ccx(app.clone()).await;
     let mut tool = ToolBuddyOpenSetupFlow {
         config_path: String::new(),
     };
@@ -3832,7 +3851,8 @@ async fn buddy_setup_speech_tools_error_without_service() {
     use crate::tools::tool_buddy_say::{ToolBuddyRenderControls, ToolBuddySay};
     use crate::tools::tools_description::Tool;
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let ccx = make_tool_ccx(gcx).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let ccx = make_tool_ccx(app.clone()).await;
 
     let mut setup = ToolBuddyOpenSetupFlow {
         config_path: String::new(),
@@ -4101,7 +4121,8 @@ async fn buddy_worktree_pulse_includes_worktree_stats() {
         .output()
         .unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let cache_dir = gcx.read().await.cache_dir.clone();
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let cache_dir = app.paths.cache_dir.read().unwrap().clone();
     let service =
         crate::worktrees::service::WorktreeService::new(cache_dir, source.clone()).unwrap();
     let created = service
@@ -4123,7 +4144,7 @@ async fn buddy_worktree_pulse_includes_worktree_stats() {
     record.last_seen_at = Some(ts);
     service.save_registry(&registry).await.unwrap();
     let store = super::facts::FactStore::new();
-    let pulse = super::pulse::build_pulse(gcx, &source, &store).await;
+    let pulse = super::pulse::build_pulse(app, &source, &store).await;
     assert_eq!(pulse.worktrees.total_registered, 1);
     assert_eq!(pulse.worktrees.abandoned_clean, 1);
 }
@@ -4217,8 +4238,9 @@ async fn pulse_builds_all_subpulses() {
     use super::facts::FactStore;
     use super::pulse::build_pulse;
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let store = FactStore::new();
-    let pulse = build_pulse(gcx, std::path::Path::new("/tmp"), &store).await;
+    let pulse = build_pulse(app, std::path::Path::new("/tmp"), &store).await;
     assert!(pulse.generated_at.is_some(), "generated_at must be set");
     let _ = pulse.tasks.total;
     let _ = pulse.trajectories.total;
@@ -4297,12 +4319,13 @@ async fn actor_humor_attached_when_allowed() {
             &self,
             _kind: BuddyFactKind,
             _summary: String,
-            _gcx: std::sync::Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+            _gcx: AppState,
         ) -> Vec<String> {
             vec!["Test joke".to_string()]
         }
     }
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     svc.humor_service = Arc::new(tokio::sync::Mutex::new(HumorService::new_with_generator(
         std::sync::Arc::new(MockGen),
@@ -4314,7 +4337,7 @@ async fn actor_humor_attached_when_allowed() {
     let pulse = BuddyPulse::default();
     let humor_service = svc.humor_service.clone();
     let mut humor = humor_service.lock().await;
-    apply_humor_plan(&mut humor, &mut opp, BuddyFactKind::TaskStuck, &pulse, gcx).await;
+    apply_humor_plan(&mut humor, &mut opp, BuddyFactKind::TaskStuck, &pulse, app).await;
     assert!(opp.humor.is_some(), "humor must be attached when allowed");
     assert_eq!(opp.humor.as_deref(), Some("Test joke"));
 }
@@ -4569,10 +4592,11 @@ async fn tool_buddy_create_draft_rejects_oversized_content() {
     use crate::at_commands::at_commands::AtCommandsContext;
     use crate::tools::tool_buddy_create_draft::ToolBuddyCreateDraft;
     use crate::tools::tools_description::Tool;
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let ccx = Arc::new(tokio::sync::Mutex::new(
         AtCommandsContext::new(
-            gcx,
+            gcx.clone(),
             4000,
             20,
             false,
@@ -4606,14 +4630,15 @@ async fn tool_buddy_create_draft_rejects_oversized_content() {
 
 #[tokio::test]
 async fn draft_create_endpoint_emits_exactly_one_created() {
-        let gcx = make_gcx_with_buddy().await;
+        let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let mut rx = {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         lock.as_ref().unwrap().events_tx.subscribe()
     };
     let response = crate::http::routers::v1::buddy_drafts::handle_v1_buddy_draft_create_skill(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         axum::Json(crate::http::routers::v1::buddy_drafts::DraftCreateRequest {
             title: "Skill".to_string(),
             yaml_or_json: "---\nname: skill\n---\nBody".to_string(),
@@ -4629,15 +4654,16 @@ async fn draft_create_endpoint_emits_exactly_one_created() {
         other => panic!("expected DraftCreated, got {:?}", other),
     }
     assert!(rx.try_recv().is_err(), "endpoint must emit exactly once");
-    assert!(draft_exists(&gcx, &draft_id).await);
+    assert!(draft_exists(&app, &draft_id).await);
 }
 
 #[tokio::test]
 async fn draft_create_endpoint_rejects_oversized_title() {
         use hyper::StatusCode;
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let err = crate::http::routers::v1::buddy_drafts::handle_v1_buddy_draft_create_skill(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         axum::Json(crate::http::routers::v1::buddy_drafts::DraftCreateRequest {
             title: "x".repeat(super::drafts::DRAFT_TITLE_MAX_CHARS + 1),
             yaml_or_json: "{}".to_string(),
@@ -4653,21 +4679,22 @@ async fn draft_create_endpoint_rejects_oversized_title() {
 #[tokio::test]
 async fn draft_delete_emits_removed_event() {
         use axum::extract::Path;
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let draft_id = add_draft_to_gcx(
-        &gcx,
+        &app,
         DraftKind::Skill,
         "Skill",
         "---\nname: skill\n---\nBody",
     )
     .await;
     let mut rx = {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         lock.as_ref().unwrap().events_tx.subscribe()
     };
     let _ = crate::http::routers::v1::buddy_drafts::handle_v1_buddy_draft_delete(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path(draft_id.clone()),
     )
     .await
@@ -4679,7 +4706,7 @@ async fn draft_delete_emits_removed_event() {
         }
         other => panic!("expected DraftRemoved, got {:?}", other),
     }
-    assert!(!draft_exists(&gcx, &draft_id).await);
+    assert!(!draft_exists(&app, &draft_id).await);
 }
 
 #[test]
@@ -4709,10 +4736,11 @@ fn draft_expiry_emits_removed_event() {
 
 #[tokio::test]
 async fn accept_agents_md_action_returns_content_draft_id() {
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let content = "# AGENTS.md\n\nUse cargo test.";
     let outcome = crate::http::routers::v1::buddy_opportunities::dispatch_action(
-        gcx.clone(),
+        app.clone(),
         "opp-agents-md",
         &BuddyAction::DraftAgentsMdPatch {
             content: content.to_string(),
@@ -4722,16 +4750,17 @@ async fn accept_agents_md_action_returns_content_draft_id() {
     .expect("agents md draft action must succeed");
     assert_eq!(outcome.result["draft_kind"], "agents_md");
     let draft_id = outcome.result["draft_id"].as_str().unwrap();
-    let draft = draft_by_id(&gcx, draft_id).await;
+    let draft = draft_by_id(&app, draft_id).await;
     assert_eq!(draft.kind, DraftKind::AgentsMd);
     assert_eq!(draft.yaml_or_json, content);
 }
 
 #[tokio::test]
 async fn accept_pulse_report_action_returns_report_draft_id() {
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let outcome = crate::http::routers::v1::buddy_opportunities::dispatch_action(
-        gcx.clone(),
+        app.clone(),
         "opp-pulse-report",
         &BuddyAction::CreatePulseReport {
             scope: PulseScope::All,
@@ -4741,7 +4770,7 @@ async fn accept_pulse_report_action_returns_report_draft_id() {
     .expect("pulse report draft action must succeed");
     assert_eq!(outcome.result["draft_kind"], "pulse_report");
     let draft_id = outcome.result["draft_id"].as_str().unwrap();
-    let draft = draft_by_id(&gcx, draft_id).await;
+    let draft = draft_by_id(&app, draft_id).await;
     assert_eq!(draft.kind, DraftKind::PulseReport);
     assert!(draft.yaml_or_json.contains("# Buddy Pulse Report"));
 }
@@ -4755,9 +4784,9 @@ async fn tool_buddy_launch_investigation_creates_chat() {
 
     let dir = tempfile::tempdir().unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     {
-        let gcx_lock = gcx.read().await;
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
 
@@ -4982,18 +5011,19 @@ fn ext_skill_save_consumes_draft() {
     );
 }
 
-async fn make_gcx_with_buddy() -> Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>> {
+async fn make_gcx_with_buddy() -> AppState {
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let app = crate::app_state::AppState::from_gcx(gcx).await;
+    let buddy_arc = app.buddy.buddy.clone();
     *buddy_arc.lock().await = Some(make_service());
-    gcx
+    app
 }
 
 async fn draft_by_id(
-    gcx: &Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: &AppState,
     id: &str,
 ) -> super::types::BuddyDraft {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     lock.as_ref()
         .and_then(|svc| svc.draft_store.get(id).cloned())
@@ -5001,10 +5031,10 @@ async fn draft_by_id(
 }
 
 async fn draft_exists(
-    gcx: &Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: &AppState,
     id: &str,
 ) -> bool {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     lock.as_ref()
         .and_then(|svc| svc.draft_store.get(id))
@@ -5012,12 +5042,12 @@ async fn draft_exists(
 }
 
 async fn add_draft_to_gcx(
-    gcx: &Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+    gcx: &AppState,
     kind: DraftKind,
     title: &str,
     content: &str,
 ) -> String {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     let svc = lock.as_mut().expect("buddy service must exist");
     svc.create_draft(kind, title.to_string(), content.to_string(), String::new())
@@ -5027,8 +5057,9 @@ async fn add_draft_to_gcx(
 
 #[tokio::test]
 async fn draft_customization_change_reads_real_editor_storage() {
-    let gcx = make_gcx_with_buddy().await;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     tokio::fs::create_dir_all(config_dir.join("skills/real_skill"))
         .await
         .unwrap();
@@ -5095,7 +5126,7 @@ async fn draft_customization_change_reads_real_editor_storage() {
 
     for (customization_kind, id, draft_kind, expected) in cases {
         let outcome = crate::http::routers::v1::buddy_opportunities::dispatch_action(
-            gcx.clone(),
+            app.clone(),
             "opp-real-storage",
             &BuddyAction::DraftCustomizationChange {
                 customization_kind,
@@ -5106,7 +5137,7 @@ async fn draft_customization_change_reads_real_editor_storage() {
         .await
         .expect("draft action must succeed");
         let draft_id = outcome.result["draft_id"].as_str().unwrap();
-        let draft = draft_by_id(&gcx, draft_id).await;
+        let draft = draft_by_id(&app, draft_id).await;
         assert_eq!(draft.kind, draft_kind);
         assert_eq!(draft.yaml_or_json, expected);
     }
@@ -5117,9 +5148,10 @@ async fn ext_skill_save_with_command_draft_fails_and_keeps_draft() {
     use axum::extract::Path;
         use hyper::StatusCode;
 
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let draft_id = add_draft_to_gcx(
-        &gcx,
+        &app,
         DraftKind::Command,
         "Command Draft",
         "---\ndescription: Command\n---\nBody",
@@ -5132,14 +5164,14 @@ async fn ext_skill_save_with_command_draft_fails_and_keeps_draft() {
     }))
     .unwrap();
     let response = crate::http::routers::v1::ext_management::handle_v1_ext_skill_put(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("target_skill".to_string()),
         hyper::body::Bytes::from(body),
     )
     .await
     .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert!(draft_exists(&gcx, &draft_id).await);
+    assert!(draft_exists(&app, &draft_id).await);
 }
 
 #[tokio::test]
@@ -5147,9 +5179,10 @@ async fn ext_skill_save_with_mismatched_draft_target_keeps_draft() {
     use axum::extract::Path;
         use hyper::StatusCode;
 
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let draft_id = add_draft_to_gcx(
-        &gcx,
+        &app,
         DraftKind::Skill,
         "Other Skill",
         "---\nname: other_skill\ndescription: Other\n---\nBody",
@@ -5163,14 +5196,14 @@ async fn ext_skill_save_with_mismatched_draft_target_keeps_draft() {
     }))
     .unwrap();
     let response = crate::http::routers::v1::ext_management::handle_v1_ext_skill_put(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("target_skill".to_string()),
         hyper::body::Bytes::from(body),
     )
     .await
     .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert!(draft_exists(&gcx, &draft_id).await);
+    assert!(draft_exists(&app, &draft_id).await);
 }
 
 #[tokio::test]
@@ -5178,14 +5211,15 @@ async fn raw_skill_save_rejects_mismatched_frontmatter_name() {
     use axum::extract::Path;
         use hyper::StatusCode;
 
-    let gcx = make_gcx_with_buddy().await;
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
     let body = serde_json::to_vec(&serde_json::json!({
         "raw_content": "---\nname: wrong_skill\ndescription: Wrong\n---\nBody",
         "scope": "global"
     }))
     .unwrap();
     let response = crate::http::routers::v1::ext_management::handle_v1_ext_skill_put(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("target_skill".to_string()),
         hyper::body::Bytes::from(body),
     )
@@ -5199,8 +5233,9 @@ async fn registry_validation_error_does_not_consume_draft() {
         use hyper::{Body, Request, StatusCode};
     use tower::ServiceExt;
 
-    let gcx = make_gcx_with_buddy().await;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     tokio::fs::create_dir_all(config_dir.join("modes"))
         .await
         .unwrap();
@@ -5208,7 +5243,7 @@ async fn registry_validation_error_does_not_consume_draft() {
         .await
         .unwrap();
     let draft_id = add_draft_to_gcx(
-        &gcx,
+        &app,
         DraftKind::Mode,
         "Mode Draft",
         "schema_version: 1\nid: valid_mode\ntitle: Valid\nprompt: ok\n",
@@ -5225,9 +5260,9 @@ async fn registry_validation_error_does_not_consume_draft() {
         "draft_id": draft_id.clone()
     }))
     .unwrap();
-    let app_state = crate::app_state::AppState::from_gcx(gcx.clone()).await;
-    let app = crate::http::routers::v1::make_v1_router(app_state.clone()).with_state(app_state);
-    let response = app
+    let app_state = app.clone();
+    let router = crate::http::routers::v1::make_v1_router(app_state.clone()).with_state(app_state);
+    let response = router
         .oneshot(
             Request::builder()
                 .method("PUT")
@@ -5242,7 +5277,7 @@ async fn registry_validation_error_does_not_consume_draft() {
     let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(value["ok"], false);
-    assert!(draft_exists(&gcx, &draft_id).await);
+    assert!(draft_exists(&app, &draft_id).await);
 }
 
 #[tokio::test]
@@ -5250,10 +5285,11 @@ async fn customization_delegates_route_writes_subagent_storage_and_consumes() {
         use hyper::{Body, Request, StatusCode};
     use tower::ServiceExt;
 
-    let gcx = make_gcx_with_buddy().await;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let draft_id = add_draft_to_gcx(
-        &gcx,
+        &app,
         DraftKind::Delegate,
         "Delegate Draft",
         "schema_version: 1\nid: helper_delegate\ntitle: Helper\nsubchat:\n  context_mode: bare\n",
@@ -5270,9 +5306,9 @@ async fn customization_delegates_route_writes_subagent_storage_and_consumes() {
         "draft_id": draft_id.clone()
     }))
     .unwrap();
-    let app_state = crate::app_state::AppState::from_gcx(gcx.clone()).await;
-    let app = crate::http::routers::v1::make_v1_router(app_state.clone()).with_state(app_state);
-    let response = app
+    let app_state = app.clone();
+    let router = crate::http::routers::v1::make_v1_router(app_state.clone()).with_state(app_state);
+    let response = router
         .oneshot(
             Request::builder()
                 .method("PUT")
@@ -5289,7 +5325,7 @@ async fn customization_delegates_route_writes_subagent_storage_and_consumes() {
             .await
             .is_ok()
     );
-    assert!(!draft_exists(&gcx, &draft_id).await);
+    assert!(!draft_exists(&app, &draft_id).await);
 }
 
 #[tokio::test]
@@ -5315,8 +5351,9 @@ async fn customization_save_leaves_no_atomic_temp_file() {
         use hyper::{Body, Request, StatusCode};
     use tower::ServiceExt;
 
-    let gcx = make_gcx_with_buddy().await;
-    let config_dir = gcx.read().await.config_dir.clone();
+    let app = make_gcx_with_buddy().await;
+    let gcx = app.gcx.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let body = serde_json::to_vec(&serde_json::json!({
         "config": {
             "schema_version": 1,
@@ -5327,9 +5364,9 @@ async fn customization_save_leaves_no_atomic_temp_file() {
         "scope": "global"
     }))
     .unwrap();
-    let app_state = crate::app_state::AppState::from_gcx(gcx.clone()).await;
-    let app = crate::http::routers::v1::make_v1_router(app_state.clone()).with_state(app_state);
-    let response = app
+    let app_state = app.clone();
+    let router = crate::http::routers::v1::make_v1_router(app_state.clone()).with_state(app_state);
+    let response = router
         .oneshot(
             Request::builder()
                 .method("PUT")
@@ -5767,7 +5804,7 @@ async fn humor_attach_does_not_hold_buddy_lock() {
             &self,
             _kind: BuddyFactKind,
             _summary: String,
-            _gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+            _gcx: AppState,
         ) -> Vec<String> {
             self.started.store(true, Ordering::SeqCst);
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -5788,6 +5825,7 @@ async fn humor_attach_does_not_hold_buddy_lock() {
         Arc::new(tokio::sync::Mutex::new(Some(svc)));
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let pulse = BuddyPulse::default();
 
     // Simulate the background loop: extract humor_arc under buddy lock then release.
@@ -5798,7 +5836,7 @@ async fn humor_attach_does_not_hold_buddy_lock() {
 
     // Task A: hold humor lock for 200ms (simulates attach_humor outside buddy lock).
     let humor_clone = humor_arc.clone();
-    let gcx_clone = gcx.clone();
+    let app_clone = app.clone();
     let pulse_clone = pulse.clone();
     let humor_task = tokio::spawn(async move {
         let mut humor = humor_clone.lock().await;
@@ -5808,7 +5846,7 @@ async fn humor_attach_does_not_hold_buddy_lock() {
             &mut opp,
             BuddyFactKind::TaskStuck,
             &pulse_clone,
-            gcx_clone,
+            app_clone,
         )
         .await;
     });
@@ -6000,18 +6038,18 @@ async fn pulse_populates_all_subpulse_counts() {
     use crate::caps::CodeAssistantCaps;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
 
     {
-        let mut gcx_w = gcx.write().await;
         let mut caps = CodeAssistantCaps::default();
         caps.defaults.chat_default_model = "openai/gpt-4o".to_string();
         caps.defaults.chat_light_model = "openai/gpt-4o-mini".to_string();
         caps.defaults.chat_thinking_model = "openai/o1".to_string();
         caps.defaults.chat_buddy_model = "openai/gpt-4o-mini".to_string();
-        gcx_w.caps = Some(Arc::new(caps));
+        app.model.caps.write().await.caps = Some(Arc::new(caps));
     }
 
-    let config_dir = gcx.read().await.config_dir.clone();
+    let config_dir = app.paths.config_dir.read().unwrap().clone();
     let skill_dir = config_dir.join("skills/pulse_skill");
     tokio::fs::create_dir_all(&skill_dir).await.unwrap();
     tokio::fs::write(
@@ -6037,7 +6075,7 @@ async fn pulse_populates_all_subpulse_counts() {
         now,
     ));
 
-    let pulse = build_pulse(gcx.clone(), std::path::Path::new("/tmp"), &store).await;
+    let pulse = build_pulse(app.clone(), std::path::Path::new("/tmp"), &store).await;
 
     assert!(pulse.generated_at.is_some(), "generated_at must be set");
     assert!(
@@ -6091,7 +6129,8 @@ async fn accept_dismiss_action_via_accept_route_is_single_resolution() {
     let _ = rx.try_recv();
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let outcome = dispatch_action(gcx, "opp-acc-dm", &BuddyAction::Dismiss)
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let outcome = dispatch_action(app.clone(), "opp-acc-dm", &BuddyAction::Dismiss)
         .await
         .unwrap();
 
@@ -6131,11 +6170,12 @@ async fn draft_customization_change_dispatches() {
     use crate::http::routers::v1::buddy_opportunities::dispatch_action;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let buddy_svc = make_service();
-    *gcx.read().await.buddy.lock().await = Some(buddy_svc);
+    *app.buddy.buddy.lock().await = Some(buddy_svc);
 
     let outcome = dispatch_action(
-        gcx,
+        app.clone(),
         "opp-customization",
         &BuddyAction::DraftCustomizationChange {
             customization_kind: CustomizationKind::Mode,
@@ -6194,6 +6234,7 @@ async fn accept_route_response_shape_for_defaults_draft() {
     use crate::http::routers::v1::buddy_opportunities::dispatch_action;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     {
         let (etx, _) = broadcast::channel(16);
         let buddy_svc = BuddyService::new(
@@ -6205,7 +6246,7 @@ async fn accept_route_response_shape_for_defaults_draft() {
             etx,
             None,
         );
-        *gcx.read().await.buddy.lock().await = Some(buddy_svc);
+        *app.buddy.buddy.lock().await = Some(buddy_svc);
     }
 
     let action = BuddyAction::DraftDefaultsChange {
@@ -6213,7 +6254,7 @@ async fn accept_route_response_shape_for_defaults_draft() {
         patch: serde_json::json!({}),
     };
 
-    let outcome = dispatch_action(gcx.clone(), "irrelevant-id", &action)
+    let outcome = dispatch_action(app.clone(), "irrelevant-id", &action)
         .await
         .unwrap();
 
@@ -6235,7 +6276,7 @@ async fn accept_route_response_shape_for_defaults_draft() {
         .and_then(|v| v.as_str())
         .unwrap()
         .to_string();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let draft = lock.as_ref().unwrap().draft_store.get(&draft_id).unwrap();
     let content: serde_json::Value = serde_json::from_str(&draft.yaml_or_json).unwrap();
@@ -6266,7 +6307,8 @@ async fn defaults_update_with_valid_draft_consumes_after_save() {
 
     let dir = tempfile::tempdir().unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    gcx.write().await.config_dir = dir.path().to_path_buf();
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.paths.config_dir.write().unwrap() = dir.path().to_path_buf();
 
     let mut svc = make_service();
     let draft = svc
@@ -6278,7 +6320,7 @@ async fn defaults_update_with_valid_draft_consumes_after_save() {
         )
         .unwrap();
     let draft_id = draft.id.clone();
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let body = serde_json::json!({
         "chat": { "model": "openai/gpt-4o" },
@@ -6287,7 +6329,7 @@ async fn defaults_update_with_valid_draft_consumes_after_save() {
         "chat_buddy": {},
         "draft_id": draft_id.clone(),
     });
-    let response = handle_v1_defaults_update(axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await), Bytes::from(body.to_string()))
+    let response = handle_v1_defaults_update(axum::extract::State(app.clone()), Bytes::from(body.to_string()))
         .await
         .unwrap();
 
@@ -6298,7 +6340,7 @@ async fn defaults_update_with_valid_draft_consumes_after_save() {
         saved.chat_light.model.as_deref(),
         Some("openai/gpt-4o-mini")
     );
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     assert!(lock.as_ref().unwrap().draft_store.get(&draft_id).is_none());
 }
@@ -6311,7 +6353,8 @@ async fn defaults_update_wrong_draft_kind_returns_conflict_and_keeps_draft() {
 
     let dir = tempfile::tempdir().unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    gcx.write().await.config_dir = dir.path().to_path_buf();
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.paths.config_dir.write().unwrap() = dir.path().to_path_buf();
 
     let mut svc = make_service();
     let draft = svc
@@ -6323,7 +6366,7 @@ async fn defaults_update_wrong_draft_kind_returns_conflict_and_keeps_draft() {
         )
         .unwrap();
     let draft_id = draft.id.clone();
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let body = serde_json::json!({
         "chat": { "model": "openai/gpt-4o" },
@@ -6332,12 +6375,12 @@ async fn defaults_update_wrong_draft_kind_returns_conflict_and_keeps_draft() {
         "chat_buddy": {},
         "draft_id": draft_id.clone(),
     });
-    let err = handle_v1_defaults_update(axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await), Bytes::from(body.to_string()))
+    let err = handle_v1_defaults_update(axum::extract::State(app.clone()), Bytes::from(body.to_string()))
         .await
         .unwrap_err();
 
     assert_eq!(err.status_code, StatusCode::CONFLICT);
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     assert!(lock.as_ref().unwrap().draft_store.get(&draft_id).is_some());
 }
@@ -6350,7 +6393,8 @@ async fn defaults_update_parse_invalid_draft_returns_422_and_keeps_draft() {
 
     let dir = tempfile::tempdir().unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    gcx.write().await.config_dir = dir.path().to_path_buf();
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.paths.config_dir.write().unwrap() = dir.path().to_path_buf();
 
     let mut svc = make_service();
     let draft = svc
@@ -6362,7 +6406,7 @@ async fn defaults_update_parse_invalid_draft_returns_422_and_keeps_draft() {
         )
         .unwrap();
     let draft_id = draft.id.clone();
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let body = serde_json::json!({
         "chat": { "model": "openai/gpt-4o" },
@@ -6371,12 +6415,12 @@ async fn defaults_update_parse_invalid_draft_returns_422_and_keeps_draft() {
         "chat_buddy": {},
         "draft_id": draft_id.clone(),
     });
-    let err = handle_v1_defaults_update(axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await), Bytes::from(body.to_string()))
+    let err = handle_v1_defaults_update(axum::extract::State(app.clone()), Bytes::from(body.to_string()))
         .await
         .unwrap_err();
 
     assert_eq!(err.status_code, StatusCode::UNPROCESSABLE_ENTITY);
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     assert!(lock.as_ref().unwrap().draft_store.get(&draft_id).is_some());
 }
@@ -6390,7 +6434,8 @@ async fn defaults_update_without_draft_id_still_saves() {
 
     let dir = tempfile::tempdir().unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    gcx.write().await.config_dir = dir.path().to_path_buf();
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.paths.config_dir.write().unwrap() = dir.path().to_path_buf();
 
     let body = serde_json::json!({
         "chat": { "model": "openai/gpt-4o" },
@@ -6398,7 +6443,7 @@ async fn defaults_update_without_draft_id_still_saves() {
         "chat_thinking": {},
         "chat_buddy": {}
     });
-    let response = handle_v1_defaults_update(axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await), Bytes::from(body.to_string()))
+    let response = handle_v1_defaults_update(axum::extract::State(app.clone()), Bytes::from(body.to_string()))
         .await
         .unwrap();
 
@@ -6448,6 +6493,7 @@ async fn accept_route_terminal_status_returns_409() {
     use hyper::StatusCode;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-terminal-accept", "ck-terminal-accept");
     opp.status = OpportunityStatus::Dismissed;
@@ -6456,10 +6502,10 @@ async fn accept_route_terminal_status_returns_409() {
         page: BuddyPage::Buddy,
     }];
     push_opportunity(&mut svc.opportunity_queue, opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-terminal-accept".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6477,22 +6523,23 @@ async fn accept_after_dismiss_returns_409() {
     use hyper::StatusCode;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-dismiss-then-accept", "ck-dismiss-then-accept");
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
     }];
     svc.add_opportunity(opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let _ = handle_v1_buddy_opportunity_dismiss(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-dismiss-then-accept".to_string()),
     )
     .await
     .unwrap();
     let accept_err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-dismiss-then-accept".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6500,7 +6547,7 @@ async fn accept_after_dismiss_returns_409() {
     .unwrap_err();
     assert_eq!(accept_err.status_code, StatusCode::CONFLICT);
     let dismiss_err = handle_v1_buddy_opportunity_dismiss(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-dismiss-then-accept".to_string()),
     )
     .await
@@ -6517,6 +6564,7 @@ async fn expired_opportunity_cannot_be_accepted() {
     use hyper::StatusCode;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-expired-accept", "ck-expired-accept");
     opp.status = OpportunityStatus::Expired;
@@ -6525,10 +6573,10 @@ async fn expired_opportunity_cannot_be_accepted() {
         page: BuddyPage::Buddy,
     }];
     push_opportunity(&mut svc.opportunity_queue, opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-expired-accept".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6568,19 +6616,20 @@ async fn concurrent_accepts_only_one_succeeds() {
     use hyper::StatusCode;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-concurrent-accept", "ck-concurrent-accept");
     opp.proposed_actions = vec![BuddyAction::OpenPage {
         page: BuddyPage::Buddy,
     }];
     svc.add_opportunity(opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
-    let gcx1 = gcx.clone();
-    let gcx2 = gcx.clone();
+    let app1 = app.clone();
+    let app2 = app.clone();
     let task1 = tokio::spawn(async move {
         match handle_v1_buddy_opportunity_accept(
-            axum::extract::State(crate::app_state::AppState::from_gcx(gcx1.clone()).await),
+            axum::extract::State(app1.clone()),
             Path("opp-concurrent-accept".to_string()),
             Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
         )
@@ -6592,7 +6641,7 @@ async fn concurrent_accepts_only_one_succeeds() {
     });
     let task2 = tokio::spawn(async move {
         match handle_v1_buddy_opportunity_accept(
-            axum::extract::State(crate::app_state::AppState::from_gcx(gcx2.clone()).await),
+            axum::extract::State(app2.clone()),
             Path("opp-concurrent-accept".to_string()),
             Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
         )
@@ -6616,21 +6665,22 @@ async fn dismiss_action_through_accept_route_results_in_dismissed_not_accepted()
     };
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-accept-dismiss-action", "ck-accept-dismiss-action");
     opp.proposed_actions = vec![BuddyAction::Dismiss];
     svc.add_opportunity(opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let _ = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-accept-dismiss-action".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
     .await
     .unwrap();
 
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let svc = lock.as_ref().unwrap();
     let opp = svc
@@ -6674,10 +6724,11 @@ async fn accept_route_with_action_index_1_returns_second_action_without_navigati
     while rx.try_recv().is_ok() {}
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let response = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-action-index".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 1 })),
     )
@@ -6705,6 +6756,7 @@ async fn failed_dispatch_leaves_opportunity_retryable_and_clears_claim() {
     use hyper::StatusCode;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-dispatch-fails", "ck-dispatch-fails");
     opp.proposed_actions = vec![BuddyAction::DraftCustomizationChange {
@@ -6713,10 +6765,10 @@ async fn failed_dispatch_leaves_opportunity_retryable_and_clears_claim() {
         patch: serde_json::json!("not-an-object"),
     }];
     svc.add_opportunity(opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-dispatch-fails".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6725,7 +6777,7 @@ async fn failed_dispatch_leaves_opportunity_retryable_and_clears_claim() {
     assert_eq!(err.status_code, StatusCode::UNPROCESSABLE_ENTITY);
 
     {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         let svc = lock.as_ref().unwrap();
         let opp = svc.opportunity_queue.get("opp-dispatch-fails").unwrap();
@@ -6734,7 +6786,7 @@ async fn failed_dispatch_leaves_opportunity_retryable_and_clears_claim() {
     }
 
     let err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-dispatch-fails".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6752,6 +6804,7 @@ async fn failed_marketplace_install_leaves_opportunity_retryable() {
     use hyper::StatusCode;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-marketplace-fails", "ck-marketplace-fails");
     opp.proposed_actions = vec![BuddyAction::OfferMarketplaceInstall {
@@ -6759,10 +6812,10 @@ async fn failed_marketplace_install_leaves_opportunity_retryable() {
         item_id: "../evil".to_string(),
     }];
     svc.add_opportunity(opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-marketplace-fails".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6772,7 +6825,7 @@ async fn failed_marketplace_install_leaves_opportunity_retryable() {
     assert!(err.message.contains("marketplace_install_failed"));
 
     {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         let svc = lock.as_ref().unwrap();
         let opp = svc.opportunity_queue.get("opp-marketplace-fails").unwrap();
@@ -6781,7 +6834,7 @@ async fn failed_marketplace_install_leaves_opportunity_retryable() {
     }
 
     let err = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-marketplace-fails".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6798,6 +6851,7 @@ async fn successful_marketplace_install_accepts_opportunity() {
     };
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let mut svc = make_service();
     let mut opp = make_opportunity("opp-marketplace-ok", "ck-marketplace-ok");
     opp.proposed_actions = vec![BuddyAction::OfferMarketplaceInstall {
@@ -6805,10 +6859,10 @@ async fn successful_marketplace_install_accepts_opportunity() {
         item_id: "github".to_string(),
     }];
     svc.add_opportunity(opp);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let response = handle_v1_buddy_opportunity_accept(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         Path("opp-marketplace-ok".to_string()),
         Some(axum::extract::Json(AcceptRequest { action_index: 0 })),
     )
@@ -6817,7 +6871,7 @@ async fn successful_marketplace_install_accepts_opportunity() {
     assert_eq!(response.0["action_result"]["kind"], "marketplace_install");
     assert_eq!(response.0["action_result"]["success"], true);
 
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let svc = lock.as_ref().unwrap();
     let opp = svc.opportunity_queue.get("opp-marketplace-ok").unwrap();
@@ -7078,10 +7132,10 @@ async fn task_abandoned_not_emitted_when_only_session_missing() {
     use super::observers::{BuddyObserver, ObserverContext};
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
-        let gcx_lock = gcx.read().await;
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
 
@@ -7123,7 +7177,7 @@ async fn task_abandoned_not_emitted_when_only_session_missing() {
         project_root: dir.path().to_path_buf(),
         now: chrono::Utc::now(),
     };
-    let facts = observer.observe(gcx, &ctx).await;
+    let facts = observer.observe(app, &ctx).await;
     assert!(
         !facts.iter().any(|f| f.kind == BuddyFactKind::TaskAbandoned),
         "TaskAbandoned must not fire when agent has started_at (session cleaned up)"
@@ -7141,10 +7195,10 @@ async fn task_cluster_duplicate_emits_with_real_touched_files() {
     use super::observers::{BuddyObserver, ObserverContext};
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
-        let gcx_lock = gcx.read().await;
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
 
@@ -7181,7 +7235,7 @@ async fn task_cluster_duplicate_emits_with_real_touched_files() {
         project_root: dir.path().to_path_buf(),
         now: chrono::Utc::now(),
     };
-    let facts = observer.observe(gcx, &ctx).await;
+    let facts = observer.observe(app, &ctx).await;
     assert!(
         facts.iter().any(|f| f.kind == BuddyFactKind::TaskClusterDuplicate),
         "TaskClusterDuplicate must be emitted for similar-named tasks with overlapping target_files"
@@ -7269,10 +7323,10 @@ async fn task_agent_monitor_writes_heartbeat_on_message() {
     use crate::tasks::storage::{create_task, load_board, save_board};
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
-        let gcx_lock = gcx.read().await;
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
     let task = create_task(gcx.clone(), "Heartbeat task").await.unwrap();
@@ -7347,14 +7401,14 @@ async fn target_files_persisted_through_api() {
     use crate::tasks::storage::load_board;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
-        let gcx_lock = gcx.read().await;
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
     let meta = handle_create_task(
-        axum::extract::State(crate::app_state::AppState::from_gcx(gcx.clone()).await),
+        axum::extract::State(app.clone()),
         axum::Json(CreateTaskRequest {
             name: "API target files".to_string(),
             target_files: vec!["src/foo.rs".to_string(), "src/bar.ts".to_string()],
@@ -7486,21 +7540,21 @@ async fn launch_investigation_action_writes_static_prompt_and_envelope() {
 
     let dir = tempfile::tempdir().unwrap();
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     {
-        let mut gcx_lock = gcx.write().await;
-        gcx_lock.caps = None;
-        gcx_lock.cache_dir = dir.path().join("cache");
-        gcx_lock.cmdline.logs_to_file = dir
+        app.model.caps.write().await.caps = None;
+        *app.paths.cache_dir.write().unwrap() = dir.path().join("cache");
+        app.runtime.cmdline.write().unwrap().logs_to_file = dir
             .path()
             .join("missing.log")
             .to_string_lossy()
             .into_owned();
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
 
     let outcome = dispatch_action(
-        gcx,
+        app.clone(),
         "opp-investigation",
         &BuddyAction::LaunchInvestigationChat {
             preload: InvestigationContext {
@@ -7631,6 +7685,7 @@ async fn investigation_enrich_context_resolves_diagnostic_ids() {
     use crate::http::routers::v1::buddy_opportunities::enrich_investigation_context;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let diag = DiagnosticContext {
         error_type: "timeout".to_string(),
         error_message: "request timed out".to_string(),
@@ -7643,7 +7698,7 @@ async fn investigation_enrich_context_resolves_diagnostic_ids() {
     let id = diagnostic_id(&diag);
     let mut svc = make_service();
     svc.recent_diagnostics.push(diag);
-    *gcx.read().await.buddy.lock().await = Some(svc);
+    *app.buddy.buddy.lock().await = Some(svc);
 
     let mut ctx = InvestigationContext {
         fact_keys: vec![],
@@ -7653,7 +7708,7 @@ async fn investigation_enrich_context_resolves_diagnostic_ids() {
         initial_user_message: "investigate".to_string(),
     };
 
-    enrich_investigation_context(&gcx, &mut ctx).await;
+    enrich_investigation_context(&app, &mut ctx).await;
 
     assert!(ctx
         .log_excerpt
@@ -7666,13 +7721,13 @@ async fn investigation_enrich_context_caps_log_excerpt_to_4000_chars() {
     use crate::http::routers::v1::buddy_opportunities::enrich_investigation_context;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("refact.log");
     std::fs::write(&log_path, "x".repeat(10000)).unwrap();
     {
-        let mut lock = gcx.write().await;
-        lock.cmdline.logs_to_file = log_path.to_string_lossy().to_string();
-        lock.caps = Some(Arc::new(CodeAssistantCaps::default()));
+        app.runtime.cmdline.write().unwrap().logs_to_file = log_path.to_string_lossy().to_string();
+        app.model.caps.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
     }
 
     let mut ctx = InvestigationContext {
@@ -7683,7 +7738,7 @@ async fn investigation_enrich_context_caps_log_excerpt_to_4000_chars() {
         initial_user_message: "investigate".to_string(),
     };
 
-    enrich_investigation_context(&gcx, &mut ctx).await;
+    enrich_investigation_context(&app, &mut ctx).await;
 
     assert!(ctx.log_excerpt.starts_with(&"x".repeat(4000)));
     assert!(ctx.log_excerpt.ends_with("... [truncated]"));
@@ -7763,10 +7818,10 @@ async fn pulse_task_total_and_by_status_populated() {
     use super::pulse::build_pulse;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
+    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
-        let gcx_lock = gcx.read().await;
-        *gcx_lock.documents_state.workspace_folders.lock().unwrap() =
+        *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
 
@@ -7783,7 +7838,7 @@ async fn pulse_task_total_and_by_status_populated() {
     save_task_meta(gcx.clone(), &t3.id, &m3).await.unwrap();
 
     let store = FactStore::new();
-    let pulse = build_pulse(gcx, dir.path(), &store).await;
+    let pulse = build_pulse(app, dir.path(), &store).await;
 
     assert_eq!(pulse.tasks.total, 3, "total must count all tasks");
     assert_eq!(

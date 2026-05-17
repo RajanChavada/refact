@@ -1,8 +1,8 @@
-use std::sync::Arc;
 
 use super::super::actor::make_runtime_event;
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
 use super::super::types::{BuddyActivity, BuddyRuntimeEvent, BuddySuggestion};
+use crate::app_state::AppState;
 use crate::caps::CodeAssistantCaps;
 
 pub struct HealthWatcherJob;
@@ -27,28 +27,26 @@ impl BuddyJob for HealthWatcherJob {
 
     async fn should_run(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: &BuddyJobContext,
     ) -> bool {
-        let caps = {
-            let gcx_locked = gcx.read().await;
-            gcx_locked.caps.clone()
-        };
+        let caps = gcx.model.caps.read().await.caps.clone();
         health_watcher_has_visible_output(caps.as_deref(), ctx)
     }
 
     async fn execute(
         &self,
-        gcx: Arc<tokio::sync::RwLock<crate::global_context::GlobalContext>>,
+        gcx: AppState,
         ctx: BuddyJobContext,
     ) -> BuddyJobResult {
-        let caps_result = {
-            let gcx_locked = gcx.read().await;
-            gcx_locked
-                .caps
-                .as_ref()
-                .map(|c| (!c.completion_models.is_empty(), !c.chat_models.is_empty()))
-        };
+        let caps_result = gcx
+            .model
+            .caps
+            .read()
+            .await
+            .caps
+            .as_ref()
+            .map(|c| (!c.completion_models.is_empty(), !c.chat_models.is_empty()));
 
         let Some((has_completion, has_chat)) = caps_result else {
             return BuddyJobResult::default();
@@ -199,9 +197,10 @@ mod tests {
     async fn health_watcher_first_unhealthy_is_runtime_only_without_suggestion() {
         let job = HealthWatcherJob;
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        gcx.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
+        let app = AppState::from_gcx(gcx).await;
+        app.model.caps.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
 
-        let result = job.execute(gcx, test_context(None)).await;
+        let result = job.execute(app, test_context(None)).await;
 
         assert!(result.suggestion.is_none());
         assert!(result.runtime_event.is_some());
@@ -212,9 +211,10 @@ mod tests {
     async fn health_watcher_recovered_state_produces_setup_suggestion_when_models_disappear() {
         let job = HealthWatcherJob;
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        gcx.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
+        let app = AppState::from_gcx(gcx).await;
+        app.model.caps.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
 
-        let result = job.execute(gcx, test_context(Some("healthy"))).await;
+        let result = job.execute(app, test_context(Some("healthy"))).await;
 
         assert!(result.suggestion.is_some());
         assert!(result.runtime_event.is_some());
@@ -225,11 +225,12 @@ mod tests {
     async fn health_watcher_suppresses_suggestion_when_proactive_is_disabled_but_keeps_event() {
         let job = HealthWatcherJob;
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        gcx.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
+        let app = AppState::from_gcx(gcx).await;
+        app.model.caps.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
         let mut ctx = test_context(Some("healthy"));
         ctx.settings.proactive_enabled = false;
 
-        let result = job.execute(gcx, ctx.clone()).await;
+        let result = job.execute(app, ctx.clone()).await;
         assert!(result.suggestion.is_some());
         let result = result_after_suggestion_policy(result, &ctx.settings, &ctx.suggestion_state);
 
@@ -242,13 +243,14 @@ mod tests {
     async fn health_watcher_suppresses_suggestion_when_unread_cap_is_full_but_keeps_event() {
         let job = HealthWatcherJob;
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        gcx.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
+        let app = AppState::from_gcx(gcx).await;
+        app.model.caps.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
         let mut ctx = test_context(Some("healthy"));
         ctx.suggestion_state = (0..crate::buddy::scheduler::MAX_UNREAD_SUGGESTIONS)
             .map(active_suggestion)
             .collect();
 
-        let result = job.execute(gcx, ctx.clone()).await;
+        let result = job.execute(app, ctx.clone()).await;
         assert!(result.suggestion.is_some());
         let result = result_after_suggestion_policy(result, &ctx.settings, &ctx.suggestion_state);
 
@@ -261,20 +263,21 @@ mod tests {
     async fn health_watcher_should_run_only_for_visible_health_policy() {
         let job = HealthWatcherJob;
         let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx).await;
         let mut healthy_caps = CodeAssistantCaps::default();
         healthy_caps.chat_models.insert(
             "provider/model".to_string(),
             Arc::new(ChatModelRecord::default()),
         );
 
-        gcx.write().await.caps = Some(Arc::new(healthy_caps));
-        assert!(job.should_run(gcx.clone(), &test_context(None)).await);
+        app.model.caps.write().await.caps = Some(Arc::new(healthy_caps));
+        assert!(job.should_run(app.clone(), &test_context(None)).await);
         assert!(
-            !job.should_run(gcx.clone(), &test_context(Some("healthy")))
+            !job.should_run(app.clone(), &test_context(Some("healthy")))
                 .await
         );
 
-        gcx.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
-        assert!(job.should_run(gcx, &test_context(Some("healthy"))).await);
+        app.model.caps.write().await.caps = Some(Arc::new(CodeAssistantCaps::default()));
+        assert!(job.should_run(app, &test_context(Some("healthy"))).await);
     }
 }

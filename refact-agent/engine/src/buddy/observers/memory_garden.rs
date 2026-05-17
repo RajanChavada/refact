@@ -2,17 +2,15 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind, BuddyJobState};
 use crate::file_filter::KNOWLEDGE_FOLDER_NAME;
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::knowledge_graph::kg_structs::KnowledgeFrontmatter;
 
 pub struct MemoryGardenObserver;
@@ -61,8 +59,8 @@ struct KnowledgeReferenceScan {
     stats: KnowledgeScanStats,
 }
 
-async fn memory_garden_job_state(gcx: Arc<RwLock<GlobalContext>>) -> BuddyJobState {
-    let buddy_arc = gcx.read().await.buddy.clone();
+async fn memory_garden_job_state(gcx: AppState) -> BuddyJobState {
+    let buddy_arc = gcx.buddy.buddy.clone();
     let buddy = buddy_arc.lock().await;
     buddy
         .as_ref()
@@ -76,13 +74,13 @@ async fn memory_garden_job_state(gcx: Arc<RwLock<GlobalContext>>) -> BuddyJobSta
 }
 
 async fn persist_memory_garden_daily_counter(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     counter: &MemoryGardenDailyCounter,
 ) {
     let Ok(last_result) = serde_json::to_string(counter) else {
         return;
     };
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let mut buddy = buddy_arc.lock().await;
     if let Some(svc) = buddy.as_mut() {
         let state = svc
@@ -95,14 +93,14 @@ async fn persist_memory_garden_daily_counter(
     }
 }
 
-async fn knowledge_dirs(gcx: Arc<RwLock<GlobalContext>>) -> Vec<PathBuf> {
-    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+async fn knowledge_dirs(gcx: AppState) -> Vec<PathBuf> {
+    let project_dirs = crate::files_correction::get_project_dirs(gcx.gcx.clone()).await;
     let mut dirs: Vec<PathBuf> = project_dirs
         .iter()
         .map(|d| d.join(KNOWLEDGE_FOLDER_NAME))
         .filter(|d| d.exists())
         .collect();
-    let global_dir = gcx.read().await.config_dir.join("knowledge");
+    let global_dir = gcx.paths.config_dir.read().unwrap().join("knowledge");
     if global_dir.exists() {
         dirs.push(global_dir);
     }
@@ -659,7 +657,7 @@ fn memory_garden_facts_from_entries_with_references(
 }
 
 async fn detect_memory_garden(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     now: DateTime<Utc>,
 ) -> Vec<BuddyFact> {
     let dirs = knowledge_dirs(gcx).await;
@@ -686,7 +684,7 @@ impl BuddyObserver for MemoryGardenObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
         let facts = detect_memory_garden(gcx.clone(), ctx.now).await;

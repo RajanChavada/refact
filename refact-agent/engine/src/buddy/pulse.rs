@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use chrono::Utc;
-use tokio::sync::RwLock;
 
 use crate::buddy::facts::FactStore;
 use crate::buddy::memory_lifecycle::memory_lifecycle_op_counts;
@@ -12,10 +10,10 @@ use crate::buddy::types::{
 };
 use crate::ext::competitor_import::manifest::{manifest_path_for_scope_root, ImportManifest};
 use crate::ext::competitor_import::types::{ImportReport, ImportReportCounts, ImportStatus};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub async fn build_pulse(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     project_root: &std::path::Path,
     fact_store: &FactStore,
 ) -> BuddyPulse {
@@ -35,13 +33,13 @@ pub async fn build_pulse(
     p
 }
 
-async fn build_tasks_pulse(gcx: Arc<RwLock<GlobalContext>>, fact_store: &FactStore) -> TaskPulse {
+async fn build_tasks_pulse(gcx: AppState, fact_store: &FactStore) -> TaskPulse {
     let mut pulse = TaskPulse::default();
     let stuck = fact_store.recent(BuddyFactKind::TaskStuck, chrono::Duration::hours(1));
     pulse.stuck = stuck.len() as u32;
     let abandoned = fact_store.recent(BuddyFactKind::TaskAbandoned, chrono::Duration::hours(24));
     pulse.abandoned = abandoned.len() as u32;
-    if let Ok(tasks) = crate::tasks::storage::list_tasks(gcx).await {
+    if let Ok(tasks) = crate::tasks::storage::list_tasks(gcx.gcx.clone()).await {
         pulse.total = tasks.len() as u32;
         for task in &tasks {
             let key = serde_json::to_value(&task.status)
@@ -98,10 +96,10 @@ async fn build_memory_pulse(project_root: &std::path::Path, fact_store: &FactSto
     pulse
 }
 
-async fn build_providers_pulse(gcx: Arc<RwLock<GlobalContext>>) -> ProviderPulse {
+async fn build_providers_pulse(gcx: AppState) -> ProviderPulse {
     let mut pulse = ProviderPulse::default();
-    let gcx_r = gcx.read().await;
-    if let Some(caps) = &gcx_r.caps {
+    let caps_state = gcx.model.caps.read().await;
+    if let Some(caps) = &caps_state.caps {
         let d = &caps.defaults;
         pulse.defaults_ok = !d.chat_default_model.is_empty()
             && !d.chat_light_model.is_empty()
@@ -124,9 +122,9 @@ async fn build_providers_pulse(gcx: Arc<RwLock<GlobalContext>>) -> ProviderPulse
     pulse
 }
 
-async fn build_mcp_pulse(gcx: Arc<RwLock<GlobalContext>>, fact_store: &FactStore) -> McpPulse {
+async fn build_mcp_pulse(gcx: AppState, fact_store: &FactStore) -> McpPulse {
     let mut pulse = McpPulse::default();
-    let integration_sessions = gcx.read().await.integration_sessions.clone();
+    let integration_sessions = gcx.integrations.integration_sessions.clone();
     pulse.total = integration_sessions.lock().await.len() as u32;
     let failing = fact_store.recent(
         BuddyFactKind::IntegrationFailing,
@@ -138,20 +136,20 @@ async fn build_mcp_pulse(gcx: Arc<RwLock<GlobalContext>>, fact_store: &FactStore
     pulse
 }
 
-async fn build_customization_pulse(gcx: Arc<RwLock<GlobalContext>>) -> CustomizationPulse {
+async fn build_customization_pulse(gcx: AppState) -> CustomizationPulse {
     let mut pulse = CustomizationPulse::default();
     let (config_dir, project_roots) = competitor_import_roots(gcx.clone()).await;
     pulse.competitor_import = build_competitor_import_pulse(&config_dir, &project_roots).await;
 
     if let Some(reg) =
-        crate::yaml_configs::customization_registry::get_project_registry(gcx.clone()).await
+        crate::yaml_configs::customization_registry::get_project_registry(gcx.gcx.clone()).await
     {
         pulse.modes = reg.modes.len() as u32;
         pulse.subagents = reg.subagents.len() as u32;
         pulse.commands = reg.toolbox_commands.len() as u32;
     }
 
-    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx).await;
+    let ext_dirs = crate::ext::config_dirs::get_ext_dirs(gcx.gcx.clone()).await;
     let skills = crate::ext::skills::load_skill_indices(&ext_dirs).await;
     pulse.skills = skills.len() as u32;
     let hooks = crate::ext::hooks::load_hooks(&ext_dirs).await;
@@ -160,12 +158,9 @@ async fn build_customization_pulse(gcx: Arc<RwLock<GlobalContext>>) -> Customiza
     pulse
 }
 
-async fn competitor_import_roots(gcx: Arc<RwLock<GlobalContext>>) -> (PathBuf, Vec<PathBuf>) {
-    let config_dir = {
-        let gcx_locked = gcx.read().await;
-        gcx_locked.config_dir.clone()
-    };
-    let project_roots = crate::files_correction::get_project_dirs(gcx).await;
+async fn competitor_import_roots(gcx: AppState) -> (PathBuf, Vec<PathBuf>) {
+    let config_dir = gcx.paths.config_dir.read().unwrap().clone();
+    let project_roots = crate::files_correction::get_project_dirs(gcx.gcx.clone()).await;
     (config_dir, project_roots)
 }
 
@@ -265,9 +260,9 @@ fn saturating_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-async fn build_diagnostics_pulse(gcx: Arc<RwLock<GlobalContext>>) -> DiagnosticPulse {
+async fn build_diagnostics_pulse(gcx: AppState) -> DiagnosticPulse {
     let mut pulse = DiagnosticPulse::default();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let diagnostics = match lock.as_ref() {
         Some(svc) => svc.recent_diagnostics.clone(),
@@ -292,10 +287,10 @@ async fn build_diagnostics_pulse(gcx: Arc<RwLock<GlobalContext>>) -> DiagnosticP
 }
 
 async fn build_worktree_pulse(
-    gcx: Arc<RwLock<GlobalContext>>,
+    gcx: AppState,
     project_root: &std::path::Path,
 ) -> WorktreePulse {
-    let cache_dir = gcx.read().await.cache_dir.clone();
+    let cache_dir = gcx.paths.cache_dir.read().unwrap().clone();
     let Ok(service) =
         crate::worktrees::service::WorktreeService::new(cache_dir, project_root.to_path_buf())
     else {

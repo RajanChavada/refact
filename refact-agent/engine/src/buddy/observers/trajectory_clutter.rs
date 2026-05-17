@@ -1,11 +1,9 @@
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct TrajectoryClutterObserver;
 pub(crate) const MAX_TRAJECTORY_SCAN_FILES: usize = 500;
@@ -123,7 +121,7 @@ impl BuddyObserver for TrajectoryClutterObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
         let traj_dir = ctx.project_root.join(".refact").join("trajectories");

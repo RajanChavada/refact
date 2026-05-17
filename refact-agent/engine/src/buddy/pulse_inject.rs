@@ -1,18 +1,16 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::Arc;
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::conversation_ledger::list_all_buddy_conversations;
 use crate::buddy::jobs::autonomous_chats::redact_and_cap_text;
 use crate::buddy::types::BuddyConversationEntry;
 use crate::buddy::user_activity::{time_of_day_pattern, UserAction};
 use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 use crate::knowledge_graph::kg_structs::KnowledgeFrontmatter;
 
 pub const BUDDY_PULSE_MARKER: &str = "buddy_project_memory_pulse";
@@ -83,9 +81,9 @@ struct LessonCandidate {
 }
 
 pub async fn build_buddy_pulse_payload(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
 ) -> Option<BuddyPulsePayload> {
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = gcx.buddy.buddy.clone();
     let project_root = {
         let lock = buddy_arc.lock().await;
         let service = lock.as_ref()?;
@@ -114,7 +112,7 @@ pub async fn build_buddy_pulse_payload(
     }
 }
 
-pub async fn build_buddy_pulse_message(gcx: Arc<ARwLock<GlobalContext>>) -> Option<ChatMessage> {
+pub async fn build_buddy_pulse_message(gcx: AppState) -> Option<ChatMessage> {
     let payload = build_buddy_pulse_payload(gcx).await?;
     let file_content = render_pulse_as_markdown(&payload);
     let mut extra = serde_json::Map::new();
@@ -410,8 +408,8 @@ async fn read_lessons(project_root: &Path) -> Vec<PulseLesson> {
         .collect()
 }
 
-async fn build_friction(gcx: Arc<ARwLock<GlobalContext>>) -> PulseFriction {
-    let buddy_arc = gcx.read().await.buddy.clone();
+async fn build_friction(gcx: AppState) -> PulseFriction {
+    let buddy_arc = gcx.buddy.buddy.clone();
     let (diagnostics, pulse_diagnostic_types, stuck_tasks) = {
         let lock = buddy_arc.lock().await;
         let Some(service) = lock.as_ref() else {
@@ -469,8 +467,8 @@ fn report_from_entry(entry: BuddyConversationEntry) -> PulseReport {
     }
 }
 
-async fn build_activity_section(gcx: Arc<ARwLock<GlobalContext>>) -> PulseActivitySection {
-    let user_activity = gcx.read().await.user_activity.clone();
+async fn build_activity_section(gcx: AppState) -> PulseActivitySection {
+    let user_activity = gcx.buddy.user_activity.clone();
     let actions = user_activity.lock().await.last_hours(24);
     if actions.is_empty() {
         return PulseActivitySection {
@@ -640,7 +638,7 @@ mod tests {
     use chrono::Duration;
     use tokio::sync::broadcast;
 
-    async fn make_gcx_with_buddy(project_root: &Path) -> Arc<ARwLock<GlobalContext>> {
+    async fn make_gcx_with_buddy(project_root: &Path) -> AppState {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let (tx, _) = broadcast::channel(16);
         let service = BuddyService::new(
@@ -652,9 +650,10 @@ mod tests {
             tx,
             None,
         );
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let app = AppState::from_gcx(gcx).await;
+        let buddy_arc = app.buddy.buddy.clone();
         *buddy_arc.lock().await = Some(service);
-        gcx
+        app
     }
 
     fn full_payload() -> BuddyPulsePayload {
@@ -753,7 +752,7 @@ mod tests {
     async fn pulse_includes_user_activity_section_with_pattern() {
         let dir = tempfile::tempdir().unwrap();
         let gcx = make_gcx_with_buddy(dir.path()).await;
-        let user_activity = gcx.read().await.user_activity.clone();
+        let user_activity = gcx.buddy.user_activity.clone();
         {
             let mut ring = user_activity.lock().await;
             ring.push(UserAction::FileOpened {

@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex as StdMutex;
 #[cfg(test)]
@@ -15,13 +15,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 #[cfg(test)]
 use tokio::sync::OwnedMutexGuard;
-use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
+use tokio::sync::Mutex as AMutex;
 use tracing::debug;
 use uuid::Uuid;
 
 use crate::buddy::types::{BuddyPersonalityProfile, BuddySpeechItem};
 use crate::call_validation::{ChatContent, ChatMessage, ChatModelType, SubchatParameters};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 const VOICE_TTL: Duration = Duration::from_secs(5 * 60);
 const VOICE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -73,7 +73,7 @@ struct VoiceRenderRequest {
 trait VoiceRenderer: Send + Sync {
     async fn render_voice(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         request: VoiceRenderRequest,
     ) -> Option<String>;
 }
@@ -111,7 +111,7 @@ impl TestVoiceRenderer {
 impl VoiceRenderer for TestVoiceRenderer {
     async fn render_voice(
         &self,
-        _gcx: Arc<ARwLock<GlobalContext>>,
+        _gcx: AppState,
         request: VoiceRenderRequest,
     ) -> Option<String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -129,7 +129,7 @@ impl VoiceRenderer for TestVoiceRenderer {
 impl VoiceRenderer for SubchatVoiceRenderer {
     async fn render_voice(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         request: VoiceRenderRequest,
     ) -> Option<String> {
         render_via_subchat(gcx, request).await
@@ -236,7 +236,7 @@ impl VoiceService {
 
     pub async fn render_activity_title(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: VoiceCtx<'_>,
         intent: VoiceIntent,
     ) -> String {
@@ -245,7 +245,7 @@ impl VoiceService {
 
     pub async fn render_speech(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: VoiceCtx<'_>,
         intent: SpeechIntent,
     ) -> BuddySpeechItem {
@@ -267,7 +267,7 @@ impl VoiceService {
 
     pub async fn render_runtime_event(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: VoiceCtx<'_>,
         status: &str,
     ) -> (String, Option<String>) {
@@ -282,7 +282,7 @@ impl VoiceService {
 
     pub async fn render_runtime_event_fast(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: VoiceCtx<'_>,
         status: &str,
     ) -> (String, Option<String>) {
@@ -304,7 +304,7 @@ impl VoiceService {
 
     pub async fn render_chat_title(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: VoiceCtx<'_>,
     ) -> String {
         self.render_line(gcx, &ctx, VoiceIntent::ChatTitle.as_str())
@@ -320,7 +320,7 @@ impl VoiceService {
 
     async fn render_line(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &VoiceCtx<'_>,
         intent_kind: &str,
     ) -> String {
@@ -330,7 +330,7 @@ impl VoiceService {
 
     async fn render_line_with_timeout(
         &self,
-        gcx: Arc<ARwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &VoiceCtx<'_>,
         intent_kind: &str,
         timeout: Duration,
@@ -441,11 +441,11 @@ impl VoiceRenderRequest {
 }
 
 async fn render_via_subchat(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    gcx: AppState,
     request: VoiceRenderRequest,
 ) -> Option<String> {
     let mut config = match crate::subchat::resolve_subchat_config(
-        gcx.clone(),
+        gcx.gcx.clone(),
         "follow_up",
         false,
         Some(format!("buddy-voice-{}", Uuid::new_v4())),
@@ -477,7 +477,7 @@ async fn render_via_subchat(
         subchat_tokens_for_rag: 0,
         subchat_reasoning_effort: None,
     };
-    let model = match crate::subchat::resolve_subchat_model(gcx.clone(), &params).await {
+    let model = match crate::subchat::resolve_subchat_model(gcx.gcx.clone(), &params).await {
         Ok(model) => model,
         Err(e) => {
             debug!("buddy voice: failed to resolve light model: {}", e);
@@ -502,7 +502,7 @@ async fn render_via_subchat(
         ChatMessage::new("user".to_string(), request.user_prompt()),
     ];
 
-    match crate::subchat::run_subchat(gcx, messages, config).await {
+    match crate::subchat::run_subchat(gcx.gcx.clone(), messages, config).await {
         Ok(result) => result
             .messages
             .last()
@@ -613,7 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_returns_fallback_when_renderer_returns_none() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let renderer = TestVoiceRenderer::new(vec![None]);
         let service = VoiceService::new_with_renderer(renderer.clone());
         let persona = persona("helper_sprite");
@@ -628,7 +628,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_cache_hits_within_ttl_window() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let renderer = TestVoiceRenderer::new(vec![Some("cached sparkle".to_string())]);
         let service = VoiceService::new_with_renderer(renderer.clone());
         let persona = persona("helper_sprite");
@@ -645,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_caps_output_at_80_chars() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let renderer = TestVoiceRenderer::new(vec![Some("a".repeat(120))]);
         let service = VoiceService::new_with_renderer(renderer);
         let persona = persona("helper_sprite");
@@ -657,7 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_strips_newlines() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
         let renderer = TestVoiceRenderer::new(vec![Some("hello\nbuddy\r\nnow".to_string())]);
         let service = VoiceService::new_with_renderer(renderer);
         let persona = persona("helper_sprite");

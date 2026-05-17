@@ -169,7 +169,7 @@ impl Tool for ToolChrome {
             Ok(log) => log,
             Err(e) => {
                 crate::buddy::actor::report_error_persisted(
-                    gcx.clone(),
+                    crate::app_state::AppState::from_gcx(gcx.clone()).await,
                     "browser_error",
                     &e,
                     Some("tools/tool_chrome.rs"),
@@ -242,7 +242,7 @@ impl Tool for ToolChrome {
                     let err_msg = format!("Failed to execute typed browser request: {}.", e);
                     tool_log.push(err_msg.clone());
                     crate::buddy::actor::report_error_persisted(
-                        gcx.clone(),
+                        crate::app_state::AppState::from_gcx(gcx.clone()).await,
                         "browser_error",
                         &err_msg,
                         Some("tools/tool_chrome.rs"),
@@ -288,7 +288,7 @@ impl Tool for ToolChrome {
                         let err_msg = format!("Failed to execute command: {}.", e);
                         tool_log.push(err_msg.clone());
                         crate::buddy::actor::report_error_persisted(
-                            gcx.clone(),
+                            crate::app_state::AppState::from_gcx(gcx.clone()).await,
                             "browser_error",
                             &err_msg,
                             Some("tools/tool_chrome.rs"),

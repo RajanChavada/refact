@@ -474,7 +474,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let ring_arc = gcx.read().await.user_activity.clone();
+        let ring_arc = AppState::from_gcx(gcx).await.buddy.user_activity.clone();
         let ring = ring_arc.lock().await;
         assert_eq!(ring.snapshot().len(), 1);
         let root = ring.project_root.clone();

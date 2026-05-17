@@ -4,8 +4,6 @@ use axum::extract::Query;
 use axum::response::Result;
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock as ARwLock;
 
 use crate::buddy::diagnostics::DiagnosticContext;
 use crate::buddy::events::BuddyEvent;
@@ -17,7 +15,6 @@ use crate::buddy::types::{BuddyActivity, BuddyCareAction, BuddyConversationEntry
 use crate::buddy::user_activity::{time_of_day_pattern, UserAction};
 use crate::buddy::voice_service::SpeechIntent;
 use crate::app_state::AppState;
-use crate::global_context::GlobalContext;
 use crate::custom_error::ScratchError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,8 +45,7 @@ pub async fn handle_v1_buddy_user_action(
     State(app): State<AppState>,
     axum::Json(action): axum::Json<UserAction>,
 ) -> Result<StatusCode, ScratchError> {
-    let gcx = app.gcx.clone();
-    let user_activity = gcx.read().await.user_activity.clone();
+    let user_activity = app.buddy.user_activity.clone();
     let mut ring = user_activity.lock().await;
     ring.push(action);
     if let Err(e) = ring.persist().await {
@@ -62,8 +58,7 @@ pub async fn handle_v1_buddy_user_activity(
     State(app): State<AppState>,
     Query(query): Query<UserActivityQuery>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let user_activity = gcx.read().await.user_activity.clone();
+    let user_activity = app.buddy.user_activity.clone();
     let ring = user_activity.lock().await;
     let actions = ring.last_hours(query.hours.unwrap_or(24));
     let pattern = time_of_day_pattern(&actions);
@@ -76,17 +71,15 @@ pub async fn handle_v1_buddy_user_activity(
 pub async fn handle_v1_buddy_pulse_preview(
     State(app): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
     Ok(axum::Json(serde_json::json!({
-        "payload": build_buddy_pulse_payload(gcx).await
+        "payload": build_buddy_pulse_payload(app).await
     })))
 }
 
 pub async fn handle_v1_buddy_artifacts(
     State(app): State<AppState>,
 ) -> Result<axum::Json<crate::buddy::memory_lifecycle::MemoryOpsState>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let state = lock
         .as_ref()
@@ -99,20 +92,18 @@ pub async fn handle_v1_buddy_artifact_approve(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<BuddyArtifactRequest>,
 ) -> Result<StatusCode, ScratchError> {
-    let gcx = app.gcx.clone();
-    update_buddy_artifact_status(gcx, req.op_id, MemoryOpStatus::Approved).await
+    update_buddy_artifact_status(app, req.op_id, MemoryOpStatus::Approved).await
 }
 
 pub async fn handle_v1_buddy_artifact_reject(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<BuddyArtifactRequest>,
 ) -> Result<StatusCode, ScratchError> {
-    let gcx = app.gcx.clone();
-    update_buddy_artifact_status(gcx, req.op_id, MemoryOpStatus::Rejected).await
+    update_buddy_artifact_status(app, req.op_id, MemoryOpStatus::Rejected).await
 }
 
 async fn update_buddy_artifact_status(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     op_id: String,
     status: MemoryOpStatus,
 ) -> Result<StatusCode, ScratchError> {
@@ -124,7 +115,7 @@ async fn update_buddy_artifact_status(
         ));
     }
 
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+    let project_root = crate::files_correction::get_project_dirs(app.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -150,7 +141,7 @@ async fn update_buddy_artifact_status(
     op.status = status;
     op.error = None;
     let updated = if status == MemoryOpStatus::Approved {
-        apply_memory_lifecycle_op_status(gcx.clone(), &op).await
+        apply_memory_lifecycle_op_status(app.clone(), &op).await
     } else {
         op
     };
@@ -158,7 +149,7 @@ async fn update_buddy_artifact_status(
     let state = enqueue_memory_op(&project_root, updated)
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(service) = lock.as_mut() {
         service.memory_ops = state;
@@ -169,8 +160,7 @@ async fn update_buddy_artifact_status(
 pub async fn handle_v1_buddy_snapshot(
     State(app): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     match lock.as_ref() {
         Some(service) => Ok(axum::Json(
@@ -192,8 +182,7 @@ pub async fn handle_v1_buddy_snapshot(
 pub async fn handle_v1_buddy_settings_get(
     State(app): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     match lock.as_ref() {
         Some(service) => Ok(axum::Json(
@@ -222,7 +211,6 @@ pub async fn handle_v1_buddy_settings_update(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<BuddySettingsRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
     if let Some(pi) = req.palette_index {
         if pi > MAX_PALETTE_INDEX {
             return Err(ScratchError::new(
@@ -232,7 +220,7 @@ pub async fn handle_v1_buddy_settings_update(
         }
     }
 
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+    let project_root = crate::files_correction::get_project_dirs(app.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -243,7 +231,7 @@ pub async fn handle_v1_buddy_settings_update(
             )
         })?;
 
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let events_tx = {
         let mut lock = buddy_arc.lock().await;
         if let Some(service) = lock.as_mut() {
@@ -310,7 +298,7 @@ pub struct BuddyQuestAcceptRequest {
 }
 
 async fn refresh_completed_quest_with_voice(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
     mut lock: tokio::sync::MutexGuard<'_, Option<crate::buddy::actor::BuddyService>>,
 ) {
     let Some(svc) = lock.as_mut() else {
@@ -339,17 +327,17 @@ async fn refresh_completed_quest_with_voice(
     drop(lock);
 
     let completed = crate::buddy::actor::complete_quest_with_voice(
-        gcx.clone(),
+        app.clone(),
         quest,
         persona,
         identity_name,
         pulse,
     )
     .await;
-    crate::buddy::actor::buddy_update_speech(gcx.clone(), completed.speech).await;
-    crate::buddy::actor::buddy_apply(gcx.clone(), completed.mutation).await;
+    crate::buddy::actor::buddy_update_speech(app.clone(), completed.speech).await;
+    crate::buddy::actor::buddy_apply(app.clone(), completed.mutation).await;
     if reward > 0 {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let mut lock = buddy_arc.lock().await;
         if let Some(svc) = lock.as_mut() {
             svc.grant_xp(reward);
@@ -361,8 +349,7 @@ pub async fn handle_v1_buddy_care(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<BuddyCareRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     let svc = lock.as_mut().ok_or_else(|| {
         ScratchError::new(
@@ -403,8 +390,8 @@ pub async fn handle_v1_buddy_care(
         controls: vec![],
         chat_id: None,
     });
-    refresh_completed_quest_with_voice(gcx.clone(), lock).await;
-    let snapshot = crate::buddy::actor::buddy_snapshot(gcx).await;
+    refresh_completed_quest_with_voice(app.clone(), lock).await;
+    let snapshot = crate::buddy::actor::buddy_snapshot(app).await;
 
     Ok(axum::Json(serde_json::json!({
         "message": message,
@@ -415,8 +402,7 @@ pub async fn handle_v1_buddy_care(
 pub async fn handle_v1_buddy_personality_reroll(
     State(app): State<AppState>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     let svc = lock.as_mut().ok_or_else(|| {
         ScratchError::new(
@@ -454,8 +440,8 @@ pub async fn handle_v1_buddy_personality_reroll(
     });
 
     if should_refresh_completed_quest {
-        refresh_completed_quest_with_voice(gcx.clone(), lock).await;
-        let snapshot = crate::buddy::actor::buddy_snapshot(gcx).await;
+        refresh_completed_quest_with_voice(app.clone(), lock).await;
+        let snapshot = crate::buddy::actor::buddy_snapshot(app).await;
         return Ok(axum::Json(serde_json::json!({
             "snapshot": snapshot
         })));
@@ -469,8 +455,7 @@ pub async fn handle_v1_buddy_personality_reroll(
 pub async fn handle_v1_buddy_quest_dismiss(
     State(app): State<AppState>,
 ) -> Result<StatusCode, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     match lock.as_mut() {
         Some(svc) => {
@@ -488,8 +473,7 @@ pub async fn handle_v1_buddy_quest_accept(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<BuddyQuestAcceptRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     let svc = lock.as_mut().ok_or_else(|| {
         ScratchError::new(
@@ -538,7 +522,7 @@ pub async fn handle_v1_buddy_quest_accept(
     drop(lock);
 
     let mut speech = crate::buddy::actor::render_buddy_speech(
-        gcx.clone(),
+        app.clone(),
         persona,
         identity_name,
         pulse,
@@ -552,8 +536,8 @@ pub async fn handle_v1_buddy_quest_accept(
     speech.ttl_seconds = 12;
     speech.dedupe_key = Some(dedupe_key);
     speech.controls = controls;
-    crate::buddy::actor::buddy_update_speech(gcx.clone(), speech).await;
-    let snapshot = crate::buddy::actor::buddy_snapshot(gcx)
+    crate::buddy::actor::buddy_update_speech(app.clone(), speech).await;
+    let snapshot = crate::buddy::actor::buddy_snapshot(app)
         .await
         .unwrap_or(snapshot);
 
@@ -567,8 +551,7 @@ pub async fn handle_v1_buddy_quest_accept(
 pub async fn handle_v1_buddy_activities(
     State(app): State<AppState>,
 ) -> Result<axum::Json<Vec<BuddyActivity>>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let lock = buddy_arc.lock().await;
     let activities = lock
         .as_ref()
@@ -586,8 +569,7 @@ pub async fn handle_v1_buddy_conversations_list(
     State(app): State<AppState>,
     axum::extract::Query(query): axum::extract::Query<ConversationsListQuery>,
 ) -> Result<axum::Json<Vec<BuddyConversationEntry>>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+    let project_root = crate::files_correction::get_project_dirs(app.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -697,15 +679,14 @@ pub async fn handle_v1_buddy_investigation_context(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<DiagnosticsCollectRequest>,
 ) -> Result<axum::Json<BuddyInvestigationContextResponse>, ScratchError> {
-    let gcx = app.gcx.clone();
     let log_lines = crate::buddy::issues::investigation_logs(
-        gcx.clone(),
+        app.clone(),
         &req.error,
         req.collected_at.as_deref(),
     )
     .await
     .unwrap_or_else(|e| format!("Investigation logs unavailable: {}", e));
-    let internal = crate::buddy::issues::investigation_internal_context(gcx.clone())
+    let internal = crate::buddy::issues::investigation_internal_context(app.clone())
         .await
         .unwrap_or_else(|e| format!("Investigation context unavailable: {}", e));
 
@@ -727,8 +708,7 @@ pub async fn handle_v1_buddy_conversations_create_setup(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<CreateSetupRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let project_root = crate::files_correction::get_project_dirs(gcx.clone())
+    let project_root = crate::files_correction::get_project_dirs(app.gcx.clone())
         .await
         .into_iter()
         .next()
@@ -805,8 +785,7 @@ pub async fn handle_v1_buddy_suggestion_dismiss(
     State(app): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     match lock.as_mut() {
         Some(service) => {
@@ -826,8 +805,7 @@ pub async fn handle_v1_buddy_runtime_dismiss(
     State(app): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     match lock.as_mut() {
         Some(service) => {
@@ -856,8 +834,7 @@ pub async fn handle_v1_buddy_diagnostics_collect(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<DiagnosticsCollectRequest>,
 ) -> Result<axum::Json<DiagnosticContext>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let mut ctx = crate::buddy::diagnostics::collect_diagnostics(gcx.clone(), &req.error).await;
+    let mut ctx = crate::buddy::diagnostics::collect_diagnostics(app.clone(), &req.error).await;
     ctx.source_file = req
         .source_file
         .as_deref()
@@ -869,7 +846,7 @@ pub async fn handle_v1_buddy_diagnostics_collect(
     ctx.chat_id = req.chat_id;
     ctx.collected_at = req.collected_at.unwrap_or(ctx.collected_at);
 
-    let buddy_arc = gcx.read().await.buddy.clone();
+    let buddy_arc = app.buddy.buddy.clone();
     let mut lock = buddy_arc.lock().await;
     if let Some(svc) = lock.as_mut() {
         svc.add_diagnostic(ctx.clone());
@@ -892,8 +869,7 @@ pub async fn handle_v1_buddy_diagnostics_collect(
 pub async fn handle_v1_buddy_diagnostics_list(
     State(app): State<AppState>,
 ) -> Result<axum::Json<Vec<DiagnosticContext>>, ScratchError> {
-    let gcx = app.gcx.clone();
-    let project_root = crate::buddy::actor::latest_project_root(gcx.clone())
+    let project_root = crate::buddy::actor::latest_project_root(app.clone())
         .await
         .map_err(|e| ScratchError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     let diags = crate::buddy::storage::load_recent_diagnostics(&project_root, 100)
@@ -915,14 +891,13 @@ pub async fn handle_v1_buddy_issues_create(
     State(app): State<AppState>,
     axum::Json(req): axum::Json<IssueCreateRequest>,
 ) -> Result<axum::Json<serde_json::Value>, ScratchError> {
-    let gcx = app.gcx.clone();
     let pre_diag = if req.diagnostic_index.is_none()
         && req.diagnostic_id.is_none()
         && req.collected_at.is_none()
     {
         match &req.error {
             Some(err) => {
-                Some(crate::buddy::diagnostics::collect_diagnostics(gcx.clone(), err).await)
+                Some(crate::buddy::diagnostics::collect_diagnostics(app.clone(), err).await)
             }
             None => None,
         }
@@ -931,7 +906,7 @@ pub async fn handle_v1_buddy_issues_create(
     };
 
     let ctx = crate::buddy::actor::resolve_diagnostic(
-        gcx.clone(),
+        app.clone(),
         req.diagnostic_index,
         req.diagnostic_id.as_deref(),
         req.collected_at.as_deref(),
@@ -941,7 +916,7 @@ pub async fn handle_v1_buddy_issues_create(
     .map_err(|e| ScratchError::new(StatusCode::BAD_REQUEST, e))?;
 
     let (auto_enabled, last_issue_at, recent_errors) = {
-        let buddy_arc = gcx.read().await.buddy.clone();
+        let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
         let svc = lock.as_ref().ok_or_else(|| {
             ScratchError::new(
@@ -959,7 +934,7 @@ pub async fn handle_v1_buddy_issues_create(
 
     let manual = req.manual.unwrap_or(false);
     let result = crate::buddy::issues::create_issue(
-        gcx.clone(),
+        app.clone(),
         &ctx,
         auto_enabled,
         manual,

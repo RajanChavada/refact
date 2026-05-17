@@ -333,7 +333,7 @@ async fn vectorize_thread(
                             "completed",
                             None,
                         );
-                        crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+                        crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
                         vstatus_notify.notify_waiters();
                         {
                             let vstatus_locked = vstatus.lock().await;
@@ -361,7 +361,7 @@ async fn vectorize_thread(
                 "started",
                 None,
             );
-            crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+            crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
         }
 
         let last_30_chars = crate::nicer_logs::last_n_chars(&cpath, 30);

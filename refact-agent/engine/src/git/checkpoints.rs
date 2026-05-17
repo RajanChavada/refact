@@ -341,7 +341,7 @@ pub async fn create_workspace_checkpoint_for_root(
             None,
         );
         ev.chat_id = Some(chat_id.to_string());
-        crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+        crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
     }
 
     Ok((checkpoint, repo))

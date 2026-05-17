@@ -171,7 +171,7 @@ async fn process_single_trajectory(
     let gcx2 = gcx.clone();
     let title2 = current_title.clone();
     let extraction = crate::buddy::workflows::buddy_wrap_workflow(
-        gcx.clone(),
+        crate::app_state::AppState::from_gcx(gcx.clone()).await,
         "memo_extraction",
         "🧠",
         8,

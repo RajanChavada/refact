@@ -1,12 +1,10 @@
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
 
 use crate::buddy::observers::{BuddyObserver, Ephemeral, ObserverContext};
 use crate::buddy::settings::BuddySettings;
 use crate::buddy::types::{BuddyFact, BuddyFactKind};
 use crate::call_validation::{ChatContent, ChatMessage};
-use crate::global_context::GlobalContext;
+use crate::app_state::AppState;
 
 pub struct ChatPatternObserver;
 
@@ -93,10 +91,10 @@ impl BuddyObserver for ChatPatternObserver {
 
     async fn observe(
         &self,
-        gcx: Arc<RwLock<GlobalContext>>,
+        gcx: AppState,
         ctx: &ObserverContext,
     ) -> Vec<BuddyFact> {
-        let sessions_map = gcx.read().await.chat_sessions.clone();
+        let sessions_map = gcx.chat.sessions.clone();
         let sessions_read = sessions_map.read().await;
         let mut facts = vec![];
         for (chat_id, session_arc) in sessions_read.iter() {

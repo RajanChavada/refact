@@ -368,7 +368,7 @@ pub async fn system_prompt_add_extra_instructions(
 }
 
 async fn buddy_persona_block(gcx: Arc<ARwLock<GlobalContext>>, mode_id: &str) -> String {
-    let Some(snapshot) = crate::buddy::actor::buddy_snapshot(gcx).await else {
+    let Some(snapshot) = crate::buddy::actor::buddy_snapshot(crate::app_state::AppState::from_gcx(gcx).await).await else {
         return String::new();
     };
     let mode_id = buddy_persona_cache_mode_id(mode_id);
@@ -879,7 +879,7 @@ async fn gather_and_inject_system_context(
         .iter()
         .any(|m| m.role == "context_file" && m.tool_call_id == BUDDY_PULSE_MARKER);
     if !have_buddy_pulse {
-        if let Some(pulse_msg) = build_buddy_pulse_message(gcx.clone()).await {
+        if let Some(pulse_msg) = build_buddy_pulse_message(crate::app_state::AppState::from_gcx(gcx.clone()).await).await {
             let insert_pos = messages
                 .iter()
                 .position(|m| m.role == "user" || m.role == "assistant")

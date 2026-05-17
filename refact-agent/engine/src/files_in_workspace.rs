@@ -1166,7 +1166,7 @@ pub async fn files_in_workspace_init_task(gcx: Arc<ARwLock<GlobalContext>>) {
         "started",
         None,
     );
-    crate::buddy::actor::buddy_enqueue_event(gcx.clone(), ev).await;
+    crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx.clone()).await, ev).await;
     let file_count = enqueue_all_files_from_workspace_folders(gcx.clone(), true, false).await;
     let current_folders = gcx
         .read()
@@ -1206,7 +1206,7 @@ pub async fn files_in_workspace_init_task(gcx: Arc<ARwLock<GlobalContext>>) {
         "completed",
         None,
     );
-    crate::buddy::actor::buddy_enqueue_event(gcx, ev).await;
+    crate::buddy::actor::buddy_enqueue_event(crate::app_state::AppState::from_gcx(gcx).await, ev).await;
 }
 
 #[cfg(test)]
