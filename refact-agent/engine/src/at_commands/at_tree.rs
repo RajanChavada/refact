@@ -300,15 +300,18 @@ pub async fn tree_for_tools(
     max_files: usize,
     is_root_query: bool,
 ) -> Result<String, String> {
-    let (gcx, tokens_for_rag) = {
+    let (ast_service, tokens_for_rag) = {
         let ccx_locked = ccx.lock().await;
-        (ccx_locked.global_context.clone(), ccx_locked.tokens_for_rag)
+        (
+            ccx_locked.app.workspace.ast_service.clone(),
+            ccx_locked.tokens_for_rag,
+        )
     };
     const CHARS_PER_TOKEN: f32 = 3.5;
     let char_limit = ((tokens_for_rag as f32) * CHARS_PER_TOKEN) as usize;
 
     let ast_db = if use_ast {
-        if let Some(ast_module) = gcx.read().await.ast_service.clone() {
+        if let Some(ast_module) = ast_service {
             crate::ast::ast_indexer_thread::ast_indexer_block_until_finished(
                 ast_module.clone(),
                 20_000,

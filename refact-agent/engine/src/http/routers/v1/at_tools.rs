@@ -192,8 +192,8 @@ pub async fn handle_v1_tools_check_if_confirmation_needed(
     })?;
 
     let ccx = Arc::new(AMutex::new(
-        AtCommandsContext::new(
-            gcx.clone(),
+        AtCommandsContext::new_from_app(
+            app.clone(),
             1000,
             1,
             false,
@@ -333,7 +333,7 @@ pub async fn handle_v1_tools_execute(
     };
 
     let (messages, tools_ran) = execute_tools(
-        AppState::from_gcx(gcx.clone()).await,
+        app,
         &tool_calls,
         &tools_execute_post.messages,
         &thread,

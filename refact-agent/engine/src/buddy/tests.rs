@@ -3785,8 +3785,8 @@ async fn make_tool_ccx(
     gcx: AppState,
 ) -> Arc<tokio::sync::Mutex<crate::at_commands::at_commands::AtCommandsContext>> {
     Arc::new(tokio::sync::Mutex::new(
-        crate::at_commands::at_commands::AtCommandsContext::new(
-            gcx.gcx.clone(),
+        crate::at_commands::at_commands::AtCommandsContext::new_from_app(
+            gcx,
             4000,
             20,
             false,
@@ -4595,8 +4595,8 @@ async fn tool_buddy_create_draft_rejects_oversized_content() {
     let app = make_gcx_with_buddy().await;
     let gcx = app.gcx.clone();
     let ccx = Arc::new(tokio::sync::Mutex::new(
-        AtCommandsContext::new(
-            gcx.clone(),
+        AtCommandsContext::new_from_app(
+            app.clone(),
             4000,
             20,
             false,

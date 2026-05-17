@@ -18,6 +18,7 @@ use crate::call_validation::{
 };
 use crate::files_in_workspace;
 use crate::files_in_workspace::{on_did_change, on_did_delete};
+use crate::app_state::AppState;
 use crate::global_context::{CommandLine, GlobalContext};
 use crate::http::routers::v1::code_completion::handle_v1_code_completion;
 
@@ -220,7 +221,8 @@ impl LspBackend {
     pub async fn get_completions(&self, params: CompletionParams1) -> Result<CompletionRes> {
         let mut post = self.flat_params_to_code_completion_post(&params).await?;
 
-        let res = handle_v1_code_completion(self.gcx.clone(), &mut post)
+        let app = AppState::from_gcx(self.gcx.clone()).await;
+        let res = handle_v1_code_completion(app, &mut post)
             .await
             .map_err(|e| internal_error(e))?;
 

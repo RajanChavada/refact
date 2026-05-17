@@ -914,8 +914,8 @@ mod tests {
     async fn ccx(root: &Path) -> Arc<AMutex<AtCommandsContext>> {
         let gcx = test_gcx(root).await;
         Arc::new(AMutex::new(
-            AtCommandsContext::new(
-                gcx,
+            AtCommandsContext::new_from_app(
+                crate::app_state::AppState::from_gcx(gcx).await,
                 4096,
                 20,
                 false,

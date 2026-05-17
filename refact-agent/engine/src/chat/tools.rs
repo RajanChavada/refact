@@ -68,7 +68,7 @@ async fn build_tool_execution_context(
 ) -> Arc<AMutex<AtCommandsContext>> {
     Arc::new(AMutex::new(
         AtCommandsContext::new_with_abort(
-            app.gcx.clone(),
+            app.clone(),
             n_ctx,
             CHAT_TOP_N,
             false,
@@ -1416,8 +1416,8 @@ pub async fn check_tools_confirmation(
     let mut denials = Vec::new();
 
     let ccx = Arc::new(AMutex::new(
-        AtCommandsContext::new(
-            app.gcx.clone(),
+        AtCommandsContext::new_from_app(
+            app.clone(),
             1000,
             1,
             false,

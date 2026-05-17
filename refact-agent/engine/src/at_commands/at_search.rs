@@ -68,12 +68,11 @@ pub async fn execute_at_search(
     query: &String,
     vecdb_scope_filter_mb: Option<String>,
 ) -> Result<Vec<ContextFile>, String> {
-    let (gcx, top_n) = {
+    let (vec_db, top_n) = {
         let ccx_locked = ccx.lock().await;
-        (ccx_locked.global_context.clone(), ccx_locked.top_n)
+        (ccx_locked.app.workspace.vec_db.clone(), ccx_locked.top_n)
     };
 
-    let vec_db = gcx.read().await.vec_db.clone();
     let r = match *vec_db.lock().await {
         Some(ref db) => {
             let top_n_twice_as_big = top_n * 2;  // top_n will be cut at postprocessing stage, and we really care about top_n files, not pieces

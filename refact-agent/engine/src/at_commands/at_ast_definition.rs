@@ -62,12 +62,12 @@ impl AtParam for AtParamSymbolPathQuery {
         if value.is_empty() {
             return vec![];
         }
-        let (gcx, top_n) = {
+        let (app, top_n) = {
             let ccx_locked = ccx.lock().await;
-            (ccx_locked.global_context.clone(), ccx_locked.top_n)
+            (ccx_locked.app.clone(), ccx_locked.top_n)
         };
 
-        let ast_service_opt = gcx.read().await.ast_service.clone();
+        let ast_service_opt = app.workspace.ast_service.clone();
         if ast_service_opt.is_none() {
             return vec![];
         }
@@ -109,9 +109,10 @@ impl AtCommand for AtAstDefinition {
         args.clear();
         args.push(arg_symbol.clone());
 
-        let gcx = ccx.lock().await.global_context.clone();
-        let ast_service_opt = gcx.read().await.ast_service.clone();
+        let app = ccx.lock().await.app.clone();
+        let ast_service_opt = app.workspace.ast_service.clone();
         if let Some(ast_service) = ast_service_opt {
+            let gcx = app.gcx.clone();
             let ast_index = ast_service.lock().await.ast_index.clone();
             let defs: Vec<Arc<crate::ast::ast_structs::AstDefinition>> =
                 crate::ast::ast_db::definitions(ast_index, arg_symbol.text.as_str())?;

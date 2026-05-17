@@ -865,7 +865,7 @@ pub async fn run_subchat(
     let messages = sanitize_messages_for_new_thread(&messages);
     let ccx = Arc::new(AMutex::new(
         AtCommandsContext::new_with_abort(
-            gcx.clone(),
+            AppState::from_gcx(gcx.clone()).await,
             config.n_ctx,
             1,
             false,
@@ -951,8 +951,8 @@ pub async fn run_subchat_once(
 
     let messages = sanitize_messages_for_new_thread(&messages);
     let ccx = Arc::new(AMutex::new(
-        AtCommandsContext::new(
-            gcx.clone(),
+        AtCommandsContext::new_from_app(
+            AppState::from_gcx(gcx.clone()).await,
             config.n_ctx,
             1,
             false,

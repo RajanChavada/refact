@@ -776,8 +776,8 @@ mod tests {
 
         async fn ccx(f: &Fixture) -> Arc<AMutex<AtCommandsContext>> {
             Arc::new(AMutex::new(
-                AtCommandsContext::new(
-                    f.gcx.clone(),
+                AtCommandsContext::new_from_app(
+                    crate::app_state::AppState::from_gcx(f.gcx.clone()).await,
                     4096,
                     20,
                     false,

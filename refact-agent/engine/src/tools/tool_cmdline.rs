@@ -19,8 +19,8 @@ mod tests {
                 vec![std::env::temp_dir()];
         }
         let ccx = Arc::new(AMutex::new(
-            AtCommandsContext::new(
-                gcx.clone(),
+            AtCommandsContext::new_from_app(
+                crate::app_state::AppState::from_gcx(gcx.clone()).await,
                 1000,
                 1,
                 false,

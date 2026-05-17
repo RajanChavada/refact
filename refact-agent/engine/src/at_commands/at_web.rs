@@ -48,9 +48,8 @@ impl AtCommand for AtWeb {
         args.truncate(1);
 
         let preview_cache = {
-            let gcx = ccx.lock().await.global_context.clone();
-            let gcx_read = gcx.read().await;
-            gcx_read.at_commands_preview_cache.clone()
+            let ccx_locked = ccx.lock().await;
+            ccx_locked.app.workspace.at_commands_preview_cache.clone()
         };
         let text_from_cache = preview_cache
             .lock()

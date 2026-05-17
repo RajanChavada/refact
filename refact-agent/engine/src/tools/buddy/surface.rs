@@ -178,7 +178,7 @@ mod tests {
     use crate::buddy::settings::BuddySettings;
 
     async fn ccx(gcx: Arc<ARwLock<GlobalContext>>) -> Arc<AMutex<AtCommandsContext>> {
-        Arc::new(AMutex::new(AtCommandsContext::new(gcx, 4000, 20, false, vec![], "test-chat".to_string(), None, "test-model".to_string(), None, None).await))
+        Arc::new(AMutex::new(AtCommandsContext::new_from_app(crate::app_state::AppState::from_gcx(gcx).await, 4000, 20, false, vec![], "test-chat".to_string(), None, "test-model".to_string(), None, None).await))
     }
 
     async fn gcx_with_buddy() -> (tempfile::TempDir, Arc<ARwLock<GlobalContext>>) {

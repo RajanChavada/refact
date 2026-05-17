@@ -996,8 +996,8 @@ pub async fn run_llm_generation(
         ..Default::default()
     };
 
-    let ccx = AtCommandsContext::new(
-        gcx.clone(),
+    let ccx = AtCommandsContext::new_from_app(
+        app.clone(),
         effective_n_ctx,
         CHAT_TOP_N,
         false,

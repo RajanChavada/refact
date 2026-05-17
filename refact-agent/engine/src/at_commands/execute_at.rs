@@ -22,17 +22,17 @@ pub async fn run_at_commands_locally(
     mut original_messages: Vec<ChatMessage>,
     stream_back_to_user: &mut HasRagResults,
 ) -> (Vec<ChatMessage>, bool) {
-    let (n_ctx, top_n, is_preview, gcx) = {
+    let (n_ctx, top_n, is_preview, app) = {
         let ccx_locked = ccx.lock().await;
         (
             ccx_locked.n_ctx,
             ccx_locked.top_n,
             ccx_locked.is_preview,
-            ccx_locked.global_context.clone(),
+            ccx_locked.app.clone(),
         )
     };
     if !is_preview {
-        let preview_cache = gcx.read().await.at_commands_preview_cache.clone();
+        let preview_cache = app.workspace.at_commands_preview_cache.clone();
         preview_cache.lock().await.clear();
     }
     let reserve_for_context = max_tokens_for_rag_chat(n_ctx, maxgen);

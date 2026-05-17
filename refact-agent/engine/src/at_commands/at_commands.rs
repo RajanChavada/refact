@@ -11,6 +11,7 @@ use tokio::sync::RwLock as ARwLock;
 use crate::call_validation::{
     ChatMessage, ContextFile, ContextEnum, SubchatParameters, PostprocessSettings,
 };
+use crate::app_state::AppState;
 use crate::chat::types::TaskMeta;
 use crate::global_context::GlobalContext;
 use crate::worktrees::scope::ExecutionScope;
@@ -26,6 +27,7 @@ pub const MAX_SUBCHAT_DEPTH: usize = 5;
 
 pub struct AtCommandsContext {
     pub global_context: Arc<ARwLock<GlobalContext>>,
+    pub app: AppState,
     pub n_ctx: usize,
     pub top_n: usize,
     pub tokens_for_rag: usize,
@@ -64,8 +66,36 @@ impl AtCommandsContext {
         task_meta: Option<TaskMeta>,
         worktree: Option<WorktreeMeta>,
     ) -> Self {
+        let app = AppState::from_gcx(global_context).await;
+        Self::new_from_app(
+            app,
+            n_ctx,
+            top_n,
+            is_preview,
+            messages,
+            chat_id,
+            root_chat_id,
+            current_model,
+            task_meta,
+            worktree,
+        )
+        .await
+    }
+
+    pub async fn new_from_app(
+        app: AppState,
+        n_ctx: usize,
+        top_n: usize,
+        is_preview: bool,
+        messages: Vec<ChatMessage>,
+        chat_id: String,
+        root_chat_id: Option<String>,
+        current_model: String,
+        task_meta: Option<TaskMeta>,
+        worktree: Option<WorktreeMeta>,
+    ) -> Self {
         Self::new_with_abort(
-            global_context,
+            app,
             n_ctx,
             top_n,
             is_preview,
@@ -81,7 +111,7 @@ impl AtCommandsContext {
     }
 
     pub async fn new_with_abort(
-        global_context: Arc<ARwLock<GlobalContext>>,
+        app: AppState,
         n_ctx: usize,
         top_n: usize,
         is_preview: bool,
@@ -95,7 +125,7 @@ impl AtCommandsContext {
     ) -> Self {
         let execution_scope = worktree.map(|worktree| ExecutionScope::from_worktree(&worktree));
         Self::new_with_abort_and_execution_scope(
-            global_context,
+            app,
             n_ctx,
             top_n,
             is_preview,
@@ -111,7 +141,7 @@ impl AtCommandsContext {
     }
 
     pub async fn new_with_abort_and_execution_scope(
-        global_context: Arc<ARwLock<GlobalContext>>,
+        app: AppState,
         n_ctx: usize,
         top_n: usize,
         is_preview: bool,
@@ -125,8 +155,10 @@ impl AtCommandsContext {
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<serde_json::Value>();
         let effective_root = root_chat_id.unwrap_or_else(|| chat_id.clone());
+        let global_context = app.gcx.clone();
         AtCommandsContext {
-            global_context: global_context.clone(),
+            global_context,
+            app: app.clone(),
             n_ctx,
             top_n,
             tokens_for_rag: (n_ctx / 4).max(64).min(n_ctx),
@@ -140,7 +172,7 @@ impl AtCommandsContext {
             task_meta,
             execution_scope,
             subchat_depth: 0,
-            at_commands: at_commands_dict(global_context.clone()).await,
+            at_commands: at_commands_dict(app).await,
             subchat_tool_parameters: IndexMap::new(),
             postprocess_parameters: PostprocessSettings::new(),
             subchat_tx: Arc::new(AMutex::new(tx)),
@@ -200,7 +232,7 @@ pub trait AtParam: Send + Sync {
 }
 
 pub async fn at_commands_dict(
-    gcx: Arc<ARwLock<GlobalContext>>,
+    app: AppState,
 ) -> HashMap<String, Arc<dyn AtCommand + Send>> {
     let at_commands_dict = HashMap::from([
         (
@@ -234,11 +266,8 @@ pub async fn at_commands_dict(
         ),
     ]);
 
-    let (ast_on, vecdb_on) = {
-        let gcx_locked = gcx.read().await;
-        let vecdb_on = gcx_locked.vec_db.lock().await.is_some();
-        (gcx_locked.ast_service.is_some(), vecdb_on)
-    };
+    let ast_on = app.workspace.ast_service.is_some();
+    let vecdb_on = app.workspace.vec_db.lock().await.is_some();
     let mut result = HashMap::new();
     for (key, value) in at_commands_dict {
         let depends_on = value.depends_on();
@@ -309,8 +338,8 @@ mod tests {
     async fn subchat_worktree_at_commands_context_has_execution_scope() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let (_temp, worktree) = sample_worktree();
-        let ccx = AtCommandsContext::new(
-            gcx,
+        let ccx = AtCommandsContext::new_from_app(
+            AppState::from_gcx(gcx).await,
             4096,
             20,
             false,

@@ -8,7 +8,6 @@ use std::sync::{Arc, OnceLock};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use serde_json::{json, Value};
-use tokio::sync::RwLock as ARwLock;
 use tokio::sync::Mutex as AMutex;
 use strsim::jaro_winkler;
 use itertools::Itertools;
@@ -30,7 +29,7 @@ use crate::call_validation::{ChatMeta, PostprocessSettings, SubchatParameters};
 use crate::caps::resolve_chat_model;
 use crate::app_state::AppState;
 use crate::custom_error::ScratchError;
-use crate::global_context::{try_load_caps_quickly_if_not_present, GlobalContext};
+use crate::global_context::try_load_caps_quickly_if_not_present;
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, deserialize_messages_from_post};
 use crate::at_commands::at_commands::filter_only_context_file_from_context_tool;
 use crate::chat::get_or_create_session_with_trajectory;
@@ -237,7 +236,6 @@ pub async fn handle_v1_command_completion(
     State(app): State<AppState>,
     body_bytes: hyper::body::Bytes,
 ) -> Result<Response<Body>, ScratchError> {
-    let global_context = app.gcx.clone();
     let post = serde_json::from_slice::<CommandCompletionPost>(&body_bytes).map_err(|e| {
         ScratchError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -248,8 +246,8 @@ pub async fn handle_v1_command_completion(
 
     let fake_n_ctx = 4096;
     let ccx: Arc<AMutex<AtCommandsContext>> = Arc::new(AMutex::new(
-        AtCommandsContext::new(
-            global_context.clone(),
+        AtCommandsContext::new_from_app(
+            app.clone(),
             fake_n_ctx,
             top_n,
             true,
@@ -397,8 +395,8 @@ pub async fn handle_v1_command_preview(
         };
 
     let ccx = Arc::new(AMutex::new(
-        AtCommandsContext::new(
-            global_context.clone(),
+        AtCommandsContext::new_from_app(
+            app.clone(),
             model_rec.base.n_ctx,
             crate::constants::CHAT_TOP_N,
             true,
@@ -527,8 +525,8 @@ pub async fn handle_v1_at_command_execute(
 
     let effective_n_ctx = post.n_ctx.min(model_rec.base.n_ctx).max(1);
 
-    let mut ccx = AtCommandsContext::new(
-        global_context.clone(),
+    let mut ccx = AtCommandsContext::new_from_app(
+        app.clone(),
         effective_n_ctx,
         crate::constants::CHAT_TOP_N,
         false,

@@ -574,8 +574,8 @@ mod worktree_scope_read_tools {
         worktree: WorktreeMeta,
     ) -> Arc<AMutex<AtCommandsContext>> {
         Arc::new(AMutex::new(
-            AtCommandsContext::new(
-                gcx,
+            AtCommandsContext::new_from_app(
+                crate::app_state::AppState::from_gcx(gcx).await,
                 4096,
                 20,
                 false,
