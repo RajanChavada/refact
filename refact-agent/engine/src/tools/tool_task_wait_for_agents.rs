@@ -63,7 +63,7 @@ impl Tool for ToolTaskWaitForAgents {
         drop(ccx_lock);
 
         let task_id = get_task_id(&ccx, args).await?;
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let statuses = get_agent_statuses(gcx, &task_id).await?;
 

@@ -127,7 +127,7 @@ impl Tool for ToolTaskBoardGet {
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let task_id = get_task_id(&ccx, args).await?;
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let board = storage::load_board(gcx, &task_id).await?;
         let card_id = args
             .get("card_id")
@@ -209,7 +209,7 @@ impl Tool for ToolTaskBoardCreateCard {
                 .as_ref()
                 .map(|m| m.role == "planner")
                 .unwrap_or(false);
-            let gcx = ccx_lock.global_context.clone();
+            let gcx = ccx_lock.app.gcx.clone();
             (is_planner, gcx)
         };
 
@@ -333,7 +333,7 @@ impl Tool for ToolTaskBoardUpdateCard {
                 .as_ref()
                 .map(|m| m.role == "planner")
                 .unwrap_or(false);
-            let gcx = ccx_lock.global_context.clone();
+            let gcx = ccx_lock.app.gcx.clone();
             (is_planner, gcx)
         };
 
@@ -450,7 +450,7 @@ impl Tool for ToolTaskBoardMoveCard {
                 .as_ref()
                 .map(|m| m.role == "planner")
                 .unwrap_or(false);
-            let gcx = ccx_lock.global_context.clone();
+            let gcx = ccx_lock.app.gcx.clone();
             (is_planner, gcx)
         };
 
@@ -571,7 +571,7 @@ impl Tool for ToolTaskBoardDeleteCard {
                 .as_ref()
                 .map(|m| m.role == "planner")
                 .unwrap_or(false);
-            let gcx = ccx_lock.global_context.clone();
+            let gcx = ccx_lock.app.gcx.clone();
             (is_planner, gcx)
         };
 
@@ -661,7 +661,7 @@ impl Tool for ToolTaskReadyCards {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let task_id = get_task_id(&ccx, args).await?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let board = storage::load_board(gcx, &task_id).await?;
         let ready = board.get_ready_cards();
 

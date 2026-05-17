@@ -315,7 +315,7 @@ impl Tool for ToolTaskAgentFinish {
             .ok_or("Missing 'report' parameter")?
             .to_string();
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let finish_lock = get_finish_lock(&task_id, &card_id).await;
         let _finish_guard = finish_lock.lock().await;
 

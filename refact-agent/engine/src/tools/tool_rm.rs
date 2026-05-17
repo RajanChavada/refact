@@ -143,7 +143,7 @@ impl Tool for ToolRm {
         let (gcx, execution_scope, top_n) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.execution_scope.clone(),
                 ccx_locked.top_n,
             )

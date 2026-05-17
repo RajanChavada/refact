@@ -180,7 +180,7 @@ impl Tool for ToolHandoffToMode {
 
         let (gcx, chat_id) = {
             let ccx_lock = ccx.lock().await;
-            (ccx_lock.global_context.clone(), ccx_lock.chat_id.clone())
+            (ccx_lock.app.gcx.clone(), ccx_lock.chat_id.clone())
         };
 
         let sessions = gcx.read().await.chat_sessions.clone();

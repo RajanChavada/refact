@@ -390,7 +390,7 @@ impl Tool for ToolTaskSpawnAgent {
         };
         let suggested_steps = suggested_steps.min(50).max(1);
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let current_model = ccx.lock().await.current_model.clone();
 
         let task_meta = storage::load_task_meta(gcx.clone(), &task_id).await?;

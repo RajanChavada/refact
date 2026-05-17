@@ -94,7 +94,7 @@ impl Tool for ToolTaskMemorySave {
         let (gcx, task_meta) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.task_meta.clone(),
             )
         };
@@ -235,7 +235,7 @@ impl Tool for ToolTaskMemoriesGet {
         let (gcx, task_meta) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.task_meta.clone(),
             )
         };

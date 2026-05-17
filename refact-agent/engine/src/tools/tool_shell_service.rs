@@ -619,7 +619,7 @@ impl Tool for ToolShellService {
             parse_startup_wait_params(args);
         let output_filter = parse_output_params(args);
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let workdir = resolve_workdir(gcx.clone(), workdir_opt).await?;
 
         let mut error_log = Vec::<YamlError>::new();

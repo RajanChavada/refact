@@ -154,7 +154,7 @@ impl Tool for ToolChrome {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let (gcx, chat_id) = {
             let ccx_lock = ccx.lock().await;
-            (ccx_lock.global_context.clone(), ccx_lock.chat_id.clone())
+            (ccx_lock.app.gcx.clone(), ccx_lock.chat_id.clone())
         };
 
         let session_hashmap_key = get_session_hashmap_key("chrome", &chat_id);

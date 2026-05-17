@@ -97,7 +97,7 @@ impl Tool for ToolBuddyGetLogs {
             None => None,
         };
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let (logs_to_file, cache_dir) = {
             let lock = gcx.read().await;
             (lock.cmdline.logs_to_file.clone(), lock.cache_dir.clone())

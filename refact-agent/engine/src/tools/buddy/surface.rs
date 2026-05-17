@@ -73,7 +73,7 @@ fn ok_message(tool_call_id: &String, content: impl Into<String>) -> Result<(bool
 
 async fn context(ccx: Arc<AMutex<AtCommandsContext>>) -> (Arc<ARwLock<GlobalContext>>, String) {
     let lock = ccx.lock().await;
-    (lock.global_context.clone(), lock.chat_id.clone())
+    (lock.app.gcx.clone(), lock.chat_id.clone())
 }
 
 async fn buddy_initialized(gcx: Arc<ARwLock<GlobalContext>>) -> bool {

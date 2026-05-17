@@ -47,7 +47,7 @@ impl Tool for ToolGetKnowledge {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         info!("knowledge search {:?}", args);
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let search_key = match args.get("search_key") {
             Some(Value::String(s)) => s.clone(),

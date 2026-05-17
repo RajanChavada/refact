@@ -122,7 +122,7 @@ impl Tool for ToolBuddyLaunchInvestigation {
         }
         let user_text = msg_parts.join("\n\n");
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let chat_id = Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
 

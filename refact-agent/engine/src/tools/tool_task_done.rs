@@ -116,7 +116,7 @@ impl Tool for ToolTaskDone {
                 ccx_lock.root_chat_id.clone(),
                 ccx_lock.chat_id.clone(),
                 ccx_lock.abort_flag.clone(),
-                ccx_lock.global_context.clone(),
+                ccx_lock.app.gcx.clone(),
             )
         };
 

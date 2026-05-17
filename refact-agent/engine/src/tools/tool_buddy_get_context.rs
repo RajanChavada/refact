@@ -88,7 +88,7 @@ impl Tool for ToolBuddyGetContext {
             _ => all_sections.iter().map(|s| s.to_string()).collect(),
         };
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let (config_dir, project_dirs) = {
             let lock = gcx.read().await;
             (

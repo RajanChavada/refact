@@ -155,7 +155,7 @@ fn legacy_finish_tool_error(tool_name: &str) -> String {
 async fn get_global_context(
     ccx: &Arc<AMutex<AtCommandsContext>>,
 ) -> SharedGlobalContext {
-    ccx.lock().await.global_context.clone()
+    ccx.lock().await.app.gcx.clone()
 }
 
 fn required_card_id(scope: &TaskAgentScope) -> Result<String, String> {

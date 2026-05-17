@@ -207,7 +207,7 @@ impl Tool for ToolCat {
         // Append related memories (short form) based on involved file paths.
         // This is fast: uses in-memory KnowledgeIndex only.
         let related_section = {
-            let gcx = ccx.lock().await.global_context.clone();
+            let gcx = ccx.lock().await.app.gcx.clone();
             let idx_arc = { gcx.read().await.knowledge_index.clone() };
             let idx_guard = idx_arc.lock().await;
             let mut cards = idx_guard.related_for_files(&filenames_present, 8);
@@ -365,7 +365,7 @@ pub async fn paths_and_symbols_to_cat_with_path_ranges(
     let (gcx, top_n, execution_scope) = {
         let ccx_locked = ccx.lock().await;
         (
-            ccx_locked.global_context.clone(),
+            ccx_locked.app.gcx.clone(),
             ccx_locked.top_n,
             ccx_locked.execution_scope.clone(),
         )

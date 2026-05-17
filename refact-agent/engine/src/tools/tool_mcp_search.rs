@@ -77,7 +77,7 @@ impl Tool for ToolMcpSearch {
         let re = regex::Regex::new(&format!("(?i){}", query))
             .map_err(|e| format!("Invalid regex pattern '{}': {}", query, e))?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let integration_groups = get_integration_tools(gcx).await;
 
         let matched: Vec<(String, String, Value)> = integration_groups

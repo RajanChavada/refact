@@ -81,7 +81,7 @@ impl Tool for ToolCreateKnowledge {
 
         // Surface related memories right away (short form), and tell how to fetch full content.
         let related_section = {
-            let gcx = ccx.lock().await.global_context.clone();
+            let gcx = ccx.lock().await.app.gcx.clone();
             let idx_arc = { gcx.read().await.knowledge_index.clone() };
             let idx_guard = idx_arc.lock().await;
             let mut tags = user_tags.clone();

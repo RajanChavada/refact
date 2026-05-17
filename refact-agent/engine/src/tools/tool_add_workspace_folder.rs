@@ -60,7 +60,7 @@ impl Tool for ToolAddWorkspaceFolder {
             .canonicalize()
             .map_err(|e| format!("Failed to resolve path '{}': {}", path_str, e))?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let already_exists = {
             let gcx_locked = gcx.read().await;

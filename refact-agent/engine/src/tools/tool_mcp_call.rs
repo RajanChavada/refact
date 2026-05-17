@@ -98,7 +98,7 @@ impl Tool for ToolMcpCall {
 
         let tool_args = extract_proxy_args(args).unwrap_or_default();
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let mut integration_groups = get_integration_tools(gcx).await;
 
         // Move the tool out of the groups so it can be awaited safely.
@@ -141,7 +141,7 @@ impl Tool for ToolMcpCall {
 
         let tool_args = extract_proxy_args(args)?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let mut integration_groups = get_integration_tools(gcx).await;
 
         // Find the named MCP tool and extract it (needs &mut self for tool_execute).

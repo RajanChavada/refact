@@ -53,7 +53,7 @@ async fn execute_att_search(
     let (gcx, execution_scope) = {
         let ccx_locked = ccx.lock().await;
         (
-            ccx_locked.global_context.clone(),
+            ccx_locked.app.gcx.clone(),
             ccx_locked.execution_scope.clone(),
         )
     };
@@ -168,7 +168,7 @@ impl Tool for ToolSearch {
             // Optional: include small previews in the tool text output.
             // This is intentionally best-effort and bounded.
             if context_lines > 0 {
-                let gcx = ccx.lock().await.global_context.clone();
+                let gcx = ccx.lock().await.app.gcx.clone();
                 let mut files_sorted: Vec<String> = file_results_to_reqs.keys().cloned().collect();
                 files_sorted.sort();
                 for file in files_sorted.iter().take(max_files) {
@@ -258,7 +258,7 @@ impl Tool for ToolSearch {
         // Append related memories (short form) based on involved file paths.
         // This does not require VecDB and is <50ms (in-memory index).
         let related_section = {
-            let gcx = ccx.lock().await.global_context.clone();
+            let gcx = ccx.lock().await.app.gcx.clone();
             let idx_arc = { gcx.read().await.knowledge_index.clone() };
             let idx_guard = idx_arc.lock().await;
             let mut files: Vec<String> = all_context_files

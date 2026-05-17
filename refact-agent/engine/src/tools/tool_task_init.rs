@@ -32,7 +32,7 @@ impl Tool for ToolTaskInit {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'name' argument")?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let meta = storage::create_task(gcx, name).await?;
 
         let result = format!(

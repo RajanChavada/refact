@@ -184,7 +184,7 @@ impl Tool for ToolWorktreeMerge {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let (gcx, active_worktree) = {
             let ccx = ccx.lock().await;
-            (ccx.global_context.clone(), ccx.execution_scope_worktree())
+            (ccx.app.gcx.clone(), ccx.execution_scope_worktree())
         };
 
         let worktree_id = string_arg(args, "worktree_id")

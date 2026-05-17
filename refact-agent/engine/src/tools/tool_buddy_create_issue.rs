@@ -135,7 +135,7 @@ impl Tool for ToolBuddyCreateIssue {
             })
             .unwrap_or_else(|| vec!["bug".to_string(), "buddy".to_string()]);
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
 
         let has_mcp = crate::buddy::issues::has_github_mcp(app.clone()).await;

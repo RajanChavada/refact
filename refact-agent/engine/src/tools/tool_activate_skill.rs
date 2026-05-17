@@ -107,7 +107,7 @@ impl Tool for ToolActivateSkill {
         let (gcx, chat_id) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.chat_id.clone(),
             )
         };
@@ -230,7 +230,7 @@ impl Tool for ToolDeactivateSkill {
         let (gcx, chat_id) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.chat_id.clone(),
             )
         };

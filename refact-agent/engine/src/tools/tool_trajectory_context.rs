@@ -106,7 +106,7 @@ impl Tool for ToolTrajectoryContext {
             _ => 3,
         };
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let project_dirs = get_project_dirs(gcx.clone()).await;
         let traj_path = project_dirs.iter()
             .map(|dir| dir.join(".refact/trajectories").join(format!("{}.json", trajectory_id)))

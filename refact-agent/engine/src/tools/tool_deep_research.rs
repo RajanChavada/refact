@@ -183,7 +183,7 @@ impl Tool for ToolDeepResearch {
 
         let (gcx, subchat_tx) = {
             let ccx_lock = ccx.lock().await;
-            (ccx_lock.global_context.clone(), ccx_lock.subchat_tx.clone())
+            (ccx_lock.app.gcx.clone(), ccx_lock.subchat_tx.clone())
         };
 
         let (abort_flag, parent_depth, parent_task_meta, parent_worktree) = {
@@ -249,7 +249,7 @@ impl Tool for ToolDeepResearch {
             }
         };
         let related_memories_note = {
-            let gcx = ccx.lock().await.global_context.clone();
+            let gcx = ccx.lock().await.app.gcx.clone();
             let gcx_read = gcx.read().await;
             let idx_guard = gcx_read.knowledge_index.lock().await;
             let cards = idx_guard.related_for_tags(

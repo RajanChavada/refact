@@ -293,7 +293,7 @@ impl Tool for ToolStrategicPlanning {
         tool_call_id: &String,
         _args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let config = load_code_subagent_config(gcx.clone(), "strategic_planning", None).await?;
         let guardrails_prompt = config

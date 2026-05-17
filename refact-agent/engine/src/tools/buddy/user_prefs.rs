@@ -410,7 +410,7 @@ impl Tool for ToolBuddyUserPrefList {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let prefs = read_profile(&profile_path(gcx).await?).await?;
         Ok(result(
             tool_call_id,
@@ -453,7 +453,7 @@ impl Tool for ToolBuddyUserPrefUpsert {
         let statement = limited_text_arg(args, "statement", 240)?;
         let evidence = limited_text_arg(args, "evidence", 240)?;
         let confidence = confidence_arg(args)?;
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
         let (slug, created, updates) = upsert_user_pref_at(
             &profile_path(gcx).await?,
@@ -501,7 +501,7 @@ impl Tool for ToolBuddyUserPrefRemove {
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let substring = required_string_arg(args, "substring_match")?;
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let removed = remove_user_prefs(&profile_path(gcx).await?, substring).await?;
         Ok(result(
             tool_call_id,

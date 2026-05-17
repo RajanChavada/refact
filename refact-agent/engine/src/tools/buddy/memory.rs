@@ -578,7 +578,7 @@ impl Tool for ToolBuddyMemorySearch {
             .transpose()?;
         let tags = normalize_tags(&optional_string_array_arg(args, "tags")?);
         let limit = limit_arg(args)?;
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let mut cards = all_index_cards(gcx).await;
         cards.retain(|card| card_matches(card, kind.as_deref(), &tags));
         cards.sort_by(|a, b| {
@@ -629,7 +629,7 @@ impl Tool for ToolBuddyMemoryCreate {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let outcome = create_memory(
             gcx,
             string_arg(args, "title")?,
@@ -691,7 +691,7 @@ impl Tool for ToolBuddyMemoryArchive {
         if reason.chars().count() > 240 {
             return Err("argument `reason` must be at most 240 chars".to_string());
         }
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
         let path = resolve_memory_path(gcx.clone(), string_arg(args, "path")?).await?;
         let superseded_by = optional_string_arg(args, "superseded_by");
@@ -753,7 +753,7 @@ impl Tool for ToolBuddyMemoryRetag {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let path = resolve_memory_path(gcx.clone(), string_arg(args, "path")?).await?;
         let path = checked_existing_memory_path(gcx.clone(), &path).await?;
         let tags = tags_with_buddy(string_array_arg(args, "new_tags")?);
@@ -821,7 +821,7 @@ impl Tool for ToolBuddyMemoryMerge {
         if superseded.is_empty() {
             return Err("argument `superseded_paths` must be non-empty".to_string());
         }
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
         let source_id = hash_parts(&[
             string_arg(args, "canonical_title")?,
@@ -1033,7 +1033,7 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(files, 1);
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let cards = gcx.read().await.knowledge_index.lock().await.all_cards();
         assert!(cards.iter().any(|card| card.title == "Create Test"));
         let state = load_memory_ops(dir.path()).await;

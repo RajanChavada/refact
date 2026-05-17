@@ -277,7 +277,7 @@ impl Tool for ToolTaskMergeAgent {
             ));
         }
 
-        let gcx = ccx_lock.global_context.clone();
+        let gcx = ccx_lock.app.gcx.clone();
         drop(ccx_lock);
 
         let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;

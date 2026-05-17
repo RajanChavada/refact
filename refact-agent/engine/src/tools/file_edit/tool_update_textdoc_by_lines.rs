@@ -87,7 +87,7 @@ impl Tool for ToolUpdateTextDocByLines {
         let (gcx, execution_scope) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.execution_scope.clone(),
             )
         };
@@ -151,7 +151,7 @@ impl Tool for ToolUpdateTextDocByLines {
         let (gcx, execution_scope, msgs_len) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.execution_scope.clone(),
                 ccx_locked.messages.len(),
             )

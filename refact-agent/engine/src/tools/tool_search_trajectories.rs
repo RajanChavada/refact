@@ -40,7 +40,7 @@ impl Tool for ToolSearchTrajectories {
         tool_call_id: &String,
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let query = match args.get("query") {
             Some(Value::String(s)) => s.clone(),

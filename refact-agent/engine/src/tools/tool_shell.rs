@@ -154,7 +154,7 @@ impl Tool for ToolShell {
         let (gcx, subchat_tx, abort_flag, execution_scope) = {
             let ccx_lock = ccx.lock().await;
             (
-                ccx_lock.global_context.clone(),
+                ccx_lock.app.gcx.clone(),
                 ccx_lock.subchat_tx.clone(),
                 ccx_lock.abort_flag.clone(),
                 ccx_lock.execution_scope.clone(),
@@ -255,7 +255,7 @@ impl Tool for ToolShell {
         let (gcx, execution_scope) = {
             let ccx_locked = ccx.lock().await;
             (
-                ccx_locked.global_context.clone(),
+                ccx_locked.app.gcx.clone(),
                 ccx_locked.execution_scope.clone(),
             )
         };

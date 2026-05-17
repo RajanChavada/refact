@@ -78,7 +78,7 @@ impl Tool for ToolTaskMarkCardDone {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'report'")?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let card_title = {
             let card_id_owned = card_id.to_string();
@@ -168,7 +168,7 @@ impl Tool for ToolTaskMarkCardFailed {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'reason'")?;
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
 
         let card_title = {
             let card_id_owned = card_id.to_string();

@@ -195,7 +195,7 @@ impl Tool for ToolSubagent {
         ) = {
             let ccx_lock = ccx.lock().await;
             (
-                ccx_lock.global_context.clone(),
+                ccx_lock.app.gcx.clone(),
                 ccx_lock.chat_id.clone(),
                 ccx_lock.root_chat_id.clone(),
                 ccx_lock.subchat_tx.clone(),
@@ -399,7 +399,7 @@ impl Tool for ToolSubagent {
             files.sort();
             files.dedup();
 
-            let gcx = ccx.lock().await.global_context.clone();
+            let gcx = ccx.lock().await.app.gcx.clone();
             let gcx_read = gcx.read().await;
             let idx_guard = gcx_read.knowledge_index.lock().await;
             let mut cards = idx_guard.related_for_files(&files, 5);

@@ -76,7 +76,7 @@ impl Tool for ToolBuddyOpenView {
             })
             .unwrap_or_default();
 
-        let gcx = ccx.lock().await.global_context.clone();
+        let gcx = ccx.lock().await.app.gcx.clone();
         let buddy_arc = gcx.read().await.buddy.clone();
         let lock = buddy_arc.lock().await;
         let svc = lock
