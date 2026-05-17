@@ -26,6 +26,7 @@ use crate::background_tasks::BackgroundTasksHolder;
 use crate::voice::SharedVoiceService;
 use crate::yaml_configs::customization_registry::RegistryCacheManager;
 use crate::knowledge_index::KnowledgeIndex;
+use refact_context_api::{HttpClientAccess, PathsAccess, ShutdownAccess};
 
 #[derive(Debug, StructOpt, Clone)]
 pub struct CommandLine {
@@ -261,6 +262,28 @@ pub struct GlobalContext {
 }
 
 pub type SharedGlobalContext = Arc<ARwLock<GlobalContext>>; // TODO: remove this type alias, confusing
+
+impl ShutdownAccess for GlobalContext {
+    fn shutdown_flag(&self) -> Arc<AtomicBool> {
+        self.shutdown_flag.clone()
+    }
+}
+
+impl PathsAccess for GlobalContext {
+    fn cache_dir(&self) -> PathBuf {
+        self.cache_dir.clone()
+    }
+
+    fn config_dir(&self) -> PathBuf {
+        self.config_dir.clone()
+    }
+}
+
+impl HttpClientAccess for GlobalContext {
+    fn http_client(&self) -> reqwest::Client {
+        self.http_client.clone()
+    }
+}
 
 const CAPS_RELOAD_BACKOFF: u64 = 60; // seconds
 const CAPS_BACKGROUND_RELOAD: u64 = 3600; // seconds
