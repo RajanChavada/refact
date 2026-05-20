@@ -29,6 +29,7 @@ members = [
     "crates/refact-caps-core",
     "crates/refact-voice",
     "crates/refact-context-api",
+    "crates/refact-runtime-api",
 ]
 resolver = "2"
 
