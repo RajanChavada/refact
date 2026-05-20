@@ -14,8 +14,7 @@ use crate::llm::{LlmRequest, CanonicalToolChoice, CommonParams, ReasoningIntent,
 use crate::llm::params::CacheControl;
 use crate::scratchpad_abstract::HasTokenizerAndEot;
 use crate::scratchpads::scratchpad_utils::HasRagResults;
-use crate::tools::tools_description::ToolDesc;
-use crate::tools::tool_name_alias::build_registry_from_names;
+use refact_tool_api::{build_registry_from_names, ToolDesc};
 use super::tools::execute_tools;
 use super::types::ThreadParams;
 

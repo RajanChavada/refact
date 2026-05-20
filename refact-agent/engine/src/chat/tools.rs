@@ -21,7 +21,7 @@ use crate::yaml_configs::customization_registry::{
 };
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, first_block_reason, get_project_dir_string, run_hooks};
-use crate::tools::tool_name_alias::build_registry_from_names;
+use refact_tool_api::{build_registry_from_names, MatchConfirmDenyResult};
 
 fn make_runtime_event(
     signal_type: &str,
@@ -190,11 +190,12 @@ pub async fn resolve_tool_call_aliases(
     mode_id: &str,
     model_id: Option<&str>,
 ) -> Vec<ChatToolCall> {
-    let raw_tools = crate::tools::tools_list::get_tools_for_mode(app.gcx.clone(), mode_id, model_id).await;
-    let available_tools = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools).tools;
-    let tool_names: Vec<String> = available_tools
-        .iter()
-        .map(|t| t.tool_description().name.clone())
+    let tool_names: Vec<String> = app
+        .tool_registry
+        .get_tools_for_mode(mode_id, model_id)
+        .await
+        .into_iter()
+        .map(|t| t.name)
         .collect();
     let registry = build_registry_from_names(&tool_names);
     let needs_cc = tool_calls.iter().any(|tc| {
@@ -610,7 +611,7 @@ mod tests {
     #[test]
     fn test_autonomous_allowlist_rejects_unlisted_tool() {
         let result = compute_final_action(
-            &crate::tools::tools_description::MatchConfirmDenyResult::CONFIRMATION,
+            &MatchConfirmDenyResult::CONFIRMATION,
             None,
             false,
             "unsafe_tool",
@@ -640,27 +641,26 @@ mod tests {
 
     #[test]
     fn test_tool_config_default() {
-        let config = crate::tools::tools_description::ToolConfig::default();
+        let config = refact_tool_api::ToolConfig::default();
         assert!(config.enabled);
         assert!(config.allow_parallel.is_none());
     }
 
     #[test]
     fn test_tool_config_serde_roundtrip() {
-        let config = crate::tools::tools_description::ToolConfig {
+        let config = refact_tool_api::ToolConfig {
             enabled: true,
             allow_parallel: Some(false),
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: crate::tools::tools_description::ToolConfig =
-            serde_yaml::from_str(&yaml).unwrap();
+        let parsed: refact_tool_api::ToolConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.enabled, config.enabled);
         assert_eq!(parsed.allow_parallel, config.allow_parallel);
     }
 
     #[test]
     fn test_tool_config_serde_skip_none() {
-        let config = crate::tools::tools_description::ToolConfig {
+        let config = refact_tool_api::ToolConfig {
             enabled: true,
             allow_parallel: None,
         };
@@ -670,7 +670,6 @@ mod tests {
 
     #[test]
     fn test_tool_desc_default_allow_parallel() {
-        use crate::tools::tools_description::ToolDesc;
         let yaml = r#"
 name: test_tool
 description: A test tool
@@ -683,7 +682,7 @@ source:
   source_type: builtin
   config_path: ""
 "#;
-        let desc: ToolDesc = serde_yaml::from_str(yaml).unwrap();
+        let desc: refact_tool_api::ToolDesc = serde_yaml::from_str(yaml).unwrap();
         assert!(!desc.allow_parallel);
     }
 
@@ -840,7 +839,6 @@ source:
 
     #[test]
     fn test_allowed_tool_still_denied_if_tool_says_deny() {
-        use crate::tools::tools_description::MatchConfirmDenyResult;
         assert_eq!(
             compute_final_action(&MatchConfirmDenyResult::DENY, None, true, "shell"),
             "deny"
@@ -857,7 +855,6 @@ source:
 
     #[test]
     fn test_allowed_tool_auto_approves_confirmation() {
-        use crate::tools::tools_description::MatchConfirmDenyResult;
         assert_eq!(
             compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, None, true, "shell"),
             "auto"
@@ -875,7 +872,6 @@ source:
 
     #[test]
     fn test_allowed_tool_respects_mode_deny() {
-        use crate::tools::tools_description::MatchConfirmDenyResult;
         assert_eq!(
             compute_final_action(
                 &MatchConfirmDenyResult::CONFIRMATION,
@@ -893,7 +889,6 @@ source:
 
     #[test]
     fn test_empty_allowed_tools_no_change() {
-        use crate::tools::tools_description::MatchConfirmDenyResult;
         assert_eq!(
             compute_final_action(&MatchConfirmDenyResult::CONFIRMATION, None, false, "shell"),
             "ask"
@@ -933,7 +928,6 @@ source:
 
     #[test]
     fn test_always_ask_tools_override_auto() {
-        use crate::tools::tools_description::MatchConfirmDenyResult;
         assert_eq!(
             compute_final_action(
                 &MatchConfirmDenyResult::PASS,
@@ -1400,12 +1394,11 @@ fn format_openai_server_tool_result(tc: &ChatToolCall) -> String {
 }
 
 fn compute_final_action(
-    tool_result: &crate::tools::tools_description::MatchConfirmDenyResult,
+    tool_result: &MatchConfirmDenyResult,
     mode_action: Option<&str>,
     is_auto_approved: bool,
     tool_name: &str,
 ) -> &'static str {
-    use crate::tools::tools_description::MatchConfirmDenyResult;
     const ALWAYS_ASK_TOOLS: &[&str] = &["compress_chat_probe", "compress_chat_apply"];
     if *tool_result == MatchConfirmDenyResult::DENY {
         return "deny";
@@ -1442,8 +1435,6 @@ pub async fn check_tools_confirmation(
     allowed_tools: &[String],
     _source_command: &str,
 ) -> (Vec<PauseReason>, Vec<PauseReason>) {
-    use crate::tools::tools_description::MatchConfirmDenyResult;
-
     let mut confirmations = Vec::new();
     let mut denials = Vec::new();
 
@@ -1470,38 +1461,7 @@ pub async fn check_tools_confirmation(
         .map(|m| m.tool_confirm.rules.as_slice())
         .unwrap_or(&[]);
 
-    let needed_names: std::collections::HashSet<&str> = tool_calls
-        .iter()
-        .map(|tc| tc.function.name.as_str())
-        .collect();
-
-    let all_tools = crate::tools::tools_list::apply_mcp_lazy_filter(
-        crate::tools::tools_list::get_tools_for_mode(app.gcx.clone(), mode_id, model_id).await,
-    )
-    .tools
-    .into_iter()
-    .filter_map(|tool| {
-        let spec = tool.tool_description();
-        if needed_names.contains(spec.name.as_str()) {
-            Some((spec.name, tool))
-        } else {
-            None
-        }
-    })
-    .collect::<indexmap::IndexMap<_, _>>();
-
     for tool_call in tool_calls {
-        let tool = match all_tools.get(&tool_call.function.name) {
-            Some(t) => t,
-            None => {
-                info!(
-                    "Unknown tool: {}, skipping confirmation check",
-                    tool_call.function.name
-                );
-                continue;
-            }
-        };
-
         if thread.autonomous_no_confirm && !allowed_tools.is_empty() {
             let resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(
                 &tool_call.function.name,
@@ -1519,41 +1479,52 @@ pub async fn check_tools_confirmation(
                         tool_call.function.name
                     ),
                     tool_call_id: tool_call.id.clone(),
-                    integr_config_path: tool.has_config_path(),
+                    integr_config_path: None,
                 });
                 continue;
             }
         }
 
-        let args: std::collections::HashMap<String, serde_json::Value> =
-            match tool_call.function.parse_args() {
-                Ok(a) => a,
-                Err(e) => {
-                    denials.push(PauseReason {
-                        reason_type: "denial".to_string(),
-                        tool_name: tool_call.function.name.clone(),
-                        command: tool_call.function.name.clone(),
-                        rule: format!("Failed to parse arguments: {}", e),
-                        tool_call_id: tool_call.id.clone(),
-                        integr_config_path: tool.has_config_path(),
-                    });
-                    continue;
-                }
-            };
+        let args = match tool_call.function.parse_args() {
+            Ok(a) => serde_json::Map::from_iter(a.into_iter()),
+            Err(e) => {
+                denials.push(PauseReason {
+                    reason_type: "denial".to_string(),
+                    tool_name: tool_call.function.name.clone(),
+                    command: tool_call.function.name.clone(),
+                    rule: format!("Failed to parse arguments: {}", e),
+                    tool_call_id: tool_call.id.clone(),
+                    integr_config_path: None,
+                });
+                continue;
+            }
+        };
 
-        let tool_result = tool.match_against_confirm_deny(ccx.clone(), &args).await;
+        let Some(tool_result) = app
+            .tool_registry
+            .check_tool_confirmation(&ccx, mode_id, model_id, &tool_call.function.name, args)
+            .await
+        else {
+            info!(
+                "Unknown tool: {}, skipping confirmation check",
+                tool_call.function.name
+            );
+            continue;
+        };
         let mode_action = match_tool_confirm_action(tool_confirm_rules, &tool_call.function.name);
 
         match tool_result {
             Ok(result) => {
-                if result.result == MatchConfirmDenyResult::DENY {
+                let integr_config_path = result.integr_config_path.clone();
+                let resolved_tool_name = result.tool_name.clone();
+                if result.result.result == MatchConfirmDenyResult::DENY {
                     denials.push(PauseReason {
                         reason_type: "denial".to_string(),
                         tool_name: tool_call.function.name.clone(),
-                        command: result.command,
-                        rule: result.rule,
+                        command: result.result.command,
+                        rule: result.result.rule,
                         tool_call_id: tool_call.id.clone(),
-                        integr_config_path: tool.has_config_path(),
+                        integr_config_path,
                     });
                     continue;
                 }
@@ -1561,9 +1532,10 @@ pub async fn check_tools_confirmation(
                 let is_auto_approved =
                     should_auto_approve_confirmation(thread, &tool_call.function.name)
                         || (!allowed_tools.is_empty()
-                            && allowed_tools.contains(&tool_call.function.name));
+                            && (allowed_tools.contains(&tool_call.function.name)
+                                || allowed_tools.contains(&resolved_tool_name)));
                 let final_action = compute_final_action(
-                    &result.result,
+                    &result.result.result,
                     mode_action.as_deref(),
                     is_auto_approved,
                     &tool_call.function.name,
@@ -1571,7 +1543,7 @@ pub async fn check_tools_confirmation(
 
                 let rule_text = match mode_action.as_deref() {
                     Some(action) => format!("mode policy: {}", action),
-                    None => result.rule.clone(),
+                    None => result.result.rule.clone(),
                 };
 
                 match final_action {
@@ -1579,20 +1551,20 @@ pub async fn check_tools_confirmation(
                         denials.push(PauseReason {
                             reason_type: "denial".to_string(),
                             tool_name: tool_call.function.name.clone(),
-                            command: result.command,
+                            command: result.result.command,
                             rule: rule_text,
                             tool_call_id: tool_call.id.clone(),
-                            integr_config_path: tool.has_config_path(),
+                            integr_config_path: integr_config_path.clone(),
                         });
                     }
                     "ask" => {
                         confirmations.push(PauseReason {
                             reason_type: "confirmation".to_string(),
                             tool_name: tool_call.function.name.clone(),
-                            command: result.command,
+                            command: result.result.command,
                             rule: rule_text,
                             tool_call_id: tool_call.id.clone(),
-                            integr_config_path: tool.has_config_path(),
+                            integr_config_path: integr_config_path.clone(),
                         });
                     }
                     _ => {}
@@ -1605,7 +1577,7 @@ pub async fn check_tools_confirmation(
                     command: tool_call.function.name.clone(),
                     rule: format!("confirmation check failed: {}", e),
                     tool_call_id: tool_call.id.clone(),
-                    integr_config_path: tool.has_config_path(),
+                    integr_config_path: None,
                 });
             }
         }
@@ -1727,30 +1699,7 @@ async fn wait_for_tool_abort(session_arc: Arc<AMutex<ChatSession>>, abort_flag: 
     }
 }
 
-type SerialToolRegistry = std::collections::HashMap<
-    String,
-    Arc<AMutex<Box<dyn crate::tools::tools_description::Tool + Send>>>,
->;
-
-async fn instantiate_tool_for_call(
-    app: AppState,
-    mode_id: &str,
-    model_id: Option<&str>,
-    tool_name: &str,
-) -> Option<Box<dyn crate::tools::tools_description::Tool + Send>> {
-    let raw_tools = crate::tools::tools_list::get_tools_for_mode(app.gcx.clone(), mode_id, model_id).await;
-    let tools = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools).tools;
-    // Resolve CC-mode name (strips mcp_ prefix + reverses CC_TOOL_RENAMES) so that
-    // "mcp_plan" dispatches to "strategic_planning", "mcp_cat" dispatches to "cat", etc.
-    let resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(tool_name);
-    for tool in tools {
-        let name = tool.tool_description().name;
-        if name == tool_name || name == resolved.as_str() {
-            return Some(tool);
-        }
-    }
-    None
-}
+type SerialToolRegistry = std::collections::HashSet<String>;
 
 async fn execute_single_tool(
     app: AppState,
@@ -1800,145 +1749,89 @@ async fn execute_single_tool(
         (sid, pd)
     };
 
-    let (idx, had_corrections, msgs, files) = if allow_parallel {
-        let mut tool = match instantiate_tool_for_call(
-            app.clone(),
-            mode_id,
-            model_id,
-            &tool_call.function.name,
-        )
-        .await
-        {
-            Some(t) => t,
-            None => {
-                return (
-                    idx,
-                    true,
-                    vec![ChatMessage {
-                        message_id: Uuid::new_v4().to_string(),
-                        role: "tool".to_string(),
-                        content: ChatContent::SimpleText(format!(
-                            "Error: tool '{}' not found",
-                            tool_call.function.name
-                        )),
-                        tool_call_id: tool_call.id.clone(),
-                        tool_failed: Some(true),
-                        ..Default::default()
-                    }],
-                    vec![],
-                );
-            }
-        };
-
-        match tool.tool_execute(ccx, &tool_call.id, &args).await {
-            Ok((had_corrections, results)) => {
-                let mut msgs = Vec::new();
-                let mut files = Vec::new();
-                for result in results {
-                    match result {
-                        crate::call_validation::ContextEnum::ChatMessage(mut msg) => {
-                            if msg.message_id.is_empty() {
-                                msg.message_id = Uuid::new_v4().to_string();
-                            }
-                            if msg.tool_failed.is_none() {
-                                msg.tool_failed = Some(false);
-                            }
-                            msgs.push(msg);
-                        }
-                        crate::call_validation::ContextEnum::ContextFile(cf) => {
-                            files.push(cf);
-                        }
-                    }
-                }
-                (idx, had_corrections, msgs, files)
-            }
-            Err(e) => {
-                info!("Tool execution failed: {}: {}", tool_call.function.name, e);
-                (
-                    idx,
-                    true,
-                    vec![ChatMessage {
-                        message_id: Uuid::new_v4().to_string(),
-                        role: "tool".to_string(),
-                        content: ChatContent::SimpleText(format!("Error: {}", e)),
-                        tool_call_id: tool_call.id.clone(),
-                        tool_failed: Some(true),
-                        ..Default::default()
-                    }],
-                    vec![],
-                )
-            }
-        }
-    } else {
+    if !allow_parallel {
         let resolved_name = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(
             &tool_call.function.name,
         );
-        let tool_arc = match serial_registry
-            .get(&tool_call.function.name)
-            .or_else(|| serial_registry.get(resolved_name.as_str()))
+        if !serial_registry.contains(&tool_call.function.name)
+            && !serial_registry.contains(resolved_name.as_str())
         {
-            Some(t) => t.clone(),
-            None => {
-                return (
-                    idx,
-                    true,
-                    vec![ChatMessage {
-                        message_id: Uuid::new_v4().to_string(),
-                        role: "tool".to_string(),
-                        content: ChatContent::SimpleText(format!(
-                            "Error: tool '{}' not found",
-                            tool_call.function.name
-                        )),
-                        tool_call_id: tool_call.id.clone(),
-                        tool_failed: Some(true),
-                        ..Default::default()
-                    }],
-                    vec![],
-                );
-            }
-        };
+            return (
+                idx,
+                true,
+                vec![ChatMessage {
+                    message_id: Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: ChatContent::SimpleText(format!(
+                        "Error: tool '{}' not found",
+                        tool_call.function.name
+                    )),
+                    tool_call_id: tool_call.id.clone(),
+                    tool_failed: Some(true),
+                    ..Default::default()
+                }],
+                vec![],
+            );
+        }
+    }
 
-        let mut tool = tool_arc.lock().await;
-        match tool.tool_execute(ccx, &tool_call.id, &args).await {
-            Ok((had_corrections, results)) => {
-                let mut msgs = Vec::new();
-                let mut files = Vec::new();
-                for result in results {
-                    match result {
-                        crate::call_validation::ContextEnum::ChatMessage(mut msg) => {
-                            if msg.message_id.is_empty() {
-                                msg.message_id = Uuid::new_v4().to_string();
-                            }
-                            if msg.tool_failed.is_none() {
-                                msg.tool_failed = Some(false);
-                            }
-                            msgs.push(msg);
-                        }
-                        crate::call_validation::ContextEnum::ContextFile(cf) => {
-                            files.push(cf);
-                        }
-                    }
-                }
-                (idx, had_corrections, msgs, files)
-            }
-            Err(e) => {
-                info!("Tool execution failed: {}: {}", tool_call.function.name, e);
-                (
-                    idx,
-                    true,
-                    vec![ChatMessage {
-                        message_id: Uuid::new_v4().to_string(),
-                        role: "tool".to_string(),
-                        content: ChatContent::SimpleText(format!("Error: {}", e)),
-                        tool_call_id: tool_call.id.clone(),
-                        tool_failed: Some(true),
-                        ..Default::default()
-                    }],
-                    vec![],
-                )
-            }
+    let (idx, had_corrections, mut msgs, files) = match app
+        .tool_registry
+        .execute_tool(
+            &ccx,
+            mode_id,
+            model_id,
+            &tool_call.id,
+            &tool_call.function.name,
+            serde_json::Map::from_iter(args.into_iter()),
+        )
+        .await
+    {
+        Ok(Some(result)) => (idx, result.had_corrections, result.messages, result.context_files),
+        Ok(None) => {
+            return (
+                idx,
+                true,
+                vec![ChatMessage {
+                    message_id: Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: ChatContent::SimpleText(format!(
+                        "Error: tool '{}' not found",
+                        tool_call.function.name
+                    )),
+                    tool_call_id: tool_call.id.clone(),
+                    tool_failed: Some(true),
+                    ..Default::default()
+                }],
+                vec![],
+            );
+        }
+        Err(e) => {
+            info!("Tool execution failed: {}: {}", tool_call.function.name, e);
+            return (
+                idx,
+                true,
+                vec![ChatMessage {
+                    message_id: Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: ChatContent::SimpleText(format!("Error: {}", e)),
+                    tool_call_id: tool_call.id.clone(),
+                    tool_failed: Some(true),
+                    ..Default::default()
+                }],
+                vec![],
+            );
         }
     };
+
+    for msg in &mut msgs {
+        if msg.message_id.is_empty() {
+            msg.message_id = Uuid::new_v4().to_string();
+        }
+        if msg.tool_failed.is_none() {
+            msg.tool_failed = Some(false);
+        }
+    }
 
     let tool_output_text = msgs
         .iter()
@@ -1994,38 +1887,24 @@ async fn execute_tools_inner(
 ) -> (Vec<ChatMessage>, bool) {
     let max_parallel = limits().max_parallel_tools.max(1);
 
-    let raw_available_tools =
-        crate::tools::tools_list::get_tools_for_mode(app.gcx.clone(), mode_id, model_id).await;
-    let available_tools =
-        crate::tools::tools_list::apply_mcp_lazy_filter(raw_available_tools).tools;
+    let available_tools = app
+        .tool_registry
+        .get_tool_policy_info(mode_id, model_id)
+        .await;
 
     let mut tool_allow_parallel: std::collections::HashMap<String, bool> =
         std::collections::HashMap::new();
-    let mut serial_registry: SerialToolRegistry = std::collections::HashMap::new();
+    let mut serial_registry = SerialToolRegistry::new();
 
     for tool in available_tools {
-        let desc = tool.tool_description();
-        // Only check config if config_path is non-empty (avoid unnecessary I/O)
-        let config_override = if !desc.source.config_path.is_empty() {
-            tool.config().ok().and_then(|c| c.allow_parallel)
-        } else {
-            None
-        };
-        // Security: YAML can only DISABLE parallelism, not enable it for tools that declared false
-        // This prevents users from accidentally enabling parallel execution for unsafe tools
-        let effective = if desc.allow_parallel {
-            config_override.unwrap_or(true)
-        } else {
-            false // ignore override-to-true for safety
-        };
-        tool_allow_parallel.insert(desc.name.clone(), effective);
+        tool_allow_parallel.insert(tool.name.clone(), tool.effective_allow_parallel);
 
         // Parallel tools are instantiated per call (no shared mutex).
         // Sequential tools are cached and protected by a single mutex.
-        if effective {
+        if tool.effective_allow_parallel {
             continue;
         }
-        serial_registry.insert(desc.name, Arc::new(AMutex::new(tool)));
+        serial_registry.insert(tool.name);
     }
 
     let serial_registry = Arc::new(serial_registry);

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use refact_core::buddy_meta::BuddyThreadMeta;
-pub use refact_core::chat_types::ChatMessage;
+pub use refact_core::chat_types::{ChatMessage, ContextFile};
 pub use refact_core::worktree_meta::WorktreeMeta;
 
 fn default_true() -> bool {

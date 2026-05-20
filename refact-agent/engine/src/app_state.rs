@@ -9,7 +9,10 @@ use refact_buddy_core::snapshot::BuddySnapshot;
 use refact_buddy_core::types::{BuddyRuntimeEvent, BuddySuggestion};
 use refact_buddy_core::user_action::UserAction;
 use refact_chat_api::ChatMessage;
-use refact_runtime_api::{ActivitySink, BuddyEventSink};
+use refact_runtime_api::{
+    ActivitySink, BuddyEventSink, ToolConfirmationCheck, ToolExecutionResult, ToolPolicyInfo,
+    ToolRegistry, ToolRegistryIndex,
+};
 use tokenizers::Tokenizer;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, Semaphore};
 
@@ -248,6 +251,7 @@ pub struct AppState {
     pub integrations: IntegrationServices,
     pub activity_sink: Arc<dyn ActivitySink>,
     pub buddy_event_sink: Arc<dyn BuddyEventSink>,
+    pub tool_registry: Arc<dyn ToolRegistry>,
 }
 
 pub struct AppActivitySink {
@@ -266,6 +270,157 @@ impl ActivitySink for AppActivitySink {
         if let Ok(mut ring) = self.user_activity.try_lock() {
             ring.push(action);
         }
+    }
+}
+
+pub struct AppToolRegistry {
+    gcx: SharedGlobalContext,
+}
+
+impl AppToolRegistry {
+    pub fn new(gcx: SharedGlobalContext) -> Self {
+        Self { gcx }
+    }
+}
+
+#[async_trait]
+impl ToolRegistry for AppToolRegistry {
+    async fn get_tools_for_mode(&self, mode: &str, model_id: Option<&str>) -> Vec<refact_tool_api::ToolDesc> {
+        crate::tools::tools_list::apply_mcp_lazy_filter(
+            crate::tools::tools_list::get_tools_for_mode(self.gcx.clone(), mode, model_id).await,
+        )
+        .tools
+        .into_iter()
+        .map(|tool| tool.tool_description())
+        .collect()
+    }
+
+    async fn get_tools_index_for_mode(&self, mode: &str, model_id: Option<&str>) -> ToolRegistryIndex {
+        let tools = crate::tools::tools_list::apply_mcp_lazy_filter(
+            crate::tools::tools_list::get_tools_for_mode(self.gcx.clone(), mode, model_id).await,
+        );
+        ToolRegistryIndex {
+            tools: tools
+                .tools
+                .into_iter()
+                .map(|tool| tool.tool_description())
+                .collect(),
+            mcp_lazy_mode: tools.mcp_lazy_mode,
+            mcp_total_count: tools.mcp_total_count,
+            mcp_tool_index: tools.mcp_tool_index,
+        }
+    }
+
+    async fn check_tool_confirmation(
+        &self,
+        ccx: &(dyn std::any::Any + Send + Sync),
+        mode: &str,
+        model_id: Option<&str>,
+        tool_name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Result<ToolConfirmationCheck, String>> {
+        let ccx = match ccx
+            .downcast_ref::<Arc<AMutex<crate::at_commands::at_commands::AtCommandsContext>>>()
+        {
+            Some(ccx) => ccx.clone(),
+            None => return Some(Err("invalid AtCommandsContext passed to ToolRegistry".to_string())),
+        };
+        let args: HashMap<String, serde_json::Value> = args.into_iter().collect();
+        let raw_tools = crate::tools::tools_list::get_tools_for_mode(self.gcx.clone(), mode, model_id).await;
+        let tools = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools).tools;
+        let resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(tool_name);
+        for tool in tools {
+            let desc = tool.tool_description();
+            if desc.name == tool_name || desc.name == resolved.as_str() {
+                let integr_config_path = tool.has_config_path();
+                return Some(
+                    tool.match_against_confirm_deny(ccx, &args)
+                        .await
+                        .map(|result| ToolConfirmationCheck {
+                            tool_name: desc.name,
+                            result,
+                            integr_config_path,
+                        }),
+                );
+            }
+        }
+        None
+    }
+
+    async fn get_tool_policy_info(&self, mode: &str, model_id: Option<&str>) -> Vec<ToolPolicyInfo> {
+        let raw_tools = crate::tools::tools_list::get_tools_for_mode(self.gcx.clone(), mode, model_id).await;
+        crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools)
+            .tools
+            .into_iter()
+            .map(|tool| {
+                let desc = tool.tool_description();
+                let config_override = if !desc.source.config_path.is_empty() {
+                    tool.config().ok().and_then(|c| c.allow_parallel)
+                } else {
+                    None
+                };
+                let effective_allow_parallel = if desc.allow_parallel {
+                    config_override.unwrap_or(true)
+                } else {
+                    false
+                };
+                ToolPolicyInfo {
+                    name: desc.name,
+                    effective_allow_parallel,
+                }
+            })
+            .collect()
+    }
+
+    async fn execute_tool(
+        &self,
+        ccx: &(dyn std::any::Any + Send + Sync),
+        mode: &str,
+        model_id: Option<&str>,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<ToolExecutionResult>, String> {
+        let ccx = ccx
+            .downcast_ref::<Arc<AMutex<crate::at_commands::at_commands::AtCommandsContext>>>()
+            .ok_or_else(|| "invalid AtCommandsContext passed to ToolRegistry".to_string())?
+            .clone();
+        let gcx = {
+            let cgcx = ccx.lock().await;
+            cgcx.app.gcx.clone()
+        };
+        let raw_tools = crate::tools::tools_list::get_tools_for_mode(gcx.clone(), mode, model_id).await;
+        let tools = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools).tools;
+        let resolved = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(tool_name);
+        let args: HashMap<String, serde_json::Value> = args.into_iter().collect();
+        for mut tool in tools {
+            let name = tool.tool_description().name;
+            if name == tool_name || name == resolved.as_str() {
+                {
+                    let mut cgcx = ccx.lock().await;
+                    cgcx.app = AppState::from_gcx(gcx.clone()).await;
+                }
+                let result = tool.tool_execute(ccx, &tool_call_id.to_string(), &args).await?;
+                let mut messages = Vec::new();
+                let mut context_files = Vec::new();
+                for item in result.1 {
+                    match item {
+                        crate::call_validation::ContextEnum::ChatMessage(message) => messages.push(message),
+                        crate::call_validation::ContextEnum::ContextFile(file) => context_files.push(file),
+                    }
+                }
+                return Ok(Some(ToolExecutionResult {
+                    had_corrections: result.0,
+                    messages,
+                    context_files,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn load_task_memories(&self, task_id: &str) -> Result<Vec<(PathBuf, String)>, String> {
+        crate::tools::tool_task_memory::load_task_memories(self.gcx.clone(), task_id).await
     }
 }
 

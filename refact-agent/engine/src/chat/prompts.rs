@@ -18,7 +18,6 @@ use crate::ext::skills_context::{
 use crate::yaml_configs::project_information::load_project_information_config;
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile, canonical_mode_id};
 use crate::tasks::storage::infer_task_id_from_chat_id;
-use crate::tools::tool_task_memory::load_task_memories;
 use crate::yaml_configs::customization_registry::{get_mode_config, map_legacy_mode_to_id};
 
 const BUDDY_PERSONALITY_MARKER: &str = "%BUDDY_PERSONALITY%";
@@ -940,7 +939,7 @@ pub async fn inject_task_memories(
         None => return Ok(()),
     };
 
-    let memories = load_task_memories(app.gcx.clone(), &task_id).await?;
+    let memories = app.tool_registry.load_task_memories(&task_id).await?;
     if memories.is_empty() {
         return Ok(());
     }

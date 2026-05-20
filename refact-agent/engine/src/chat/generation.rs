@@ -221,13 +221,10 @@ pub async fn prepare_session_preamble_and_knowledge(
             }
         };
 
-        let raw_tools = crate::tools::tools_list::get_tools_for_mode(
-            gcx.clone(),
-            &thread.mode,
-            Some(&model_rec.base.id),
-        )
-        .await;
-        let tools_for_mode = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools);
+        let tools_for_mode = app
+            .tool_registry
+            .get_tools_index_for_mode(&thread.mode, Some(&model_rec.base.id))
+            .await;
         if tools_for_mode.mcp_lazy_mode {
             mcp_for_index = Some((
                 tools_for_mode.mcp_tool_index.clone(),
@@ -237,7 +234,7 @@ pub async fn prepare_session_preamble_and_knowledge(
         let tool_names: std::collections::HashSet<String> = tools_for_mode
             .tools
             .iter()
-            .map(|t| t.tool_description().name.clone())
+            .map(|t| t.name.clone())
             .collect();
 
         let meta = ChatMeta {
@@ -907,19 +904,12 @@ pub async fn run_llm_generation(
         .map_err(|e| e.message)?;
     let model_rec = crate::caps::resolve_chat_model(caps.clone(), &thread.model)?;
 
-    let raw_tools_for_gen = crate::tools::tools_list::get_tools_for_mode(
-        gcx.clone(),
-        &thread.mode,
-        Some(&model_rec.base.id),
-    )
-    .await;
-    let tools_for_gen = crate::tools::tools_list::apply_mcp_lazy_filter(raw_tools_for_gen);
+    let tools_for_gen = app
+        .tool_registry
+        .get_tools_index_for_mode(&thread.mode, Some(&model_rec.base.id))
+        .await;
     let mcp_lazy_active = tools_for_gen.mcp_lazy_mode;
-    let tools: Vec<crate::tools::tools_description::ToolDesc> = tools_for_gen
-        .tools
-        .into_iter()
-        .map(|tool| tool.tool_description())
-        .collect();
+    let tools = tools_for_gen.tools;
 
     info!(
         "session generation: model={}, tools count = {} (mcp_lazy={})",

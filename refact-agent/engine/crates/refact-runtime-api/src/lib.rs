@@ -1,8 +1,10 @@
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use refact_buddy_core::snapshot::BuddySnapshot;
 use refact_buddy_core::types::{BuddyRuntimeEvent, BuddySuggestion};
 use refact_buddy_core::user_action::UserAction;
-use refact_chat_api::{ChatCommand, ChatMessage, ThreadParams};
+use refact_chat_api::{ChatCommand, ChatMessage, ContextFile, ThreadParams};
 use refact_chat_history::trajectory_snapshot::TrajectorySnapshot;
 use refact_tool_api::ToolDesc;
 
@@ -35,9 +37,57 @@ pub trait BuddyEventSink: Send + Sync {
     ) -> Option<(String, Option<String>)>;
 }
 
+#[derive(Clone)]
+pub struct ToolRegistryIndex {
+    pub tools: Vec<ToolDesc>,
+    pub mcp_lazy_mode: bool,
+    pub mcp_total_count: usize,
+    pub mcp_tool_index: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+pub struct ToolConfirmationCheck {
+    pub tool_name: String,
+    pub result: refact_tool_api::MatchConfirmDeny,
+    pub integr_config_path: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ToolPolicyInfo {
+    pub name: String,
+    pub effective_allow_parallel: bool,
+}
+
+#[derive(Clone)]
+pub struct ToolExecutionResult {
+    pub had_corrections: bool,
+    pub messages: Vec<ChatMessage>,
+    pub context_files: Vec<ContextFile>,
+}
+
 #[async_trait]
 pub trait ToolRegistry: Send + Sync {
-    async fn get_tools_for_mode(&self, mode: &str) -> Vec<ToolDesc>;
+    async fn get_tools_for_mode(&self, mode: &str, model_id: Option<&str>) -> Vec<ToolDesc>;
+    async fn get_tools_index_for_mode(&self, mode: &str, model_id: Option<&str>) -> ToolRegistryIndex;
+    async fn check_tool_confirmation(
+        &self,
+        ccx: &(dyn std::any::Any + Send + Sync),
+        mode: &str,
+        model_id: Option<&str>,
+        tool_name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Result<ToolConfirmationCheck, String>>;
+    async fn get_tool_policy_info(&self, mode: &str, model_id: Option<&str>) -> Vec<ToolPolicyInfo>;
+    async fn execute_tool(
+        &self,
+        ccx: &(dyn std::any::Any + Send + Sync),
+        mode: &str,
+        model_id: Option<&str>,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<ToolExecutionResult>, String>;
+    async fn load_task_memories(&self, task_id: &str) -> Result<Vec<(PathBuf, String)>, String>;
 }
 
 #[derive(Clone)]
