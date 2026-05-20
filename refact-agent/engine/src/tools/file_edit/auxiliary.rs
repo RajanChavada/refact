@@ -691,7 +691,7 @@ mod tests {
         use std::fs;
         use std::path::{Path, PathBuf};
         use std::sync::Arc;
-        use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
+        use tokio::sync::Mutex as AMutex;
 
         struct Fixture {
             _temp: tempfile::TempDir,

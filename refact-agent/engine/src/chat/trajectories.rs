@@ -3790,7 +3790,7 @@ mod tests {
         {
             *gcx.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
         }
-        let app = AppState::from_gcx(gcx.clone()).await;
+        let _app = AppState::from_gcx(gcx.clone()).await;
 
         let task_id = "task-legacy";
         let agent_id = "agent-1";
@@ -3919,7 +3919,7 @@ mod tests {
         {
             *gcx.documents_state.workspace_folders.lock().unwrap() = vec![source.clone()];
         }
-        let app = AppState::from_gcx(gcx.clone()).await;
+        let _app = AppState::from_gcx(gcx.clone()).await;
 
         let task_id = "task-legacy-mismatch";
         let agent_id = "agent-1";

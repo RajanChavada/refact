@@ -4514,7 +4514,7 @@ fn tool_buddy_open_view_each_page() {
         },
     ];
 
-    let mut svc = make_service();
+    let svc = make_service();
     let mut rx = svc.events_tx.subscribe();
 
     for page in &pages {
@@ -4593,7 +4593,7 @@ async fn tool_buddy_create_draft_rejects_oversized_content() {
     use crate::tools::tool_buddy_create_draft::ToolBuddyCreateDraft;
     use crate::tools::tools_description::Tool;
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let ccx = Arc::new(tokio::sync::Mutex::new(
         AtCommandsContext::new_from_app(
             app.clone(),
@@ -4631,7 +4631,7 @@ async fn tool_buddy_create_draft_rejects_oversized_content() {
 #[tokio::test]
 async fn draft_create_endpoint_emits_exactly_one_created() {
         let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let mut rx = {
         let buddy_arc = app.buddy.buddy.clone();
         let lock = buddy_arc.lock().await;
@@ -4661,7 +4661,7 @@ async fn draft_create_endpoint_emits_exactly_one_created() {
 async fn draft_create_endpoint_rejects_oversized_title() {
         use hyper::StatusCode;
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let err = crate::http::routers::v1::buddy_drafts::handle_v1_buddy_draft_create_skill(
         axum::extract::State(app.clone()),
         axum::Json(crate::http::routers::v1::buddy_drafts::DraftCreateRequest {
@@ -4680,7 +4680,7 @@ async fn draft_create_endpoint_rejects_oversized_title() {
 async fn draft_delete_emits_removed_event() {
         use axum::extract::Path;
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let draft_id = add_draft_to_gcx(
         &app,
         DraftKind::Skill,
@@ -4737,7 +4737,7 @@ fn draft_expiry_emits_removed_event() {
 #[tokio::test]
 async fn accept_agents_md_action_returns_content_draft_id() {
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let content = "# AGENTS.md\n\nUse cargo test.";
     let outcome = crate::http::routers::v1::buddy_opportunities::dispatch_action(
         app.clone(),
@@ -4758,7 +4758,7 @@ async fn accept_agents_md_action_returns_content_draft_id() {
 #[tokio::test]
 async fn accept_pulse_report_action_returns_report_draft_id() {
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let outcome = crate::http::routers::v1::buddy_opportunities::dispatch_action(
         app.clone(),
         "opp-pulse-report",
@@ -5058,7 +5058,7 @@ async fn add_draft_to_gcx(
 #[tokio::test]
 async fn draft_customization_change_reads_real_editor_storage() {
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let config_dir = app.paths.config_dir.clone();
     tokio::fs::create_dir_all(config_dir.join("skills/real_skill"))
         .await
@@ -5149,7 +5149,7 @@ async fn ext_skill_save_with_command_draft_fails_and_keeps_draft() {
         use hyper::StatusCode;
 
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let draft_id = add_draft_to_gcx(
         &app,
         DraftKind::Command,
@@ -5180,7 +5180,7 @@ async fn ext_skill_save_with_mismatched_draft_target_keeps_draft() {
         use hyper::StatusCode;
 
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let draft_id = add_draft_to_gcx(
         &app,
         DraftKind::Skill,
@@ -5212,7 +5212,7 @@ async fn raw_skill_save_rejects_mismatched_frontmatter_name() {
         use hyper::StatusCode;
 
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let body = serde_json::to_vec(&serde_json::json!({
         "raw_content": "---\nname: wrong_skill\ndescription: Wrong\n---\nBody",
         "scope": "global"
@@ -5234,7 +5234,7 @@ async fn registry_validation_error_does_not_consume_draft() {
     use tower::ServiceExt;
 
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let config_dir = app.paths.config_dir.clone();
     tokio::fs::create_dir_all(config_dir.join("modes"))
         .await
@@ -5286,7 +5286,7 @@ async fn customization_delegates_route_writes_subagent_storage_and_consumes() {
     use tower::ServiceExt;
 
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let config_dir = app.paths.config_dir.clone();
     let draft_id = add_draft_to_gcx(
         &app,
@@ -5352,7 +5352,7 @@ async fn customization_save_leaves_no_atomic_temp_file() {
     use tower::ServiceExt;
 
     let app = make_gcx_with_buddy().await;
-    let gcx = app.gcx.clone();
+    let _gcx = app.gcx.clone();
     let config_dir = app.paths.config_dir.clone();
     let body = serde_json::to_vec(&serde_json::json!({
         "config": {
@@ -7126,7 +7126,7 @@ async fn task_abandoned_not_emitted_when_only_session_missing() {
     use super::observers::{BuddyObserver, ObserverContext};
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
         *app.workspace.documents_state.workspace_folders.lock().unwrap() =
@@ -7189,7 +7189,7 @@ async fn task_cluster_duplicate_emits_with_real_touched_files() {
     use super::observers::{BuddyObserver, ObserverContext};
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
         *app.workspace.documents_state.workspace_folders.lock().unwrap() =
@@ -7317,7 +7317,7 @@ async fn task_agent_monitor_writes_heartbeat_on_message() {
     use crate::tasks::storage::{create_task, load_board, save_board};
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
         *app.workspace.documents_state.workspace_folders.lock().unwrap() =
@@ -7395,7 +7395,7 @@ async fn target_files_persisted_through_api() {
     use crate::tasks::storage::load_board;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
         *app.workspace.documents_state.workspace_folders.lock().unwrap() =
@@ -7811,14 +7811,14 @@ async fn pulse_task_total_and_by_status_populated() {
     use super::pulse::build_pulse;
 
     let gcx = crate::global_context::tests::make_test_gcx().await;
-    let mut app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     {
         *app.workspace.documents_state.workspace_folders.lock().unwrap() =
             vec![dir.path().to_path_buf()];
     }
 
-    let t1 = create_task(gcx.clone(), "Task planning").await.unwrap();
+    let _t1 = create_task(gcx.clone(), "Task planning").await.unwrap();
     let t2 = create_task(gcx.clone(), "Task active").await.unwrap();
     let t3 = create_task(gcx.clone(), "Task completed").await.unwrap();
 
