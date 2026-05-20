@@ -14,11 +14,88 @@ use crate::tools::tools_description::{
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile};
 use crate::postprocessing::pp_command_output::OutputFilter;
 use crate::knowledge_index::format_related_memories_section;
-use crate::tools::scope_utils::{format_scope_notices, remap_context_files_for_execution_scope};
+use crate::tools::scope_utils::{
+    format_scope_notices, is_worktree_only_path, remap_context_files_for_execution_scope,
+    resolve_scope_with_execution_scope,
+};
 use regex::Regex;
+use std::path::PathBuf;
 
 pub struct ToolAstDefinition {
     pub config_path: String,
+}
+
+fn source_text_symbols(file_text: &str, symbol: &str) -> Vec<(String, usize, usize)> {
+    let last_segment = symbol.rsplit("::").next().unwrap_or(symbol);
+    let patterns = [
+        format!("fn {}", last_segment),
+        format!("struct {}", last_segment),
+        format!("enum {}", last_segment),
+        format!("trait {}", last_segment),
+        format!("type {}", last_segment),
+        format!("mod {}", last_segment),
+    ];
+    file_text
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            let trimmed = line.trim_start();
+            if patterns.iter().any(|pattern| trimmed.contains(pattern)) {
+                let line_number = idx + 1;
+                Some((last_segment.to_string(), line_number, line_number))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+async fn direct_worktree_symbol_fallback(
+    gcx: Arc<crate::global_context::GlobalContext>,
+    execution_scope: Option<&crate::worktrees::scope::ExecutionScope>,
+    symbol: &str,
+) -> Result<Vec<ContextFile>, String> {
+    let Some(execution_scope) = execution_scope else {
+        return Ok(Vec::new());
+    };
+    if !execution_scope.is_enforced() {
+        return Ok(Vec::new());
+    }
+
+    let scoped_files =
+        resolve_scope_with_execution_scope(gcx.clone(), Some(execution_scope), "workspace").await?;
+    let mut files = scoped_files.files;
+    files.sort();
+    let mut context_files = Vec::new();
+    for file in files {
+        let file_path = PathBuf::from(&file);
+        if !is_worktree_only_path(execution_scope, &file_path) {
+            continue;
+        }
+        let file_text = match crate::files_in_workspace::get_file_text_from_memory_or_disk(
+            gcx.clone(),
+            &file_path,
+        )
+        .await
+        {
+            Ok(text) => text.to_string(),
+            Err(_) => continue,
+        };
+        for (symbol_name, line1, line2) in source_text_symbols(&file_text, symbol) {
+            context_files.push(ContextFile {
+                file_name: file.clone(),
+                file_content: String::new(),
+                line1,
+                line2,
+                file_rev: None,
+                symbols: vec![symbol_name],
+                gradient_type: 5,
+                usefulness: 90.0,
+                skip_pp: false,
+            });
+        }
+    }
+    Ok(context_files)
 }
 
 #[async_trait]
@@ -48,10 +125,7 @@ impl Tool for ToolAstDefinition {
 
         let (gcx, execution_scope) = {
             let cgcx = ccx.lock().await;
-            (
-                cgcx.app.gcx.clone(),
-                cgcx.execution_scope.clone(),
-            )
+            (cgcx.app.gcx.clone(), cgcx.execution_scope.clone())
         };
         let ast_service_opt = gcx.ast_service.lock().unwrap().clone();
         if let Some(ast_service) = ast_service_opt {
@@ -89,13 +163,27 @@ impl Tool for ToolAstDefinition {
                             skip_pp: false,
                         })
                         .collect();
-                    let (context_files, scope_notices) = remap_context_files_for_execution_scope(
+                    let (mut context_files, scope_notices) =
+                        remap_context_files_for_execution_scope(
+                            gcx.clone(),
+                            execution_scope.as_ref(),
+                            raw_context_files,
+                        )
+                        .await?;
+                    all_scope_notices.extend(scope_notices);
+                    let fallback_context_files = direct_worktree_symbol_fallback(
                         gcx.clone(),
                         execution_scope.as_ref(),
-                        raw_context_files,
+                        &symbol,
                     )
                     .await?;
-                    all_scope_notices.extend(scope_notices);
+                    if !fallback_context_files.is_empty() {
+                        all_scope_notices.push(format!(
+                            "⚠️ Direct worktree filesystem fallback added {} worktree-only definition result(s) not present in the source AST index.",
+                            fallback_context_files.len()
+                        ));
+                        context_files.extend(fallback_context_files);
+                    }
 
                     if context_files.is_empty() {
                         corrections = true;
@@ -132,11 +220,44 @@ impl Tool for ToolAstDefinition {
                     all_context_files
                         .extend(context_files.into_iter().map(ContextEnum::ContextFile));
                 } else {
-                    corrections = true;
-                    let tool_message =
-                        there_are_definitions_with_similar_names_though(ast_index.clone(), &symbol)
-                            .await;
-                    all_messages.push(format!("For symbol `{}`:\n{}", symbol, tool_message));
+                    let context_files = direct_worktree_symbol_fallback(
+                        gcx.clone(),
+                        execution_scope.as_ref(),
+                        &symbol,
+                    )
+                    .await?;
+                    if context_files.is_empty() {
+                        corrections = true;
+                        let tool_message = there_are_definitions_with_similar_names_though(
+                            ast_index.clone(),
+                            &symbol,
+                        )
+                        .await;
+                        all_messages.push(format!("For symbol `{}`:\n{}", symbol, tool_message));
+                    } else {
+                        all_scope_notices.push(format!(
+                            "⚠️ Direct worktree filesystem fallback added {} worktree-only definition result(s) not present in the source AST index.",
+                            context_files.len()
+                        ));
+                        let file_paths = context_files
+                            .iter()
+                            .map(|cf| cf.file_name.clone())
+                            .collect::<Vec<_>>();
+                        let short_file_paths =
+                            crate::files_correction::shortify_paths(gcx.clone(), &file_paths).await;
+                        let mut tool_message =
+                            format!("Definitions for `{}`:\n", symbol).to_string();
+                        for (cf, short_path) in context_files.iter().zip(short_file_paths.iter()) {
+                            let symbol_path = cf.symbols.get(0).cloned().unwrap_or_default();
+                            tool_message.push_str(&format!(
+                                "{} defined at {}:{}-{}\n",
+                                symbol_path, short_path, cf.line1, cf.line2
+                            ));
+                        }
+                        all_messages.push(tool_message);
+                        all_context_files
+                            .extend(context_files.into_iter().map(ContextEnum::ContextFile));
+                    }
                 }
             }
 

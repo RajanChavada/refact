@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
@@ -9,15 +10,18 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::{vec_context_file_to_context_tools, AtCommandsContext};
 use crate::at_commands::at_search::execute_at_search;
+use crate::files_in_workspace::get_file_text_from_memory_or_disk;
+use crate::global_context::GlobalContext;
 use crate::tools::scope_utils::{
-    create_scope_filter_with_execution_scope, format_scope_notices,
-    remap_context_files_for_execution_scope,
+    create_scope_filter_with_execution_scope, format_scope_notices, is_worktree_only_path,
+    remap_context_files_for_execution_scope, resolve_scope_with_execution_scope,
 };
 use crate::tools::tools_description::{
     Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
 };
 use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile};
 use crate::knowledge_index::format_related_memories_section;
+use crate::worktrees::scope::ExecutionScope;
 
 pub struct ToolSearch {
     pub config_path: String,
@@ -45,17 +49,147 @@ fn format_preview(lines: &[&str], start_idx: usize, end_idx_exclusive: usize) ->
         .join("\n")
 }
 
+fn query_terms(query: &str) -> Vec<String> {
+    let lower = query.to_lowercase();
+    let mut terms = Vec::new();
+    let trimmed = lower.trim();
+    if trimmed.len() >= 2 {
+        terms.push(trimmed.to_string());
+    }
+    terms.extend(
+        lower
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|term| term.len() >= 2)
+            .map(|term| term.to_string()),
+    );
+    terms.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+    terms.dedup();
+    terms
+}
+
+fn direct_fallback_window(
+    file_name: &str,
+    file_content: &str,
+    terms: &[String],
+    context_lines: usize,
+) -> Option<(usize, usize, f32)> {
+    let lines: Vec<&str> = file_content.lines().collect();
+    let line_count = lines.len().max(1);
+    for (line_idx, line) in lines.iter().enumerate() {
+        let lower = line.to_lowercase();
+        let matches = terms
+            .iter()
+            .filter(|term| lower.contains(term.as_str()))
+            .count();
+        if matches > 0 {
+            let start = line_idx.saturating_sub(context_lines) + 1;
+            let end = (line_idx + context_lines + 1).min(line_count).max(start);
+            return Some((start, end, 55.0 + matches as f32));
+        }
+    }
+
+    let lower_file_name = file_name.to_lowercase();
+    if terms
+        .iter()
+        .any(|term| lower_file_name.contains(term.as_str()))
+    {
+        return Some((1, (context_lines * 2 + 1).min(line_count).max(1), 45.0));
+    }
+
+    None
+}
+
+fn context_file_key(context_file: &ContextFile) -> String {
+    format!(
+        "{}:{}:{}:{:?}",
+        context_file.file_name, context_file.line1, context_file.line2, context_file.symbols
+    )
+}
+
+fn append_unseen_context_files(
+    context_files: &mut Vec<ContextFile>,
+    additions: Vec<ContextFile>,
+) -> usize {
+    let mut seen: HashSet<String> = context_files.iter().map(context_file_key).collect();
+    let mut added = 0;
+    for context_file in additions {
+        let key = context_file_key(&context_file);
+        if seen.insert(key) {
+            context_files.push(context_file);
+            added += 1;
+        }
+    }
+    added
+}
+
+async fn direct_worktree_fallback_search(
+    gcx: Arc<GlobalContext>,
+    execution_scope: Option<&ExecutionScope>,
+    scope: &str,
+    query: &str,
+    context_lines: usize,
+    limit: usize,
+) -> Result<Vec<ContextFile>, String> {
+    let Some(execution_scope) = execution_scope else {
+        return Ok(Vec::new());
+    };
+    if !execution_scope.is_enforced() || limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let scoped_files =
+        resolve_scope_with_execution_scope(gcx.clone(), Some(execution_scope), scope).await?;
+    let mut files = scoped_files.files;
+    files.sort();
+    let mut context_files = Vec::new();
+
+    for file in files {
+        if context_files.len() >= limit {
+            break;
+        }
+        let file_path = PathBuf::from(&file);
+        if !is_worktree_only_path(execution_scope, &file_path) {
+            continue;
+        }
+        let file_content = match get_file_text_from_memory_or_disk(gcx.clone(), &file_path).await {
+            Ok(content) => content.to_string(),
+            Err(_) => continue,
+        };
+        if let Some((line1, line2, usefulness)) =
+            direct_fallback_window(&file, &file_content, &terms, context_lines)
+        {
+            context_files.push(ContextFile {
+                file_name: file,
+                file_content: String::new(),
+                line1,
+                line2,
+                file_rev: None,
+                symbols: vec![],
+                gradient_type: 4,
+                usefulness,
+                skip_pp: false,
+            });
+        }
+    }
+
+    Ok(context_files)
+}
+
 async fn execute_att_search(
     ccx: Arc<AMutex<AtCommandsContext>>,
     query: &String,
     scope: &String,
+    context_lines: usize,
+    fallback_limit: usize,
 ) -> Result<(Vec<ContextFile>, Vec<String>), String> {
     let (gcx, execution_scope) = {
         let cgcx = ccx.lock().await;
-        (
-            cgcx.app.gcx.clone(),
-            cgcx.execution_scope.clone(),
-        )
+        (cgcx.app.gcx.clone(), cgcx.execution_scope.clone())
     };
 
     let scoped_filter =
@@ -64,7 +198,7 @@ async fn execute_att_search(
 
     info!("att-search: filter: {:?}", scoped_filter.filter);
     let context_files = execute_at_search(ccx.clone(), &query, scoped_filter.filter).await?;
-    let (context_files, remap_notices) = remap_context_files_for_execution_scope(
+    let (mut context_files, remap_notices) = remap_context_files_for_execution_scope(
         gcx.clone(),
         execution_scope.as_ref(),
         context_files,
@@ -72,6 +206,22 @@ async fn execute_att_search(
     .await?;
     let mut notices = scoped_filter.notices;
     notices.extend(remap_notices);
+    let fallback_context_files = direct_worktree_fallback_search(
+        gcx.clone(),
+        execution_scope.as_ref(),
+        scope,
+        query,
+        context_lines,
+        fallback_limit,
+    )
+    .await?;
+    let added = append_unseen_context_files(&mut context_files, fallback_context_files);
+    if added > 0 {
+        notices.push(format!(
+            "⚠️ Direct worktree filesystem fallback added {} worktree-only result(s) not present in the source index.",
+            added
+        ));
+    }
     Ok((context_files, notices))
 }
 
@@ -144,7 +294,8 @@ impl Tool for ToolSearch {
             all_content.push_str(&format!("Results for query: \"{}\"\n", query));
 
             let (vector_of_context_file, scope_notices) =
-                execute_att_search(ccx.clone(), query, &scope).await?;
+                execute_att_search(ccx.clone(), query, &scope, context_lines, max_total_recs)
+                    .await?;
             all_content.push_str(&format_scope_notices(&scope_notices));
             info!(
                 "att-search: vector_of_context_file={:?}",
