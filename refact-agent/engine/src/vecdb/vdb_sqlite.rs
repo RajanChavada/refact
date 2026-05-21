@@ -411,20 +411,28 @@ impl VecDBSqlite {
         }
 
         fn parse_scope_filter(filter: &str) -> Option<ScopeFilter> {
-            // Accept: (scope LIKE '...%')  or  scope LIKE "...%"
-            let like_re =
-                Regex::new(r#"(?i)\bscope\s+like\s+['\"]([^'\"]+)['\"]\s*\)?\s*$"#).ok()?;
-            if let Some(caps) = like_re.captures(filter.trim()) {
-                let pattern = caps.get(1)?.as_str().to_string();
-                let prefix = pattern.trim_end_matches('%').to_string();
+            let filter = filter.trim();
+            // Accept: (scope LIKE '...%') — single-quoted (paths without apostrophes)
+            let like_sq = Regex::new(r"(?i)\bscope\s+like\s+'([^']*)'\s*\)?\s*$").ok()?;
+            if let Some(caps) = like_sq.captures(filter) {
+                let prefix = caps.get(1)?.as_str().trim_end_matches('%').to_string();
                 return Some(ScopeFilter::RustPrefix(prefix));
             }
-
-            // Accept: (scope = '...')  or  scope = "..."
-            let eq_re = Regex::new(r#"(?i)\bscope\s*=\s*['\"]([^'\"]+)['\"]\s*\)?\s*$"#).ok()?;
-            if let Some(caps) = eq_re.captures(filter.trim()) {
-                let value = caps.get(1)?.as_str().to_string();
-                return Some(ScopeFilter::SqlExact(value));
+            // Accept: (scope LIKE "...%") — double-quoted (handles apostrophes in paths)
+            let like_dq = Regex::new(r#"(?i)\bscope\s+like\s+"([^"]*)"\s*\)?\s*$"#).ok()?;
+            if let Some(caps) = like_dq.captures(filter) {
+                let prefix = caps.get(1)?.as_str().trim_end_matches('%').to_string();
+                return Some(ScopeFilter::RustPrefix(prefix));
+            }
+            // Accept: (scope = '...') — single-quoted equality
+            let eq_sq = Regex::new(r"(?i)\bscope\s*=\s*'([^']*)'\s*\)?\s*$").ok()?;
+            if let Some(caps) = eq_sq.captures(filter) {
+                return Some(ScopeFilter::SqlExact(caps.get(1)?.as_str().to_string()));
+            }
+            // Accept: (scope = "...") — double-quoted equality (handles apostrophes in paths)
+            let eq_dq = Regex::new(r#"(?i)\bscope\s*=\s*"([^"]*)"\s*\)?\s*$"#).ok()?;
+            if let Some(caps) = eq_dq.captures(filter) {
+                return Some(ScopeFilter::SqlExact(caps.get(1)?.as_str().to_string()));
             }
             None
         }

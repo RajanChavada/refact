@@ -30,7 +30,7 @@ pub async fn resolve_existing_path_with_execution_scope(
         return Ok(None);
     }
     let scoped = scope.resolve_existing_path(&PathBuf::from(raw))?;
-    if scoped.outside_absolute_path && scoped.path.is_file() {
+    if scoped.path.is_file() {
         check_file_privacy_for_send(gcx, &scoped.path).await?;
     }
     Ok(Some(ScopedResolvedPath {
@@ -210,9 +210,7 @@ pub async fn resolve_scope_with_execution_scope(
                 scope
             ));
         }
-        if scoped.outside_absolute_path {
-            check_file_privacy_for_send(gcx, &scoped.path).await?;
-        }
+        check_file_privacy_for_send(gcx, &scoped.path).await?;
         return Ok(ScopedFiles {
             files: vec![scoped.path.to_string_lossy().to_string()],
             notices: scoped_path_notices(&scoped),
@@ -235,6 +233,10 @@ pub async fn resolve_scope_with_execution_scope(
         files,
         notices: scoped_path_notices(&scoped),
     })
+}
+
+fn escape_path_for_scope_filter(path: &str) -> String {
+    path.replace('"', "")
 }
 
 async fn create_scope_filter_legacy(
@@ -264,7 +266,7 @@ async fn create_scope_filter_legacy(
         } else {
             format!("{}{}", dir_path, std::path::MAIN_SEPARATOR)
         };
-        return Ok(Some(format!("(scope LIKE '{}%')", dir_path_with_sep)));
+        return Ok(Some(format!(r#"(scope LIKE "{}%")"#, escape_path_for_scope_filter(&dir_path_with_sep))));
     }
 
     match return_one_candidate_or_a_good_error(
@@ -276,7 +278,7 @@ async fn create_scope_filter_legacy(
     )
     .await
     {
-        Ok(file_path) => Ok(Some(format!("(scope = \"{}\")", file_path))),
+        Ok(file_path) => Ok(Some(format!("(scope = \"{}\")", escape_path_for_scope_filter(&file_path)))),
         Err(file_err) => {
             match return_one_candidate_or_a_good_error(
                 gcx.clone(),
@@ -293,7 +295,7 @@ async fn create_scope_filter_legacy(
                     } else {
                         format!("{}{}", dir_path, std::path::MAIN_SEPARATOR)
                     };
-                    Ok(Some(format!("(scope LIKE '{}%')", dir_path_with_sep)))
+                    Ok(Some(format!(r#"(scope LIKE "{}%")"#, escape_path_for_scope_filter(&dir_path_with_sep))))
                 }
                 Err(_) => Err(file_err),
             }
@@ -353,8 +355,8 @@ pub async fn create_scope_filter_with_execution_scope(
     if is_worktree_root_alias(scope) {
         return Ok(ScopedScopeFilter {
             filter: Some(format!(
-                "(scope LIKE '{}%')",
-                path_with_sep(execution_scope.source_workspace_root())
+                r#"(scope LIKE "{}%")"#,
+                escape_path_for_scope_filter(&path_with_sep(execution_scope.source_workspace_root()))
             )),
             notices: vec![],
         });
@@ -362,14 +364,14 @@ pub async fn create_scope_filter_with_execution_scope(
 
     let scope_is_dir = scope.ends_with('/') || scope.ends_with('\\');
     let scoped = execution_scope.resolve_existing_path(&PathBuf::from(scope))?;
-    if scoped.outside_absolute_path && scoped.path.is_file() {
+    if scoped.path.is_file() {
         check_file_privacy_for_send(gcx, &scoped.path).await?;
     }
     let indexed_path = indexed_path_for_scoped_path(execution_scope, &scoped.path);
     let filter = if scoped.path.is_dir() || scope_is_dir {
-        Some(format!("(scope LIKE '{}%')", path_with_sep(&indexed_path)))
+        Some(format!(r#"(scope LIKE "{}%")"#, escape_path_for_scope_filter(&path_with_sep(&indexed_path))))
     } else {
-        Some(format!("(scope = \"{}\")", indexed_path.to_string_lossy()))
+        Some(format!("(scope = \"{}\")", escape_path_for_scope_filter(&indexed_path.to_string_lossy())))
     };
     Ok(ScopedScopeFilter {
         filter,
@@ -1429,5 +1431,51 @@ mod worktree_scope_read_tools {
             .unwrap();
 
         assert!(remapped.is_none());
+    }
+
+    #[tokio::test]
+    async fn worktree_scope_env_file_inside_worktree_is_privacy_checked() {
+        let fixture = make_fixture();
+        fs::write(fixture.root.join(".env"), "SECRET=value\n").unwrap();
+        let gcx = make_gcx(&fixture, vec!["*.env".to_string()]).await;
+        let ccx = make_ccx(gcx, fixture.worktree.clone()).await;
+        let mut tool = ToolCat {
+            config_path: String::new(),
+        };
+        let tool_call_id = "cat-call".to_string();
+
+        let (_corrections, results) = tool
+            .tool_execute(ccx, &tool_call_id, &cat_args(".env".to_string()))
+            .await
+            .unwrap();
+        let text = tool_text(&results);
+
+        assert!(context_file_names(&results).is_empty());
+        assert!(text.contains("privacy level Blocked"), "{text}");
+    }
+
+    #[test]
+    fn scope_filter_construction_handles_special_chars() {
+        let apostrophe = "/home/user's project/src/";
+        let filter = format!(
+            r#"(scope LIKE "{}%")"#,
+            escape_path_for_scope_filter(apostrophe)
+        );
+        assert!(filter.starts_with(r#"(scope LIKE ""#), "{filter}");
+        assert!(filter.contains("user's project"), "{filter}");
+
+        let percent = "/home/user/50%/src/";
+        let filter = format!(
+            r#"(scope LIKE "{}%")"#,
+            escape_path_for_scope_filter(percent)
+        );
+        assert!(filter.contains("50%/"), "{filter}");
+
+        let underscore = "/home/user/my_project/src/";
+        let filter = format!(
+            r#"(scope LIKE "{}%")"#,
+            escape_path_for_scope_filter(underscore)
+        );
+        assert!(filter.contains("my_project"), "{filter}");
     }
 }

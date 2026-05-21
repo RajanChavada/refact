@@ -241,7 +241,7 @@ impl Tool for ToolShell {
             experimental: false,
             allow_parallel: false,
             description: "Execute a single command, using the \"sh\" on unix-like systems and \"powershell.exe\" on windows. Use it for one-time tasks like dependencies installation. Don't call this unless you have to. Not suitable for regular work because it requires a confirmation at each step. Output is compressed by default - use output_filter and output_limit parameters to see specific parts if needed. In worktree-scoped chats, the default cwd and explicit workdir are enforced to the active worktree or privacy-permitted outside paths with visible warnings; the shell command text itself is not OS-sandboxed. Note: sudo commands cannot be run - if you need elevated privileges, ask the user to run them directly.".to_string(),
-            input_schema: json_schema_from_params(&[("command", "string", "shell command to execute"), ("workdir", "string", "workdir for the command"), ("output_filter", "string", "Optional regex pattern to filter output lines. Only lines matching this pattern (and context) will be shown. Use to find specific errors or content in large outputs."), ("output_limit", "string", "Optional. Max lines to show (default: 40). Use higher values like '200' or 'all' to see more output."), ("timeout", "string", "Optional. Timeout in seconds for the command (default: 10). Use higher values for long-running commands.")], &["command", "workdir"]),
+            input_schema: json_schema_from_params(&[("command", "string", "shell command to execute"), ("workdir", "string", "workdir for the command"), ("output_filter", "string", "Optional regex pattern to filter output lines. Only lines matching this pattern (and context) will be shown. Use to find specific errors or content in large outputs."), ("output_limit", "string", "Optional. Max lines to show (default: 40). Use higher values like '200' or 'all' to see more output."), ("timeout", "string", "Optional. Timeout in seconds for the command (default: 10). Use higher values for long-running commands.")], &["command"]),
             output_schema: None,
             annotations: None,
         }
@@ -717,5 +717,20 @@ async fn resolve_shell_workdir(
         Err("Workdir doesn't exist".to_string())
     } else {
         Ok((Some(workdir), Vec::new()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_tool_workdir_is_optional_in_schema() {
+        let tool = ToolShell::default();
+        let desc = tool.tool_description();
+        let required = desc.input_schema["required"].as_array().unwrap().clone();
+        let required_names: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_names.contains(&"command"));
+        assert!(!required_names.contains(&"workdir"));
     }
 }

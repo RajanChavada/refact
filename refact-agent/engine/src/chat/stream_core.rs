@@ -164,7 +164,7 @@ fn should_commit_cache_guard_after_http_success(status: reqwest::StatusCode, tex
     }
     !matches!(
         classify_llm_error_for_retry(&format_llm_error_body(&format!("{}", status), text)),
-        RetryDecision::Retry { .. }
+        RetryDecision::Retry { .. } | RetryDecision::ContextLimit { .. }
     )
 }
 
@@ -1663,11 +1663,19 @@ mod tests {
     }
 
     #[test]
-    fn cache_guard_is_committed_for_non_retryable_http_errors() {
-        assert!(should_commit_cache_guard_after_http_success(
+    fn cache_guard_is_not_committed_for_context_limit_errors() {
+        assert!(!should_commit_cache_guard_after_http_success(
             reqwest::StatusCode::BAD_REQUEST,
             r#"{"error":{"message":"context length exceeded"}}"#,
         ));
+        assert!(!should_commit_cache_guard_after_http_success(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"message":"This model's maximum context length is 128000 tokens"}}"#,
+        ));
+    }
+
+    #[test]
+    fn cache_guard_is_committed_for_non_retryable_http_errors() {
         assert!(should_commit_cache_guard_after_http_success(
             reqwest::StatusCode::UNAUTHORIZED,
             r#"{"error":{"message":"invalid api key"}}"#,
