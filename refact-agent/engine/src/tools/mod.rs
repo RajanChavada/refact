@@ -53,6 +53,7 @@ mod tool_task_agent;
 mod tool_task_agent_finish;
 mod tool_task_board;
 pub(crate) mod tool_task_check_agents;
+mod tool_task_documents;
 mod tool_task_done;
 mod tool_task_init;
 mod tool_task_mark_card;

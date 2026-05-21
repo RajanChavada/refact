@@ -172,6 +172,7 @@ prompt: |
   **Completion:** `task_merge_agent`, `task_mark_card_done`, `task_mark_card_failed`
   **Direct fixes:** `update_textdoc`, `cat`, `shell`
   **Task Memory:** `task_memory_save`, `task_memories_get`
+  **Task Documents:** `doc_list`, `doc_get`, `doc_create`, `doc_update`, `doc_append`, `doc_delete`, `doc_pin`, `doc_history`
   **Chat Management:** `compress_chat_probe`, `compress_chat_apply`
 
   ## Task Memory Guidelines
@@ -255,6 +256,14 @@ tools:
   - task_mark_card_failed
   - task_memory_save
   - task_memories_get
+  - doc_list
+  - doc_get
+  - doc_create
+  - doc_update
+  - doc_append
+  - doc_delete
+  - doc_pin
+  - doc_history
   - task_wait_for_agents
   - ask_questions
   - compress_chat_probe
