@@ -574,19 +574,39 @@ impl ToolTaskRestartAgent {
 
         if !files_to_open.is_empty() {
             let mut context_files: Vec<ContextFile> = Vec::new();
+            let wt_root = &worktree_meta.root;
+            let worktree_canonical = dunce::canonicalize(wt_root)
+                .unwrap_or_else(|_| wt_root.clone());
             for path_str in &files_to_open {
                 let orig = std::path::Path::new(path_str);
                 let source_root = &worktree_meta.source_workspace_root;
-                let wt_root = &worktree_meta.root;
                 let resolved = match orig.strip_prefix(source_root) {
                     Ok(rel) => wt_root.join(rel),
                     Err(_) => wt_root.join(path_str.trim_start_matches('/')),
                 };
-                match tokio::fs::read_to_string(&resolved).await {
+                let canonical_resolved = match dunce::canonicalize(&resolved) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        tracing::warn!("restart_agent: files_to_open '{}' does not exist, skipping", path_str);
+                        continue;
+                    }
+                };
+                if !canonical_resolved.starts_with(&worktree_canonical) {
+                    tracing::warn!("restart_agent: files_to_open '{}' escapes worktree, rejecting", path_str);
+                    continue;
+                }
+                if crate::files_in_workspace::check_file_privacy_for_send(gcx.clone(), &canonical_resolved)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("restart_agent: files_to_open '{}' blocked by privacy settings, skipping", path_str);
+                    continue;
+                }
+                match tokio::fs::read_to_string(&canonical_resolved).await {
                     Ok(content) => {
                         let line_count = content.lines().count().max(1);
                         context_files.push(ContextFile {
-                            file_name: resolved.to_string_lossy().to_string(),
+                            file_name: canonical_resolved.to_string_lossy().to_string(),
                             file_content: content,
                             line1: 1,
                             line2: line_count,
@@ -594,7 +614,7 @@ impl ToolTaskRestartAgent {
                         });
                     }
                     Err(e) => {
-                        tracing::warn!("restart_agent: could not read file {:?}: {}", resolved, e);
+                        tracing::warn!("restart_agent: could not read file {:?}: {}", canonical_resolved, e);
                     }
                 }
             }

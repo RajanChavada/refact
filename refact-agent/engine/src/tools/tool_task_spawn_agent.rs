@@ -705,19 +705,39 @@ impl Tool for ToolTaskSpawnAgent {
 
         if !files_to_open.is_empty() {
             let mut context_files: Vec<ContextFile> = Vec::new();
+            let worktree_path = prepared_worktree.worktree_path();
+            let worktree_canonical = dunce::canonicalize(&worktree_path)
+                .unwrap_or_else(|_| worktree_path.clone());
             for path_str in &files_to_open {
                 let orig = std::path::Path::new(path_str);
                 let source_root = prepared_worktree.source_workspace_root();
-                let worktree_path = prepared_worktree.worktree_path();
                 let resolved = match orig.strip_prefix(&source_root) {
                     Ok(rel) => worktree_path.join(rel),
                     Err(_) => worktree_path.join(path_str.trim_start_matches('/')),
                 };
-                match tokio::fs::read_to_string(&resolved).await {
+                let canonical_resolved = match dunce::canonicalize(&resolved) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        tracing::warn!("task_spawn_agent: files_to_open '{}' does not exist, skipping", path_str);
+                        continue;
+                    }
+                };
+                if !canonical_resolved.starts_with(&worktree_canonical) {
+                    tracing::warn!("task_spawn_agent: files_to_open '{}' escapes worktree, rejecting", path_str);
+                    continue;
+                }
+                if crate::files_in_workspace::check_file_privacy_for_send(gcx.clone(), &canonical_resolved)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("task_spawn_agent: files_to_open '{}' blocked by privacy settings, skipping", path_str);
+                    continue;
+                }
+                match tokio::fs::read_to_string(&canonical_resolved).await {
                     Ok(content) => {
                         let line_count = content.lines().count().max(1);
                         context_files.push(ContextFile {
-                            file_name: resolved.to_string_lossy().to_string(),
+                            file_name: canonical_resolved.to_string_lossy().to_string(),
                             file_content: content,
                             line1: 1,
                             line2: line_count,
@@ -727,7 +747,7 @@ impl Tool for ToolTaskSpawnAgent {
                     Err(e) => {
                         tracing::warn!(
                             "task_spawn_agent: could not read file {:?}: {}",
-                            resolved,
+                            canonical_resolved,
                             e
                         );
                     }
@@ -1215,6 +1235,36 @@ mod tests {
         assert!(abandoned[0].contains("T-1"));
         assert!(!abandoned[0].contains("T-2"));
         assert!(!abandoned[0].contains("T-3"));
+    }
+
+    #[test]
+    fn worktree_scope_files_to_open_path_traversal_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let worktree = temp.path().join("worktree");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+        std::fs::write(worktree.join("safe.txt"), "safe").unwrap();
+
+        let worktree_canonical = dunce::canonicalize(&worktree).unwrap();
+
+        let traversal = worktree.join("../outside/secret.txt");
+        let traversal_canonical = dunce::canonicalize(&traversal).unwrap();
+        assert!(
+            !traversal_canonical.starts_with(&worktree_canonical),
+            "traversal path should escape worktree: {:?} not under {:?}",
+            traversal_canonical,
+            worktree_canonical
+        );
+
+        let safe_canonical = dunce::canonicalize(worktree.join("safe.txt")).unwrap();
+        assert!(
+            safe_canonical.starts_with(&worktree_canonical),
+            "in-worktree path should pass check: {:?} under {:?}",
+            safe_canonical,
+            worktree_canonical
+        );
     }
 
     #[test]

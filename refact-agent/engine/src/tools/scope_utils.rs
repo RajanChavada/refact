@@ -80,7 +80,7 @@ pub async fn list_execution_scope_root(
         gcx,
         &execution_scope.effective_root().to_path_buf(),
         recursive,
-        false,
+        true,
     )
     .await
 }
@@ -223,7 +223,7 @@ pub async fn resolve_scope_with_execution_scope(
         ));
     }
 
-    let files = list_files_under_dir(gcx, &scoped.path, true, scoped.outside_absolute_path)
+    let files = list_files_under_dir(gcx, &scoped.path, true, true)
         .await?
         .into_iter()
         .map(|file| file.to_string_lossy().to_string())
@@ -404,6 +404,7 @@ pub async fn remap_context_file_for_execution_scope(
         dunce::simplified(&canonical_path(context_file.file_name.clone())).to_path_buf();
 
     if normalized_path.starts_with(execution_scope.effective_root()) {
+        check_file_privacy_for_send(gcx.clone(), &normalized_path).await?;
         context_file.file_name = normalized_path.to_string_lossy().to_string();
         return Ok(Some((context_file, vec![])));
     }
@@ -420,6 +421,7 @@ pub async fn remap_context_file_for_execution_scope(
                         worktree_path.to_string_lossy().to_string(),
                     ))
                     .to_path_buf();
+                    check_file_privacy_for_send(gcx.clone(), &worktree_path).await?;
                     let notice = format!(
                         "⚠️ AST/VecDB result was mapped from source checkout to active worktree: {} -> {}",
                         normalized_path.display(),
@@ -1435,6 +1437,61 @@ mod worktree_scope_read_tools {
             .unwrap();
 
         assert!(remapped.is_none());
+    }
+
+    #[tokio::test]
+    async fn worktree_scope_directory_listing_filters_env_file() {
+        let fixture = make_fixture();
+        fs::write(fixture.root.join(".env"), "SECRET=value\n").unwrap();
+        let gcx = make_gcx(&fixture, vec!["*.env".to_string()]).await;
+        let ccx = make_ccx(gcx, fixture.worktree.clone()).await;
+        let mut tool = ToolCat {
+            config_path: String::new(),
+        };
+        let tool_call_id = "cat-call".to_string();
+
+        let (_corrections, results) = tool
+            .tool_execute(ccx, &tool_call_id, &cat_args(".".to_string()))
+            .await
+            .unwrap();
+        let names = context_file_names(&results);
+
+        assert!(
+            !names.iter().any(|n| n.ends_with(".env")),
+            "cat('.') should not expose .env: {:?}",
+            names
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_scope_remap_blocks_env_inside_worktree() {
+        let fixture = make_fixture();
+        fs::write(fixture.root.join(".env"), "SECRET=value\n").unwrap();
+        let gcx = make_gcx(&fixture, vec!["*.env".to_string()]).await;
+        let scope = ExecutionScope::from_worktree(&fixture.worktree);
+        let env_path = fixture.root.join(".env").to_string_lossy().to_string();
+        let context_file = ContextFile {
+            file_name: env_path,
+            file_content: String::new(),
+            line1: 1,
+            line2: 1,
+            file_rev: None,
+            symbols: vec![],
+            gradient_type: 5,
+            usefulness: 100.0,
+            skip_pp: false,
+        };
+
+        let result =
+            remap_context_file_for_execution_scope(gcx, Some(&scope), context_file).await;
+        assert!(
+            result.is_err(),
+            "privacy-blocked .env inside worktree should return error"
+        );
+        assert!(
+            result.unwrap_err().contains("Blocked"),
+            "error should mention privacy level Blocked"
+        );
     }
 
     #[tokio::test]

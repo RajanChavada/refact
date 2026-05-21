@@ -397,7 +397,7 @@ pub async fn paths_and_symbols_to_cat_with_path_ranges(
                             gcx.clone(),
                             &resolved.path,
                             false,
-                            resolved.outside_absolute_path,
+                            true,
                         )
                         .await
                         {
