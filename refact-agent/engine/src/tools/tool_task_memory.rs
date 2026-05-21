@@ -1,11 +1,16 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Component, Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{Local, Utc};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AMutex;
 use tracing::info;
 use uuid::Uuid;
@@ -22,6 +27,656 @@ use crate::tools::tools_description::{
 
 const MEMORIES_DIR: &str = "memories";
 const MAX_MEMORIES_CHARS: usize = 120_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryKind {
+    Decision,
+    Spec,
+    Finding,
+    Gotcha,
+    Risk,
+    Handoff,
+    Progress,
+    Postmortem,
+    Brief,
+    Freeform,
+}
+
+impl MemoryKind {
+    fn values() -> &'static [&'static str] {
+        &[
+            "decision",
+            "spec",
+            "finding",
+            "gotcha",
+            "risk",
+            "handoff",
+            "progress",
+            "postmortem",
+            "brief",
+            "freeform",
+        ]
+    }
+}
+
+impl Default for MemoryKind {
+    fn default() -> Self {
+        Self::Freeform
+    }
+}
+
+impl fmt::Display for MemoryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Decision => "decision",
+            Self::Spec => "spec",
+            Self::Finding => "finding",
+            Self::Gotcha => "gotcha",
+            Self::Risk => "risk",
+            Self::Handoff => "handoff",
+            Self::Progress => "progress",
+            Self::Postmortem => "postmortem",
+            Self::Brief => "brief",
+            Self::Freeform => "freeform",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for MemoryKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "decision" => Ok(Self::Decision),
+            "spec" => Ok(Self::Spec),
+            "finding" => Ok(Self::Finding),
+            "gotcha" => Ok(Self::Gotcha),
+            "risk" => Ok(Self::Risk),
+            "handoff" => Ok(Self::Handoff),
+            "progress" => Ok(Self::Progress),
+            "postmortem" => Ok(Self::Postmortem),
+            "brief" => Ok(Self::Brief),
+            "freeform" => Ok(Self::Freeform),
+            other => Err(format!(
+                "Invalid memory kind `{}`. Expected one of: {}",
+                other,
+                Self::values().join(", ")
+            )),
+        }
+    }
+}
+
+impl Serialize for MemoryKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemoryKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryNamespace {
+    Global,
+    Task,
+    Card(String),
+    Agent(String),
+}
+
+impl MemoryNamespace {
+    fn values() -> &'static [&'static str] {
+        &["global", "task", "card:<card-id>", "agent:<agent-id>"]
+    }
+}
+
+impl Default for MemoryNamespace {
+    fn default() -> Self {
+        Self::Task
+    }
+}
+
+impl fmt::Display for MemoryNamespace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global => f.write_str("global"),
+            Self::Task => f.write_str("task"),
+            Self::Card(card_id) => write!(f, "card:{}", card_id),
+            Self::Agent(agent_id) => write!(f, "agent:{}", agent_id),
+        }
+    }
+}
+
+impl FromStr for MemoryNamespace {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let trimmed = value.trim();
+        let lowered = trimmed.to_ascii_lowercase();
+        if lowered == "global" {
+            return Ok(Self::Global);
+        }
+        if lowered == "task" {
+            return Ok(Self::Task);
+        }
+        if lowered.starts_with("card:") {
+            let id = trimmed[5..].trim();
+            if id.is_empty() {
+                return Err("Invalid memory namespace `card:`. Card id cannot be empty".to_string());
+            }
+            return Ok(Self::Card(id.to_string()));
+        }
+        if lowered.starts_with("agent:") {
+            let id = trimmed[6..].trim();
+            if id.is_empty() {
+                return Err(
+                    "Invalid memory namespace `agent:`. Agent id cannot be empty".to_string(),
+                );
+            }
+            return Ok(Self::Agent(id.to_string()));
+        }
+        Err(format!(
+            "Invalid memory namespace `{}`. Expected one of: {}",
+            trimmed,
+            Self::values().join(", ")
+        ))
+    }
+}
+
+impl Serialize for MemoryNamespace {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemoryNamespace {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryStatus {
+    Active,
+    Archived,
+    Superseded,
+}
+
+impl MemoryStatus {
+    fn values() -> &'static [&'static str] {
+        &["active", "archived", "superseded"]
+    }
+}
+
+impl Default for MemoryStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+impl fmt::Display for MemoryStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+            Self::Superseded => "superseded",
+        };
+        f.write_str(value)
+    }
+}
+
+impl FromStr for MemoryStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "archived" => Ok(Self::Archived),
+            "superseded" => Ok(Self::Superseded),
+            other => Err(format!(
+                "Invalid memory status `{}`. Expected one of: {}",
+                other,
+                Self::values().join(", ")
+            )),
+        }
+    }
+}
+
+impl Serialize for MemoryStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for MemoryStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskMemoryFrontmatter {
+    pub created_at: Option<String>,
+    pub task_id: Option<String>,
+    pub role: Option<String>,
+    pub agent_id: Option<String>,
+    pub card_id: Option<String>,
+    pub title: Option<String>,
+    pub tags: Vec<String>,
+    pub kind: MemoryKind,
+    pub namespace: MemoryNamespace,
+    pub pinned: bool,
+    pub supersedes: Option<String>,
+    pub status: MemoryStatus,
+}
+
+impl Default for TaskMemoryFrontmatter {
+    fn default() -> Self {
+        Self {
+            created_at: None,
+            task_id: None,
+            role: None,
+            agent_id: None,
+            card_id: None,
+            title: None,
+            tags: Vec::new(),
+            kind: MemoryKind::default(),
+            namespace: MemoryNamespace::default(),
+            pinned: false,
+            supersedes: None,
+            status: MemoryStatus::default(),
+        }
+    }
+}
+
+impl TaskMemoryFrontmatter {
+    pub fn from_yaml(frontmatter: &str) -> Result<Self, String> {
+        let mapping = if frontmatter.trim().is_empty() {
+            YamlMapping::new()
+        } else {
+            match serde_yaml::from_str::<YamlValue>(frontmatter)
+                .map_err(|e| format!("Failed to parse memory frontmatter: {}", e))?
+            {
+                YamlValue::Mapping(mapping) => mapping,
+                YamlValue::Null => YamlMapping::new(),
+                _ => return Err("Memory frontmatter must be a YAML mapping".to_string()),
+            }
+        };
+
+        let kind = yaml_string(&mapping, "kind")
+            .map(|value| value.parse::<MemoryKind>())
+            .transpose()?
+            .unwrap_or_default();
+        let namespace = yaml_string(&mapping, "namespace")
+            .map(|value| value.parse::<MemoryNamespace>())
+            .transpose()?
+            .unwrap_or_default();
+        let status = yaml_string(&mapping, "status")
+            .map(|value| value.parse::<MemoryStatus>())
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self {
+            created_at: yaml_string(&mapping, "created_at"),
+            task_id: yaml_string(&mapping, "task_id"),
+            role: yaml_string(&mapping, "role"),
+            agent_id: yaml_string(&mapping, "agent_id"),
+            card_id: yaml_string(&mapping, "card_id"),
+            title: yaml_string(&mapping, "title"),
+            tags: yaml_string_list(&mapping, "tags")?,
+            kind,
+            namespace,
+            pinned: yaml_bool(&mapping, "pinned")?.unwrap_or(false),
+            supersedes: yaml_string(&mapping, "supersedes"),
+            status,
+        })
+    }
+
+    pub fn to_yaml_block(&self) -> String {
+        let mut frontmatter = String::from("---\n");
+        push_yaml_string(&mut frontmatter, "created_at", self.created_at.as_deref());
+        push_yaml_string(&mut frontmatter, "task_id", self.task_id.as_deref());
+        push_yaml_string(&mut frontmatter, "role", self.role.as_deref());
+        push_yaml_string(&mut frontmatter, "agent_id", self.agent_id.as_deref());
+        push_yaml_string(&mut frontmatter, "card_id", self.card_id.as_deref());
+        push_yaml_string(&mut frontmatter, "title", self.title.as_deref());
+        if !self.tags.is_empty() {
+            let tags = self
+                .tags
+                .iter()
+                .map(|tag| yaml_scalar(tag))
+                .collect::<Vec<_>>()
+                .join(", ");
+            frontmatter.push_str(&format!("tags: [{}]\n", tags));
+        }
+        if self.kind != MemoryKind::default() {
+            frontmatter.push_str(&format!("kind: {}\n", self.kind));
+        }
+        if self.namespace != MemoryNamespace::default() {
+            frontmatter.push_str(&format!(
+                "namespace: {}\n",
+                yaml_scalar(&self.namespace.to_string())
+            ));
+        }
+        if self.pinned {
+            frontmatter.push_str("pinned: true\n");
+        }
+        push_yaml_string(&mut frontmatter, "supersedes", self.supersedes.as_deref());
+        if self.status != MemoryStatus::default() {
+            frontmatter.push_str(&format!("status: {}\n", self.status));
+        }
+        frontmatter.push_str("---");
+        frontmatter
+    }
+}
+
+fn mapping_value<'a>(mapping: &'a YamlMapping, key: &str) -> Option<&'a YamlValue> {
+    mapping.get(&YamlValue::String(key.to_string()))
+}
+
+fn yaml_value_string(value: &YamlValue) -> Option<String> {
+    match value {
+        YamlValue::String(value) => Some(value.clone()),
+        YamlValue::Number(value) => Some(value.to_string()),
+        YamlValue::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn yaml_string(mapping: &YamlMapping, key: &str) -> Option<String> {
+    mapping_value(mapping, key).and_then(yaml_value_string)
+}
+
+fn yaml_string_list(mapping: &YamlMapping, key: &str) -> Result<Vec<String>, String> {
+    let Some(value) = mapping_value(mapping, key) else {
+        return Ok(Vec::new());
+    };
+    match value {
+        YamlValue::Sequence(values) => values
+            .iter()
+            .map(|value| {
+                yaml_value_string(value)
+                    .ok_or_else(|| format!("Memory frontmatter `{}` entries must be strings", key))
+            })
+            .collect(),
+        YamlValue::String(value) => Ok(value
+            .split(',')
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect()),
+        _ => Err(format!(
+            "Memory frontmatter `{}` must be a string or string list",
+            key
+        )),
+    }
+}
+
+fn yaml_bool(mapping: &YamlMapping, key: &str) -> Result<Option<bool>, String> {
+    let Some(value) = mapping_value(mapping, key) else {
+        return Ok(None);
+    };
+    match value {
+        YamlValue::Bool(value) => Ok(Some(*value)),
+        YamlValue::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(Some(true)),
+            "false" => Ok(Some(false)),
+            _ => Err(format!("Memory frontmatter `{}` must be a boolean", key)),
+        },
+        _ => Err(format!("Memory frontmatter `{}` must be a boolean", key)),
+    }
+}
+
+fn push_yaml_string(frontmatter: &mut String, key: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        frontmatter.push_str(&format!("{}: {}\n", key, yaml_scalar(value)));
+    }
+}
+
+fn yaml_scalar(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value.trim() == value
+        && !matches!(value, "true" | "false" | "null" | "~")
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '/' | '.' | '@'));
+    if safe {
+        value.to_string()
+    } else {
+        yaml_quote(value)
+    }
+}
+
+fn yaml_quote(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+fn split_memory_frontmatter(content: &str) -> Result<(Option<&str>, &str), String> {
+    let delimiter_len = if content.starts_with("---\r\n") {
+        5
+    } else if content.starts_with("---\n") {
+        4
+    } else {
+        return Ok((None, content));
+    };
+
+    let mut position = delimiter_len;
+    while position < content.len() {
+        let line_end = content[position..]
+            .find('\n')
+            .map(|offset| position + offset + 1)
+            .unwrap_or(content.len());
+        let line = &content[position..line_end];
+        let trimmed = line.trim_end_matches(&['\r', '\n'][..]).trim();
+        if trimmed == "---" {
+            return Ok((
+                Some(&content[delimiter_len..position]),
+                &content[line_end..],
+            ));
+        }
+        position = line_end;
+    }
+
+    Err("Invalid memory file: missing closing frontmatter delimiter".to_string())
+}
+
+fn parse_memory_file(content: &str) -> Result<(TaskMemoryFrontmatter, String), String> {
+    let (frontmatter_text, body) = split_memory_frontmatter(content)?;
+    let frontmatter = TaskMemoryFrontmatter::from_yaml(frontmatter_text.unwrap_or(""))?;
+    Ok((frontmatter, body.trim_start_matches('\n').to_string()))
+}
+
+fn render_memory_file(frontmatter: &TaskMemoryFrontmatter, body: &str) -> String {
+    format!(
+        "{}\n\n{}",
+        frontmatter.to_yaml_block(),
+        body.trim_start_matches('\n')
+    )
+}
+
+fn resolve_memory_namespace(
+    namespace_arg: Option<&str>,
+    card_id: Option<&str>,
+) -> Result<MemoryNamespace, String> {
+    if let Some(namespace) = namespace_arg {
+        if namespace.trim().is_empty() {
+            return Ok(MemoryNamespace::default());
+        }
+        return namespace.parse();
+    }
+    if let Some(card_id) = card_id {
+        return Ok(MemoryNamespace::Card(card_id.to_string()));
+    }
+    Ok(MemoryNamespace::default())
+}
+
+fn optional_string_arg(
+    args: &HashMap<String, Value>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    match args.get(name) {
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
+        }
+        Some(Value::String(_)) | Some(Value::Null) | None => Ok(None),
+        Some(value) => Err(format!("argument `{}` is not a string: {:?}", name, value)),
+    }
+}
+
+fn optional_bool_arg(args: &HashMap<String, Value>, name: &str) -> Result<Option<bool>, String> {
+    match args.get(name) {
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(Value::Null) | None => Ok(None),
+        Some(value) => Err(format!("argument `{}` is not a boolean: {:?}", name, value)),
+    }
+}
+
+fn safe_relative_path(path: &Path) -> bool {
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+async fn find_superseded_memory_path(
+    memories_dir: &Path,
+    reference: &str,
+) -> Result<PathBuf, String> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err("supersedes cannot be empty".to_string());
+    }
+
+    let reference_path = Path::new(reference);
+    if !safe_relative_path(reference_path) {
+        return Err(
+            "supersedes must be a filename or relative path inside the task memories directory"
+                .to_string(),
+        );
+    }
+
+    let direct_path = memories_dir.join(reference_path);
+    if direct_path.is_file() {
+        return Ok(direct_path);
+    }
+
+    if reference_path.components().count() == 1 {
+        for entry in WalkDir::new(memories_dir)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.file_name().and_then(|name| name.to_str()) == Some(reference) {
+                return Ok(path.to_path_buf());
+            }
+        }
+    }
+
+    Err(format!(
+        "Memory to supersede not found: {} in {}",
+        reference,
+        memories_dir.display()
+    ))
+}
+
+async fn mark_memory_superseded_path(path: &Path) -> Result<(), String> {
+    let content = fs::read_to_string(path).await.map_err(|e| {
+        format!(
+            "Failed to read memory to supersede {}: {}",
+            path.display(),
+            e
+        )
+    })?;
+    let (mut frontmatter, body) = parse_memory_file(&content)?;
+    frontmatter.status = MemoryStatus::Superseded;
+    let updated = render_memory_file(&frontmatter, &body);
+    atomic_write_text(path, &updated).await
+}
+
+async fn mark_memory_superseded(memories_dir: &Path, reference: &str) -> Result<PathBuf, String> {
+    let path = find_superseded_memory_path(memories_dir, reference).await?;
+    mark_memory_superseded_path(&path).await?;
+    Ok(path)
+}
+
+async fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Invalid memory path: missing parent".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid memory path: missing file name".to_string())?;
+    let tmp_path = parent.join(format!(".{}.tmp-{}", file_name, Uuid::new_v4()));
+    let write_result = async {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .await
+            .map_err(|e| format!("Failed to create temporary memory file: {}", e))?;
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write temporary memory file: {}", e))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush temporary memory file: {}", e))?;
+        #[cfg(windows)]
+        if path.exists() {
+            fs::remove_file(path)
+                .await
+                .map_err(|e| format!("Failed to replace memory file: {}", e))?;
+        }
+        fs::rename(&tmp_path, path)
+            .await
+            .map_err(|e| format!("Failed to replace memory file: {}", e))
+    }
+    .await;
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path).await;
+    }
+    write_result
+}
 
 pub async fn get_task_memories_dir(
     gcx: Arc<GlobalContext>,
@@ -77,8 +732,19 @@ impl Tool for ToolTaskMemorySave {
             },
             experimental: false,
             allow_parallel: false,
-            description: "Saves a memory/note for the current task. Use this to record decisions, assumptions, API quirks, investigation results, or any useful information that should be shared with other agents and future planner iterations. Memories are automatically injected into all task chats.".to_string(),
-            input_schema: json_schema_from_params(&[("content", "string", "The content to save. Can be markdown formatted."), ("title", "string", "Optional title for the memory (used in filename)."), ("tags", "string", "Optional comma-separated tags for categorization.")], &["content"]),
+            description: "Saves a typed memory/note for the current task. Use this to record decisions, specs, findings, risks, handoffs, progress, gotchas, or any useful information that should be shared with other agents and future planner iterations. Memories are automatically injected into all task chats.".to_string(),
+            input_schema: json_schema_from_params(
+                &[
+                    ("content", "string", "The content to save. Can be markdown formatted."),
+                    ("title", "string", "Optional title for the memory (used in filename)."),
+                    ("tags", "string", "Optional comma-separated tags for categorization."),
+                    ("kind", "string", "Optional memory kind: decision, spec, finding, gotcha, risk, handoff, progress, postmortem, brief, or freeform. Defaults to freeform."),
+                    ("namespace", "string", "Optional namespace: global, task, card:T-N, or agent:A-id. Defaults to task, or card:{card_id} inside task-agent card context."),
+                    ("pinned", "boolean", "If true, mark this memory as pinned. Defaults to false."),
+                    ("supersedes", "string", "Optional filename or relative path of an existing memory to mark as superseded."),
+                ],
+                &["content"],
+            ),
             output_schema: None,
             annotations: None,
         }
@@ -92,10 +758,7 @@ impl Tool for ToolTaskMemorySave {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let (gcx, task_meta) = {
             let cgcx = ccx.lock().await;
-            (
-                cgcx.app.gcx.clone(),
-                cgcx.task_meta.clone(),
-            )
+            (cgcx.app.gcx.clone(), cgcx.task_meta.clone())
         };
 
         let task_id = task_meta
@@ -129,57 +792,74 @@ impl Tool for ToolTaskMemorySave {
             })
             .unwrap_or_default();
 
-        let memories_dir = get_task_memories_dir(gcx.clone(), &task_id).await?;
-        fs::create_dir_all(&memories_dir)
-            .await
-            .map_err(|e| format!("Failed to create memories directory: {}", e))?;
-
-        let filename = generate_memory_filename(title.as_deref(), &content);
-        let file_path = memories_dir.join(&filename);
-
         let role = task_meta
             .as_ref()
             .map(|m| m.role.clone())
             .unwrap_or_else(|| "unknown".to_string());
         let agent_id = task_meta.as_ref().and_then(|m| m.agent_id.clone());
         let card_id = task_meta.as_ref().and_then(|m| m.card_id.clone());
+        let kind = optional_string_arg(args, "kind")?
+            .map(|value| value.parse::<MemoryKind>())
+            .transpose()?
+            .unwrap_or_default();
+        let namespace = resolve_memory_namespace(
+            optional_string_arg(args, "namespace")?.as_deref(),
+            card_id.as_deref(),
+        )?;
+        let pinned = optional_bool_arg(args, "pinned")?.unwrap_or(false);
+        let supersedes = optional_string_arg(args, "supersedes")?;
 
-        let mut frontmatter = String::from("---\n");
-        frontmatter.push_str(&format!("created_at: {}\n", Utc::now().to_rfc3339()));
-        frontmatter.push_str(&format!("task_id: {}\n", task_id));
-        frontmatter.push_str(&format!("role: {}\n", role));
-        if let Some(aid) = &agent_id {
-            frontmatter.push_str(&format!("agent_id: {}\n", aid));
-        }
-        if let Some(cid) = &card_id {
-            frontmatter.push_str(&format!("card_id: {}\n", cid));
-        }
-        if let Some(t) = &title {
-            frontmatter.push_str(&format!("title: {}\n", t));
-        }
-        if !tags.is_empty() {
-            frontmatter.push_str(&format!("tags: [{}]\n", tags.join(", ")));
-        }
-        frontmatter.push_str("---\n\n");
+        let memories_dir = get_task_memories_dir(gcx.clone(), &task_id).await?;
+        fs::create_dir_all(&memories_dir)
+            .await
+            .map_err(|e| format!("Failed to create memories directory: {}", e))?;
 
-        let full_content = if let Some(t) = &title {
-            format!("{}# {}\n\n{}", frontmatter, t, content)
-        } else {
-            format!("{}{}", frontmatter, content)
+        if let Some(supersedes) = &supersedes {
+            mark_memory_superseded(&memories_dir, supersedes).await?;
+        }
+
+        let filename = generate_memory_filename(title.as_deref(), &content);
+        let file_path = memories_dir.join(&filename);
+
+        let frontmatter = TaskMemoryFrontmatter {
+            created_at: Some(Utc::now().to_rfc3339()),
+            task_id: Some(task_id.clone()),
+            role: Some(role.clone()),
+            agent_id: agent_id.clone(),
+            card_id: card_id.clone(),
+            title: title.clone(),
+            tags,
+            kind,
+            namespace: namespace.clone(),
+            pinned,
+            supersedes: supersedes.clone(),
+            status: MemoryStatus::Active,
         };
 
-        fs::write(&file_path, &full_content)
+        let body = if let Some(t) = &title {
+            format!("# {}\n\n{}", t, content)
+        } else {
+            content
+        };
+        let full_content = render_memory_file(&frontmatter, &body);
+
+        atomic_write_text(&file_path, &full_content)
             .await
             .map_err(|e| format!("Failed to write memory file: {}", e))?;
 
         info!("Task memory saved: {}", file_path.display());
 
-        let result = format!(
-            "Memory saved successfully.\nFile: {}\nTask: {}\nRole: {}",
+        let mut result = format!(
+            "Memory saved successfully.\nFile: {}\nTask: {}\nRole: {}\nKind: {}\nNamespace: {}",
             file_path.display(),
             task_id,
-            role
+            role,
+            kind,
+            namespace
         );
+        if let Some(supersedes) = &supersedes {
+            result.push_str(&format!("\nSupersedes: {}", supersedes));
+        }
 
         Ok((
             false,
@@ -233,10 +913,7 @@ impl Tool for ToolTaskMemoriesGet {
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let (gcx, task_meta) = {
             let cgcx = ccx.lock().await;
-            (
-                cgcx.app.gcx.clone(),
-                cgcx.task_meta.clone(),
-            )
+            (cgcx.app.gcx.clone(), cgcx.task_meta.clone())
         };
 
         let task_id = task_meta
@@ -424,4 +1101,130 @@ pub async fn load_task_memories(
     memories.sort_by(|a, b| b.0.cmp(&a.0));
 
     Ok(memories)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn memory_enums_parse_display_round_trip() {
+        for kind in [
+            MemoryKind::Decision,
+            MemoryKind::Spec,
+            MemoryKind::Finding,
+            MemoryKind::Gotcha,
+            MemoryKind::Risk,
+            MemoryKind::Handoff,
+            MemoryKind::Progress,
+            MemoryKind::Postmortem,
+            MemoryKind::Brief,
+            MemoryKind::Freeform,
+        ] {
+            assert_eq!(kind.to_string().parse::<MemoryKind>().unwrap(), kind);
+        }
+
+        for namespace in [
+            MemoryNamespace::Global,
+            MemoryNamespace::Task,
+            MemoryNamespace::Card("T-1".to_string()),
+            MemoryNamespace::Agent("A-1".to_string()),
+        ] {
+            assert_eq!(
+                namespace.to_string().parse::<MemoryNamespace>().unwrap(),
+                namespace
+            );
+        }
+
+        for status in [
+            MemoryStatus::Active,
+            MemoryStatus::Archived,
+            MemoryStatus::Superseded,
+        ] {
+            assert_eq!(status.to_string().parse::<MemoryStatus>().unwrap(), status);
+        }
+    }
+
+    #[test]
+    fn memory_namespace_card_serializes_with_prefix() {
+        let namespace = MemoryNamespace::Card("T-N".to_string());
+        let value = serde_json::to_value(&namespace).unwrap();
+        assert_eq!(value, json!("card:T-N"));
+        let parsed: MemoryNamespace = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, namespace);
+    }
+
+    #[test]
+    fn legacy_memory_file_loads_new_fields_with_defaults() {
+        let content = "---\ncreated_at: 2026-05-22T00:00:00Z\ntask_id: task-1\nrole: agents\ntags: [old, memory]\n---\n\nLegacy body";
+        let (frontmatter, body) = parse_memory_file(content).unwrap();
+
+        assert_eq!(frontmatter.kind, MemoryKind::Freeform);
+        assert_eq!(frontmatter.namespace, MemoryNamespace::Task);
+        assert!(!frontmatter.pinned);
+        assert_eq!(frontmatter.status, MemoryStatus::Active);
+        assert_eq!(frontmatter.supersedes, None);
+        assert_eq!(
+            frontmatter.tags,
+            vec!["old".to_string(), "memory".to_string()]
+        );
+        assert_eq!(body, "Legacy body");
+    }
+
+    #[test]
+    fn frontmatter_writer_omits_default_new_fields() {
+        let frontmatter = TaskMemoryFrontmatter {
+            created_at: Some("2026-05-22T00:00:00Z".to_string()),
+            task_id: Some("task-1".to_string()),
+            role: Some("planner".to_string()),
+            ..Default::default()
+        };
+        let yaml = frontmatter.to_yaml_block();
+
+        assert!(!yaml.contains("kind:"));
+        assert!(!yaml.contains("namespace:"));
+        assert!(!yaml.contains("pinned:"));
+        assert!(!yaml.contains("supersedes:"));
+        assert!(!yaml.contains("status:"));
+    }
+
+    #[tokio::test]
+    async fn supersedes_updates_referenced_memory_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("old.md");
+        let frontmatter = TaskMemoryFrontmatter {
+            title: Some("Old".to_string()),
+            kind: MemoryKind::Finding,
+            ..Default::default()
+        };
+        tokio::fs::write(&path, render_memory_file(&frontmatter, "Old body"))
+            .await
+            .unwrap();
+
+        let updated_path = mark_memory_superseded(temp.path(), "old.md").await.unwrap();
+
+        assert_eq!(updated_path, path);
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        let (updated_frontmatter, body) = parse_memory_file(&text).unwrap();
+        assert_eq!(updated_frontmatter.kind, MemoryKind::Finding);
+        assert_eq!(updated_frontmatter.status, MemoryStatus::Superseded);
+        assert_eq!(body, "Old body");
+    }
+
+    #[test]
+    fn card_id_auto_sets_memory_namespace() {
+        assert_eq!(
+            resolve_memory_namespace(None, Some("T-9")).unwrap(),
+            MemoryNamespace::Card("T-9".to_string())
+        );
+        assert_eq!(
+            resolve_memory_namespace(Some("task"), Some("T-9")).unwrap(),
+            MemoryNamespace::Task
+        );
+        assert_eq!(
+            resolve_memory_namespace(None, None).unwrap(),
+            MemoryNamespace::Task
+        );
+    }
 }
