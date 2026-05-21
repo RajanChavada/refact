@@ -273,8 +273,8 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
           source: "speech",
           controls: activeSpeech.controls,
           diagnostic: activeSpeech.chat_id
-            ? (diagnostics.find((d) => d.chat_id === activeSpeech.chat_id) ??
-              null)
+            ? diagnostics.find((d) => d.chat_id === activeSpeech.chat_id) ??
+              null
             : null,
           speechIntent: activeSpeech.speech_intent,
         };

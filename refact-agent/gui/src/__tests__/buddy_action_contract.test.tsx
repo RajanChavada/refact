@@ -223,15 +223,13 @@ function setupCompanionApiHandlers() {
         message_count: 0,
       }),
     ),
-    http.post(
-      "http://127.0.0.1:8001/v1/buddy/investigation-context",
-      async () =>
-        HttpResponse.json({
-          logs: "logs",
-          internal_context: "context",
-          repo_owner: "smallcloudai",
-          repo_name: "refact",
-        }),
+    http.post("http://127.0.0.1:8001/v1/buddy/investigation-context", () =>
+      HttpResponse.json({
+        logs: "logs",
+        internal_context: "context",
+        repo_owner: "smallcloudai",
+        repo_name: "refact",
+      }),
     ),
     http.post("http://127.0.0.1:8001/v1/chats/:id/commands", () =>
       HttpResponse.json({ ok: true }),
@@ -467,9 +465,8 @@ describe("buddy action execution contract", () => {
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
         HttpResponse.json({ opportunities: [opportunity] }),
       ),
-      http.post(
-        "http://127.0.0.1:8001/v1/buddy/opportunities/:id/accept",
-        () => HttpResponse.json({ detail: "accept failed" }, { status: 500 }),
+      http.post("http://127.0.0.1:8001/v1/buddy/opportunities/:id/accept", () =>
+        HttpResponse.json({ detail: "accept failed" }, { status: 500 }),
       ),
     );
     const store = setUpStore();
@@ -581,9 +578,7 @@ describe("buddy action execution contract", () => {
       ],
     });
     store.dispatch(
-      setBuddySnapshot(
-        makeSnapshot("Companion", { runtime_queue: [runtime] }),
-      ),
+      setBuddySnapshot(makeSnapshot("Companion", { runtime_queue: [runtime] })),
     );
 
     render(<BuddyChatCompanion chatId="chat-a" />, { store });
@@ -619,9 +614,7 @@ describe("buddy action execution contract", () => {
       ],
     });
     store.dispatch(
-      setBuddySnapshot(
-        makeSnapshot("Companion", { runtime_queue: [runtime] }),
-      ),
+      setBuddySnapshot(makeSnapshot("Companion", { runtime_queue: [runtime] })),
     );
 
     try {
@@ -635,11 +628,10 @@ describe("buddy action execution contract", () => {
           ),
         ).not.toBeNull();
       });
-      const button = await screen.findByRole(
-        "button",
-        { name: "Dismiss" },
-        { hidden: true },
-      );
+      const button = await screen.findByRole("button", {
+        name: "Dismiss",
+        hidden: true,
+      });
       fireEvent.click(button);
 
       await waitFor(() => {

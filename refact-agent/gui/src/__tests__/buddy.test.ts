@@ -379,15 +379,13 @@ function setupBuddyCompanionHandlers() {
         message_count: 0,
       }),
     ),
-    http.post(
-      "http://127.0.0.1:8001/v1/buddy/investigation-context",
-      async () =>
-        HttpResponse.json({
-          logs: "logs",
-          internal_context: "context",
-          repo_owner: "smallcloudai",
-          repo_name: "refact",
-        }),
+    http.post("http://127.0.0.1:8001/v1/buddy/investigation-context", () =>
+      HttpResponse.json({
+        logs: "logs",
+        internal_context: "context",
+        repo_owner: "smallcloudai",
+        repo_name: "refact",
+      }),
     ),
     http.post("http://127.0.0.1:8001/v1/chats/:id/commands", () =>
       HttpResponse.json({ ok: true }),
@@ -568,9 +566,8 @@ describe("Buddy chat notification freshness", () => {
       http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
         HttpResponse.json({ opportunities: [opportunity] }),
       ),
-      http.post(
-        "http://127.0.0.1:8001/v1/buddy/opportunities/:id/accept",
-        () => HttpResponse.json({ detail: "accept failed" }, { status: 500 }),
+      http.post("http://127.0.0.1:8001/v1/buddy/opportunities/:id/accept", () =>
+        HttpResponse.json({ detail: "accept failed" }, { status: 500 }),
       ),
     );
     store.dispatch(
@@ -588,8 +585,9 @@ describe("Buddy chat notification freshness", () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(notificationElement(container, "opportunity:opp-accept-fails"))
-        .not.toBeNull();
+      expect(
+        notificationElement(container, "opportunity:opp-accept-fails"),
+      ).not.toBeNull();
       expect(screen.getByText(/accept failed/i)).toBeInTheDocument();
     });
   });
@@ -624,8 +622,9 @@ describe("Buddy chat notification freshness", () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(notificationElement(container, "opportunity:opp-dismiss-fails"))
-        .not.toBeNull();
+      expect(
+        notificationElement(container, "opportunity:opp-dismiss-fails"),
+      ).not.toBeNull();
       expect(screen.getByText(/dismiss failed/i)).toBeInTheDocument();
     });
   });
@@ -705,11 +704,10 @@ describe("Buddy chat notification freshness", () => {
         container,
         "runtime:runtime-dismiss-fails",
       );
-      const button = await screen.findByRole(
-        "button",
-        { name: "Dismiss" },
-        { hidden: true },
-      );
+      const button = await screen.findByRole("button", {
+        name: "Dismiss",
+        hidden: true,
+      });
       fireEvent.click(button);
 
       await waitFor(() => {
@@ -919,7 +917,9 @@ describe("Buddy chat notification freshness", () => {
     expect(source).toContain(
       "dispatch(dismissRuntimeEvent(notification.sourceId))",
     );
-    expect(source).toContain("await dismissMutation(notification.sourceId).unwrap()");
+    expect(source).toContain(
+      "await dismissMutation(notification.sourceId).unwrap()",
+    );
   });
 });
 
@@ -2407,7 +2407,6 @@ describe("Buddy frontend error reporting helpers", () => {
 });
 
 describe("buddy opportunities, pulse, and drafts", () => {
-
   function makeDraft(overrides?: Partial<BuddyDraft>): BuddyDraft {
     return {
       id: "draft-1",

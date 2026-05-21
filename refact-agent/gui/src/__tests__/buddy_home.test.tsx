@@ -85,13 +85,13 @@ vi.mock("../features/Buddy/BuddyCharacter", async () => {
       sceneYPercent?: number;
       sceneDepthScale?: number;
       speechText?: string | null;
-      speechControls?: Array<{
+      speechControls?: {
         id: string;
         label: string;
         action: string;
         action_param?: string;
         style: string;
-      }>;
+      }[];
       onSpeechControl?: (control: {
         id: string;
         label: string;
@@ -609,13 +609,10 @@ describe("BuddyHome_renders_all_sections", () => {
       http.get("http://127.0.0.1:8001/v1/setup/status", () =>
         HttpResponse.json({ configured: true, reasons: [], detail: {} }),
       ),
-      http.post(
-        "http://127.0.0.1:8001/v1/buddy/runtime/:id/dismiss",
-        () => {
-          dismissCalled = true;
-          return HttpResponse.json({ detail: "offline" }, { status: 503 });
-        },
-      ),
+      http.post("http://127.0.0.1:8001/v1/buddy/runtime/:id/dismiss", () => {
+        dismissCalled = true;
+        return HttpResponse.json({ detail: "offline" }, { status: 503 });
+      }),
     );
     const unhandled = vi.fn();
     window.addEventListener("unhandledrejection", unhandled);
@@ -783,13 +780,10 @@ describe("BuddyHome_renders_all_sections", () => {
       http.get("http://127.0.0.1:8001/v1/setup/status", () =>
         HttpResponse.json({ configured: true, reasons: [], detail: {} }),
       ),
-      http.post(
-        "http://127.0.0.1:8001/v1/buddy/runtime/:id/dismiss",
-        () => {
-          dismissCalled = true;
-          return HttpResponse.json({ detail: "offline" }, { status: 503 });
-        },
-      ),
+      http.post("http://127.0.0.1:8001/v1/buddy/runtime/:id/dismiss", () => {
+        dismissCalled = true;
+        return HttpResponse.json({ detail: "offline" }, { status: 503 });
+      }),
     );
     const unhandled = vi.fn();
     window.addEventListener("unhandledrejection", unhandled);
@@ -827,7 +821,9 @@ describe("BuddyHome_renders_all_sections", () => {
       "features/Buddy/BuddyDashboardScene.tsx",
     );
     const panel = await readGuiSource("features/Buddy/BuddyPanel.tsx");
-    const executor = await readGuiSource("features/Buddy/executeBuddyAction.ts");
+    const executor = await readGuiSource(
+      "features/Buddy/executeBuddyAction.ts",
+    );
 
     expect(home).toContain(
       "void dismissRuntimeMutation(heroSpeech.runtimeEventId)",
