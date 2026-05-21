@@ -15,6 +15,9 @@ use crate::ext::skills_context::{
     build_skills_context_messages_tracked, build_skills_prompt_text, SkillsTrackingInfo,
     SKILLS_CONTEXT_MARKER,
 };
+use crate::tools::tool_task_memory::{
+    MemoryKind, MemoryNamespace, MemoryStatus, TaskMemoryFrontmatter,
+};
 use crate::yaml_configs::project_information::load_project_information_config;
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile, canonical_mode_id};
 use crate::tasks::storage::infer_task_id_from_chat_id;
@@ -404,6 +407,8 @@ mod tests {
     use refact_buddy_core::runtime_queue::RuntimeQueue;
     use refact_buddy_core::settings::BuddySettings;
     use crate::call_validation::{ChatContent, ChatMeta};
+    use crate::tasks::types::{BoardCard, TaskBoard};
+    use std::path::{Path, PathBuf};
     use tokio::sync::broadcast;
 
     struct ModePromptCase {
@@ -522,6 +527,297 @@ mod tests {
             ChatContent::SimpleText(text) => text,
             _ => panic!("system content must be simple text"),
         }
+    }
+
+    async fn task_memory_test_app(task_id: &str) -> (tempfile::TempDir, AppState, PathBuf) {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let temp = tempfile::tempdir().unwrap();
+        {
+            *gcx.documents_state.workspace_folders.lock().unwrap() = vec![temp.path().to_path_buf()];
+        }
+        let task_dir = temp.path().join(".refact/tasks").join(task_id);
+        tokio::fs::create_dir_all(task_dir.join("memories"))
+            .await
+            .unwrap();
+        let app = AppState::from_gcx(gcx).await;
+        (temp, app, task_dir)
+    }
+
+    async fn write_task_memory(task_dir: &Path, name: &str, frontmatter: &str, body: &str) {
+        tokio::fs::write(
+            task_dir.join("memories").join(name),
+            format!("---\n{}\n---\n\n{}", frontmatter.trim(), body),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn task_meta(task_id: &str, role: &str, card_id: Option<&str>) -> crate::chat::types::TaskMeta {
+        crate::chat::types::TaskMeta {
+            task_id: task_id.to_string(),
+            role: role.to_string(),
+            agent_id: None,
+            card_id: card_id.map(|id| id.to_string()),
+            planner_chat_id: None,
+        }
+    }
+
+    fn board_card(id: &str, column: &str, depends_on: Vec<&str>) -> BoardCard {
+        let now = chrono::Utc::now().to_rfc3339();
+        BoardCard {
+            id: id.to_string(),
+            title: id.to_string(),
+            column: column.to_string(),
+            priority: "P1".to_string(),
+            depends_on: depends_on.into_iter().map(str::to_string).collect(),
+            instructions: String::new(),
+            assignee: None,
+            agent_chat_id: None,
+            status_updates: Vec::new(),
+            final_report: None,
+            final_report_structured: None,
+            created_at: now,
+            started_at: None,
+            last_heartbeat_at: None,
+            completed_at: None,
+            agent_branch: None,
+            agent_worktree: None,
+            agent_worktree_name: None,
+            target_files: Vec::new(),
+        }
+    }
+
+    async fn injected_task_memory_files(
+        app: &AppState,
+        task_id: &str,
+        task_meta: Option<&crate::chat::types::TaskMeta>,
+    ) -> Vec<ContextFile> {
+        let mut messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: ChatContent::SimpleText("hello".to_string()),
+            ..Default::default()
+        }];
+        let mut stream_back_to_user = HasRagResults::new();
+        inject_task_memories(
+            app,
+            &mut messages,
+            &mut stream_back_to_user,
+            Some(task_id.to_string()),
+            task_meta,
+        )
+        .await
+        .unwrap();
+        let message = messages
+            .iter()
+            .find(|message| message.tool_call_id == TASK_MEMORIES_CONTEXT_MARKER)
+            .unwrap();
+        match &message.content {
+            ChatContent::ContextFiles(files) => files.clone(),
+            _ => panic!("task memories must be context files"),
+        }
+    }
+
+    fn combined_task_memory_content(files: &[ContextFile]) -> String {
+        files
+            .iter()
+            .map(|file| file.file_content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn task_memory_injection_skips_archived_and_superseded() {
+        let task_id = "task-memory-archived";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        write_task_memory(
+            &task_dir,
+            "active.md",
+            "created_at: 2026-05-22T00:00:03Z\nnamespace: task",
+            "ACTIVE_MEMORY",
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "archived.md",
+            "created_at: 2026-05-22T00:00:02Z\nnamespace: task\nstatus: archived",
+            "ARCHIVED_MEMORY",
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "superseded.md",
+            "created_at: 2026-05-22T00:00:01Z\nnamespace: task\nstatus: superseded",
+            "SUPERSEDED_MEMORY",
+        )
+        .await;
+
+        let meta = task_meta(task_id, "planner", None);
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains("ACTIVE_MEMORY"));
+        assert!(!content.contains("ARCHIVED_MEMORY"));
+        assert!(!content.contains("SUPERSEDED_MEMORY"));
+        assert!(content.contains(
+            "Showing 1 of 3 memories (2 archived/superseded skipped, 0 dropped over budget)."
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_memory_injection_keeps_pinned_memories_over_budget() {
+        let task_id = "task-memory-pinned";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        let large_body = "x".repeat(MAX_TASK_MEMORY_CONTENT_SIZE + 200);
+        for idx in 0..10 {
+            write_task_memory(
+                &task_dir,
+                &format!("bulk-{}.md", idx),
+                &format!(
+                    "created_at: 2026-05-22T00:00:{:02}Z\nnamespace: task",
+                    idx
+                ),
+                &large_body,
+            )
+            .await;
+        }
+        write_task_memory(
+            &task_dir,
+            "pinned.md",
+            "created_at: 2026-05-22T00:01:00Z\nnamespace: card:other\npinned: true",
+            "PINNED_MEMORY",
+        )
+        .await;
+
+        let meta = task_meta(task_id, "agents", Some("T-1"));
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains("PINNED_MEMORY"));
+        assert!(content.contains("dropped over budget"));
+    }
+
+    #[tokio::test]
+    async fn task_memory_injection_agent_uses_card_global_task_and_dependencies() {
+        let task_id = "task-memory-agent-scope";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        crate::tasks::storage::save_board(
+            app.gcx.clone(),
+            task_id,
+            &TaskBoard {
+                cards: vec![
+                    board_card("T-1", "done", vec![]),
+                    board_card("T-2", "planned", vec![]),
+                    board_card("T-3", "doing", vec!["T-1"]),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        write_task_memory(&task_dir, "global.md", "namespace: global", "GLOBAL_MEMORY").await;
+        write_task_memory(&task_dir, "task.md", "namespace: task", "TASK_MEMORY").await;
+        write_task_memory(
+            &task_dir,
+            "current.md",
+            "namespace: card:T-3",
+            "CURRENT_CARD_MEMORY",
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "dependency.md",
+            "namespace: card:T-1",
+            "DEPENDENCY_MEMORY",
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "other.md",
+            "namespace: card:T-2",
+            "OTHER_CARD_MEMORY",
+        )
+        .await;
+
+        let meta = task_meta(task_id, "agents", Some("T-3"));
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains("GLOBAL_MEMORY"));
+        assert!(content.contains("TASK_MEMORY"));
+        assert!(content.contains("CURRENT_CARD_MEMORY"));
+        assert!(content.contains("DEPENDENCY_MEMORY"));
+        assert!(!content.contains("OTHER_CARD_MEMORY"));
+    }
+
+    #[tokio::test]
+    async fn task_memory_injection_planner_uses_doing_card_global_and_task() {
+        let task_id = "task-memory-planner-scope";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        crate::tasks::storage::save_board(
+            app.gcx.clone(),
+            task_id,
+            &TaskBoard {
+                cards: vec![
+                    board_card("T-1", "doing", vec![]),
+                    board_card("T-2", "planned", vec![]),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        write_task_memory(&task_dir, "global.md", "namespace: global", "GLOBAL_MEMORY").await;
+        write_task_memory(&task_dir, "task.md", "namespace: task", "TASK_MEMORY").await;
+        write_task_memory(
+            &task_dir,
+            "doing.md",
+            "namespace: card:T-1",
+            "DOING_CARD_MEMORY",
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "planned.md",
+            "namespace: card:T-2",
+            "PLANNED_CARD_MEMORY",
+        )
+        .await;
+
+        let meta = task_meta(task_id, "planner", None);
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains("GLOBAL_MEMORY"));
+        assert!(content.contains("TASK_MEMORY"));
+        assert!(content.contains("DOING_CARD_MEMORY"));
+        assert!(!content.contains("PLANNED_CARD_MEMORY"));
+    }
+
+    #[tokio::test]
+    async fn task_memory_injection_budget_footer_counts_drops() {
+        let task_id = "task-memory-budget";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        let large_body = "y".repeat(MAX_TASK_MEMORY_CONTENT_SIZE + 200);
+        for idx in 0..10 {
+            write_task_memory(
+                &task_dir,
+                &format!("memory-{}.md", idx),
+                &format!(
+                    "created_at: 2026-05-22T00:00:{:02}Z\nnamespace: task",
+                    idx
+                ),
+                &large_body,
+            )
+            .await;
+        }
+
+        let meta = task_meta(task_id, "planner", None);
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains(
+            "Showing 8 of 10 memories (0 archived/superseded skipped, 2 dropped over budget)."
+        ));
     }
 
     #[tokio::test]
@@ -798,7 +1094,15 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
             .as_ref()
             .map(|m| m.task_id.clone())
             .or_else(|| infer_task_id_from_chat_id(&chat_meta.chat_id));
-        match inject_task_memories(&app, &mut messages, stream_back_to_user, task_id_opt).await {
+        match inject_task_memories(
+            &app,
+            &mut messages,
+            stream_back_to_user,
+            task_id_opt,
+            task_meta.as_ref(),
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) => {
                 tracing::warn!("Failed to inject task memories: {}", e);
@@ -815,7 +1119,168 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
 
 const TASK_MEMORIES_CONTEXT_MARKER: &str = "task_memories_context";
 const MAX_TASK_MEMORY_CONTENT_SIZE: usize = 3000;
-const MAX_TASK_MEMORIES_TOTAL_SIZE: usize = 80_000;
+const MAX_TASK_MEMORIES_TOTAL_SIZE: usize = 25_000;
+
+struct TaskMemoryForInjection {
+    path: PathBuf,
+    content: String,
+    frontmatter: TaskMemoryFrontmatter,
+    updated_at: String,
+}
+
+fn split_task_memory_frontmatter(content: &str) -> Result<(Option<&str>, &str), String> {
+    let delimiter_len = if content.starts_with("---\r\n") {
+        5
+    } else if content.starts_with("---\n") {
+        4
+    } else {
+        return Ok((None, content));
+    };
+
+    let mut position = delimiter_len;
+    while position < content.len() {
+        let line_end = content[position..]
+            .find('\n')
+            .map(|offset| position + offset + 1)
+            .unwrap_or(content.len());
+        let line = &content[position..line_end];
+        let trimmed = line.trim_end_matches(&['\r', '\n'][..]).trim();
+        if trimmed == "---" {
+            return Ok((
+                Some(&content[delimiter_len..position]),
+                &content[line_end..],
+            ));
+        }
+        position = line_end;
+    }
+
+    Err("Invalid memory file: missing closing frontmatter delimiter".to_string())
+}
+
+fn frontmatter_string_value(mapping: &serde_yaml::Mapping, key: &str) -> Option<String> {
+    mapping
+        .get(&serde_yaml::Value::String(key.to_string()))
+        .and_then(|value| match value {
+            serde_yaml::Value::String(value) => Some(value.clone()),
+            serde_yaml::Value::Number(value) => Some(value.to_string()),
+            serde_yaml::Value::Bool(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
+fn frontmatter_updated_at(frontmatter: &str) -> Option<String> {
+    match serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok()? {
+        serde_yaml::Value::Mapping(mapping) => frontmatter_string_value(&mapping, "updated_at")
+            .or_else(|| frontmatter_string_value(&mapping, "created_at")),
+        _ => None,
+    }
+}
+
+fn parse_task_memory_for_injection(path: &PathBuf, content: &str) -> TaskMemoryForInjection {
+    let (frontmatter, parsed) = match split_task_memory_frontmatter(content) {
+        Ok((frontmatter, _)) => {
+            let parsed = frontmatter
+                .and_then(|text| TaskMemoryFrontmatter::from_yaml(text).ok())
+                .unwrap_or_default();
+            (frontmatter, parsed)
+        }
+        Err(err) => {
+            tracing::warn!("Failed to parse task memory {}: {}", path.display(), err);
+            (None, TaskMemoryFrontmatter::default())
+        }
+    };
+    let updated_at = frontmatter
+        .and_then(frontmatter_updated_at)
+        .or_else(|| parsed.created_at.clone())
+        .or_else(|| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .unwrap_or_default();
+
+    TaskMemoryForInjection {
+        path: path.clone(),
+        content: content.to_string(),
+        frontmatter: parsed,
+        updated_at,
+    }
+}
+
+fn high_signal_memory_kind(kind: MemoryKind) -> bool {
+    matches!(
+        kind,
+        MemoryKind::Decision
+            | MemoryKind::Spec
+            | MemoryKind::Gotcha
+            | MemoryKind::Risk
+            | MemoryKind::Handoff
+            | MemoryKind::Brief
+            | MemoryKind::Postmortem
+    )
+}
+
+fn truncate_task_memory_content(content: &str) -> String {
+    if content.len() > MAX_TASK_MEMORY_CONTENT_SIZE {
+        format!(
+            "{}\n\n[TRUNCATED]",
+            content
+                .chars()
+                .take(MAX_TASK_MEMORY_CONTENT_SIZE)
+                .collect::<String>()
+        )
+    } else {
+        content.to_string()
+    }
+}
+
+fn task_memory_context_file(path: &PathBuf, content: String, usefulness: f32) -> ContextFile {
+    let line_count = content.lines().count().max(1);
+    ContextFile {
+        file_name: path.to_string_lossy().to_string(),
+        file_content: content,
+        line1: 1,
+        line2: line_count,
+        file_rev: None,
+        symbols: vec![],
+        gradient_type: -1,
+        usefulness,
+        skip_pp: true,
+    }
+}
+
+fn task_memory_summary_context_file(content: String) -> ContextFile {
+    task_memory_context_file(&PathBuf::from("(task memories summary)"), content, 50.0)
+}
+
+fn sort_task_memory_bucket(bucket: &mut [TaskMemoryForInjection]) {
+    bucket.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.path.cmp(&a.path))
+    });
+}
+
+fn include_task_memory_bucket(
+    bucket: Vec<TaskMemoryForInjection>,
+    force_include: bool,
+    context_files: &mut Vec<ContextFile>,
+    total_size: &mut usize,
+    included_count: &mut usize,
+    dropped_over_budget: &mut usize,
+) {
+    for memory in bucket {
+        let truncated_content = truncate_task_memory_content(&memory.content);
+        let content_size = truncated_content.len();
+        if !force_include && *total_size + content_size > MAX_TASK_MEMORIES_TOTAL_SIZE {
+            *dropped_over_budget += 1;
+            continue;
+        }
+        *total_size += content_size;
+        *included_count += 1;
+        context_files.push(task_memory_context_file(
+            &memory.path,
+            truncated_content,
+            95.0,
+        ));
+    }
+}
 
 async fn gather_and_inject_system_context(
     app: &AppState,
@@ -933,6 +1398,7 @@ pub async fn inject_task_memories(
     messages: &mut Vec<ChatMessage>,
     stream_back_to_user: &mut HasRagResults,
     task_id_opt: Option<String>,
+    task_meta: Option<&crate::chat::types::TaskMeta>,
 ) -> Result<(), String> {
     let task_id = match task_id_opt {
         Some(id) => id,
@@ -944,67 +1410,123 @@ pub async fn inject_task_memories(
         return Ok(());
     }
 
-    let mut context_files: Vec<ContextFile> = Vec::new();
-    let mut total_size = 0;
-    let mut included_count = 0;
-    let mut skipped_count = 0;
+    let board = crate::tasks::storage::load_board(app.gcx.clone(), &task_id)
+        .await
+        .ok();
+    let role = task_meta
+        .map(|meta| meta.role.as_str())
+        .unwrap_or("planner");
+    let current_card_id = task_meta.and_then(|meta| meta.card_id.as_deref());
+    let dependency_cards: HashSet<String> = if role == "agents" {
+        board
+            .as_ref()
+            .and_then(|board| current_card_id.and_then(|card_id| board.get_card(card_id)))
+            .map(|card| card.depends_on.iter().cloned().collect())
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+    let doing_cards: HashSet<String> = board
+        .as_ref()
+        .map(|board| {
+            board
+                .cards
+                .iter()
+                .filter(|card| card.column == "doing")
+                .map(|card| card.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut always_bucket = Vec::new();
+    let mut scoped_bucket = Vec::new();
+    let mut less_relevant_bucket = Vec::new();
+    let mut archived_skipped = 0usize;
+    let mut scope_skipped = 0usize;
 
     for (path, content) in &memories {
-        if total_size >= MAX_TASK_MEMORIES_TOTAL_SIZE {
-            skipped_count += 1;
+        let memory = parse_task_memory_for_injection(path, content);
+        if matches!(
+            memory.frontmatter.status,
+            MemoryStatus::Archived | MemoryStatus::Superseded
+        ) {
+            archived_skipped += 1;
             continue;
         }
 
-        let truncated_content = if content.len() > MAX_TASK_MEMORY_CONTENT_SIZE {
-            format!(
-                "{}\n\n[TRUNCATED]",
-                content
-                    .chars()
-                    .take(MAX_TASK_MEMORY_CONTENT_SIZE)
-                    .collect::<String>()
-            )
-        } else {
-            content.clone()
+        if memory.frontmatter.pinned || high_signal_memory_kind(memory.frontmatter.kind) {
+            always_bucket.push(memory);
+            continue;
+        }
+
+        let scope_relevant = match &memory.frontmatter.namespace {
+            MemoryNamespace::Global | MemoryNamespace::Task => true,
+            MemoryNamespace::Card(card_id) if role == "planner" => doing_cards.contains(card_id),
+            MemoryNamespace::Card(card_id) if role == "agents" => {
+                current_card_id == Some(card_id.as_str()) || dependency_cards.contains(card_id)
+            }
+            MemoryNamespace::Card(_) => false,
+            MemoryNamespace::Agent(_) => false,
         };
 
-        let line_count = truncated_content.lines().count().max(1);
-        total_size += truncated_content.len();
-        included_count += 1;
-
-        context_files.push(ContextFile {
-            file_name: path.to_string_lossy().to_string(),
-            file_content: truncated_content,
-            line1: 1,
-            line2: line_count,
-            file_rev: None,
-            symbols: vec![],
-            gradient_type: -1,
-            usefulness: 95.0,
-            skip_pp: true,
-        });
+        if scope_relevant {
+            scoped_bucket.push(memory);
+        } else if matches!(
+            memory.frontmatter.kind,
+            MemoryKind::Progress | MemoryKind::Freeform
+        ) && !matches!(memory.frontmatter.namespace, MemoryNamespace::Card(_))
+        {
+            less_relevant_bucket.push(memory);
+        } else {
+            scope_skipped += 1;
+        }
     }
 
-    if context_files.is_empty() {
-        return Ok(());
-    }
+    sort_task_memory_bucket(&mut always_bucket);
+    sort_task_memory_bucket(&mut scoped_bucket);
+    sort_task_memory_bucket(&mut less_relevant_bucket);
 
-    if skipped_count > 0 {
-        context_files.push(ContextFile {
-            file_name: "(task memories summary)".to_string(),
-            file_content: format!(
-                "Note: {} task memories included, {} omitted due to size limits. Use task_memories_get() to retrieve all.",
-                included_count,
-                skipped_count
-            ),
-            line1: 1,
-            line2: 1,
-            file_rev: None,
-            symbols: vec![],
-            gradient_type: -1,
-            usefulness: 50.0,
-            skip_pp: true,
-        });
+    let mut context_files: Vec<ContextFile> = Vec::new();
+    let mut total_size = 0usize;
+    let mut included_count = 0usize;
+    let mut dropped_over_budget = 0usize;
+
+    include_task_memory_bucket(
+        always_bucket,
+        true,
+        &mut context_files,
+        &mut total_size,
+        &mut included_count,
+        &mut dropped_over_budget,
+    );
+    include_task_memory_bucket(
+        scoped_bucket,
+        false,
+        &mut context_files,
+        &mut total_size,
+        &mut included_count,
+        &mut dropped_over_budget,
+    );
+    include_task_memory_bucket(
+        less_relevant_bucket,
+        false,
+        &mut context_files,
+        &mut total_size,
+        &mut included_count,
+        &mut dropped_over_budget,
+    );
+
+    let mut footer = format!(
+        "Showing {} of {} memories ({} archived/superseded skipped, {} dropped over budget). Search more with task_mem_search().",
+        included_count,
+        memories.len(),
+        archived_skipped,
+        dropped_over_budget
+    );
+    if scope_skipped > 0 {
+        footer.push_str(&format!(" {} outside scope skipped.", scope_skipped));
     }
+    context_files.push(task_memory_summary_context_file(footer));
 
     let task_memories_msg = ChatMessage {
         role: "context_file".to_string(),
@@ -1022,11 +1544,13 @@ pub async fn inject_task_memories(
     messages.insert(insert_pos, task_memories_msg);
 
     tracing::info!(
-        "Injected {} task memories at position {} for task {} ({} skipped)",
+        "Injected {} task memories at position {} for task {} ({} archived/superseded skipped, {} dropped over budget, {} outside scope skipped)",
         included_count,
         insert_pos,
         task_id,
-        skipped_count
+        archived_skipped,
+        dropped_over_budget,
+        scope_skipped
     );
 
     Ok(())
