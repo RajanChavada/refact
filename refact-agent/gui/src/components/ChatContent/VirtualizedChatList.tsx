@@ -129,7 +129,10 @@ export function VirtualizedChatList<T extends { key: string }>({
 
   const itemContent = useCallback(
     (_index: number, item: T) => (
-      <Container className={styles.virtuosoItem} data-testid="chat-virtuoso-item">
+      <Container
+        className={styles.virtuosoItem}
+        data-testid="chat-virtuoso-item"
+      >
         {renderItem(item)}
       </Container>
     ),
