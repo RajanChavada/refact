@@ -11,6 +11,7 @@ pub mod tool_name_alias;
 mod tool_activate_skill;
 mod tool_add_workspace_folder;
 mod tool_agent_diff;
+mod tool_agent_pulse;
 mod tool_ast_definition;
 mod tool_cat;
 mod tool_chrome;
