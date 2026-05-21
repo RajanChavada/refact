@@ -1,0 +1,785 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+use async_trait::async_trait;
+use chrono::Utc;
+use serde_json::Value;
+use tokio::sync::Mutex as AMutex;
+use uuid::Uuid;
+
+use crate::at_commands::at_commands::AtCommandsContext;
+use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile};
+use crate::global_context::GlobalContext;
+use crate::tasks::storage;
+use crate::tasks::types::{BoardCard, StatusUpdate};
+use crate::tools::tool_task_spawn_agent::{
+    build_agent_prompt, build_agent_thread_params, mark_card_agent_started, prepare_agent_worktree,
+};
+use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
+use crate::worktrees::service::WorktreeService;
+use crate::worktrees::types::WorktreeMeta;
+use refact_chat_api::ChatCommand;
+use refact_runtime_api::CreateSessionRequest;
+
+async fn cleanup_old_worktree(
+    gcx: Arc<GlobalContext>,
+    agent_worktree_name: Option<&str>,
+    agent_worktree: Option<&str>,
+    agent_branch: Option<&str>,
+) {
+    if let Some(wt_name) = agent_worktree_name {
+        let cache_dir = gcx.cache_dir.clone();
+        let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+        if let Some(source_root) = project_dirs.first() {
+            if let Ok(service) = WorktreeService::new(cache_dir, source_root.clone()) {
+                if service.delete_worktree(wt_name, true).await.is_ok() {
+                    return;
+                }
+            }
+        }
+    }
+
+    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+    if let Some(workspace_root) = project_dirs.first() {
+        if let Some(wt) = agent_worktree {
+            let _ = Command::new("git")
+                .args(["worktree", "remove", wt, "--force"])
+                .current_dir(workspace_root)
+                .output();
+        }
+        if let Some(branch) = agent_branch {
+            let _ = Command::new("git")
+                .args(["branch", "-D", branch])
+                .current_dir(workspace_root)
+                .output();
+        }
+    }
+}
+
+fn mark_card_restarted_fresh(
+    card: &mut BoardCard,
+    new_agent_id: &str,
+    new_agent_chat_id: &str,
+    worktree_branch: Option<String>,
+    worktree_path: Option<String>,
+    worktree_name: Option<String>,
+) {
+    if let Some(prev_report) = card.final_report.take() {
+        let preview: String = prev_report.chars().take(300).collect();
+        card.status_updates.push(StatusUpdate {
+            timestamp: Utc::now().to_rfc3339(),
+            message: format!("Previous failure: {}", preview),
+        });
+    }
+    card.column = "doing".to_string();
+    card.completed_at = None;
+    mark_card_agent_started(
+        card,
+        new_agent_id,
+        new_agent_chat_id,
+        worktree_branch,
+        worktree_path,
+        worktree_name,
+    );
+    card.status_updates.last_mut().map(|u| {
+        u.message = "Fresh restart: new agent started".to_string();
+    });
+}
+
+fn mark_card_restarted_resume(
+    card: &mut BoardCard,
+    new_agent_id: &str,
+    new_agent_chat_id: &str,
+) {
+    if let Some(prev_report) = card.final_report.take() {
+        let preview: String = prev_report.chars().take(300).collect();
+        card.status_updates.push(StatusUpdate {
+            timestamp: Utc::now().to_rfc3339(),
+            message: format!("Previous failure: {}", preview),
+        });
+    }
+    card.column = "doing".to_string();
+    card.completed_at = None;
+    card.assignee = Some(new_agent_id.to_string());
+    card.agent_chat_id = Some(new_agent_chat_id.to_string());
+    card.started_at = Some(Utc::now().to_rfc3339());
+    card.status_updates.push(StatusUpdate {
+        timestamp: Utc::now().to_rfc3339(),
+        message: "Resume restart: new agent attached to existing worktree".to_string(),
+    });
+}
+
+async fn get_worktree_meta_for_resume(
+    gcx: Arc<GlobalContext>,
+    card: &BoardCard,
+) -> Result<WorktreeMeta, String> {
+    let wt_name = card.agent_worktree_name.as_deref().ok_or_else(|| {
+        format!(
+            "Card {} has no retained worktree (agent_worktree_name is missing). Use mode=fresh to create a new worktree.",
+            card.id
+        )
+    })?;
+    let wt_path = card.agent_worktree.as_deref().unwrap_or("");
+    if !wt_path.is_empty() && !Path::new(wt_path).exists() {
+        return Err(format!(
+            "Retained worktree path '{}' for card {} no longer exists. Use mode=fresh to create a new worktree.",
+            wt_path, card.id
+        ));
+    }
+    let cache_dir = gcx.cache_dir.clone();
+    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+    let source_root = project_dirs
+        .first()
+        .cloned()
+        .ok_or("No workspace folder found")?;
+    let service = WorktreeService::new(cache_dir, source_root)?;
+    let view = service
+        .get_worktree(wt_name)
+        .await
+        .map_err(|e| format!("Retained worktree '{}' is no longer registered: {}. Use mode=fresh.", wt_name, e))?;
+    if !view.meta.root.exists() {
+        return Err(format!(
+            "Retained worktree root '{}' no longer exists on disk. Use mode=fresh.",
+            view.meta.root.display()
+        ));
+    }
+    Ok(view.meta)
+}
+
+pub struct ToolTaskRestartAgent;
+
+impl ToolTaskRestartAgent {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Tool for ToolTaskRestartAgent {
+    fn tool_description(&self) -> ToolDesc {
+        ToolDesc {
+            name: "restart_agent".to_string(),
+            display_name: "Task Restart Agent".to_string(),
+            source: ToolSource {
+                source_type: ToolSourceType::Builtin,
+                config_path: String::new(),
+            },
+            experimental: false,
+            allow_parallel: false,
+            description: "Restart a failed task agent. Use mode=fresh (default) to clean up the old worktree and start fresh, or mode=resume to attach a new agent to the retained worktree and continue where the previous agent left off.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "card_id": {
+                        "type": "string",
+                        "description": "Card ID to restart"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fresh", "resume"],
+                        "description": "Restart mode: 'fresh' (default) deletes the old worktree and creates a new one; 'resume' reuses the retained worktree from the previous run."
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "If true, allow restarting even if an agent is currently running on this card (sends abort to old agent first)."
+                    },
+                    "suggested_steps": {
+                        "type": "integer",
+                        "description": "Suggested step budget for the agent (default: 30)."
+                    },
+                    "files_to_open": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of file paths to open immediately when the agent starts."
+                    }
+                },
+                "required": ["card_id"]
+            }),
+            output_schema: None,
+            annotations: None,
+        }
+    }
+
+    async fn tool_execute(
+        &mut self,
+        ccx: Arc<AMutex<AtCommandsContext>>,
+        tool_call_id: &String,
+        args: &HashMap<String, Value>,
+    ) -> Result<(bool, Vec<ContextEnum>), String> {
+        let ccx_lock = ccx.lock().await;
+        let is_planner = ccx_lock
+            .task_meta
+            .as_ref()
+            .map(|m| m.role == "planner")
+            .unwrap_or(false);
+        if !is_planner {
+            return Err("restart_agent can only be called by the task planner.".to_string());
+        }
+        let task_id = ccx_lock
+            .task_meta
+            .as_ref()
+            .map(|m| m.task_id.clone())
+            .unwrap_or_default();
+        let planner_chat_id = ccx_lock
+            .task_meta
+            .as_ref()
+            .and_then(|m| m.planner_chat_id.clone())
+            .unwrap_or_else(|| ccx_lock.chat_id.clone());
+        let current_model = ccx_lock.current_model.clone();
+        let gcx = ccx_lock.app.gcx.clone();
+        drop(ccx_lock);
+
+        let card_id = args
+            .get("card_id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'card_id'")?;
+        let mode = args
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("fresh");
+        if mode != "fresh" && mode != "resume" {
+            return Err(format!("Invalid mode '{}', must be 'fresh' or 'resume'", mode));
+        }
+        let force = args
+            .get("force")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let suggested_steps: usize = match args
+            .get("suggested_steps")
+            .or_else(|| args.get("max_steps"))
+        {
+            Some(Value::String(s)) => s.parse().unwrap_or(30),
+            Some(Value::Number(n)) => n.as_u64().unwrap_or(30) as usize,
+            _ => 30,
+        };
+        let suggested_steps = suggested_steps.min(50).max(1);
+        let files_to_open: Vec<String> = args
+            .get("files_to_open")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let task_meta = storage::load_task_meta(gcx.clone(), &task_id).await?;
+        let model = {
+            let task_default = task_meta.default_agent_model.as_deref();
+            if let Some(m) = task_default {
+                if !m.is_empty() {
+                    m.to_string()
+                } else {
+                    current_model.clone()
+                }
+            } else {
+                current_model.clone()
+            }
+        };
+
+        let board = storage::load_board(gcx.clone(), &task_id).await?;
+        let card = board
+            .get_card(card_id)
+            .ok_or_else(|| format!("Card {} not found", card_id))?;
+
+        match card.column.as_str() {
+            "done" => return Err(format!("Card {} is already done and cannot be restarted.", card_id)),
+            "planned" => return Err(format!("Card {} is in 'planned' column. Use spawn_agent to start it for the first time.", card_id)),
+            "failed" => {}
+            "doing" => {
+                if card.agent_chat_id.is_some() && !force {
+                    return Err(format!(
+                        "Card {} has an active agent ({}). Use force=true to abort it and restart, or wait for it to finish.",
+                        card_id,
+                        card.agent_chat_id.as_ref().unwrap()
+                    ));
+                }
+            }
+            other => return Err(format!("Card {} is in unexpected column '{}'", card_id, other)),
+        }
+
+        if force {
+            if let Some(old_chat_id) = card.agent_chat_id.as_deref() {
+                let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+                let _ = app
+                    .chat
+                    .facade
+                    .push_command(old_chat_id, ChatCommand::Abort {})
+                    .await;
+            }
+        }
+
+        let card_title = card.title.clone();
+        let card_instructions = card.instructions.clone();
+        let dependency_context = board
+            .get_dependency_reports(card_id)
+            .into_iter()
+            .map(|(title, report)| format!("### {}\n{}", title, report))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let result_message = if mode == "resume" {
+            self.execute_resume(
+                gcx.clone(),
+                &task_id,
+                &planner_chat_id,
+                card_id,
+                &card_title,
+                &card_instructions,
+                &dependency_context,
+                &model,
+                suggested_steps,
+                files_to_open,
+                card,
+            )
+            .await?
+        } else {
+            self.execute_fresh(
+                gcx.clone(),
+                &task_id,
+                &planner_chat_id,
+                &task_meta,
+                card_id,
+                &card_title,
+                &card_instructions,
+                &dependency_context,
+                &model,
+                suggested_steps,
+                files_to_open,
+                card,
+            )
+            .await?
+        };
+
+        Ok((
+            false,
+            vec![ContextEnum::ChatMessage(ChatMessage {
+                role: "tool".to_string(),
+                content: ChatContent::SimpleText(result_message),
+                tool_calls: None,
+                tool_call_id: tool_call_id.clone(),
+                ..Default::default()
+            })],
+        ))
+    }
+
+    fn tool_depends_on(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+impl ToolTaskRestartAgent {
+    async fn execute_fresh(
+        &self,
+        gcx: Arc<GlobalContext>,
+        task_id: &str,
+        planner_chat_id: &str,
+        task_meta: &crate::tasks::types::TaskMeta,
+        card_id: &str,
+        card_title: &str,
+        card_instructions: &str,
+        dependency_context: &str,
+        model: &str,
+        suggested_steps: usize,
+        files_to_open: Vec<String>,
+        card: &BoardCard,
+    ) -> Result<String, String> {
+        cleanup_old_worktree(
+            gcx.clone(),
+            card.agent_worktree_name.as_deref(),
+            card.agent_worktree.as_deref(),
+            card.agent_branch.as_deref(),
+        )
+        .await;
+
+        let agent_id = Uuid::new_v4().to_string();
+        let agent_chat_id = format!("agent-{}-{}", card_id, &agent_id[..8]);
+
+        let prepared_worktree = prepare_agent_worktree(
+            gcx.clone(),
+            task_meta,
+            task_id,
+            &agent_id,
+            card_id,
+            &agent_chat_id,
+        )
+        .await?;
+
+        let worktree_branch = prepared_worktree.branch_name();
+        let worktree_path_str =
+            Some(prepared_worktree.worktree_path().to_string_lossy().to_string());
+        let worktree_name = Some(prepared_worktree.worktree_name());
+        let worktree_meta = prepared_worktree.worktree_meta();
+        let card_id_owned = card_id.to_string();
+        let agent_id_clone = agent_id.clone();
+        let agent_chat_id_clone = agent_chat_id.clone();
+
+        let board_update_result = storage::update_board_atomic(
+            gcx.clone(),
+            task_id,
+            move |board| {
+                let card = board
+                    .get_card_mut(&card_id_owned)
+                    .ok_or(format!("Card {} not found", card_id_owned))?;
+                mark_card_restarted_fresh(
+                    card,
+                    &agent_id_clone,
+                    &agent_chat_id_clone,
+                    worktree_branch.clone(),
+                    worktree_path_str.clone(),
+                    worktree_name.clone(),
+                );
+                Ok(())
+            },
+        )
+        .await;
+
+        if let Err(e) = board_update_result {
+            let wt_id = worktree_meta.id.clone();
+            let cache_dir = gcx.cache_dir.clone();
+            let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+            if let Some(source_root) = project_dirs.first() {
+                if let Ok(service) = WorktreeService::new(cache_dir, source_root.clone()) {
+                    let _ = service.delete_worktree(&wt_id, true).await;
+                }
+            }
+            return Err(e);
+        }
+
+        let _ = storage::update_task_stats(gcx.clone(), task_id).await;
+
+        self.create_and_dispatch_session(
+            gcx.clone(),
+            task_id,
+            planner_chat_id,
+            card_id,
+            card_title,
+            card_instructions,
+            dependency_context,
+            model,
+            &agent_id,
+            &agent_chat_id,
+            worktree_meta,
+            suggested_steps,
+            files_to_open,
+        )
+        .await?;
+
+        Ok(format!(
+            "# Agent Restarted (Fresh): {}\n\n**Card:** {}\n**Agent ID:** {}\n**Model:** {}\n**Mode:** fresh\n**Status:** Running in background\n\nPrevious worktree cleaned up. New agent started from scratch.",
+            card_title, card_id, agent_id, model
+        ))
+    }
+
+    async fn execute_resume(
+        &self,
+        gcx: Arc<GlobalContext>,
+        task_id: &str,
+        planner_chat_id: &str,
+        card_id: &str,
+        card_title: &str,
+        card_instructions: &str,
+        dependency_context: &str,
+        model: &str,
+        suggested_steps: usize,
+        files_to_open: Vec<String>,
+        card: &BoardCard,
+    ) -> Result<String, String> {
+        let worktree_meta = get_worktree_meta_for_resume(gcx.clone(), card).await?;
+
+        let agent_id = Uuid::new_v4().to_string();
+        let agent_chat_id = format!("agent-{}-{}", card_id, &agent_id[..8]);
+        let card_id_owned = card_id.to_string();
+        let agent_id_clone = agent_id.clone();
+        let agent_chat_id_clone = agent_chat_id.clone();
+
+        storage::update_board_atomic(gcx.clone(), task_id, move |board| {
+            let card = board
+                .get_card_mut(&card_id_owned)
+                .ok_or(format!("Card {} not found", card_id_owned))?;
+            mark_card_restarted_resume(card, &agent_id_clone, &agent_chat_id_clone);
+            Ok(())
+        })
+        .await?;
+
+        let _ = storage::update_task_stats(gcx.clone(), task_id).await;
+
+        self.create_and_dispatch_session(
+            gcx.clone(),
+            task_id,
+            planner_chat_id,
+            card_id,
+            card_title,
+            card_instructions,
+            dependency_context,
+            model,
+            &agent_id,
+            &agent_chat_id,
+            worktree_meta,
+            suggested_steps,
+            files_to_open,
+        )
+        .await?;
+
+        Ok(format!(
+            "# Agent Restarted (Resume): {}\n\n**Card:** {}\n**Agent ID:** {}\n**Model:** {}\n**Mode:** resume\n**Status:** Running in background\n\nAgent attached to retained worktree and continuing.",
+            card_title, card_id, agent_id, model
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_and_dispatch_session(
+        &self,
+        gcx: Arc<GlobalContext>,
+        task_id: &str,
+        planner_chat_id: &str,
+        card_id: &str,
+        card_title: &str,
+        card_instructions: &str,
+        dependency_context: &str,
+        model: &str,
+        agent_id: &str,
+        agent_chat_id: &str,
+        worktree_meta: WorktreeMeta,
+        suggested_steps: usize,
+        files_to_open: Vec<String>,
+    ) -> Result<(), String> {
+        let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+
+        let thread = build_agent_thread_params(
+            agent_chat_id,
+            card_title,
+            model,
+            task_id,
+            agent_id,
+            card_id,
+            planner_chat_id,
+            worktree_meta.clone(),
+        );
+
+        let user_prompt = build_agent_prompt(
+            card_title,
+            card_instructions,
+            dependency_context,
+            suggested_steps,
+        );
+
+        let user_msg = ChatMessage {
+            role: "user".to_string(),
+            content: ChatContent::SimpleText(user_prompt),
+            ..Default::default()
+        };
+        let mut messages = vec![user_msg];
+
+        if !files_to_open.is_empty() {
+            let mut context_files: Vec<ContextFile> = Vec::new();
+            for path_str in &files_to_open {
+                let orig = std::path::Path::new(path_str);
+                let source_root = &worktree_meta.source_workspace_root;
+                let wt_root = &worktree_meta.root;
+                let resolved = match orig.strip_prefix(source_root) {
+                    Ok(rel) => wt_root.join(rel),
+                    Err(_) => wt_root.join(path_str.trim_start_matches('/')),
+                };
+                match tokio::fs::read_to_string(&resolved).await {
+                    Ok(content) => {
+                        let line_count = content.lines().count().max(1);
+                        context_files.push(ContextFile {
+                            file_name: resolved.to_string_lossy().to_string(),
+                            file_content: content,
+                            line1: 1,
+                            line2: line_count,
+                            ..Default::default()
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("restart_agent: could not read file {:?}: {}", resolved, e);
+                    }
+                }
+            }
+            if !context_files.is_empty() {
+                messages.push(ChatMessage {
+                    role: "context_file".to_string(),
+                    content: ChatContent::ContextFiles(context_files),
+                    tool_call_id: "initial_files".to_string(),
+                    ..Default::default()
+                });
+            }
+        }
+
+        app.chat
+            .facade
+            .create_session(CreateSessionRequest {
+                chat_id: agent_chat_id.to_string(),
+                thread,
+                messages,
+            })
+            .await?;
+        app.chat.facade.maybe_save_session(agent_chat_id).await?;
+        app.chat
+            .facade
+            .push_command(agent_chat_id, ChatCommand::Regenerate {})
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::types::{BoardCard, TaskBoard};
+
+    fn failed_card(id: &str, worktree: Option<String>, branch: Option<String>) -> BoardCard {
+        BoardCard {
+            id: id.to_string(),
+            title: format!("Card {}", id),
+            column: "failed".to_string(),
+            priority: "P1".to_string(),
+            depends_on: vec![],
+            instructions: "Fix the bug".to_string(),
+            assignee: Some("old-agent".to_string()),
+            agent_chat_id: Some(format!("agent-{}-old", id)),
+            status_updates: vec![StatusUpdate {
+                timestamp: "2024-01-01T10:00:00Z".to_string(),
+                message: "Agent started".to_string(),
+            }],
+            final_report: Some("FAILED: network error after 3 retries".to_string()),
+            created_at: Utc::now().to_rfc3339(),
+            started_at: Some(Utc::now().to_rfc3339()),
+            last_heartbeat_at: None,
+            completed_at: Some(Utc::now().to_rfc3339()),
+            agent_branch: branch,
+            agent_worktree: worktree,
+            agent_worktree_name: None,
+            target_files: vec![],
+        }
+    }
+
+    #[test]
+    fn restart_agent_fresh_clears_failure_and_sets_doing() {
+        let mut card = failed_card("T-1", None, None);
+        let new_id = "new-agent-1";
+        let new_chat = "agent-T-1-new";
+
+        mark_card_restarted_fresh(
+            &mut card,
+            new_id,
+            new_chat,
+            Some("refact/task/task-1/card/T-1/new".to_string()),
+            Some("/tmp/wt".to_string()),
+            Some("wt-new".to_string()),
+        );
+
+        assert_eq!(card.column, "doing");
+        assert_eq!(card.assignee.as_deref(), Some(new_id));
+        assert_eq!(card.agent_chat_id.as_deref(), Some(new_chat));
+        assert!(card.completed_at.is_none());
+        assert!(card.final_report.is_none());
+        assert!(card.status_updates.iter().any(|u| u.message.contains("Previous failure")));
+        assert_eq!(card.agent_worktree.as_deref(), Some("/tmp/wt"));
+        assert_eq!(card.agent_worktree_name.as_deref(), Some("wt-new"));
+    }
+
+    #[test]
+    fn restart_agent_resume_keeps_worktree_fields() {
+        let mut card = failed_card(
+            "T-2",
+            Some("/tmp/retained-wt".to_string()),
+            Some("refact/task/task-1/card/T-2/old".to_string()),
+        );
+        let old_worktree = card.agent_worktree.clone();
+        let old_branch = card.agent_branch.clone();
+        let new_id = "resume-agent-1";
+        let new_chat = "agent-T-2-resume";
+
+        mark_card_restarted_resume(&mut card, new_id, new_chat);
+
+        assert_eq!(card.column, "doing");
+        assert_eq!(card.assignee.as_deref(), Some(new_id));
+        assert_eq!(card.agent_chat_id.as_deref(), Some(new_chat));
+        assert!(card.completed_at.is_none());
+        assert!(card.final_report.is_none());
+        assert!(card.status_updates.iter().any(|u| u.message.contains("Previous failure")));
+        assert!(card.status_updates.iter().any(|u| u.message.contains("Resume restart")));
+        assert_eq!(card.agent_worktree, old_worktree, "worktree path preserved");
+        assert_eq!(card.agent_branch, old_branch, "branch preserved");
+    }
+
+    #[test]
+    fn restart_agent_refuses_active_doing_card_without_force() {
+        let mut board = TaskBoard::default();
+        let doing_card = BoardCard {
+            id: "T-3".to_string(),
+            title: "Card T-3".to_string(),
+            column: "doing".to_string(),
+            priority: "P1".to_string(),
+            depends_on: vec![],
+            instructions: "do stuff".to_string(),
+            assignee: Some("active-agent".to_string()),
+            agent_chat_id: Some("agent-T-3-active".to_string()),
+            status_updates: vec![],
+            final_report: None,
+            created_at: Utc::now().to_rfc3339(),
+            started_at: Some(Utc::now().to_rfc3339()),
+            last_heartbeat_at: None,
+            completed_at: None,
+            agent_branch: None,
+            agent_worktree: None,
+            agent_worktree_name: None,
+            target_files: vec![],
+        };
+        board.cards.push(doing_card);
+
+        let card = board.get_card("T-3").unwrap();
+        let should_refuse = card.column == "doing" && card.agent_chat_id.is_some();
+        assert!(should_refuse, "active doing card should trigger refusal without force");
+    }
+
+    #[test]
+    fn restart_agent_allows_failed_card_without_force() {
+        let card = failed_card("T-4", Some("/tmp/wt".to_string()), None);
+        let should_refuse = card.column == "doing" && card.agent_chat_id.is_some();
+        assert!(!should_refuse, "failed card should not require force");
+        assert_eq!(card.column, "failed");
+    }
+
+    #[test]
+    fn restart_agent_fresh_preserves_failure_in_status_history() {
+        let mut card = failed_card("T-5", None, None);
+        let original_status_count = card.status_updates.len();
+
+        mark_card_restarted_fresh(
+            &mut card,
+            "new-agent",
+            "agent-T-5-new",
+            None,
+            None,
+            None,
+        );
+
+        assert!(
+            card.status_updates.len() > original_status_count,
+            "status updates should grow"
+        );
+        assert!(
+            card.status_updates
+                .iter()
+                .any(|u| u.message.starts_with("Previous failure:")),
+            "old failure should appear in status history"
+        );
+        assert!(
+            card.final_report.is_none(),
+            "final_report should be cleared after restart"
+        );
+    }
+
+    #[test]
+    fn restart_agent_resume_rejects_card_without_worktree_name() {
+        let card = failed_card("T-6", None, None);
+
+        let wt_name = card.agent_worktree_name.as_deref();
+        assert!(wt_name.is_none());
+    }
+}

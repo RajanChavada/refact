@@ -66,28 +66,32 @@ async fn resolve_agent_model(
 }
 
 #[derive(Debug)]
-struct PreparedWorktree {
+pub(crate) struct PreparedWorktree {
     meta: WorktreeMeta,
     branch_was_created: bool,
-    spawned_with_dirty_tree: bool,
-    base_branch_mismatch_warning: Option<String>,
+    pub(crate) spawned_with_dirty_tree: bool,
+    pub(crate) base_branch_mismatch_warning: Option<String>,
 }
 
 impl PreparedWorktree {
-    fn branch_name(&self) -> Option<String> {
+    pub(crate) fn branch_name(&self) -> Option<String> {
         self.meta.branch.clone()
     }
 
-    fn worktree_name(&self) -> String {
+    pub(crate) fn worktree_name(&self) -> String {
         self.meta.id.clone()
     }
 
-    fn worktree_path(&self) -> PathBuf {
+    pub(crate) fn worktree_path(&self) -> PathBuf {
         self.meta.root.clone()
     }
 
-    fn source_workspace_root(&self) -> PathBuf {
+    pub(crate) fn source_workspace_root(&self) -> PathBuf {
         self.meta.source_workspace_root.clone()
+    }
+
+    pub(crate) fn worktree_meta(&self) -> WorktreeMeta {
+        self.meta.clone()
     }
 
     async fn cleanup(&self, gcx: Arc<GlobalContext>) {
@@ -132,11 +136,11 @@ fn map_task_base_branch_error(error: String, base_branch: Option<&str>) -> Strin
     format!("Failed to create task-agent worktree: {}", error)
 }
 
-fn find_abandoned_worktrees(board: &crate::tasks::types::TaskBoard) -> Vec<String> {
+pub(crate) fn find_abandoned_worktrees(board: &crate::tasks::types::TaskBoard) -> Vec<String> {
     board
         .cards
         .iter()
-        .filter(|card| card.column != "doing")
+        .filter(|card| card.column != "doing" && card.column != "failed")
         .filter_map(|card| {
             let worktree = card.agent_worktree.as_ref()?;
             if !std::path::Path::new(worktree).exists() {
@@ -150,7 +154,7 @@ fn find_abandoned_worktrees(board: &crate::tasks::types::TaskBoard) -> Vec<Strin
         .collect()
 }
 
-async fn prepare_agent_worktree(
+pub(crate) async fn prepare_agent_worktree(
     gcx: Arc<GlobalContext>,
     task_meta: &StoredTaskMeta,
     task_id: &str,
@@ -237,7 +241,7 @@ impl ToolTaskSpawnAgent {
     }
 }
 
-fn build_agent_prompt(
+pub(crate) fn build_agent_prompt(
     card_title: &str,
     instructions: &str,
     dependency_context: &str,
@@ -263,7 +267,7 @@ fn build_agent_prompt(
     )
 }
 
-fn mark_card_agent_started(
+pub(crate) fn mark_card_agent_started(
     card: &mut BoardCard,
     agent_id: &str,
     agent_chat_id: &str,
@@ -286,7 +290,7 @@ fn mark_card_agent_started(
     });
 }
 
-fn build_agent_thread_params(
+pub(crate) fn build_agent_thread_params(
     agent_chat_id: &str,
     card_title: &str,
     model: &str,
@@ -1210,5 +1214,29 @@ mod tests {
         assert!(abandoned[0].contains("T-1"));
         assert!(!abandoned[0].contains("T-2"));
         assert!(!abandoned[0].contains("T-3"));
+    }
+
+    #[test]
+    fn abandoned_worktree_detection_ignores_failed_cards_with_retained_worktrees() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let worktree_path = tempdir.path().join("retained-failed-worktree");
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let mut board = TaskBoard::default();
+        board.cards.push(test_card(
+            "T-1",
+            "failed",
+            Some(worktree_path.to_string_lossy().to_string()),
+        ));
+        board.cards.push(test_card(
+            "T-2",
+            "done",
+            Some(worktree_path.to_string_lossy().to_string()),
+        ));
+
+        let abandoned = find_abandoned_worktrees(&board);
+        assert_eq!(abandoned.len(), 1, "only done card should be flagged");
+        assert!(!abandoned[0].contains("T-1"), "failed card retained worktree should not block spawning");
+        assert!(abandoned[0].contains("T-2"), "done card with retained worktree should still be flagged");
     }
 }

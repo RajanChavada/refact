@@ -414,6 +414,7 @@ async fn get_builtin_tools(gcx: Arc<GlobalContext>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_task_mark_card::ToolTaskMarkCardDone::new()),
         Box::new(crate::tools::tool_task_mark_card::ToolTaskMarkCardFailed::new()),
         Box::new(crate::tools::tool_task_merge_agent::ToolTaskMergeAgent::new()),
+        Box::new(crate::tools::tool_task_restart_agent::ToolTaskRestartAgent::new()),
         Box::new(crate::tools::tool_task_memory::ToolTaskMemorySave::new()),
         Box::new(crate::tools::tool_task_memory::ToolTaskMemoriesGet::new()),
     ];
