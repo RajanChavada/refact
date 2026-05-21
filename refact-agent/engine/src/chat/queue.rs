@@ -1458,15 +1458,14 @@ fn sanitize_message_for_restore(msg: &ChatMessage) -> ChatMessage {
         tool_calls: None, // Security: strip tool_calls to prevent prerun of restored messages
         tool_call_id: msg.tool_call_id.clone(),
         tool_failed: msg.tool_failed,
-        usage: None,
-        checkpoints: vec![],
         reasoning_content: msg.reasoning_content.clone(),
         thinking_blocks: msg.thinking_blocks.clone(),
         citations: msg.citations.clone(),
         server_content_blocks: msg.server_content_blocks.clone(),
-        finish_reason: None,
-        extra: serde_json::Map::new(),
-        output_filter: None,
+        summarized_range: msg.summarized_range,
+        summarization_tier: msg.summarization_tier.clone(),
+        summarized_token_estimate: msg.summarized_token_estimate,
+        ..Default::default()
     }
 }
 
@@ -1480,15 +1479,14 @@ fn sanitize_message_for_branch(msg: &ChatMessage) -> ChatMessage {
         tool_calls: msg.tool_calls.clone(),
         tool_call_id: msg.tool_call_id.clone(),
         tool_failed: msg.tool_failed,
-        usage: None,
         checkpoints: msg.checkpoints.clone(),
         reasoning_content: msg.reasoning_content.clone(),
-        thinking_blocks: None,
         citations: msg.citations.clone(),
         server_content_blocks: msg.server_content_blocks.clone(),
-        finish_reason: None,
-        extra: serde_json::Map::new(),
-        output_filter: None,
+        summarized_range: msg.summarized_range,
+        summarization_tier: msg.summarization_tier.clone(),
+        summarized_token_estimate: msg.summarized_token_estimate,
+        ..Default::default()
     }
 }
 

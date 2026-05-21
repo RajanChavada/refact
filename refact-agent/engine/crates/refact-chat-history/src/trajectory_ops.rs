@@ -19,6 +19,9 @@ pub fn sanitize_message_for_new_thread(m: &ChatMessage) -> ChatMessage {
         thinking_blocks: None,
         citations: vec![],
         server_content_blocks: vec![],
+        summarized_range: m.summarized_range,
+        summarization_tier: m.summarization_tier.clone(),
+        summarized_token_estimate: m.summarized_token_estimate,
         extra: serde_json::Map::new(),
         output_filter: None,
     }

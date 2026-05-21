@@ -72,6 +72,9 @@ mod tests {
             },
             checkpoints: vec![],
             output_filter: None,
+            summarized_range: None,
+            summarization_tier: None,
+            summarized_token_estimate: None,
         };
 
         let serialized = serde_json::to_value(&original).expect("serialize");

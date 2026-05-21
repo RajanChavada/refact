@@ -766,17 +766,7 @@ I'm your **Task Planner**. I handle the complete task lifecycle - from investiga
         role: "assistant".to_string(),
         content: ChatContent::SimpleText(greeting.to_string()),
         finish_reason: Some("stop".to_string()),
-        reasoning_content: None,
-        tool_calls: None,
-        tool_call_id: String::new(),
-        tool_failed: None,
-        usage: None,
-        checkpoints: vec![],
-        thinking_blocks: None,
-        citations: vec![],
-        server_content_blocks: vec![],
-        extra: serde_json::Map::new(),
-        output_filter: None,
+        ..Default::default()
     };
 
     let task_meta = super::types::TaskMeta {

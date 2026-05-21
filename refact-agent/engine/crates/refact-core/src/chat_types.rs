@@ -362,6 +362,16 @@ impl<'de> Deserialize<'de> for ChatMessage {
             .map(|v| v.iter().cloned().collect())
             .unwrap_or_default();
 
+        let summarized_range: Option<(usize, usize)> = obj
+            .get("summarized_range")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let summarization_tier: Option<String> = obj
+            .get("summarization_tier")
+            .and_then(|v| v.as_str().map(|s| s.to_string()));
+        let summarized_token_estimate: Option<usize> = obj
+            .get("summarized_token_estimate")
+            .and_then(|v| v.as_u64().map(|n| n as usize));
+
         let usage: Option<ChatUsage> = obj
             .get("usage")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -375,6 +385,7 @@ impl<'de> Deserialize<'de> for ChatMessage {
             "role", "content", "message_id", "finish_reason", "reasoning_content",
             "tool_calls", "tool_call_id", "tool_failed", "usage", "checkpoints",
             "thinking_blocks", "citations", "server_content_blocks",
+            "summarized_range", "summarization_tier", "summarized_token_estimate",
         ];
         let extra: serde_json::Map<String, Value> = obj
             .iter()
@@ -396,6 +407,9 @@ impl<'de> Deserialize<'de> for ChatMessage {
             thinking_blocks,
             citations,
             server_content_blocks,
+            summarized_range,
+            summarization_tier,
+            summarized_token_estimate,
             extra,
             output_filter: None,
         })
@@ -718,6 +732,12 @@ pub struct ChatMessage {
     pub citations: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub server_content_blocks: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarized_range: Option<(usize, usize)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarization_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summarized_token_estimate: Option<usize>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty", flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
     #[serde(skip)]

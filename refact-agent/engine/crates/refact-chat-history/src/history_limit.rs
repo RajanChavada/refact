@@ -4,6 +4,96 @@ use serde::{Serialize, Deserialize};
 use refact_core::chat_types::{ChatMessage, ChatContent, ContextFile, SamplingParameters};
 use refact_core::custom_error::first_n_chars;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tier0CompactReport {
+    pub context_files_deduped: usize,
+    pub tool_outputs_truncated: usize,
+    pub tokens_saved_estimate: usize,
+}
+
+fn extract_context_files_from_content(content: &ChatContent) -> Vec<ContextFile> {
+    match content {
+        ChatContent::ContextFiles(files) => files.clone(),
+        ChatContent::SimpleText(text) => serde_json::from_str(text).unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
+pub fn tier0_deterministic_compact(
+    messages: &mut Vec<ChatMessage>,
+    preserve_last_n: usize,
+) -> Tier0CompactReport {
+    let mut context_files_deduped = 0usize;
+    let mut tool_outputs_truncated = 0usize;
+    let mut tokens_saved_estimate = 0usize;
+
+    let mut last_occurrence: HashMap<String, usize> = HashMap::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.role != "context_file" {
+            continue;
+        }
+        for cf in extract_context_files_from_content(&msg.content) {
+            last_occurrence.insert(cf.file_name, i);
+        }
+    }
+
+    for (i, msg) in messages.iter_mut().enumerate() {
+        if msg.role != "context_file" {
+            continue;
+        }
+        let mut files = extract_context_files_from_content(&msg.content);
+        let mut modified = false;
+        for cf in &mut files {
+            if let Some(&last_idx) = last_occurrence.get(&cf.file_name) {
+                if last_idx > i {
+                    let original_tokens = cf.file_content.len() / 4 + 1;
+                    tokens_saved_estimate += original_tokens;
+                    context_files_deduped += 1;
+                    cf.file_content = format!(
+                        "\u{1f4ce} {} \u{2014} superseded by newer version in message #{}",
+                        cf.file_name,
+                        last_idx + 1
+                    );
+                    modified = true;
+                }
+            }
+        }
+        if modified {
+            msg.content = ChatContent::ContextFiles(files);
+        }
+    }
+
+    let cutoff = messages.len().saturating_sub(preserve_last_n);
+    for (i, msg) in messages.iter_mut().enumerate() {
+        if i >= cutoff {
+            break;
+        }
+        if msg.role != "tool" {
+            continue;
+        }
+        if msg.tool_failed == Some(true) {
+            continue;
+        }
+        let content_text = msg.content.content_text_only();
+        if content_text.len() <= 200 {
+            continue;
+        }
+        let estimated_tokens = content_text.len() / 4;
+        tokens_saved_estimate += estimated_tokens;
+        tool_outputs_truncated += 1;
+        msg.content = ChatContent::SimpleText(format!(
+            "[tool output truncated, was ~{} tokens]",
+            estimated_tokens
+        ));
+    }
+
+    Tier0CompactReport {
+        context_files_deduped,
+        tool_outputs_truncated,
+        tokens_saved_estimate,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompressionStrength {
@@ -434,6 +524,130 @@ pub fn fix_and_limit_messages_history(
 mod tests {
     use super::*;
     use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
+
+    fn make_context_file_msg(filename: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "context_file".to_string(),
+            content: ChatContent::ContextFiles(vec![ContextFile {
+                file_name: filename.to_string(),
+                file_content: content.to_string(),
+                line1: 1,
+                line2: 10,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    fn make_tool_msg(tool_call_id: &str, content: &str, failed: Option<bool>) -> ChatMessage {
+        ChatMessage {
+            role: "tool".to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            tool_failed: failed,
+            ..Default::default()
+        }
+    }
+
+    fn make_user_msg_basic(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "user".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_tier0_dedup_context_files_keeps_last() {
+        let mut messages = vec![
+            make_context_file_msg("src/main.rs", "first version content"),
+            make_user_msg_basic("user message"),
+            make_context_file_msg("src/main.rs", "second version content"),
+            make_user_msg_basic("user message 2"),
+            make_context_file_msg("src/main.rs", "third version content"),
+        ];
+        let report = tier0_deterministic_compact(&mut messages, 0);
+        assert_eq!(report.context_files_deduped, 2);
+        assert!(report.tokens_saved_estimate > 0);
+        let last_ctx = messages.iter().filter(|m| m.role == "context_file").last().unwrap();
+        let files = extract_context_files_from_content(&last_ctx.content);
+        assert_eq!(files[0].file_content, "third version content");
+        let first_ctx = messages.iter().find(|m| m.role == "context_file").unwrap();
+        let first_files = extract_context_files_from_content(&first_ctx.content);
+        assert!(first_files[0].file_content.contains("superseded"));
+        assert!(first_files[0].file_content.contains("message #5"));
+    }
+
+    #[test]
+    fn test_tier0_dedup_different_files_not_deduped() {
+        let mut messages = vec![
+            make_context_file_msg("src/a.rs", "content a"),
+            make_context_file_msg("src/b.rs", "content b"),
+        ];
+        let report = tier0_deterministic_compact(&mut messages, 0);
+        assert_eq!(report.context_files_deduped, 0);
+        assert_eq!(report.tokens_saved_estimate, 0);
+    }
+
+    #[test]
+    fn test_tier0_truncate_old_tool_outputs() {
+        let long_output = "x".repeat(500);
+        let mut messages = vec![
+            make_user_msg_basic("question"),
+            make_tool_msg("tc1", &long_output, None),
+            make_user_msg_basic("recent question"),
+            make_tool_msg("tc2", &long_output, None),
+        ];
+        let report = tier0_deterministic_compact(&mut messages, 2);
+        assert_eq!(report.tool_outputs_truncated, 1);
+        assert!(messages[1].content.content_text_only().contains("truncated"));
+        assert_eq!(messages[3].content.content_text_only(), long_output);
+    }
+
+    #[test]
+    fn test_tier0_preserves_failed_tool_outputs() {
+        let long_output = "x".repeat(500);
+        let mut messages = vec![
+            make_user_msg_basic("question"),
+            make_tool_msg("tc1", &long_output, Some(true)),
+            make_user_msg_basic("another"),
+        ];
+        let report = tier0_deterministic_compact(&mut messages, 0);
+        assert_eq!(report.tool_outputs_truncated, 0);
+        assert_eq!(messages[1].content.content_text_only(), long_output);
+    }
+
+    #[test]
+    fn test_tier0_preserves_short_tool_outputs() {
+        let short_output = "short output";
+        let mut messages = vec![
+            make_user_msg_basic("question"),
+            make_tool_msg("tc1", short_output, None),
+        ];
+        let report = tier0_deterministic_compact(&mut messages, 0);
+        assert_eq!(report.tool_outputs_truncated, 0);
+        assert_eq!(messages[1].content.content_text_only(), short_output);
+    }
+
+    #[test]
+    fn test_tier0_serialization_of_summarization_message() {
+        use refact_core::chat_types::ChatMessage;
+        let msg = ChatMessage {
+            role: "summarization".to_string(),
+            content: ChatContent::SimpleText("Summary text".to_string()),
+            summarized_range: Some((1, 5)),
+            summarization_tier: Some("tier0_deterministic".to_string()),
+            summarized_token_estimate: Some(1200),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role, "summarization");
+        assert_eq!(deserialized.summarized_range, Some((1, 5)));
+        assert_eq!(deserialized.summarization_tier.as_deref(), Some("tier0_deterministic"));
+        assert_eq!(deserialized.summarized_token_estimate, Some(1200));
+        assert_eq!(deserialized.content.content_text_only(), "Summary text");
+    }
 
     #[test]
     fn test_is_content_duplicate_overlapping_ranges() {

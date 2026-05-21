@@ -19,6 +19,7 @@ use super::tools::execute_tools;
 use super::types::ThreadParams;
 
 use super::history_limit::fix_and_limit_messages_history;
+use super::linearize::apply_summarization_linearize;
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
 use super::config::tokens;
 
@@ -315,6 +316,9 @@ pub async fn prepare_chat_passthrough(
 
     // 7. History validation and fixing
     let limited_msgs = fix_and_limit_messages_history(&messages, sampling_parameters)?;
+
+    // 7.5. Linearize summarization messages (replace summarized ranges with summary content)
+    let limited_msgs = apply_summarization_linearize(limited_msgs);
 
     // 8. Strip thinking blocks if thinking is disabled
     let mut limited_adapted_msgs =
