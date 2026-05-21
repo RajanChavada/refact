@@ -653,6 +653,117 @@ describe("BuddyHome_renders_all_sections", () => {
     }
   });
 
+  it("investigating a grouped recent error acknowledges every related runtime id", async () => {
+    const dismissedIds: string[] = [];
+    let conversationStarted = false;
+    const nowMs = Date.now();
+    const runtimeA = {
+      id: "grouped-error-a",
+      signal_type: "chat_error",
+      title: "Grouped provider failure",
+      description: "Model returned 500",
+      source: "provider",
+      status: "failed",
+      priority: "high",
+      created_at: new Date(nowMs - 1_000).toISOString(),
+    } satisfies BuddyRuntimeEvent;
+    const runtimeB = {
+      ...runtimeA,
+      id: "grouped-error-b",
+      created_at: new Date(nowMs - 2_000).toISOString(),
+    } satisfies BuddyRuntimeEvent;
+    const runtimeC = {
+      ...runtimeA,
+      id: "grouped-error-c",
+      created_at: new Date(nowMs - 3_000).toISOString(),
+    } satisfies BuddyRuntimeEvent;
+
+    server.use(
+      http.get("http://127.0.0.1:8001/v1/buddy/opportunities", () =>
+        HttpResponse.json({ opportunities: [] }),
+      ),
+      http.get("http://127.0.0.1:8001/v1/buddy/conversations", () =>
+        HttpResponse.json([]),
+      ),
+      http.get("http://127.0.0.1:8001/v1/stats/llm/summary", () =>
+        HttpResponse.json({
+          totals: { total_calls: 0, successful_calls: 0, total_tokens: 0 },
+        }),
+      ),
+      http.get("http://127.0.0.1:8001/v1/setup/status", () =>
+        HttpResponse.json({ configured: true, reasons: [], detail: {} }),
+      ),
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/runtime/:id/dismiss",
+        ({ params }) => {
+          dismissedIds.push(String(params.id));
+          return HttpResponse.json({ detail: "offline" }, { status: 503 });
+        },
+      ),
+      http.post("http://127.0.0.1:8001/v1/buddy/conversations", () => {
+        conversationStarted = true;
+        return HttpResponse.json({
+          chat_id: "buddy-investigation-chat",
+          title: "Buddy investigation",
+          created_at: "2024-01-01T00:00:00Z",
+          last_message_at: null,
+          message_count: 0,
+        });
+      }),
+      http.post("http://127.0.0.1:8001/v1/buddy/investigation-context", () =>
+        HttpResponse.json({
+          logs: "logs",
+          internal_context: "context",
+          repo_owner: "smallcloudai",
+          repo_name: "refact",
+        }),
+      ),
+      http.post("http://127.0.0.1:8001/v1/chats/:id/commands", () =>
+        HttpResponse.json({ ok: true }),
+      ),
+    );
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(
+      setBuddySnapshot(
+        makeSnapshot(makePulse(), {
+          runtime_queue: [runtimeA, runtimeB, runtimeC],
+        }),
+      ),
+    );
+
+    const { user } = render(<BuddyHome />, { store });
+    const errorsPanel = await screen.findByTestId("buddy-recent-errors-panel");
+    expect(within(errorsPanel).getByText("×3")).toBeInTheDocument();
+    expect(dismissedIds).toHaveLength(0);
+
+    await user.click(
+      within(errorsPanel).getByRole("button", { name: "Investigate" }),
+    );
+
+    const buddyState = store.getState().buddy;
+    const allRuntimeEvents = [
+      buddyState.nowPlaying,
+      ...buddyState.runtimeQueue,
+    ].filter((event): event is BuddyRuntimeEvent => event != null);
+    expect(allRuntimeEvents.find((event) => event.id === runtimeA.id)).toEqual(
+      expect.objectContaining({ dismissed: true }),
+    );
+    expect(allRuntimeEvents.find((event) => event.id === runtimeB.id)).toEqual(
+      expect.objectContaining({ dismissed: true }),
+    );
+    expect(allRuntimeEvents.find((event) => event.id === runtimeC.id)).toEqual(
+      expect.objectContaining({ dismissed: true }),
+    );
+
+    await waitFor(() => {
+      expect(conversationStarted).toBe(true);
+      expect(new Set(dismissedIds)).toEqual(
+        new Set([runtimeA.id, runtimeB.id, runtimeC.id]),
+      );
+    });
+    expect(dismissedIds).toHaveLength(3);
+  });
+
   it("failed dashboard runtime dismiss remains local", async () => {
     vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
     let dismissCalled = false;

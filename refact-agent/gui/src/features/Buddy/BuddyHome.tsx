@@ -106,6 +106,18 @@ const REVIEWABLE_DRAFT_KINDS: DraftKind[] = ["agents_md", "pulse_report"];
 const RECENT_ERROR_WINDOW_MS = 6 * 60 * 60 * 1000;
 const RECENT_ERROR_REFRESH_MS = 60 * 1000;
 
+function uniqueRecentErrorIds(event: RecentBuddyError): string[] {
+  const ids =
+    event.relatedIds && event.relatedIds.length > 0
+      ? event.relatedIds
+      : [event.id];
+  return Array.from(new Set(ids));
+}
+
+function isGroupedRecentError(event: RecentBuddyError): boolean {
+  return (event.relatedIds?.length ?? 0) > 1 || (event.occurrences ?? 1) > 1;
+}
+
 function draftKindLabel(draft: BuddyDraft): string {
   return DRAFT_KIND_LABELS[draft.kind];
 }
@@ -547,7 +559,9 @@ export const BuddyHome: React.FC = () => {
           Boolean(existing.dismissedAny) || Boolean(e.dismissed);
         existing.dismissedAll =
           Boolean(existing.dismissedAll) && Boolean(e.dismissed);
-        existing.relatedIds = [...(existing.relatedIds ?? [existing.id]), e.id];
+        existing.relatedIds = Array.from(
+          new Set([...(existing.relatedIds ?? [existing.id]), e.id]),
+        );
       } else {
         sigMap.set(sig, {
           ...e,
@@ -562,7 +576,7 @@ export const BuddyHome: React.FC = () => {
   }, [nowPlaying, recentErrorNow, runtimeQueue]);
 
   const handleInvestigateError = useCallback(
-    (event: BuddyRuntimeEvent) => {
+    (event: RecentBuddyError) => {
       const triggerText = event.description
         ? `${event.title}: ${event.description}`
         : event.title;
@@ -578,20 +592,26 @@ export const BuddyHome: React.FC = () => {
           diagnostic,
         }),
       );
-      if (!event.dismissed) {
-        dispatch(dismissRuntimeEvent(event.id));
-        void dismissRuntimeMutation(event.id).catch(() => undefined);
+      const shouldDismiss = !event.dismissed || isGroupedRecentError(event);
+      if (shouldDismiss) {
+        for (const id of uniqueRecentErrorIds(event)) {
+          dispatch(dismissRuntimeEvent(id));
+          void dismissRuntimeMutation(id)
+            .unwrap()
+            .catch(() => undefined);
+        }
       }
     },
     [dispatch, diagnostics, dismissRuntimeMutation],
   );
 
   const handleDismissError = useCallback(
-    (event: BuddyRuntimeEvent) => {
-      const ids = (event as RecentBuddyError).relatedIds ?? [event.id];
-      for (const id of ids) {
+    (event: RecentBuddyError) => {
+      for (const id of uniqueRecentErrorIds(event)) {
         dispatch(dismissRuntimeEvent(id));
-        void dismissRuntimeMutation(id).catch(() => undefined);
+        void dismissRuntimeMutation(id)
+          .unwrap()
+          .catch(() => undefined);
       }
       dispatch(snoozeHomeNotifications(undefined));
     },

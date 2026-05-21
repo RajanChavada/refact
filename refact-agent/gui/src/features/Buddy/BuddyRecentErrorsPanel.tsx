@@ -14,8 +14,8 @@ export type RecentBuddyError = BuddyRuntimeEvent & {
 
 interface BuddyRecentErrorsPanelProps {
   recentErrors: RecentBuddyError[];
-  onInvestigate: (event: BuddyRuntimeEvent) => void;
-  onDismiss: (event: BuddyRuntimeEvent) => void;
+  onInvestigate: (event: RecentBuddyError) => void | Promise<void>;
+  onDismiss: (event: RecentBuddyError) => void | Promise<void>;
 }
 
 export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
@@ -79,7 +79,7 @@ export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
                 <button
                   type="button"
                   className={classNames(styles.chip, styles.chipPrimary)}
-                  onClick={() => onInvestigate(e)}
+                  onClick={() => void onInvestigate(e)}
                 >
                   Investigate
                 </button>
@@ -89,7 +89,7 @@ export const BuddyRecentErrorsPanel: React.FC<BuddyRecentErrorsPanelProps> = ({
                   <button
                     type="button"
                     className={classNames(styles.chip, styles.chipGhost)}
-                    onClick={() => onDismiss(e)}
+                    onClick={() => void onDismiss(e)}
                   >
                     Dismiss
                   </button>
