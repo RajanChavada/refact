@@ -498,9 +498,25 @@ async fn autonomous_runtime_event(
         "completed",
         Some(&spec.priority),
     );
-    event.description = description.or(Some(fallback_description));
+    let description = description.or(Some(fallback_description));
+    event.description = description.clone();
+    event.ttl_ms = Some(30_000);
+    event.speech_text = Some(description.as_deref().unwrap_or(title.as_str()).to_string());
+    event.scene = Some("insight".to_string());
+    event.duration_hint = Some(12);
     event.chat_id = Some(chat_id.to_string());
     event
+}
+
+fn apply_autonomous_runtime_chat_notification(
+    event: &mut BuddyRuntimeEvent,
+    description: String,
+) {
+    event.description = Some(description.clone());
+    event.ttl_ms = Some(30_000);
+    event.speech_text = Some(description);
+    event.scene = Some("insight".to_string());
+    event.duration_hint = Some(12);
 }
 
 fn called_buddy_log_activity(messages: &[ChatMessage]) -> bool {
@@ -557,6 +573,15 @@ pub(crate) async fn execute_autonomous_spec(
             return BuddyJobResult::default();
         }
     };
+    autonomous_success_result(gcx, ctx, spec, chat_id).await
+}
+
+async fn autonomous_success_result(
+    gcx: AppState,
+    ctx: &BuddyJobContext,
+    spec: AutonomousBuddyChatSpec,
+    chat_id: String,
+) -> BuddyJobResult {
     let last = AutonomousLastResult::new(spec.signal_hash.clone(), chat_id.clone());
     let activity = autonomous_activity(gcx.clone(), &spec, &chat_id, &ctx.identity_name).await;
     let runtime_event = autonomous_runtime_event(gcx, &spec, &chat_id, &ctx.identity_name).await;
@@ -2161,10 +2186,13 @@ async fn execute_built_autonomous_job(
         "completed",
         Some(definition.meta.priority),
     );
-    runtime_event.description = Some(format!(
-        "{} created a {} system conversation from local signals.",
-        ctx.identity_name, definition.meta.badge
-    ));
+    apply_autonomous_runtime_chat_notification(
+        &mut runtime_event,
+        format!(
+            "{} created a {} system conversation from local signals.",
+            ctx.identity_name, definition.meta.badge
+        ),
+    );
     runtime_event.chat_id = Some(chat_id.clone());
     BuddyJobResult {
         activity: Some(activity),
@@ -4764,6 +4792,30 @@ mod tests {
         assert!(result.speech.is_none());
         assert!(result.suggestion.is_none());
         assert_eq!(result.last_result.as_deref(), Some(stored.as_str()));
+    }
+
+    #[tokio::test]
+    async fn autonomous_success_result_includes_visible_runtime_event_with_stable_dedupe() {
+        let ctx = context_with_last_result(None);
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
+        let spec = build_autonomous_job_spec(
+            dependency_radar_definition(),
+            "Local dependency manifest evidence:\n- total_manifest_count: 12".to_string(),
+        );
+        let expected_key = format!("{}:{}", spec.workflow_id, spec.signal_hash);
+
+        let result = autonomous_success_result(gcx, &ctx, spec, "chat-success".to_string()).await;
+
+        let event = result.runtime_event.expect("runtime event");
+        assert_eq!(event.status, "completed");
+        assert_eq!(event.dedupe_key.as_deref(), Some(expected_key.as_str()));
+        assert_eq!(event.chat_id.as_deref(), Some("chat-success"));
+        assert_eq!(event.ttl_ms, Some(30_000));
+        assert!(event.speech_text.as_deref().is_some_and(|text| {
+            text.contains("Dependency Radar") && text.contains("details")
+        }));
+        assert!(result.activity.is_some());
+        assert!(result.last_result.is_some());
     }
 
     #[tokio::test]

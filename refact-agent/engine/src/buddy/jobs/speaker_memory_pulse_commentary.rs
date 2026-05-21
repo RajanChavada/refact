@@ -52,6 +52,13 @@ impl BuddyJob for SpeakerMemoryPulseCommentaryJob {
             .await;
         BuddyJobResult {
             speech_intent: Some(SpeechIntent::MemoryPulseCommentary),
+            runtime_event: Some(super::super::scheduler::speech_runtime_event(
+                self.id(),
+                SpeechIntent::MemoryPulseCommentary,
+                &speech,
+                "Memory pulse note".to_string(),
+                Some(summary.clone()),
+            )),
             speech: Some(speech),
             last_result: Some(summary),
             ..Default::default()

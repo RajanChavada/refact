@@ -127,6 +127,13 @@ impl BuddyJob for StatsWatcherJob {
                 };
                 return BuddyJobResult {
                     speech_intent: Some(super::super::voice_service::SpeechIntent::Milestone),
+                    runtime_event: Some(super::super::scheduler::speech_runtime_event(
+                        self.id(),
+                        SpeechIntent::Milestone,
+                        &speech,
+                        format!("Milestone: {} tasks completed!", m),
+                        Some(format!("{} workflows have finished successfully.", m)),
+                    )),
                     speech: Some(speech),
                     activity: Some(activity),
                     last_result: Some(runs.to_string()),

@@ -62,6 +62,13 @@ impl BuddyJob for SpeakerWinJob {
             .await;
         BuddyJobResult {
             speech_intent: Some(SpeechIntent::Win),
+            runtime_event: Some(super::super::scheduler::speech_runtime_event(
+                self.id(),
+                SpeechIntent::Win,
+                &speech,
+                "Buddy win ready".to_string(),
+                Some(summary),
+            )),
             speech: Some(speech),
             last_result: serde_json::to_string(&current_state(&ctx)).ok(),
             ..Default::default()

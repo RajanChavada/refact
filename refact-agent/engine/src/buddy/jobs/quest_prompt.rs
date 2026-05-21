@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 
 use super::super::scheduler::{BuddyJob, BuddyJobContext, BuddyJobResult};
-use super::super::types::{BuddyControl, BuddyQuest, BuddySuggestion};
+use super::super::types::{BuddyControl, BuddyQuest, BuddySpeechItem, BuddySuggestion};
 use crate::buddy::voice_service::{SpeechIntent, VoiceCtx, voice_service};
 
 pub struct QuestPromptJob;
@@ -137,14 +137,25 @@ fn pick_quest(ctx: &BuddyJobContext) -> Option<&'static str> {
     None
 }
 
-async fn voice_quest_description(
+async fn voice_quest_speech(
     gcx: AppState,
     _ctx: &BuddyJobContext,
     kind: &str,
     fallback: &str,
-) -> String {
+) -> BuddySpeechItem {
     let Some(snapshot) = crate::buddy::actor::buddy_snapshot(gcx.clone()).await else {
-        return fallback.to_string();
+        return BuddySpeechItem {
+            id: format!("quest-prompt-{}-{}", kind, chrono::Utc::now().timestamp()),
+            text: fallback.to_string(),
+            mood: "excited".to_string(),
+            scope: "global".to_string(),
+            persistent: false,
+            ttl_seconds: 12,
+            dedupe_key: Some(format!("quest_prompt_{kind}")),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            controls: vec![],
+            chat_id: None,
+        };
     };
     let pulse_one_liner = format!(
         "{} pending ops, {} stuck tasks",
@@ -157,11 +168,13 @@ async fn voice_quest_description(
         workflow_id: Some(kind),
         workflow_summary: Some(fallback),
     };
-    voice_service()
+    let mut speech = voice_service()
         .await
         .render_speech(gcx, voice_ctx, SpeechIntent::QuestAccept)
-        .await
-        .text
+        .await;
+    speech.ttl_seconds = 12;
+    speech.dedupe_key = Some(format!("quest_prompt_{kind}"));
+    speech
 }
 
 #[async_trait::async_trait]
@@ -201,9 +214,8 @@ impl BuddyJob for QuestPromptJob {
         let Some(mut quest) = make_quest(&ctx, kind) else {
             return BuddyJobResult::default();
         };
-        let voiced_description =
-            voice_quest_description(gcx, &ctx, kind, quest.description.as_str()).await;
-        quest.description = voiced_description;
+        let speech = voice_quest_speech(gcx, &ctx, kind, quest.description.as_str()).await;
+        quest.description = speech.text.clone();
 
         let suggestion_id = format!(
             "quest-suggestion-{}-{}",
@@ -212,6 +224,15 @@ impl BuddyJob for QuestPromptJob {
         );
 
         BuddyJobResult {
+            speech_intent: Some(SpeechIntent::QuestAccept),
+            runtime_event: Some(super::super::scheduler::speech_runtime_event(
+                self.id(),
+                SpeechIntent::QuestAccept,
+                &speech,
+                quest.title.clone(),
+                Some(quest.description.clone()),
+            )),
+            speech: Some(speech),
             suggestion: Some(BuddySuggestion {
                 id: suggestion_id.clone(),
                 suggestion_type: format!("quest_{kind}"),

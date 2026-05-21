@@ -68,6 +68,13 @@ impl BuddyJob for SpeakerInsightJob {
             .await;
         BuddyJobResult {
             speech_intent: Some(SpeechIntent::Insight),
+            runtime_event: Some(super::super::scheduler::speech_runtime_event(
+                self.id(),
+                SpeechIntent::Insight,
+                &speech,
+                "Buddy insight ready".to_string(),
+                Some(latest),
+            )),
             speech: Some(speech),
             last_result: Some(current.to_string()),
             ..Default::default()

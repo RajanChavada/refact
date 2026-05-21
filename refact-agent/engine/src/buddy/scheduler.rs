@@ -72,6 +72,67 @@ fn should_record_job_result(result: &BuddyJobResult, records_empty_result: bool)
     records_empty_result || result.has_visible_output()
 }
 
+pub(crate) fn speech_runtime_event(
+    job_id: &str,
+    intent: SpeechIntent,
+    speech: &BuddySpeechItem,
+    title: String,
+    description: Option<String>,
+) -> BuddyRuntimeEvent {
+    let intent_key = super::speech_policy::intent_key(intent);
+    let dedupe_key = speech
+        .dedupe_key
+        .as_deref()
+        .map(|key| format!("speech_runtime:{job_id}:{key}"))
+        .unwrap_or_else(|| format!("speech_runtime:{job_id}:{intent_key}"));
+    let mut event = super::actor::make_runtime_event(
+        &format!("speech_{intent_key}"),
+        if title.trim().is_empty() {
+            &speech.text
+        } else {
+            &title
+        },
+        job_id,
+        &dedupe_key,
+        "completed",
+        Some(speech_runtime_priority(intent)),
+    );
+    event.description = description.filter(|text| !text.trim().is_empty());
+    event.ttl_ms = Some(speech.ttl_seconds.saturating_mul(1000).max(1000));
+    event.speech_text = Some(speech.text.clone());
+    event.scene = Some(speech_runtime_scene(intent).to_string());
+    event.duration_hint = Some(speech.ttl_seconds.min(u64::from(u32::MAX)) as u32);
+    event.persistent = speech.persistent;
+    event.controls = speech.controls.clone();
+    event.chat_id = speech.chat_id.clone();
+    event
+}
+
+fn speech_runtime_priority(intent: SpeechIntent) -> &'static str {
+    match intent {
+        SpeechIntent::ErrorAlert => "high",
+        SpeechIntent::Win
+        | SpeechIntent::Milestone
+        | SpeechIntent::QuestAccept
+        | SpeechIntent::QuestComplete => "normal",
+        SpeechIntent::Insight | SpeechIntent::MemoryPulseCommentary => "normal",
+        SpeechIntent::Greeting | SpeechIntent::Tour | SpeechIntent::Suggestion => "low",
+        SpeechIntent::Humor => "low",
+    }
+}
+
+fn speech_runtime_scene(intent: SpeechIntent) -> &'static str {
+    match intent {
+        SpeechIntent::ErrorAlert => "alert",
+        SpeechIntent::Win | SpeechIntent::Milestone | SpeechIntent::QuestComplete => "celebrate",
+        SpeechIntent::Insight | SpeechIntent::MemoryPulseCommentary | SpeechIntent::Suggestion => {
+            "insight"
+        }
+        SpeechIntent::Greeting | SpeechIntent::Tour | SpeechIntent::QuestAccept => "welcome",
+        SpeechIntent::Humor => "playful",
+    }
+}
+
 pub(crate) fn result_after_suggestion_policy(
     result: BuddyJobResult,
     settings: &BuddySettings,
@@ -538,6 +599,7 @@ mod tests {
         priority: u32,
         intent: SpeechIntent,
         activity_title: String,
+        runtime_event: bool,
     }
 
     #[async_trait::async_trait]
@@ -589,6 +651,19 @@ mod tests {
                     activity_type: "test".to_string(),
                     chat_id: None,
                 }),
+                runtime_event: self.runtime_event.then(|| {
+                    let title = format!("runtime {}", self.id);
+                    let mut event = crate::buddy::actor::make_runtime_event(
+                        "test_signal",
+                        &title,
+                        self.id(),
+                        &format!("runtime-{}", self.id),
+                        "completed",
+                        None,
+                    );
+                    event.speech_text = Some(format!("runtime speech {}", self.id));
+                    event
+                }),
                 ..Default::default()
             }
         }
@@ -636,12 +711,14 @@ mod tests {
                     priority: 0,
                     intent: SpeechIntent::Humor,
                     activity_title: "one activity".to_string(),
+                    runtime_event: false,
                 }),
                 Box::new(SpeechJob {
                     id: "speech_two".to_string(),
                     priority: 1,
                     intent: SpeechIntent::ErrorAlert,
                     activity_title: "two activity".to_string(),
+                    runtime_event: false,
                 }),
             ],
         };
@@ -669,6 +746,7 @@ mod tests {
                         priority: idx,
                         intent: SpeechIntent::Humor,
                         activity_title: "humor activity".to_string(),
+                        runtime_event: false,
                     }) as Box<dyn BuddyJob>
                 })
                 .collect(),
@@ -714,12 +792,14 @@ mod tests {
                     priority: 0,
                     intent: SpeechIntent::Humor,
                     activity_title: "low activity".to_string(),
+                    runtime_event: false,
                 }),
                 Box::new(SpeechJob {
                     id: "speech_high".to_string(),
                     priority: 1,
                     intent: SpeechIntent::ErrorAlert,
                     activity_title: "high activity".to_string(),
+                    runtime_event: false,
                 }),
             ],
         };
@@ -744,6 +824,104 @@ mod tests {
         assert!(!rotation
             .by_intent
             .contains_key(crate::buddy::speech_policy::intent_key(SpeechIntent::Humor)));
+    }
+
+    #[tokio::test]
+    async fn scheduler_preserves_runtime_events_from_unselected_speech_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = BuddyScheduler {
+            jobs: vec![
+                Box::new(SpeechJob {
+                    id: "speech_low".to_string(),
+                    priority: 0,
+                    intent: SpeechIntent::Humor,
+                    activity_title: "low activity".to_string(),
+                    runtime_event: true,
+                }),
+                Box::new(SpeechJob {
+                    id: "speech_high".to_string(),
+                    priority: 1,
+                    intent: SpeechIntent::ErrorAlert,
+                    activity_title: "high activity".to_string(),
+                    runtime_event: true,
+                }),
+            ],
+        };
+        let buddy_arc = test_service(&dir, crate::buddy::state::default_buddy_state()).await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
+
+        scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
+
+        let buddy = buddy_arc.lock().await;
+        let service = buddy.as_ref().unwrap();
+        assert_eq!(
+            service.active_speech.as_ref().unwrap().text,
+            "speech speech_high"
+        );
+        assert_eq!(service.runtime_queue.items.len(), 2);
+        assert!(service
+            .runtime_queue
+            .items
+            .iter()
+            .any(|event| event.title == "runtime speech_low"
+                && event.speech_text.as_deref() == Some("runtime speech speech_low")));
+        assert!(service
+            .runtime_queue
+            .items
+            .iter()
+            .any(|event| event.title == "runtime speech_high"
+                && event.speech_text.as_deref() == Some("runtime speech speech_high")));
+    }
+
+    #[tokio::test]
+    async fn speech_rotation_allows_win_when_error_over_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = BuddyScheduler {
+            jobs: vec![
+                Box::new(SpeechJob {
+                    id: "speech_error".to_string(),
+                    priority: 0,
+                    intent: SpeechIntent::ErrorAlert,
+                    activity_title: "error activity".to_string(),
+                    runtime_event: false,
+                }),
+                Box::new(SpeechJob {
+                    id: "speech_win".to_string(),
+                    priority: 1,
+                    intent: SpeechIntent::Win,
+                    activity_title: "win activity".to_string(),
+                    runtime_event: false,
+                }),
+            ],
+        };
+        let mut state = crate::buddy::state::default_buddy_state();
+        let now = chrono::Utc::now();
+        state.speech_rotation.by_intent.insert(
+            crate::buddy::speech_policy::intent_key(SpeechIntent::ErrorAlert).to_string(),
+            crate::buddy::state::IntentBudgetState {
+                last_emitted_at: Some(now),
+                hour_count: 2,
+                day_count: 2,
+                hour_window_start: Some(now),
+                day_window_start: Some(now),
+            },
+        );
+        let buddy_arc = test_service(&dir, state).await;
+        let gcx = AppState::from_gcx(crate::global_context::tests::make_test_gcx().await).await;
+
+        scheduler.tick(gcx, buddy_arc.clone(), dir.path()).await;
+
+        let buddy = buddy_arc.lock().await;
+        let service = buddy.as_ref().unwrap();
+        assert_eq!(
+            service.active_speech.as_ref().unwrap().text,
+            "speech speech_win"
+        );
+        assert!(service
+            .state
+            .speech_rotation
+            .by_intent
+            .contains_key(crate::buddy::speech_policy::intent_key(SpeechIntent::Win)));
     }
 
     #[test]
