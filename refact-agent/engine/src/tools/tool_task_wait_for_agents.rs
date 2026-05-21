@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex as AMutex;
-use async_trait::async_trait;
 
-use crate::tools::tools_description::{
-    Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
-};
-use crate::call_validation::{ChatMessage, ChatContent, ContextEnum};
 use crate::at_commands::at_commands::AtCommandsContext;
-use crate::tools::tool_task_check_agents::{get_task_id, get_agent_statuses, format_agent_status};
+use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
+use crate::tools::tool_task_check_agents::{
+    agent_status_input_schema, format_agent_statuses, get_agent_statuses,
+    has_active_agent_statuses, parse_agent_status_query,
+};
+use crate::tools::tool_task_check_agents::get_task_id;
+use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 
 pub struct ToolTaskWaitForAgents;
 
@@ -31,8 +34,8 @@ impl Tool for ToolTaskWaitForAgents {
             },
             experimental: false,
             allow_parallel: false,
-            description: "Check the status of all spawned agents for a task. Shows their board status (primary) and live session state (if available). Agents mark themselves done via task_agent_finish(). Agents that fail (streaming errors, timeouts, stuck) are automatically marked as failed.".to_string(),
-            input_schema: json_schema_from_params(&[("task_id", "string", "Task ID (optional if chat is bound to a task)")], &[]),
+            description: "Check spawned task agents using the same compact status view as task_check_agents, then stop the planner turn so it waits for agent completion messages.".to_string(),
+            input_schema: agent_status_input_schema(),
             output_schema: None,
             annotations: None,
         }
@@ -62,6 +65,7 @@ impl Tool for ToolTaskWaitForAgents {
 
         drop(ccx_lock);
 
+        let query = parse_agent_status_query(args)?;
         let task_id = get_task_id(&ccx, args).await?;
         let (gcx, chat_facade) = {
             let ccx_lock = ccx.lock().await;
@@ -69,41 +73,14 @@ impl Tool for ToolTaskWaitForAgents {
         };
 
         let statuses = get_agent_statuses(gcx, chat_facade, &task_id).await?;
+        let mut result = format_agent_statuses(&statuses, &query)?;
 
         if statuses.is_empty() {
-            let result = "# Agent Status\n\nNo agents have been spawned yet for this task.\n\nUse `task_spawn_agent(card_id)` to spawn an agent for a card.".to_string();
-
-            {
-                let ccx_lock = ccx.lock().await;
-                ccx_lock
-                    .abort_flag
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-
-            return Ok((
-                false,
-                vec![ContextEnum::ChatMessage(ChatMessage {
-                    role: "tool".to_string(),
-                    content: ChatContent::SimpleText(result),
-                    tool_calls: None,
-                    tool_call_id: tool_call_id.clone(),
-                    ..Default::default()
-                })],
-            ));
-        }
-
-        let running: Vec<_> = statuses.iter().filter(|s| s.column == "doing").collect();
-
-        let mut result = String::new();
-
-        if running.is_empty() {
-            result.push_str("No agents are currently running.\n");
+            result.push_str("\nNo agents are currently running.\n");
+        } else if has_active_agent_statuses(&statuses) {
+            result.push_str("\n⏳ **Agents are still working.** Do not check again, wait for the completion message to arrive.\n");
         } else {
-            for status in &running {
-                result.push_str(&format_agent_status(status));
-                result.push_str("\n---\n\n");
-            }
-            result.push_str("⏳ **Agents are still working.** Do not check again, wait for the completion message to arrive.\n");
+            result.push_str("\nNo agents are currently running.\n");
         }
 
         {
