@@ -82,6 +82,7 @@ function makeToolMessage(content: string): ToolMessage {
 function renderFinalReportTool(content: string) {
   const chat = createDefaultChatState();
   const runtime = chat.threads[chat.current_thread_id];
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!runtime) throw new Error("missing test thread");
   runtime.thread.messages = [makeToolMessage(content)] as ChatMessages;
   return render(<ToolContent toolCalls={[makeToolCall()]} />, {
