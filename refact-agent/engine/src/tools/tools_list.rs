@@ -409,6 +409,7 @@ async fn get_builtin_tools(gcx: Arc<GlobalContext>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_task_agent::ToolTaskAssignAgent::new()),
         Box::new(crate::tools::tool_task_spawn_agent::ToolTaskSpawnAgent::new()),
         Box::new(crate::tools::tool_task_check_agents::ToolTaskCheckAgents::new()),
+        Box::new(crate::tools::tool_task_overview::ToolTaskOverview::new()),
         Box::new(crate::tools::tool_agent_diff::ToolAgentDiff::new()),
         Box::new(crate::tools::tool_agent_pulse::ToolAgentPulse::new()),
         Box::new(crate::tools::tool_agent_chat_summary::ToolAgentChatSummary::new()),
