@@ -221,14 +221,17 @@ where
     let failed_before: HashSet<String> = board
         .cards
         .iter()
-        .filter(|card| card.column == "failed")
+        .filter(|card| card.column == "failed" || card.column == "regressed")
         .map(|card| card.id.clone())
         .collect();
     let result = updater(&mut board)?;
     let new_failed = board
         .cards
         .iter()
-        .filter(|card| card.column == "failed" && !failed_before.contains(&card.id))
+        .filter(|card| {
+            (card.column == "failed" || card.column == "regressed")
+                && !failed_before.contains(&card.id)
+        })
         .map(|card| {
             let reason_short = card
                 .final_report
@@ -434,7 +437,11 @@ pub async fn update_task_stats(
 
     meta.cards_total = board.cards.len();
     meta.cards_done = board.cards.iter().filter(|c| c.column == "done").count();
-    meta.cards_failed = board.cards.iter().filter(|c| c.column == "failed").count();
+    meta.cards_failed = board
+        .cards
+        .iter()
+        .filter(|c| c.column == "failed" || c.column == "regressed")
+        .count();
     meta.agents_active = board
         .cards
         .iter()

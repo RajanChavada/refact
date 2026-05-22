@@ -217,7 +217,7 @@ mod task_types_tests {
             "Default schema version should be 1"
         );
         assert_eq!(board.rev, 0, "Default rev should be 0");
-        assert_eq!(board.columns.len(), 4, "Should have 4 default columns");
+        assert_eq!(board.columns.len(), 5, "Should have 5 default columns");
         assert_eq!(board.cards.len(), 0, "Default board should have no cards");
     }
 

@@ -445,6 +445,7 @@ fn mermaid_class(column: &str) -> &'static str {
         "doing" => "doing",
         "done" => "done",
         "failed" => "failed",
+        "regressed" => "failed",
         _ => "other",
     }
 }
@@ -1030,7 +1031,7 @@ impl Tool for ToolTaskBoardMoveCard {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'column'")?;
 
-        let valid_columns = ["planned", "doing", "done", "failed"];
+        let valid_columns = ["planned", "doing", "done", "failed", "regressed"];
         if !valid_columns.contains(&column) {
             return Err(format!(
                 "Invalid column: {}. Must be one of: {:?}",
@@ -1048,7 +1049,9 @@ impl Tool for ToolTaskBoardMoveCard {
         if column == "doing" && card.started_at.is_none() {
             card.started_at = Some(now.clone());
         }
-        if (column == "done" || column == "failed") && card.completed_at.is_none() {
+        if (column == "done" || column == "failed" || column == "regressed")
+            && card.completed_at.is_none()
+        {
             card.completed_at = Some(now);
         }
         card.column = column.to_string();
@@ -1097,7 +1100,7 @@ impl Tool for ToolTaskBoardMoveCard {
                     (
                         "column",
                         "string",
-                        "Target column: planned, doing, done, or failed",
+                        "Target column: planned, doing, done, failed, or regressed",
                     ),
                 ],
                 &["card_id", "column"],

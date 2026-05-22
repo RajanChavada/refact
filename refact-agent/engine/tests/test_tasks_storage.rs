@@ -434,11 +434,12 @@ cards:
             ("doing", "Doing"),
             ("done", "Done"),
             ("failed", "Failed"),
+            ("regressed", "Regressed"),
         ];
 
-        assert_eq!(columns.len(), 4, "Should have 4 default columns");
+        assert_eq!(columns.len(), 5, "Should have 5 default columns");
         assert_eq!(columns[0].0, "planned", "First column should be planned");
-        assert_eq!(columns[3].0, "failed", "Last column should be failed");
+        assert_eq!(columns[4].0, "regressed", "Last column should be regressed");
     }
 
     // Test 15: Task status enum

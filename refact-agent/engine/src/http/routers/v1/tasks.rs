@@ -451,7 +451,7 @@ pub async fn handle_patch_board(
             let card = board
                 .get_card_mut(&id)
                 .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Card {} not found", id)))?;
-            let valid_columns = ["planned", "doing", "done", "failed"];
+            let valid_columns = ["planned", "doing", "done", "failed", "regressed"];
             if !valid_columns.contains(&column.as_str()) {
                 return Err((
                     StatusCode::BAD_REQUEST,
@@ -461,7 +461,9 @@ pub async fn handle_patch_board(
             if column == "doing" && card.started_at.is_none() {
                 card.started_at = Some(now.clone());
             }
-            if (column == "done" || column == "failed") && card.completed_at.is_none() {
+            if (column == "done" || column == "failed" || column == "regressed")
+                && card.completed_at.is_none()
+            {
                 card.completed_at = Some(now.clone());
             }
             card.column = column;

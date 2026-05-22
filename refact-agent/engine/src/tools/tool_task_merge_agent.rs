@@ -1,9 +1,11 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex as AMutex;
-use async_trait::async_trait;
 
 use crate::tools::tools_description::{
     Tool, ToolDesc, ToolSource, ToolSourceType, json_schema_from_params,
@@ -46,7 +48,45 @@ fn cleanup_summary(response: &MergeWorktreeResponse) -> String {
     }
 }
 
-fn merge_response_message(card_id: &str, response: &MergeWorktreeResponse) -> String {
+fn append_post_merge_check_message(
+    message: &mut String,
+    result: &crate::chat::post_merge_check::PostMergeCheckResult,
+) {
+    if !result.checked {
+        if let Some(reason) = result.skipped_reason.as_deref() {
+            message.push_str(&format!("\n\n**Post-merge check:** skipped ({})", reason));
+        }
+        return;
+    }
+    if result.auto_reverted {
+        message.push_str(&format!(
+            "\n\n## Post-merge regression detected\n\n**Verification:** `{}` failed{}\n**Auto-reverted:** true\n**Merge commit:** {}\n**Revert commit:** {}\n**Fix card:** {}\n\n{}",
+            result.command.as_deref().unwrap_or("unknown"),
+            result
+                .exit_code
+                .map(|code| format!(" with exit code {}", code))
+                .unwrap_or_default(),
+            result.merge_commit.as_deref().unwrap_or("unknown"),
+            result.revert_commit.as_deref().unwrap_or("unknown"),
+            result.fix_card_id.as_deref().unwrap_or("created"),
+            crate::chat::post_merge_check::first_error_line(&result.output_tail)
+        ));
+    } else {
+        message.push_str(&format!(
+            "\n\n**Post-merge check:** `{}` passed",
+            result.command.as_deref().unwrap_or("unknown")
+        ));
+    }
+}
+
+fn merge_response_message(
+    card_id: &str,
+    response: &MergeWorktreeResponse,
+    post_merge_check: Option<&crate::chat::post_merge_check::PostMergeCheckResult>,
+) -> String {
+    if response.conflict.is_some() || response.status == "nothing_to_merge" {
+        let _ = post_merge_check;
+    }
     if let Some(conflict) = response.conflict.as_ref() {
         return format!(
             "# Merge Conflicts Detected\n\n**Card:** {}\n**Branch:** {} → {}\n**Strategy:** {}\n**Aborted:** {}\n\n## Conflicting Files\n{}\n\n{}",
@@ -77,23 +117,56 @@ fn merge_response_message(card_id: &str, response: &MergeWorktreeResponse) -> St
             cleanup_summary(response)
         );
     }
-    format!(
+    let mut message = format!(
         "# Agent Work Merged\n\n**Card:** {}\n**Strategy:** {}\n**Branch:** {} → {}\n**Cleanup:** {}\n\nThe agent's work has been successfully merged back to the target branch.",
         card_id,
         response.strategy,
         response.source_branch,
         response.target_branch,
         cleanup_summary(response)
-    )
+    );
+    if let Some(result) = post_merge_check {
+        append_post_merge_check_message(&mut message, result);
+    }
+    message
+}
+
+fn parse_bool_arg(args: &HashMap<String, Value>, name: &str) -> Result<bool, String> {
+    match args.get(name) {
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(Value::String(value)) => Ok(value.eq_ignore_ascii_case("true")),
+        Some(_) => Err(format!("{} must be a boolean", name)),
+        None => Ok(false),
+    }
 }
 
 fn parse_force(args: &HashMap<String, Value>) -> Result<bool, String> {
-    match args.get("force") {
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(Value::String(value)) => Ok(value.eq_ignore_ascii_case("true")),
-        Some(_) => Err("force must be a boolean".to_string()),
-        None => Ok(false),
+    parse_bool_arg(args, "force")
+}
+
+fn parse_auto_revert(args: &HashMap<String, Value>) -> Result<bool, String> {
+    parse_bool_arg(args, "auto_revert")
+}
+
+fn parse_auto_revert_timeout(args: &HashMap<String, Value>) -> Result<Duration, String> {
+    let Some(value) = args.get("auto_revert_timeout_secs") else {
+        return Ok(Duration::from_secs(
+            crate::chat::post_merge_check::DEFAULT_POST_MERGE_CHECK_TIMEOUT_SECS,
+        ));
+    };
+    let secs = match value {
+        Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| "auto_revert_timeout_secs must be a positive integer".to_string())?,
+        Value::String(text) => text
+            .parse::<u64>()
+            .map_err(|_| "auto_revert_timeout_secs must be a positive integer".to_string())?,
+        _ => return Err("auto_revert_timeout_secs must be a positive integer".to_string()),
+    };
+    if secs == 0 {
+        return Err("auto_revert_timeout_secs must be greater than zero".to_string());
     }
+    Ok(Duration::from_secs(secs))
 }
 
 fn verifier_merge_block_message(card_id: &str, concerns: &[String]) -> String {
@@ -165,6 +238,8 @@ async fn merge_registered_task_worktree(
     tool_call_id: &str,
     commit_message_override: Option<String>,
     force: bool,
+    auto_revert: bool,
+    auto_revert_timeout: Duration,
 ) -> Result<Option<(bool, Vec<ContextEnum>)>, String> {
     let board = storage::load_board(gcx.clone(), task_id).await?;
     let Some(card) = board.get_card(card_id) else {
@@ -232,12 +307,33 @@ async fn merge_registered_task_worktree(
         )
         .await;
     }
-    clear_board_mirrors_after_registered_merge(gcx, task_id, card_id, &response).await?;
+    clear_board_mirrors_after_registered_merge(gcx.clone(), task_id, card_id, &response).await?;
+    let post_merge_check = if response.merged && auto_revert {
+        Some(
+            crate::chat::post_merge_check::post_merge_check(
+                gcx,
+                crate::chat::post_merge_check::PostMergeCheckRequest {
+                    task_id: task_id.to_string(),
+                    card_id: card_id.to_string(),
+                    workspace_root: workspace_root.to_path_buf(),
+                    enabled: auto_revert,
+                    timeout: auto_revert_timeout,
+                },
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     Ok(Some((
         false,
         vec![ContextEnum::ChatMessage(ChatMessage {
             role: "tool".to_string(),
-            content: ChatContent::SimpleText(merge_response_message(card_id, &response)),
+            content: ChatContent::SimpleText(merge_response_message(
+                card_id,
+                &response,
+                post_merge_check.as_ref(),
+            )),
             tool_calls: None,
             tool_call_id: tool_call_id.to_string(),
             ..Default::default()
@@ -266,7 +362,7 @@ impl Tool for ToolTaskMergeAgent {
             experimental: false,
             allow_parallel: false,
             description: "Merge an agent's work back to the main branch and always cleanup the worktree after a successful merge or no-op merged state. The agent must have completed work on a card with an associated git branch and worktree.".to_string(),
-            input_schema: json_schema_from_params(&[("card_id", "string", "Card ID whose agent branch to merge"), ("strategy", "string", "Merge strategy: 'merge' (default) or 'squash'"), ("force", "boolean", "Override a failed verifier_report and merge anyway")], &["card_id"]),
+            input_schema: json_schema_from_params(&[("card_id", "string", "Card ID whose agent branch to merge"), ("strategy", "string", "Merge strategy: 'merge' (default) or 'squash'"), ("force", "boolean", "Override a failed verifier_report and merge anyway"), ("auto_revert", "boolean", "Opt in to post-merge verification and automatic git revert on deterministic regression"), ("auto_revert_timeout_secs", "integer", "Timeout for post-merge verification and revert commands, default 300 seconds")], &["card_id"]),
             output_schema: None,
             annotations: None,
         }
@@ -310,6 +406,8 @@ impl Tool for ToolTaskMergeAgent {
             .and_then(|v| v.as_str())
             .unwrap_or("merge");
         let force = parse_force(args)?;
+        let auto_revert = parse_auto_revert(args)?;
+        let auto_revert_timeout = parse_auto_revert_timeout(args)?;
 
         if strategy != "merge" && strategy != "squash" {
             return Err(format!(
@@ -356,6 +454,8 @@ impl Tool for ToolTaskMergeAgent {
                 tool_call_id,
                 None,
                 force,
+                auto_revert,
+                auto_revert_timeout,
             )
             .await?
             {
@@ -682,6 +782,24 @@ Use `cat <file>` to see conflict markers in each file."#,
 
         drop(_guard);
 
+        let post_merge_check = if auto_revert {
+            Some(
+                crate::chat::post_merge_check::post_merge_check(
+                    gcx.clone(),
+                    crate::chat::post_merge_check::PostMergeCheckRequest {
+                        task_id: task_id.clone(),
+                        card_id: card_id.to_string(),
+                        workspace_root: workspace_root.to_path_buf(),
+                        enabled: true,
+                        timeout: auto_revert_timeout,
+                    },
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         let _ = crate::chat::task_agent_monitor::append_card_target_files(
             crate::app_state::AppState::from_gcx(gcx.clone()).await,
             &task_id,
@@ -720,7 +838,7 @@ Use `cat <file>` to see conflict markers in each file."#,
             "Cleanup skipped because agent branch matches base branch.".to_string()
         };
 
-        let result_message = format!(
+        let mut result_message = format!(
             r#"# Agent Work Merged
 
 **Card:** {}
@@ -731,6 +849,9 @@ Use `cat <file>` to see conflict markers in each file."#,
 The agent's work has been successfully merged back to the main branch."#,
             card_id, strategy, agent_branch, base_branch, cleanup_info
         );
+        if let Some(post_merge_check) = post_merge_check.as_ref() {
+            append_post_merge_check_message(&mut result_message, post_merge_check);
+        }
 
         Ok((
             false,
@@ -859,6 +980,35 @@ mod worktree_merge_tool_tests {
         assert!(ensure_verifier_allows_merge(&card, false).is_ok());
     }
 
+    #[test]
+    fn merge_agent_auto_revert_schema_and_args_are_opt_in() {
+        let schema = ToolTaskMergeAgent::new().tool_description().input_schema;
+        assert!(schema["properties"].get("auto_revert").is_some());
+        assert!(schema["properties"]
+            .get("auto_revert_timeout_secs")
+            .is_some());
+        let empty = HashMap::new();
+        assert!(!parse_auto_revert(&empty).unwrap());
+        assert_eq!(
+            parse_auto_revert_timeout(&empty).unwrap(),
+            Duration::from_secs(
+                crate::chat::post_merge_check::DEFAULT_POST_MERGE_CHECK_TIMEOUT_SECS
+            )
+        );
+        let args = HashMap::from([
+            ("auto_revert".to_string(), Value::Bool(true)),
+            (
+                "auto_revert_timeout_secs".to_string(),
+                Value::Number(120.into()),
+            ),
+        ]);
+        assert!(parse_auto_revert(&args).unwrap());
+        assert_eq!(
+            parse_auto_revert_timeout(&args).unwrap(),
+            Duration::from_secs(120)
+        );
+    }
+
     async fn write_task(gcx: Arc<GlobalContext>, source: &Path, card: BoardCard) {
         let task_dir = source.join(".refact").join("tasks").join("task-1");
         tokio::fs::create_dir_all(&task_dir).await.unwrap();
@@ -939,6 +1089,8 @@ mod worktree_merge_tool_tests {
             "tool-call",
             Some("task merge".to_string()),
             false,
+            false,
+            Duration::from_secs(5),
         )
         .await
         .unwrap();

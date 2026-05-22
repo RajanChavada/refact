@@ -156,7 +156,7 @@ fn board_counts(board: &TaskBoard) -> Vec<(String, ColumnCounts)> {
             "planned" => entry.planned += 1,
             "doing" => entry.doing += 1,
             "done" => entry.done += 1,
-            "failed" => entry.failed += 1,
+            "failed" | "regressed" => entry.failed += 1,
             _ => entry.planned += 1,
         }
     }
@@ -200,7 +200,7 @@ enum OverviewAgentState {
 fn classify_agent(status: &AgentStatus, now: DateTime<Utc>) -> OverviewAgentState {
     match status.column.as_str() {
         "done" => OverviewAgentState::Done,
-        "failed" => OverviewAgentState::Failed,
+        "failed" | "regressed" => OverviewAgentState::Failed,
         "doing" => {
             if matches!(status.session_state, Some(SessionState::Error)) {
                 return OverviewAgentState::Stuck;

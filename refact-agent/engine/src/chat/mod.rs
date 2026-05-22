@@ -9,6 +9,7 @@ pub mod history_limit;
 pub mod linearize;
 pub mod summarization;
 mod openai_merge;
+pub mod post_merge_check;
 pub mod prepare;
 pub mod prompt_snippets;
 pub mod prompts;

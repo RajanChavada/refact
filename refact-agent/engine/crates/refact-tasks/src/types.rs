@@ -85,6 +85,10 @@ fn default_columns() -> Vec<BoardColumn> {
             id: "failed".into(),
             title: "Failed".into(),
         },
+        BoardColumn {
+            id: "regressed".into(),
+            title: "Regressed".into(),
+        },
     ]
 }
 
@@ -404,7 +408,7 @@ impl TaskBoard {
         for card in &self.cards {
             match card.column.as_str() {
                 "done" => completed.push(card.id.clone()),
-                "failed" => failed.push(card.id.clone()),
+                "failed" | "regressed" => failed.push(card.id.clone()),
                 "doing" => in_progress.push(card.id.clone()),
                 "planned" => {
                     let deps_satisfied = card
@@ -506,7 +510,8 @@ mod tests {
                 ("planned", "Planned"),
                 ("doing", "Doing"),
                 ("done", "Done"),
-                ("failed", "Failed")
+                ("failed", "Failed"),
+                ("regressed", "Regressed"),
             ]
         );
     }
@@ -533,7 +538,7 @@ mod tests {
         assert!(!meta.is_name_generated);
         assert_eq!(board.schema_version, 1);
         assert_eq!(board.rev, 0);
-        assert_eq!(board.columns.len(), 4);
+        assert_eq!(board.columns.len(), 5);
     }
 
     #[test]
@@ -725,9 +730,7 @@ mod tests {
 
         let markdown = report.to_markdown();
 
-        assert!(markdown.contains(
-            "\n````text\nbefore\n```\n## Fake Section\n```\nafter\n````\n"
-        ));
+        assert!(markdown.contains("\n````text\nbefore\n```\n## Fake Section\n```\nafter\n````\n"));
         assert!(!markdown.contains("\n```text\nbefore\n```\n## Fake Section"));
     }
 
@@ -746,6 +749,7 @@ mod tests {
                     vec!["missing"],
                 ),
                 card("in-progress", "In progress", "doing", vec![]),
+                card("regressed", "Regressed", "regressed", vec![]),
             ],
             ..TaskBoard::default()
         };
@@ -756,7 +760,7 @@ mod tests {
         assert_eq!(result.blocked, vec!["blocked", "blocked-missing"]);
         assert_eq!(result.in_progress, vec!["in-progress"]);
         assert_eq!(result.completed, vec!["dep-done"]);
-        assert_eq!(result.failed, vec!["dep-failed"]);
+        assert_eq!(result.failed, vec!["dep-failed", "regressed"]);
     }
 
     #[test]

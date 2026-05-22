@@ -112,7 +112,7 @@ mod tests {
                 assert_eq!(task_id, "task-1");
                 assert_eq!(rev, 3);
                 assert_eq!(board.schema_version, 1);
-                assert_eq!(board.columns.len(), 4);
+                assert_eq!(board.columns.len(), 5);
             }
             _ => panic!("unexpected event variant"),
         }
