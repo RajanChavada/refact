@@ -32,6 +32,21 @@ const structuredPayload = JSON.stringify({
   assumptions: ["Legacy markdown remains available."],
 });
 
+const unsafeStructuredPayload = JSON.stringify({
+  summary: [
+    "Rendered untrusted markdown.",
+    "<script>window.x=1</script>",
+    '<img onerror="alert(1)" src=x>',
+  ].join("\n\n"),
+  success: true,
+  files_changed: [],
+  tests_added_or_updated: [],
+  verification: [],
+  followup_cards: [],
+  risks: [],
+  assumptions: [],
+});
+
 describe("FinalReportView", () => {
   it("renders structured payload sections", () => {
     render(<FinalReportView content={structuredPayload} title="Card T-1" />);
@@ -44,6 +59,15 @@ describe("FinalReportView", () => {
     expect(screen.getByText("FinalReportView.test.tsx")).toBeInTheDocument();
     expect(screen.getByText("Followup cards")).toBeInTheDocument();
     expect(screen.getByText("Add create-card actions")).toBeInTheDocument();
+  });
+
+  it("does not render raw scripts or inline image handlers from summary markdown", () => {
+    const { container } = render(
+      <FinalReportView content={unsafeStructuredPayload} />,
+    );
+
+    expect(container.querySelector("script")).not.toBeInTheDocument();
+    expect(container.querySelector("img[onerror]")).not.toBeInTheDocument();
   });
 
   it("shows verification pass and fail emoji", () => {

@@ -24,6 +24,21 @@ const DOC_GET = [
   "- Ship document renderer",
 ].join("\n");
 
+const UNSAFE_DOC_GET = [
+  "---",
+  "name: Unsafe Document",
+  "slug: unsafe-document",
+  "kind: plan",
+  "pinned: false",
+  "version: 1",
+  "---",
+  "",
+  "# Unsafe Document",
+  "",
+  "<script>window.x=1</script>",
+  '<img onerror="alert(1)" src=x>',
+].join("\n");
+
 describe("TaskDocumentsContent", () => {
   it("parses doc_list markdown into rows and renders them", () => {
     render(<TaskDocumentsContent toolType="doc_list" content={DOC_LIST} />);
@@ -63,6 +78,15 @@ describe("TaskDocumentsContent", () => {
     expect(screen.getByText("Ship document renderer")).toBeInTheDocument();
     expect(screen.getByText("main-plan")).toBeInTheDocument();
     expect(screen.getByText("v3")).toBeInTheDocument();
+  });
+
+  it("does not render raw scripts or inline image handlers from doc_get markdown", () => {
+    const { container } = render(
+      <TaskDocumentsContent toolType="doc_get" content={UNSAFE_DOC_GET} />,
+    );
+
+    expect(container.querySelector("script")).not.toBeInTheDocument();
+    expect(container.querySelector("img[onerror]")).not.toBeInTheDocument();
   });
 
   it("renders pinned and non-pinned stars differently", () => {
