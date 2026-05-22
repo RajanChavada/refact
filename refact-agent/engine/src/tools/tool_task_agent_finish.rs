@@ -80,6 +80,18 @@ async fn get_finish_lock(task_id: &str, card_id: &str) -> Arc<AMutex<()>> {
         .clone()
 }
 
+fn parse_success_arg(args: &HashMap<String, Value>) -> Result<bool, String> {
+    match args.get("success") {
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err("Invalid 'success' string; expected true or false".to_string()),
+        },
+        _ => Err("Missing or invalid 'success' parameter (must be boolean)".to_string()),
+    }
+}
+
 fn git_failure_details(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -546,11 +558,7 @@ impl Tool for ToolTaskAgentFinish {
             .as_ref()
             .and_then(|meta| meta.planner_chat_id.clone());
 
-        let success = match args.get("success") {
-            Some(Value::Bool(b)) => *b,
-            Some(Value::String(s)) => s.to_lowercase() == "true",
-            _ => return Err("Missing or invalid 'success' parameter (must be boolean)".to_string()),
-        };
+        let success = parse_success_arg(args)?;
 
         let report = parse_finish_report(args, success)?;
 
@@ -944,6 +952,50 @@ mod tests {
         assert_eq!(structured.files_changed, vec!["src/lib.rs"]);
         assert_eq!(structured.tests_added_or_updated, vec!["unit test"]);
         assert!(parsed.markdown.contains("## Verification"));
+    }
+
+    #[test]
+    fn task_agent_finish_rejects_invalid_success_string() {
+        let tru_args = HashMap::from_iter([
+            ("success".to_string(), json!("tru")),
+            ("report".to_string(), json!("invalid success")),
+        ]);
+        let yes_args = HashMap::from_iter([
+            ("success".to_string(), json!("yes")),
+            ("report".to_string(), json!("invalid success")),
+        ]);
+
+        let tru_error = parse_success_arg(&tru_args).unwrap_err();
+        let yes_error = parse_success_arg(&yes_args).unwrap_err();
+
+        assert_eq!(
+            tru_error,
+            "Invalid 'success' string; expected true or false"
+        );
+        assert_eq!(
+            yes_error,
+            "Invalid 'success' string; expected true or false"
+        );
+    }
+
+    #[test]
+    fn task_agent_finish_accepts_trimmed_boolean_strings() {
+        let true_args = HashMap::from_iter([
+            ("success".to_string(), json!(" true ")),
+            ("report".to_string(), json!("success")),
+        ]);
+        let false_args = HashMap::from_iter([
+            ("success".to_string(), json!(" false ")),
+            ("report".to_string(), json!("failure")),
+        ]);
+        let bool_args = HashMap::from_iter([
+            ("success".to_string(), json!(true)),
+            ("report".to_string(), json!("boolean success")),
+        ]);
+
+        assert!(parse_success_arg(&true_args).unwrap());
+        assert!(!parse_success_arg(&false_args).unwrap());
+        assert!(parse_success_arg(&bool_args).unwrap());
     }
 
     #[tokio::test]

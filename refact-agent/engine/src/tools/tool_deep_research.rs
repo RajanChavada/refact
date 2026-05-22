@@ -39,6 +39,14 @@ fn template_includes_research_query(template: &str) -> bool {
         || template.contains("{{task}}")
 }
 
+fn deep_research_title(research_query: &str) -> String {
+    if research_query.chars().count() > 80 {
+        format!("{}...", research_query.chars().take(80).collect::<String>())
+    } else {
+        research_query.to_string()
+    }
+}
+
 fn build_deep_research_messages(
     subagent_config: &SubagentConfig,
     research_query: &str,
@@ -215,11 +223,7 @@ impl Tool for ToolDeepResearch {
             research_result.content.content_text_only()
         );
 
-        let title = if research_query.len() > 80 {
-            format!("{}...", &research_query[..80])
-        } else {
-            research_query.clone()
-        };
+        let title = deep_research_title(&research_query);
         let root_chat_id = ccx.lock().await.root_chat_id.clone();
         let enrichment_params = EnrichmentParams {
             base_tags: vec!["research".to_string(), "deep-research".to_string()],
@@ -328,5 +332,20 @@ impl Tool for ToolDeepResearch {
             command: command_to_match,
             rule: "default".to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_research_title_truncates_unicode_without_panic() {
+        let query = "🦀".repeat(81);
+
+        let title = deep_research_title(&query);
+
+        assert_eq!(title, format!("{}...", "🦀".repeat(80)));
+        assert_eq!(title.chars().count(), 83);
     }
 }
