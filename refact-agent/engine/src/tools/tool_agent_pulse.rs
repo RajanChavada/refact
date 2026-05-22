@@ -580,6 +580,7 @@ mod tests {
             }],
             final_report: None,
             final_report_structured: None,
+            verifier_report: None,
             created_at: created_at.clone(),
             started_at: Some(created_at),
             last_heartbeat_at: Some(heartbeat_at),

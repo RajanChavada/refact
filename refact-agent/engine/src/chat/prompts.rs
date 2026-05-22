@@ -596,6 +596,7 @@ mod tests {
             status_updates: Vec::new(),
             final_report: None,
             final_report_structured: None,
+            verifier_report: None,
             created_at: now,
             started_at: None,
             last_heartbeat_at: None,

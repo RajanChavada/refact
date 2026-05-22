@@ -26,6 +26,7 @@ pub mod tools;
 pub mod trajectories;
 pub mod trajectory_ops;
 pub mod types;
+pub mod verifier;
 
 pub use session::{
     SessionsMap, create_sessions_map, start_session_cleanup_task,

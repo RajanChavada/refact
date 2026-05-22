@@ -87,6 +87,44 @@ fn merge_response_message(card_id: &str, response: &MergeWorktreeResponse) -> St
     )
 }
 
+fn parse_force(args: &HashMap<String, Value>) -> Result<bool, String> {
+    match args.get("force") {
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(Value::String(value)) => Ok(value.eq_ignore_ascii_case("true")),
+        Some(_) => Err("force must be a boolean".to_string()),
+        None => Ok(false),
+    }
+}
+
+fn verifier_merge_block_message(card_id: &str, concerns: &[String]) -> String {
+    let rendered = if concerns.is_empty() {
+        "- verifier failed without concerns".to_string()
+    } else {
+        concerns
+            .iter()
+            .map(|concern| format!("- {}", concern))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "Card {} verifier failed. Refusing merge unless force=true. Concerns:\n{}",
+        card_id, rendered
+    )
+}
+
+fn ensure_verifier_allows_merge(
+    card: &crate::tasks::types::BoardCard,
+    force: bool,
+) -> Result<(), String> {
+    let Some(report) = card.verifier_report.as_ref() else {
+        return Ok(());
+    };
+    if report.passed || force {
+        return Ok(());
+    }
+    Err(verifier_merge_block_message(&card.id, &report.concerns))
+}
+
 async fn clear_board_mirrors_after_registered_merge(
     gcx: Arc<GlobalContext>,
     task_id: &str,
@@ -126,11 +164,13 @@ async fn merge_registered_task_worktree(
     strategy: &str,
     tool_call_id: &str,
     commit_message_override: Option<String>,
+    force: bool,
 ) -> Result<Option<(bool, Vec<ContextEnum>)>, String> {
     let board = storage::load_board(gcx.clone(), task_id).await?;
     let Some(card) = board.get_card(card_id) else {
         return Err(format!("Card {} not found", card_id));
     };
+    ensure_verifier_allows_merge(card, force)?;
     let Some(worktree_id) = card.agent_worktree_name.clone() else {
         return Ok(None);
     };
@@ -226,7 +266,7 @@ impl Tool for ToolTaskMergeAgent {
             experimental: false,
             allow_parallel: false,
             description: "Merge an agent's work back to the main branch and always cleanup the worktree after a successful merge or no-op merged state. The agent must have completed work on a card with an associated git branch and worktree.".to_string(),
-            input_schema: json_schema_from_params(&[("card_id", "string", "Card ID whose agent branch to merge"), ("strategy", "string", "Merge strategy: 'merge' (default) or 'squash'")], &["card_id"]),
+            input_schema: json_schema_from_params(&[("card_id", "string", "Card ID whose agent branch to merge"), ("strategy", "string", "Merge strategy: 'merge' (default) or 'squash'"), ("force", "boolean", "Override a failed verifier_report and merge anyway")], &["card_id"]),
             output_schema: None,
             annotations: None,
         }
@@ -269,6 +309,7 @@ impl Tool for ToolTaskMergeAgent {
             .get("strategy")
             .and_then(|v| v.as_str())
             .unwrap_or("merge");
+        let force = parse_force(args)?;
 
         if strategy != "merge" && strategy != "squash" {
             return Err(format!(
@@ -297,6 +338,7 @@ impl Tool for ToolTaskMergeAgent {
         let card = board
             .get_card(card_id)
             .ok_or(format!("Card {} not found", card_id))?;
+        ensure_verifier_allows_merge(card, force)?;
 
         let task_meta = storage::load_task_meta(gcx.clone(), &task_id).await?;
         let base_branch = task_meta
@@ -313,6 +355,7 @@ impl Tool for ToolTaskMergeAgent {
                 strategy,
                 tool_call_id,
                 None,
+                force,
             )
             .await?
             {
@@ -709,7 +752,7 @@ The agent's work has been successfully merged back to the main branch."#,
 #[cfg(test)]
 mod worktree_merge_tool_tests {
     use super::*;
-    use crate::tasks::types::{BoardCard, TaskBoard, TaskMeta, TaskStatus};
+    use crate::tasks::types::{BoardCard, TaskBoard, TaskMeta, TaskStatus, VerifierReport};
     use crate::worktrees::types::CreateWorktreeRequest;
     use std::path::Path;
 
@@ -765,6 +808,7 @@ mod worktree_merge_tool_tests {
             status_updates: vec![],
             final_report: Some("done".to_string()),
             final_report_structured: None,
+            verifier_report: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             started_at: None,
             last_heartbeat_at: None,
@@ -775,6 +819,43 @@ mod worktree_merge_tool_tests {
             target_files: vec![],
             scope_guard_mode: Default::default(),
         }
+    }
+
+    #[test]
+    fn merge_agent_refuses_when_verifier_failed_without_force() {
+        let mut card = test_card("wt", "agent", Path::new("/tmp/worktree"));
+        card.verifier_report = Some(VerifierReport {
+            passed: false,
+            concerns: vec!["cargo test failed".to_string()],
+            recommendation: "fix-needed".to_string(),
+            ..Default::default()
+        });
+
+        let err = ensure_verifier_allows_merge(&card, false).unwrap_err();
+
+        assert!(err.contains("verifier failed"));
+        assert!(err.contains("cargo test failed"));
+        assert!(err.contains("force=true"));
+    }
+
+    #[test]
+    fn merge_agent_proceeds_when_force_true() {
+        let mut card = test_card("wt", "agent", Path::new("/tmp/worktree"));
+        card.verifier_report = Some(VerifierReport {
+            passed: false,
+            concerns: vec!["cargo test failed".to_string()],
+            recommendation: "fix-needed".to_string(),
+            ..Default::default()
+        });
+
+        assert!(ensure_verifier_allows_merge(&card, true).is_ok());
+    }
+
+    #[test]
+    fn merge_agent_allows_card_without_verifier_report() {
+        let card = test_card("wt", "agent", Path::new("/tmp/worktree"));
+
+        assert!(ensure_verifier_allows_merge(&card, false).is_ok());
     }
 
     async fn write_task(gcx: Arc<GlobalContext>, source: &Path, card: BoardCard) {
@@ -856,6 +937,7 @@ mod worktree_merge_tool_tests {
             "squash",
             "tool-call",
             Some("task merge".to_string()),
+            false,
         )
         .await
         .unwrap();

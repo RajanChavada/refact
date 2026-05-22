@@ -805,6 +805,7 @@ impl Tool for ToolTaskBoardCreateCard {
             status_updates: vec![],
             final_report: None,
             final_report_structured: None,
+            verifier_report: None,
             created_at: Utc::now().to_rfc3339(),
             started_at: None,
             last_heartbeat_at: None,

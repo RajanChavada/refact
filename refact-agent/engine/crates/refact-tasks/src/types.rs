@@ -129,6 +129,15 @@ pub struct VerificationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
+pub struct VerifierReport {
+    pub passed: bool,
+    pub command_results: Vec<VerificationResult>,
+    pub concerns: Vec<String>,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct SuggestedCard {
     pub title: String,
     pub instructions: String,
@@ -276,6 +285,8 @@ pub struct BoardCard {
     pub final_report: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_report_structured: Option<FinalReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier_report: Option<VerifierReport>,
     pub created_at: String,
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,6 +422,7 @@ mod tests {
             status_updates: vec![],
             final_report: None,
             final_report_structured: None,
+            verifier_report: None,
             created_at: "2026-05-16T00:00:00Z".into(),
             started_at: None,
             last_heartbeat_at: None,
@@ -492,6 +504,7 @@ mod tests {
 
         assert_eq!(card.final_report.as_deref(), Some("legacy markdown report"));
         assert!(card.final_report_structured.is_none());
+        assert!(card.verifier_report.is_none());
     }
 
     #[test]
@@ -543,6 +556,26 @@ mod tests {
 
         let encoded = serde_json::to_string(&report).unwrap();
         let decoded: FinalReport = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn verifier_report_round_trips_json() {
+        let report = VerifierReport {
+            passed: false,
+            command_results: vec![VerificationResult {
+                command: "cargo test --lib -p refact-lsp -- verifier".into(),
+                exit_code: Some(1),
+                passed: false,
+                output_tail: "test failed".into(),
+            }],
+            concerns: vec!["Diff removes a required guard".into()],
+            recommendation: "fix-needed".into(),
+        };
+
+        let encoded = serde_json::to_string(&report).unwrap();
+        let decoded: VerifierReport = serde_json::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, report);
     }

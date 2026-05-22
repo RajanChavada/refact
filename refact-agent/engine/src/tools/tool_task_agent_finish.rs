@@ -10,6 +10,7 @@ use tokio::sync::Mutex as AMutex;
 use crate::agentic::generate_commit_message::generate_commit_message_by_diff;
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
+use crate::chat::verifier::schedule_card_verifier_after_finish;
 use crate::global_context::GlobalContext;
 use crate::tasks::storage;
 use crate::tasks::types::{BoardCard, FinalReport, StatusUpdate, SuggestedCard, VerificationResult};
@@ -690,6 +691,15 @@ impl Tool for ToolTaskAgentFinish {
             );
         }
 
+        if success {
+            schedule_card_verifier_after_finish(
+                gcx.clone(),
+                task_id.clone(),
+                card_id.clone(),
+            )
+            .await;
+        }
+
         if !success {
             let card_id_clear = card_id.clone();
             let _ = storage::update_board_atomic(gcx.clone(), &task_id, move |board| {
@@ -776,6 +786,7 @@ mod tests {
             status_updates: vec![],
             final_report: None,
             final_report_structured: None,
+            verifier_report: None,
             created_at: Utc::now().to_rfc3339(),
             started_at: Some(Utc::now().to_rfc3339()),
             last_heartbeat_at: None,

@@ -1138,6 +1138,7 @@ mod tests {
             status_updates: vec![],
             final_report: None,
             final_report_structured: None,
+            verifier_report: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             started_at: Some(chrono::Utc::now().to_rfc3339()),
             last_heartbeat_at: None,
