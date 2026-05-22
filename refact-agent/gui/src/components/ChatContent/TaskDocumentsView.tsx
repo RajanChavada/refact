@@ -31,6 +31,10 @@ type Meta = {
   pinned?: string;
   version?: string;
 };
+type ParsedDocument = {
+  body: string;
+  meta: Meta;
+};
 type Props = { toolType: ToolType; content: string };
 type TaskDocumentsToolProps = { toolCall: ToolCall; toolType: ToolType };
 
@@ -96,10 +100,7 @@ function parseRows(markdown: string): Row[] {
   });
 }
 
-function parseDocument(markdown: string): {
-  body: string;
-  meta: Meta;
-} {
+function parseDocument(markdown: string): ParsedDocument {
   const lines = markdown.split(/\r?\n/);
   if (lines[0]?.trim() !== "---") return { body: markdown, meta: {} };
   const end = lines.findIndex(
@@ -122,6 +123,29 @@ function parseDocument(markdown: string): {
   };
 }
 
+function hasParsedDocumentContent(document: ParsedDocument): boolean {
+  if (document.body.trim().length > 0) return true;
+  return Object.values(document.meta).some(
+    (value) => (value ?? "").trim().length > 0,
+  );
+}
+
+const RawMarkdownFallback: React.FC<{ content: string; notice: string }> = ({
+  content,
+  notice,
+}) => (
+  <Box className={styles.root}>
+    <Box className={styles.header}>
+      <Text size="1" color="gray">
+        {notice}
+      </Text>
+    </Box>
+    <Box className={styles.markdown}>
+      <Markdown>{content}</Markdown>
+    </Box>
+  </Box>
+);
+
 const PinStar: React.FC<{ pinned: boolean; slug?: string }> = ({
   pinned,
   slug,
@@ -143,6 +167,15 @@ export const TaskDocumentsContent: React.FC<Props> = ({
 
   if (toolType === "doc_get") {
     const { body, meta } = document;
+    if (!hasParsedDocumentContent(document)) {
+      return (
+        <RawMarkdownFallback
+          content={content}
+          notice="Parser produced no document details; raw output below"
+        />
+      );
+    }
+
     return (
       <Box className={styles.root}>
         <Box className={styles.header}>
@@ -170,6 +203,15 @@ export const TaskDocumentsContent: React.FC<Props> = ({
           <Markdown>{body || content}</Markdown>
         </Box>
       </Box>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <RawMarkdownFallback
+        content={content}
+        notice="Parser produced no rows; raw output below"
+      />
     );
   }
 
@@ -242,7 +284,7 @@ export const TaskDocumentsView: React.FC<TaskDocumentsToolProps> = ({
       icon={<FileTextIcon />}
       summary={toolType === "doc_list" ? "Task documents" : "Task document"}
       meta={
-        toolType === "doc_list" && content
+        toolType === "doc_list" && content && rows.length > 0
           ? `${rows.length} documents`
           : undefined
       }

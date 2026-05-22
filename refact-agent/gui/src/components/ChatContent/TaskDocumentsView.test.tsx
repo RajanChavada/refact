@@ -34,6 +34,26 @@ describe("TaskDocumentsContent", () => {
     expect(screen.getByText("3 documents")).toBeInTheDocument();
   });
 
+  it("renders raw doc_list markdown when no rows parse", () => {
+    render(
+      <TaskDocumentsContent toolType="doc_list" content="No documents found" />,
+    );
+
+    expect(screen.getByText("No documents found")).toBeInTheDocument();
+    expect(
+      screen.getByText("Parser produced no rows; raw output below"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("0 documents")).not.toBeInTheDocument();
+  });
+
+  it("does not render the raw fallback when doc_list rows parse", () => {
+    render(<TaskDocumentsContent toolType="doc_list" content={DOC_LIST} />);
+
+    expect(
+      screen.queryByText("Parser produced no rows; raw output below"),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders doc_get body markdown", () => {
     render(<TaskDocumentsContent toolType="doc_get" content={DOC_GET} />);
 
