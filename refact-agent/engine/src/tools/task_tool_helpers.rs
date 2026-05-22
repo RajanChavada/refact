@@ -18,6 +18,7 @@ pub(crate) fn required_string(args: &HashMap<String, Value>, key: &str) -> Resul
         .ok_or_else(|| format!("Missing '{}'", key))
 }
 
+#[allow(dead_code)]
 pub(crate) fn optional_string(args: &HashMap<String, Value>, key: &str) -> Option<String> {
     args.get(key)
         .and_then(|value| value.as_str())
@@ -93,6 +94,7 @@ pub(crate) async fn require_bound_planner_task(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn require_agent_task_meta(
     ccx: &Arc<AMutex<AtCommandsContext>>,
 ) -> Result<TaskMeta, String> {
