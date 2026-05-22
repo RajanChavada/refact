@@ -278,7 +278,8 @@ export const TaskDocumentsView: React.FC<TaskDocumentsToolProps> = ({
   }, [isStreaming, isWaiting, maybeResult]);
 
   return (
-    <div data-testid="task-documents-view" style={{ display: "contents" }}>
+    <>
+    <span data-testid="task-documents-view" hidden />
     <ToolCard
       icon={<FileTextIcon />}
       summary={toolType === "doc_list" ? "Task documents" : "Task document"}
@@ -296,7 +297,7 @@ export const TaskDocumentsView: React.FC<TaskDocumentsToolProps> = ({
         <TaskDocumentsContent toolType={toolType} content={content} />
       )}
     </ToolCard>
-    </div>
+    </>
   );
 };
 

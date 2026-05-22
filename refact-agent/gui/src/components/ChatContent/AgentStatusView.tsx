@@ -613,7 +613,8 @@ export const AgentStatusView: React.FC<AgentStatusViewProps> = ({
   );
 
   return (
-    <div data-testid="agent-status-view" style={{ display: "contents" }}>
+    <>
+    <span data-testid="agent-status-view" hidden />
     <ToolCard
       icon={<GearIcon />}
       summary={summary}
@@ -633,7 +634,7 @@ export const AgentStatusView: React.FC<AgentStatusViewProps> = ({
         <ShikiCodeBlock showLineNumbers={false}>{content}</ShikiCodeBlock>
       ) : null}
     </ToolCard>
-    </div>
+    </>
   );
 };
 

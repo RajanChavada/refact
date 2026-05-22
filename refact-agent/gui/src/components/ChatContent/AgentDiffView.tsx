@@ -218,7 +218,8 @@ export const AgentDiffView: React.FC<AgentDiffViewProps> = ({ toolCall }) => {
     : undefined;
 
   return (
-    <div data-testid="agent-diff-view" style={{ display: "contents" }}>
+    <>
+    <span data-testid="agent-diff-view" hidden />
     <ToolCard
       icon={<GitHubLogoIcon />}
       summary={report ? `Agent diff: ${report.cardId}` : "Agent diff"}
@@ -234,7 +235,7 @@ export const AgentDiffView: React.FC<AgentDiffViewProps> = ({ toolCall }) => {
         <ShikiCodeBlock showLineNumbers={false}>{content}</ShikiCodeBlock>
       ) : null}
     </ToolCard>
-    </div>
+    </>
   );
 };
 
