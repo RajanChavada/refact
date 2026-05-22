@@ -81,6 +81,7 @@ import { AgentStatusView } from "./AgentStatusView";
 import { AgentPulseView } from "./AgentPulseView";
 import { AgentDiffView } from "./AgentDiffView";
 import { TaskDocumentsView } from "./TaskDocumentsView";
+import { FinalReportView } from "./FinalReportView";
 
 function parseProgressEntry(entry: string): { step?: string; text: string } {
   const m = entry.match(/^(\d+\/\d+):\s*([\s\S]+)$/);
@@ -915,6 +916,30 @@ function processToolCalls(
         toolType={headName}
       />
     );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+      activeToolCallId,
+    );
+  }
+
+  if (headName === "task_agent_finish") {
+    const elem =
+      result && typeof result.content === "string" ? (
+        <FinalReportView
+          key={`final-report-tool-${head.id ?? processed.length}`}
+          content={result.content}
+        />
+      ) : (
+        <GenericTool
+          key={`final-report-tool-${head.id ?? processed.length}`}
+          toolCall={normalizedHead}
+        />
+      );
     return processToolCalls(
       tail,
       toolResults,
