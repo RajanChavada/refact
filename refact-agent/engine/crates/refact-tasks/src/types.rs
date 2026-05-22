@@ -168,6 +168,14 @@ pub struct AbVariants {
     pub b: AbVariantInfo,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TeamMember {
+    pub role: String,
+    pub agent_chat_id: Option<String>,
+    pub agent_branch: Option<String>,
+    pub status: Option<String>,
+}
+
 impl FinalReport {
     pub fn to_markdown(&self) -> String {
         let mut output = String::new();
@@ -356,6 +364,8 @@ pub struct BoardCard {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ab_variants: Option<AbVariants>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub team_members: Vec<TeamMember>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub target_files: Vec<String>,
     #[serde(default)]
     pub scope_guard_mode: ScopeGuardMode,
@@ -488,6 +498,7 @@ mod tests {
             agent_worktree: None,
             agent_worktree_name: None,
             ab_variants: None,
+            team_members: vec![],
             target_files: vec![],
             scope_guard_mode: ScopeGuardMode::Off,
         }
@@ -608,6 +619,88 @@ mod tests {
         .unwrap();
 
         assert_eq!(card.scope_guard_mode, ScopeGuardMode::Off);
+    }
+
+    #[test]
+    fn board_card_without_team_members_deserializes_with_empty_vec() {
+        let card: BoardCard = serde_json::from_str(
+            r#"{
+                "id": "T-1",
+                "title": "Legacy card",
+                "column": "planned",
+                "created_at": "2026-05-16T00:00:00Z",
+                "started_at": null,
+                "completed_at": null,
+                "assignee": null,
+                "agent_chat_id": null
+            }"#,
+        )
+        .unwrap();
+
+        assert!(card.team_members.is_empty());
+    }
+
+    #[test]
+    fn empty_team_members_are_skipped_in_serialized_yaml_output() {
+        let card = card("T-1", "Schema card", "planned", vec![]);
+
+        let output = serde_json::to_string(&card).unwrap();
+
+        assert!(!output.contains("team_members"));
+    }
+
+    #[test]
+    fn team_members_round_trip_three_entries() {
+        let mut card = card("T-1", "Team card", "doing", vec![]);
+        card.team_members = vec![
+            TeamMember {
+                role: "implementer".into(),
+                agent_chat_id: Some("chat-implementer".into()),
+                agent_branch: Some("team/implementer".into()),
+                status: Some("doing".into()),
+            },
+            TeamMember {
+                role: "tester".into(),
+                agent_chat_id: Some("chat-tester".into()),
+                agent_branch: Some("team/tester".into()),
+                status: Some("idle".into()),
+            },
+            TeamMember {
+                role: "reviewer".into(),
+                agent_chat_id: None,
+                agent_branch: None,
+                status: Some("done".into()),
+            },
+        ];
+
+        let encoded = serde_json::to_string(&card).unwrap();
+        let decoded: BoardCard = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.team_members.len(), 3);
+        assert_eq!(decoded.team_members[0].role, "implementer");
+        assert_eq!(
+            decoded.team_members[0].agent_chat_id.as_deref(),
+            Some("chat-implementer")
+        );
+        assert_eq!(
+            decoded.team_members[0].agent_branch.as_deref(),
+            Some("team/implementer")
+        );
+        assert_eq!(decoded.team_members[0].status.as_deref(), Some("doing"));
+        assert_eq!(decoded.team_members[1].role, "tester");
+        assert_eq!(
+            decoded.team_members[1].agent_chat_id.as_deref(),
+            Some("chat-tester")
+        );
+        assert_eq!(
+            decoded.team_members[1].agent_branch.as_deref(),
+            Some("team/tester")
+        );
+        assert_eq!(decoded.team_members[1].status.as_deref(), Some("idle"));
+        assert_eq!(decoded.team_members[2].role, "reviewer");
+        assert!(decoded.team_members[2].agent_chat_id.is_none());
+        assert!(decoded.team_members[2].agent_branch.is_none());
+        assert_eq!(decoded.team_members[2].status.as_deref(), Some("done"));
     }
 
     #[test]
