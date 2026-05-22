@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as AMutex;
 
 use crate::app_state::AppState;
@@ -15,9 +16,7 @@ use crate::ext::skills_context::{
     build_skills_context_messages_tracked, build_skills_prompt_text, SkillsTrackingInfo,
     SKILLS_CONTEXT_MARKER,
 };
-use crate::tools::tool_task_memory::{
-    MemoryKind, MemoryNamespace, MemoryStatus, TaskMemoryFrontmatter,
-};
+use crate::tools::tool_task_memory::{MemoryKind, MemoryNamespace, MemoryStatus, TaskMemoryFrontmatter};
 use crate::yaml_configs::project_information::load_project_information_config;
 use crate::call_validation::{ChatMessage, ChatContent, ContextFile, canonical_mode_id};
 use crate::tasks::storage::infer_task_id_from_chat_id;
@@ -121,13 +120,14 @@ pub async fn system_prompt_add_extra_instructions(
     // If config is globally disabled, treat as if include_project_info is false
     let include_project_info = include_project_info && config.enabled;
 
-    async fn workspace_files_info(
-        app: &AppState,
-    ) -> (Vec<String>, Option<PathBuf>) {
+    async fn workspace_files_info(app: &AppState) -> (Vec<String>, Option<PathBuf>) {
         let documents_state = &app.workspace.documents_state;
         let workspace_dirs: Vec<String> = {
             let dirs_locked = documents_state.workspace_folders.lock().unwrap();
-            dirs_locked.iter().map(|x| x.to_string_lossy().to_string()).collect()
+            dirs_locked
+                .iter()
+                .map(|x| x.to_string_lossy().to_string())
+                .collect()
         };
         let active_file_path = documents_state.active_file_path.lock().await.clone();
         (workspace_dirs, active_file_path)
@@ -533,10 +533,14 @@ mod tests {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let temp = tempfile::tempdir().unwrap();
         {
-            *gcx.documents_state.workspace_folders.lock().unwrap() = vec![temp.path().to_path_buf()];
+            *gcx.documents_state.workspace_folders.lock().unwrap() =
+                vec![temp.path().to_path_buf()];
         }
         let task_dir = temp.path().join(".refact/tasks").join(task_id);
         tokio::fs::create_dir_all(task_dir.join("memories"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(task_dir.join("documents"))
             .await
             .unwrap();
         let app = AppState::from_gcx(gcx).await;
@@ -550,6 +554,22 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    async fn write_task_document(task_dir: &Path, name: &str, frontmatter: &str, body: &str) {
+        tokio::fs::write(
+            task_dir.join("documents").join(name),
+            format!("---\n{}\n---\n\n{}", frontmatter.trim(), body),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn reset_task_briefing_tests() -> tokio::sync::MutexGuard<'static, ()> {
+        let guard = prompt_test_lock().lock().await;
+        clear_task_briefing_cache_for_tests().await;
+        clear_task_briefing_test_state().await;
+        guard
     }
 
     fn task_meta(task_id: &str, role: &str, card_id: Option<&str>) -> crate::chat::types::TaskMeta {
@@ -592,6 +612,15 @@ mod tests {
         task_id: &str,
         task_meta: Option<&crate::chat::types::TaskMeta>,
     ) -> Vec<ContextFile> {
+        injected_task_context_files(app, task_id, task_meta, TASK_MEMORIES_CONTEXT_MARKER).await
+    }
+
+    async fn injected_task_context_files(
+        app: &AppState,
+        task_id: &str,
+        task_meta: Option<&crate::chat::types::TaskMeta>,
+        marker: &str,
+    ) -> Vec<ContextFile> {
         let mut messages = vec![ChatMessage {
             role: "user".to_string(),
             content: ChatContent::SimpleText("hello".to_string()),
@@ -609,11 +638,11 @@ mod tests {
         .unwrap();
         let message = messages
             .iter()
-            .find(|message| message.tool_call_id == TASK_MEMORIES_CONTEXT_MARKER)
+            .find(|message| message.tool_call_id == marker)
             .unwrap();
         match &message.content {
             ChatContent::ContextFiles(files) => files.clone(),
-            _ => panic!("task memories must be context files"),
+            _ => panic!("task context must be context files"),
         }
     }
 
@@ -672,10 +701,7 @@ mod tests {
             write_task_memory(
                 &task_dir,
                 &format!("bulk-{}.md", idx),
-                &format!(
-                    "created_at: 2026-05-22T00:00:{:02}Z\nnamespace: task",
-                    idx
-                ),
+                &format!("created_at: 2026-05-22T00:00:{:02}Z\nnamespace: task", idx),
                 &large_body,
             )
             .await;
@@ -802,10 +828,7 @@ mod tests {
             write_task_memory(
                 &task_dir,
                 &format!("memory-{}.md", idx),
-                &format!(
-                    "created_at: 2026-05-22T00:00:{:02}Z\nnamespace: task",
-                    idx
-                ),
+                &format!("created_at: 2026-05-22T00:00:{:02}Z\nnamespace: task", idx),
                 &large_body,
             )
             .await;
@@ -818,6 +841,133 @@ mod tests {
         assert!(content.contains(
             "Showing 8 of 10 memories (0 archived/superseded skipped, 2 dropped over budget)."
         ));
+    }
+
+    #[tokio::test]
+    async fn task_briefing_small_content_skips_briefing() {
+        let _guard = reset_task_briefing_tests().await;
+        let task_id = "task-briefing-small";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        set_task_briefing_test_responses(
+            task_id,
+            vec![Ok("## Active Plans\n- should not be used".to_string())],
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "small.md",
+            "created_at: 2026-05-22T00:00:00Z\nnamespace: task",
+            "SMALL",
+        )
+        .await;
+
+        let meta = task_meta(task_id, "planner", None);
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains("SMALL"));
+        assert_eq!(task_briefing_test_calls().await, 0);
+    }
+
+    #[tokio::test]
+    async fn task_briefing_cached_without_second_subchat_call() {
+        let _guard = reset_task_briefing_tests().await;
+        let task_id = "task-briefing-cache";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        set_task_briefing_test_responses(
+            task_id,
+            vec![Ok("## Active Plans\n- Use cached plan [cache.md]\n\n## Key Decisions\n- Keep cache [cache.md]\n\n## Gotchas / Risks\n- None\n\n## Current State\n- Ready".to_string())],
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "large.md",
+            "created_at: 2026-05-22T00:00:00Z\nnamespace: task",
+            &"CACHE_MEMORY ".repeat(300),
+        )
+        .await;
+
+        let meta = task_meta(task_id, "planner", None);
+        let first =
+            injected_task_context_files(&app, task_id, Some(&meta), TASK_BRIEFING_CONTEXT_MARKER)
+                .await;
+        let second =
+            injected_task_context_files(&app, task_id, Some(&meta), TASK_BRIEFING_CONTEXT_MARKER)
+                .await;
+
+        assert_eq!(task_briefing_test_calls().await, 1);
+        assert!(combined_task_memory_content(&first).contains("Use cached plan"));
+        assert_eq!(
+            combined_task_memory_content(&first),
+            combined_task_memory_content(&second)
+        );
+    }
+
+    #[tokio::test]
+    async fn task_briefing_failure_falls_back_to_raw() {
+        let _guard = reset_task_briefing_tests().await;
+        let task_id = "task-briefing-fallback";
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        set_task_briefing_test_responses(task_id, vec![Err("briefing unavailable".to_string())])
+            .await;
+        write_task_memory(
+            &task_dir,
+            "large.md",
+            "created_at: 2026-05-22T00:00:00Z\nnamespace: task",
+            &"FALLBACK_MEMORY ".repeat(250),
+        )
+        .await;
+
+        let meta = task_meta(task_id, "planner", None);
+        let files = injected_task_memory_files(&app, task_id, Some(&meta)).await;
+        let content = combined_task_memory_content(&files);
+
+        assert_eq!(task_briefing_test_calls().await, 1);
+        assert!(content.contains("FALLBACK_MEMORY"));
+        assert!(content.contains("Showing 1 of 1 memories"));
+    }
+
+    #[tokio::test]
+    async fn task_briefing_renders_expected_sections_and_pinned_documents() {
+        let _guard = reset_task_briefing_tests().await;
+        let task_id = "task-briefing-render";
+        let prompt = task_briefing_prompt("agents", "SOURCE");
+        assert!(prompt.contains("## Active Plans"));
+        assert!(prompt.contains("## Key Decisions"));
+        assert!(prompt.contains("## Gotchas / Risks"));
+        assert!(prompt.contains("## Current State"));
+        let (_temp, app, task_dir) = task_memory_test_app(task_id).await;
+        set_task_briefing_test_responses(
+            task_id,
+            vec![Ok("## Active Plans\n- Follow the rollout plan [plan.md]\n\n## Key Decisions\n- Use task documents [brief.md]\n\n## Gotchas / Risks\n- Watch cache invalidation [risk.md]\n\n## Current State\n- Implementation is in progress".to_string())],
+        )
+        .await;
+        write_task_memory(
+            &task_dir,
+            "risk.md",
+            "created_at: 2026-05-22T00:00:01Z\nnamespace: task\nkind: risk",
+            &"Risk details ".repeat(180),
+        )
+        .await;
+        write_task_document(
+            &task_dir,
+            "brief.md",
+            "name: Brief\nslug: brief\nkind: brief\ncreated_at: 2026-05-22T00:00:02Z\nupdated_at: 2026-05-22T00:00:02Z\nauthor_role: planner\npinned: true\nversion: 1",
+            &"Pinned task document ".repeat(80),
+        )
+        .await;
+
+        let meta = task_meta(task_id, "agents", Some("T-1"));
+        let files =
+            injected_task_context_files(&app, task_id, Some(&meta), TASK_BRIEFING_CONTEXT_MARKER)
+                .await;
+        let content = combined_task_memory_content(&files);
+
+        assert!(content.contains("## Active Plans"));
+        assert!(content.contains("## Key Decisions"));
+        assert!(content.contains("## Gotchas / Risks"));
+        assert!(content.contains("## Current State"));
+        assert!(content.contains("[brief.md]"));
     }
 
     #[tokio::test]
@@ -1118,14 +1268,110 @@ pub async fn prepend_the_right_system_prompt_and_maybe_more_initial_messages(
 }
 
 const TASK_MEMORIES_CONTEXT_MARKER: &str = "task_memories_context";
+const TASK_BRIEFING_CONTEXT_MARKER: &str = "task_briefing";
 const MAX_TASK_MEMORY_CONTENT_SIZE: usize = 3000;
 const MAX_TASK_MEMORIES_TOTAL_SIZE: usize = 25_000;
+const MIN_TASK_BRIEFING_SOURCE_SIZE: usize = 2_000;
+const MAX_TASK_BRIEFING_SIZE: usize = 5_000;
+
+#[derive(Clone)]
+struct TaskBriefingCacheEntry {
+    briefing: String,
+}
+
+static TASK_BRIEFING_CACHE: OnceLock<AMutex<HashMap<(String, String), TaskBriefingCacheEntry>>> =
+    OnceLock::new();
+
+fn task_briefing_cache() -> &'static AMutex<HashMap<(String, String), TaskBriefingCacheEntry>> {
+    TASK_BRIEFING_CACHE.get_or_init(|| AMutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TaskBriefingTestState {
+    enabled_task_id: Option<String>,
+    calls: usize,
+    responses: std::collections::VecDeque<Result<String, String>>,
+}
+
+#[cfg(test)]
+static TASK_BRIEFING_TEST_STATE: OnceLock<AMutex<TaskBriefingTestState>> = OnceLock::new();
+
+#[cfg(test)]
+fn task_briefing_test_state() -> &'static AMutex<TaskBriefingTestState> {
+    TASK_BRIEFING_TEST_STATE.get_or_init(|| AMutex::new(TaskBriefingTestState::default()))
+}
+
+#[cfg(test)]
+async fn task_briefing_test_response(task_id: &str) -> Result<String, String> {
+    let mut state = task_briefing_test_state().lock().await;
+    if state.enabled_task_id.as_deref() != Some(task_id) {
+        return Err("task briefing subchat disabled in tests".to_string());
+    }
+    state.calls += 1;
+    state
+        .responses
+        .pop_front()
+        .unwrap_or_else(|| Err("task briefing test response missing".to_string()))
+}
+
+#[cfg(test)]
+async fn set_task_briefing_test_responses(task_id: &str, responses: Vec<Result<String, String>>) {
+    let mut state = task_briefing_test_state().lock().await;
+    state.enabled_task_id = Some(task_id.to_string());
+    state.calls = 0;
+    state.responses = responses.into_iter().collect();
+}
+
+#[cfg(test)]
+async fn clear_task_briefing_test_state() {
+    if let Some(state) = TASK_BRIEFING_TEST_STATE.get() {
+        let mut state = state.lock().await;
+        *state = TaskBriefingTestState::default();
+    }
+}
+
+#[cfg(test)]
+async fn task_briefing_test_calls() -> usize {
+    task_briefing_test_state().lock().await.calls
+}
+
+#[cfg(test)]
+async fn clear_task_briefing_cache_for_tests() {
+    if let Some(cache) = TASK_BRIEFING_CACHE.get() {
+        cache.lock().await.clear();
+    }
+}
 
 struct TaskMemoryForInjection {
     path: PathBuf,
     content: String,
     frontmatter: TaskMemoryFrontmatter,
     updated_at: String,
+}
+
+#[derive(Clone, Copy)]
+enum TaskContextEntryKind {
+    Memory,
+    Document,
+}
+
+struct TaskContextEntry {
+    path: PathBuf,
+    content: String,
+    kind: TaskContextEntryKind,
+    updated_at: String,
+    fingerprint_content: String,
+}
+
+struct TaskContextInjectionPlan {
+    entries: Vec<TaskContextEntry>,
+    footer: String,
+    included_memories: usize,
+    pinned_documents: usize,
+    archived_skipped: usize,
+    dropped_over_budget: usize,
+    scope_skipped: usize,
 }
 
 fn split_task_memory_frontmatter(content: &str) -> Result<(Option<&str>, &str), String> {
@@ -1192,7 +1438,10 @@ fn parse_task_memory_for_injection(path: &PathBuf, content: &str) -> TaskMemoryF
     let updated_at = frontmatter
         .and_then(frontmatter_updated_at)
         .or_else(|| parsed.created_at.clone())
-        .or_else(|| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
         .unwrap_or_default();
 
     TaskMemoryForInjection {
@@ -1249,6 +1498,18 @@ fn task_memory_summary_context_file(content: String) -> ContextFile {
     task_memory_context_file(&PathBuf::from("(task memories summary)"), content, 50.0)
 }
 
+fn task_briefing_context_file(content: String) -> ContextFile {
+    task_memory_context_file(&PathBuf::from("(task briefing)"), content, 100.0)
+}
+
+fn task_context_entry_context_file(entry: &TaskContextEntry) -> ContextFile {
+    let usefulness = match entry.kind {
+        TaskContextEntryKind::Memory => 95.0,
+        TaskContextEntryKind::Document => 90.0,
+    };
+    task_memory_context_file(&entry.path, entry.content.clone(), usefulness)
+}
+
 fn sort_task_memory_bucket(bucket: &mut [TaskMemoryForInjection]) {
     bucket.sort_by(|a, b| {
         b.updated_at
@@ -1260,7 +1521,7 @@ fn sort_task_memory_bucket(bucket: &mut [TaskMemoryForInjection]) {
 fn include_task_memory_bucket(
     bucket: Vec<TaskMemoryForInjection>,
     force_include: bool,
-    context_files: &mut Vec<ContextFile>,
+    entries: &mut Vec<TaskContextEntry>,
     total_size: &mut usize,
     included_count: &mut usize,
     dropped_over_budget: &mut usize,
@@ -1274,12 +1535,453 @@ fn include_task_memory_bucket(
         }
         *total_size += content_size;
         *included_count += 1;
-        context_files.push(task_memory_context_file(
-            &memory.path,
-            truncated_content,
-            95.0,
+        entries.push(TaskContextEntry {
+            path: memory.path,
+            content: truncated_content,
+            kind: TaskContextEntryKind::Memory,
+            updated_at: memory.updated_at,
+            fingerprint_content: memory.content,
+        });
+    }
+}
+
+fn frontmatter_bool_value(mapping: &serde_yaml::Mapping, key: &str) -> Option<bool> {
+    mapping
+        .get(&serde_yaml::Value::String(key.to_string()))
+        .and_then(|value| match value {
+            serde_yaml::Value::Bool(value) => Some(*value),
+            serde_yaml::Value::String(value) => match value.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+fn pinned_task_document_for_injection(path: PathBuf, content: String) -> Option<TaskContextEntry> {
+    let (frontmatter, _) = split_task_memory_frontmatter(&content).ok()?;
+    let frontmatter = frontmatter?;
+    let mapping = match serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok()? {
+        serde_yaml::Value::Mapping(mapping) => mapping,
+        _ => return None,
+    };
+    if !frontmatter_bool_value(&mapping, "pinned").unwrap_or(false) {
+        return None;
+    }
+    let updated_at = frontmatter_string_value(&mapping, "updated_at")
+        .or_else(|| frontmatter_string_value(&mapping, "created_at"))
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_default();
+    Some(TaskContextEntry {
+        path,
+        content: truncate_task_memory_content(&content),
+        kind: TaskContextEntryKind::Document,
+        updated_at,
+        fingerprint_content: content,
+    })
+}
+
+async fn load_pinned_task_documents(
+    app: &AppState,
+    task_id: &str,
+) -> Result<Vec<TaskContextEntry>, String> {
+    let task_dir = crate::tasks::storage::find_task_dir(app.gcx.clone(), task_id).await?;
+    let documents_dir = task_dir.join("documents");
+    if !documents_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries = tokio::fs::read_dir(&documents_dir)
+        .await
+        .map_err(|e| format!("failed to read {}: {}", documents_dir.display(), e))?;
+    let mut documents = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("failed to read {}: {}", documents_dir.display(), e))?
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if extension != "md" && extension != "mdx" {
+            continue;
+        }
+        match tokio::fs::read_to_string(&path).await {
+            Ok(content) => {
+                if let Some(document) = pinned_task_document_for_injection(path, content) {
+                    documents.push(document);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read task document file {:?}: {}", path, e);
+            }
+        }
+    }
+    documents.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.path.cmp(&a.path))
+    });
+    Ok(documents)
+}
+
+async fn build_task_context_injection_plan(
+    app: &AppState,
+    task_id: &str,
+    task_meta: Option<&crate::chat::types::TaskMeta>,
+) -> Result<Option<TaskContextInjectionPlan>, String> {
+    let memories = app.tool_registry.load_task_memories(task_id).await?;
+    let pinned_documents = load_pinned_task_documents(app, task_id).await?;
+    if memories.is_empty() && pinned_documents.is_empty() {
+        return Ok(None);
+    }
+
+    let board = crate::tasks::storage::load_board(app.gcx.clone(), task_id)
+        .await
+        .ok();
+    let role = task_meta
+        .map(|meta| meta.role.as_str())
+        .unwrap_or("planner");
+    let current_card_id = task_meta.and_then(|meta| meta.card_id.as_deref());
+    let dependency_cards: HashSet<String> = if role == "agents" {
+        board
+            .as_ref()
+            .and_then(|board| current_card_id.and_then(|card_id| board.get_card(card_id)))
+            .map(|card| card.depends_on.iter().cloned().collect())
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+    let doing_cards: HashSet<String> = board
+        .as_ref()
+        .map(|board| {
+            board
+                .cards
+                .iter()
+                .filter(|card| card.column == "doing")
+                .map(|card| card.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut always_bucket = Vec::new();
+    let mut scoped_bucket = Vec::new();
+    let mut less_relevant_bucket = Vec::new();
+    let mut archived_skipped = 0usize;
+    let mut scope_skipped = 0usize;
+
+    for (path, content) in &memories {
+        let memory = parse_task_memory_for_injection(path, content);
+        if matches!(
+            memory.frontmatter.status,
+            MemoryStatus::Archived | MemoryStatus::Superseded
+        ) {
+            archived_skipped += 1;
+            continue;
+        }
+
+        if memory.frontmatter.pinned || high_signal_memory_kind(memory.frontmatter.kind) {
+            always_bucket.push(memory);
+            continue;
+        }
+
+        let scope_relevant = match &memory.frontmatter.namespace {
+            MemoryNamespace::Global | MemoryNamespace::Task => true,
+            MemoryNamespace::Card(card_id) if role == "planner" => doing_cards.contains(card_id),
+            MemoryNamespace::Card(card_id) if role == "agents" => {
+                current_card_id == Some(card_id.as_str()) || dependency_cards.contains(card_id)
+            }
+            MemoryNamespace::Card(_) => false,
+            MemoryNamespace::Agent(_) => false,
+        };
+
+        if scope_relevant {
+            scoped_bucket.push(memory);
+        } else if matches!(
+            memory.frontmatter.kind,
+            MemoryKind::Progress | MemoryKind::Freeform
+        ) && !matches!(memory.frontmatter.namespace, MemoryNamespace::Card(_))
+        {
+            less_relevant_bucket.push(memory);
+        } else {
+            scope_skipped += 1;
+        }
+    }
+
+    sort_task_memory_bucket(&mut always_bucket);
+    sort_task_memory_bucket(&mut scoped_bucket);
+    sort_task_memory_bucket(&mut less_relevant_bucket);
+
+    let mut entries = Vec::new();
+    let mut total_size = 0usize;
+    let mut included_count = 0usize;
+    let mut dropped_over_budget = 0usize;
+
+    include_task_memory_bucket(
+        always_bucket,
+        true,
+        &mut entries,
+        &mut total_size,
+        &mut included_count,
+        &mut dropped_over_budget,
+    );
+    include_task_memory_bucket(
+        scoped_bucket,
+        false,
+        &mut entries,
+        &mut total_size,
+        &mut included_count,
+        &mut dropped_over_budget,
+    );
+    include_task_memory_bucket(
+        less_relevant_bucket,
+        false,
+        &mut entries,
+        &mut total_size,
+        &mut included_count,
+        &mut dropped_over_budget,
+    );
+
+    let pinned_document_count = pinned_documents.len();
+    entries.extend(pinned_documents);
+
+    let mut footer = format!(
+        "Showing {} of {} memories ({} archived/superseded skipped, {} dropped over budget). Search more with task_mem_search().",
+        included_count,
+        memories.len(),
+        archived_skipped,
+        dropped_over_budget
+    );
+    if scope_skipped > 0 {
+        footer.push_str(&format!(" {} outside scope skipped.", scope_skipped));
+    }
+    if pinned_document_count > 0 {
+        footer.push_str(&format!(
+            " {} pinned task document{} included.",
+            pinned_document_count,
+            if pinned_document_count == 1 { "" } else { "s" }
         ));
     }
+
+    Ok(Some(TaskContextInjectionPlan {
+        entries,
+        footer,
+        included_memories: included_count,
+        pinned_documents: pinned_document_count,
+        archived_skipped,
+        dropped_over_budget,
+        scope_skipped,
+    }))
+}
+
+fn task_context_raw_files(plan: &TaskContextInjectionPlan) -> Vec<ContextFile> {
+    let mut context_files = plan
+        .entries
+        .iter()
+        .map(task_context_entry_context_file)
+        .collect::<Vec<_>>();
+    context_files.push(task_memory_summary_context_file(plan.footer.clone()));
+    context_files
+}
+
+fn task_context_source_text(entries: &[TaskContextEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            let entry_type = match entry.kind {
+                TaskContextEntryKind::Memory => "Memory",
+                TaskContextEntryKind::Document => "Document",
+            };
+            format!(
+                "### {} [{}]\n{}\n",
+                entry_type,
+                entry.path.to_string_lossy(),
+                entry.content.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn task_briefing_cache_hash(source: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(source.as_bytes());
+    hex::encode(h.finalize())
+}
+
+fn task_context_cache_material(entries: &[TaskContextEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            let entry_type = match entry.kind {
+                TaskContextEntryKind::Memory => "Memory",
+                TaskContextEntryKind::Document => "Document",
+            };
+            format!(
+                "{}\n{}\n{}\n",
+                entry_type,
+                entry.path.to_string_lossy(),
+                entry.fingerprint_content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn task_briefing_prompt(role: &str, source: &str) -> String {
+    format!(
+        "Summarize the following project memories and task documents into a \"What you need to know\" briefing for the {} on this task.\n\nFormat:\n## Active Plans\n- bullet\n\n## Key Decisions\n- bullet (cite source [path])\n\n## Gotchas / Risks\n- bullet (cite source [path])\n\n## Current State\n- bullet\n\nKeep to 8 bullets total. Cite memory paths in [brackets] so the agent can cat them.\n\nMemories and documents:\n{}",
+        role, source
+    )
+}
+
+async fn run_task_briefing_subchat(
+    app: &AppState,
+    _task_id: &str,
+    role: &str,
+    source: &str,
+) -> Result<String, String> {
+    #[cfg(test)]
+    {
+        let _ = (app, role, source);
+        let briefing = task_briefing_test_response(_task_id).await?;
+        return Ok(crate::llm::safe_truncate(&briefing, MAX_TASK_BRIEFING_SIZE)
+            .trim()
+            .to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        let app = app.clone();
+        let role = role.to_string();
+        let source = source.to_string();
+        tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("failed to start task briefing runtime: {}", e))?;
+            runtime.block_on(async move {
+                let caps = crate::global_context::try_load_caps_quickly_if_not_present(
+                    app.gcx.clone(),
+                    0,
+                )
+                .await
+                .map_err(|e| e.message.clone())?;
+                let model = if !caps.defaults.chat_light_model.is_empty() {
+                    caps.defaults.chat_light_model.clone()
+                } else if !caps.defaults.chat_default_model.is_empty() {
+                    caps.defaults.chat_default_model.clone()
+                } else {
+                    return Err("no model available for task briefing".to_string());
+                };
+                let model_rec = crate::caps::resolve_chat_model(caps, &model)?;
+                let model_n_ctx = if model_rec.base.n_ctx > 0 {
+                    model_rec.base.n_ctx
+                } else {
+                    16384
+                };
+                let messages = vec![ChatMessage::new(
+                    "user".to_string(),
+                    task_briefing_prompt(&role, &source),
+                )];
+                let config = crate::subchat::SubchatConfig {
+                    tool_name: TASK_BRIEFING_CONTEXT_MARKER.to_string(),
+                    stateful: false,
+                    autonomous_no_confirm: false,
+                    chat_id: None,
+                    title: None,
+                    parent_id: None,
+                    link_type: None,
+                    root_chat_id: None,
+                    tools: crate::subchat::ToolsPolicy::None,
+                    max_steps: 1,
+                    prepend_system_prompt: false,
+                    wrap_up: None,
+                    task_meta: None,
+                    worktree: None,
+                    model,
+                    mode: "NO_TOOLS".to_string(),
+                    n_ctx: model_n_ctx,
+                    max_new_tokens: 1536,
+                    temperature: Some(0.0),
+                    reasoning_effort: None,
+                    parent_tool_call_id: None,
+                    parent_subchat_tx: None,
+                    abort_flag: None,
+                    subchat_depth: 0,
+                    buddy_meta: None,
+                };
+                let result = crate::subchat::run_subchat(app.gcx.clone(), messages, config).await?;
+                let briefing = result
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "assistant")
+                    .map(|m| m.content.content_text_only())
+                    .ok_or_else(|| {
+                        "task briefing subchat produced no assistant message".to_string()
+                    })?;
+                Ok(crate::llm::safe_truncate(&briefing, MAX_TASK_BRIEFING_SIZE)
+                    .trim()
+                    .to_string())
+            })
+        })
+        .await
+        .map_err(|e| format!("task briefing worker failed: {}", e))?
+    }
+}
+
+async fn task_briefing_for_plan(
+    app: &AppState,
+    task_id: &str,
+    role: &str,
+    plan: &TaskContextInjectionPlan,
+) -> Result<Option<String>, String> {
+    if plan.entries.is_empty() {
+        return Ok(None);
+    }
+    let content_size = plan
+        .entries
+        .iter()
+        .map(|entry| entry.content.len())
+        .sum::<usize>();
+    if content_size < MIN_TASK_BRIEFING_SOURCE_SIZE {
+        return Ok(None);
+    }
+    let source = task_context_source_text(&plan.entries);
+    let content_hash = task_briefing_cache_hash(&task_context_cache_material(&plan.entries));
+    let cache_key = (task_id.to_string(), content_hash.clone());
+    if let Some(entry) = task_briefing_cache().lock().await.get(&cache_key).cloned() {
+        return Ok(Some(entry.briefing));
+    }
+    let prompt_source = source;
+    let briefing = run_task_briefing_subchat(app, task_id, role, &prompt_source).await?;
+    task_briefing_cache().lock().await.insert(
+        cache_key,
+        TaskBriefingCacheEntry {
+            briefing: briefing.clone(),
+        },
+    );
+    Ok(Some(briefing))
+}
+
+fn insert_task_context_message(
+    messages: &mut Vec<ChatMessage>,
+    stream_back_to_user: &mut HasRagResults,
+    message: ChatMessage,
+) -> usize {
+    let insert_pos = messages
+        .iter()
+        .position(|m| m.role == "user" || m.role == "assistant")
+        .unwrap_or(messages.len());
+    stream_back_to_user.push_in_json(serde_json::json!(message));
+    messages.insert(insert_pos, message);
+    insert_pos
 }
 
 async fn gather_and_inject_system_context(
@@ -1405,153 +2107,79 @@ pub async fn inject_task_memories(
         None => return Ok(()),
     };
 
-    let memories = app.tool_registry.load_task_memories(&task_id).await?;
-    if memories.is_empty() {
+    let Some(plan) = build_task_context_injection_plan(app, &task_id, task_meta).await? else {
         return Ok(());
-    }
+    };
 
-    let board = crate::tasks::storage::load_board(app.gcx.clone(), &task_id)
-        .await
-        .ok();
     let role = task_meta
         .map(|meta| meta.role.as_str())
         .unwrap_or("planner");
-    let current_card_id = task_meta.and_then(|meta| meta.card_id.as_deref());
-    let dependency_cards: HashSet<String> = if role == "agents" {
-        board
-            .as_ref()
-            .and_then(|board| current_card_id.and_then(|card_id| board.get_card(card_id)))
-            .map(|card| card.depends_on.iter().cloned().collect())
-            .unwrap_or_default()
-    } else {
-        HashSet::new()
-    };
-    let doing_cards: HashSet<String> = board
-        .as_ref()
-        .map(|board| {
-            board
-                .cards
-                .iter()
-                .filter(|card| card.column == "doing")
-                .map(|card| card.id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+    let briefing = task_briefing_for_plan(app, &task_id, role, &plan).await;
 
-    let mut always_bucket = Vec::new();
-    let mut scoped_bucket = Vec::new();
-    let mut less_relevant_bucket = Vec::new();
-    let mut archived_skipped = 0usize;
-    let mut scope_skipped = 0usize;
-
-    for (path, content) in &memories {
-        let memory = parse_task_memory_for_injection(path, content);
-        if matches!(
-            memory.frontmatter.status,
-            MemoryStatus::Archived | MemoryStatus::Superseded
-        ) {
-            archived_skipped += 1;
-            continue;
+    match briefing {
+        Ok(Some(briefing)) => {
+            let task_briefing_msg = ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(vec![task_briefing_context_file(briefing)]),
+                tool_call_id: TASK_BRIEFING_CONTEXT_MARKER.to_string(),
+                ..Default::default()
+            };
+            let insert_pos =
+                insert_task_context_message(messages, stream_back_to_user, task_briefing_msg);
+            tracing::info!(
+                "Injected task briefing at position {} for task {} from {} memories and {} pinned documents ({} archived/superseded skipped, {} dropped over budget, {} outside scope skipped)",
+                insert_pos,
+                task_id,
+                plan.included_memories,
+                plan.pinned_documents,
+                plan.archived_skipped,
+                plan.dropped_over_budget,
+                plan.scope_skipped
+            );
         }
-
-        if memory.frontmatter.pinned || high_signal_memory_kind(memory.frontmatter.kind) {
-            always_bucket.push(memory);
-            continue;
+        Ok(None) => {
+            let task_memories_msg = ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(task_context_raw_files(&plan)),
+                tool_call_id: TASK_MEMORIES_CONTEXT_MARKER.to_string(),
+                ..Default::default()
+            };
+            let insert_pos =
+                insert_task_context_message(messages, stream_back_to_user, task_memories_msg);
+            tracing::info!(
+                "Injected {} task memories and {} pinned documents at position {} for task {} ({} archived/superseded skipped, {} dropped over budget, {} outside scope skipped)",
+                plan.included_memories,
+                plan.pinned_documents,
+                insert_pos,
+                task_id,
+                plan.archived_skipped,
+                plan.dropped_over_budget,
+                plan.scope_skipped
+            );
         }
-
-        let scope_relevant = match &memory.frontmatter.namespace {
-            MemoryNamespace::Global | MemoryNamespace::Task => true,
-            MemoryNamespace::Card(card_id) if role == "planner" => doing_cards.contains(card_id),
-            MemoryNamespace::Card(card_id) if role == "agents" => {
-                current_card_id == Some(card_id.as_str()) || dependency_cards.contains(card_id)
-            }
-            MemoryNamespace::Card(_) => false,
-            MemoryNamespace::Agent(_) => false,
-        };
-
-        if scope_relevant {
-            scoped_bucket.push(memory);
-        } else if matches!(
-            memory.frontmatter.kind,
-            MemoryKind::Progress | MemoryKind::Freeform
-        ) && !matches!(memory.frontmatter.namespace, MemoryNamespace::Card(_))
-        {
-            less_relevant_bucket.push(memory);
-        } else {
-            scope_skipped += 1;
+        Err(e) => {
+            tracing::warn!(
+                "Task briefing failed for task {}, falling back to raw context: {}",
+                task_id,
+                e
+            );
+            let task_memories_msg = ChatMessage {
+                role: "context_file".to_string(),
+                content: ChatContent::ContextFiles(task_context_raw_files(&plan)),
+                tool_call_id: TASK_MEMORIES_CONTEXT_MARKER.to_string(),
+                ..Default::default()
+            };
+            let insert_pos =
+                insert_task_context_message(messages, stream_back_to_user, task_memories_msg);
+            tracing::info!(
+                "Injected raw task context fallback at position {} for task {} from {} memories and {} pinned documents",
+                insert_pos,
+                task_id,
+                plan.included_memories,
+                plan.pinned_documents
+            );
         }
     }
-
-    sort_task_memory_bucket(&mut always_bucket);
-    sort_task_memory_bucket(&mut scoped_bucket);
-    sort_task_memory_bucket(&mut less_relevant_bucket);
-
-    let mut context_files: Vec<ContextFile> = Vec::new();
-    let mut total_size = 0usize;
-    let mut included_count = 0usize;
-    let mut dropped_over_budget = 0usize;
-
-    include_task_memory_bucket(
-        always_bucket,
-        true,
-        &mut context_files,
-        &mut total_size,
-        &mut included_count,
-        &mut dropped_over_budget,
-    );
-    include_task_memory_bucket(
-        scoped_bucket,
-        false,
-        &mut context_files,
-        &mut total_size,
-        &mut included_count,
-        &mut dropped_over_budget,
-    );
-    include_task_memory_bucket(
-        less_relevant_bucket,
-        false,
-        &mut context_files,
-        &mut total_size,
-        &mut included_count,
-        &mut dropped_over_budget,
-    );
-
-    let mut footer = format!(
-        "Showing {} of {} memories ({} archived/superseded skipped, {} dropped over budget). Search more with task_mem_search().",
-        included_count,
-        memories.len(),
-        archived_skipped,
-        dropped_over_budget
-    );
-    if scope_skipped > 0 {
-        footer.push_str(&format!(" {} outside scope skipped.", scope_skipped));
-    }
-    context_files.push(task_memory_summary_context_file(footer));
-
-    let task_memories_msg = ChatMessage {
-        role: "context_file".to_string(),
-        content: ChatContent::ContextFiles(context_files),
-        tool_call_id: TASK_MEMORIES_CONTEXT_MARKER.to_string(),
-        ..Default::default()
-    };
-
-    let insert_pos = messages
-        .iter()
-        .position(|m| m.role == "user" || m.role == "assistant")
-        .unwrap_or(messages.len());
-
-    stream_back_to_user.push_in_json(serde_json::json!(task_memories_msg));
-    messages.insert(insert_pos, task_memories_msg);
-
-    tracing::info!(
-        "Injected {} task memories at position {} for task {} ({} archived/superseded skipped, {} dropped over budget, {} outside scope skipped)",
-        included_count,
-        insert_pos,
-        task_id,
-        archived_skipped,
-        dropped_over_budget,
-        scope_skipped
-    );
 
     Ok(())
 }
