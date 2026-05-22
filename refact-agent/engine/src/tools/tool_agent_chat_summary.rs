@@ -10,7 +10,7 @@ use crate::at_commands::at_commands::{AtCommandsContext, MAX_SUBCHAT_DEPTH};
 use crate::call_validation::{ChatContent, ChatMessage, ChatToolCall, ContextEnum};
 use crate::subchat::{run_subchat, SubchatConfig, ToolsPolicy};
 use crate::tasks::storage;
-use crate::tools::tool_task_check_agents::get_task_id;
+use crate::tools::task_tool_helpers::require_bound_planner_task;
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 use refact_runtime_api::ChatSessionFacade;
 
@@ -458,7 +458,7 @@ impl Tool for ToolAgentChatSummary {
 
         let card_id = required_string(args, "card_id")?;
         let focus = optional_string(args, "focus");
-        let task_id = get_task_id(&ccx, args).await?;
+        let task_id = require_bound_planner_task(&ccx, args).await?;
         let (gcx, chat_facade) = {
             let ccx_lock = ccx.lock().await;
             (ccx_lock.app.gcx.clone(), ccx_lock.app.chat.facade.clone())

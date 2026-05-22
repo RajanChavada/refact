@@ -17,21 +17,6 @@ use refact_runtime_api::{ChatSessionFacade, SessionState};
 const DEFAULT_LIMIT: usize = 20;
 const STUCK_AFTER_MINUTES: i64 = 15;
 
-pub(crate) async fn get_task_id(
-    ccx: &Arc<AMutex<AtCommandsContext>>,
-    args: &HashMap<String, Value>,
-) -> Result<String, String> {
-    if let Some(id) = args.get("task_id").and_then(|v| v.as_str()) {
-        return Ok(id.to_string());
-    }
-    let ccx_lock = ccx.lock().await;
-    if let Some(ref meta) = ccx_lock.task_meta {
-        return Ok(meta.task_id.clone());
-    }
-    storage::infer_task_id_from_chat_id(&ccx_lock.chat_id)
-        .ok_or_else(|| "Missing 'task_id' (and chat is not bound to a task)".to_string())
-}
-
 pub struct ToolTaskCheckAgents;
 
 impl ToolTaskCheckAgents {
@@ -1044,6 +1029,7 @@ mod tests {
     use crate::app_state::AppState;
     use crate::chat::types::TaskMeta as ThreadTaskMeta;
     use crate::tasks::types::{TaskBoard, TaskMeta as StoredTaskMeta, TaskStatus};
+    use crate::tools::tool_task_wait_for_agents::ToolTaskWaitForAgents;
     use crate::tools::tools_description::Tool;
 
     fn now() -> DateTime<Utc> {
@@ -1282,7 +1268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_check_agents_rejects_mismatched_task_id() {
+    async fn check_agents_rejects_mismatched_task_id_override() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let ccx = planner_ccx(gcx, "planner").await;
 
@@ -1296,6 +1282,36 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err, "task_id override is not allowed from this planner chat");
+    }
+
+    #[tokio::test]
+    async fn wait_for_agents_rejects_mismatched_task_id_override() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let ccx = planner_ccx(gcx, "planner").await;
+
+        let err = ToolTaskWaitForAgents::new()
+            .tool_execute(
+                ccx,
+                &"call".to_string(),
+                &args(&[("task_id", json!("task-2"))]),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "task_id override is not allowed from this planner chat");
+    }
+
+    #[tokio::test]
+    async fn check_agents_non_planner_role_rejected() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let ccx = planner_ccx(gcx, "agents").await;
+
+        let err = ToolTaskCheckAgents::new()
+            .tool_execute(ccx, &"call".to_string(), &HashMap::new())
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("task planner"));
     }
 
     #[tokio::test]

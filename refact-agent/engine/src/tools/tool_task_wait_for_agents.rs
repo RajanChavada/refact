@@ -7,11 +7,11 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
+use crate::tools::task_tool_helpers::require_bound_planner_task;
 use crate::tools::tool_task_check_agents::{
     agent_status_input_schema, format_agent_statuses, get_agent_statuses,
     has_active_agent_statuses, parse_agent_status_query,
 };
-use crate::tools::tool_task_check_agents::get_task_id;
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 
 pub struct ToolTaskWaitForAgents;
@@ -66,7 +66,7 @@ impl Tool for ToolTaskWaitForAgents {
         drop(ccx_lock);
 
         let query = parse_agent_status_query(args)?;
-        let task_id = get_task_id(&ccx, args).await?;
+        let task_id = require_bound_planner_task(&ccx, args).await?;
         let (gcx, chat_facade) = {
             let ccx_lock = ccx.lock().await;
             (ccx_lock.app.gcx.clone(), ccx_lock.app.chat.facade.clone())
