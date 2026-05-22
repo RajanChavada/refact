@@ -34,9 +34,76 @@ function extractField(content: string, label: string): string | null {
 function extractFence(
   content: string,
 ): { language: string; body: string } | null {
-  const match = content.match(/```([^\n`]*)\n([\s\S]*?)\n```/u);
-  if (!match) return null;
-  return { language: match[1].trim(), body: match[2] };
+  const lines = content.split("\n");
+  const startLine = metadataHeaderEndLine(lines);
+  let openLine = -1;
+  let language = "";
+
+  for (let i = startLine; i < lines.length; i += 1) {
+    const parsed = openingFenceLanguage(lines[i]);
+    if (parsed === null) continue;
+    openLine = i;
+    language = parsed;
+    break;
+  }
+
+  if (openLine < 0) return null;
+
+  const closeLine = lastClosingFenceLine(lines, openLine);
+  if (closeLine !== null)
+    return {
+      language,
+      body: lines.slice(openLine + 1, closeLine).join("\n"),
+    };
+
+  return null;
+}
+
+function metadataHeaderEndLine(lines: string[]): number {
+  const baseLine = lines.findIndex((line) => line.startsWith("**Base:**"));
+  if (baseLine >= 0) return baseLine + 1;
+
+  const titleLine = lines.findIndex((line) =>
+    line.startsWith("# Agent Diff for"),
+  );
+  return titleLine >= 0 ? titleLine + 1 : 0;
+}
+
+function openingFenceLanguage(line: string): string | null {
+  const match = line.match(/^```([^`]*)$/u);
+  return match ? match[1].trim() : null;
+}
+
+function isClosingFence(line: string): boolean {
+  return /^```\s*$/u.test(line);
+}
+
+function isTruncationBanner(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith("... (") && trimmed.includes("more lines");
+}
+
+function lastClosingFenceLine(
+  lines: string[],
+  openLine: number,
+): number | null {
+  const closingLines: number[] = [];
+  let truncationLine: number | null = null;
+
+  for (let i = openLine + 1; i < lines.length; i += 1) {
+    if (truncationLine === null && isTruncationBanner(lines[i])) {
+      truncationLine = i;
+    }
+    if (isClosingFence(lines[i])) {
+      closingLines.push(i);
+    }
+  }
+
+  const candidates =
+    truncationLine === null
+      ? closingLines
+      : closingLines.filter((line) => line < truncationLine);
+  return candidates.at(-1) ?? closingLines.at(-1) ?? null;
 }
 
 function parseNumstatLine(
@@ -173,9 +240,7 @@ function extractTruncation(body: string): string | null {
     body
       .split("\n")
       .map((line) => line.trim())
-      .find(
-        (line) => line.startsWith("... (") && line.includes("more lines"),
-      ) ?? null
+      .find(isTruncationBanner) ?? null
   );
 }
 

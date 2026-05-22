@@ -74,6 +74,38 @@ describe("AgentDiffView parsing", () => {
     expect(report?.stats).toMatchObject({ files: 2, added: 3, removed: 1 });
     expect(report?.diffChunks).toHaveLength(2);
   });
+
+  it("parses unified diffs containing markdown fences", () => {
+    const output = [
+      "# Agent Diff for T-30",
+      "",
+      "**Card:** docs update",
+      "**Branch:** refact/task/T-30-agent",
+      "**Base:** commit def456",
+      "",
+      `${FENCE}diff`,
+      "## Committed changes since base",
+      "diff --git a/README.md b/README.md",
+      "index 1111111..2222222 100644",
+      "--- a/README.md",
+      "+++ b/README.md",
+      "@@ -1,1 +1,5 @@",
+      " # Usage",
+      "+Run this command:",
+      "+```bash",
+      "+npm test",
+      "+```",
+      FENCE,
+    ].join("\n");
+
+    const report = parseAgentDiffOutput(output);
+
+    expect(report?.body).toContain("+```bash");
+    expect(report?.body).toContain("+```");
+    expect(report?.files).toEqual(["README.md"]);
+    expect(report?.stats).toMatchObject({ files: 1, added: 4, removed: 0 });
+    expect(report?.diffChunks[0]?.lines_add).toContain("```bash");
+  });
 });
 
 describe("AgentDiffContent", () => {

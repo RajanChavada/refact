@@ -62,6 +62,51 @@ describe("FinalReportView", () => {
     expect(screen.getByText(/Still readable/)).toBeInTheDocument();
   });
 
+  it("renders minimal structured payload", () => {
+    render(
+      <FinalReportView
+        content={JSON.stringify({ summary: "Minimal report", success: true })}
+      />,
+    );
+
+    expect(screen.getByText("Minimal report")).toBeInTheDocument();
+    expect(screen.getByText(/Success/)).toBeInTheDocument();
+    expect(screen.getByText("Files changed")).toBeInTheDocument();
+    expect(screen.getByText("Tests added or updated")).toBeInTheDocument();
+    expect(screen.getByText("Verification")).toBeInTheDocument();
+    expect(screen.getByText("Followup cards")).toBeInTheDocument();
+    expect(screen.getByText("Risks")).toBeInTheDocument();
+    expect(screen.getByText("Assumptions")).toBeInTheDocument();
+    expect(screen.getAllByText("None")).toHaveLength(6);
+  });
+
+  it("renders null optional fields as empty sections", () => {
+    render(
+      <FinalReportView
+        content={JSON.stringify({
+          summary: "Null optional fields report",
+          success: false,
+          files_changed: null,
+          tests_added_or_updated: null,
+          verification: null,
+          followup_cards: null,
+          risks: null,
+          assumptions: null,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Null optional fields report")).toBeInTheDocument();
+    expect(screen.getByText(/Failed/)).toBeInTheDocument();
+    expect(screen.getByText("Files changed")).toBeInTheDocument();
+    expect(screen.getByText("Tests added or updated")).toBeInTheDocument();
+    expect(screen.getByText("Verification")).toBeInTheDocument();
+    expect(screen.getByText("Followup cards")).toBeInTheDocument();
+    expect(screen.getByText("Risks")).toBeInTheDocument();
+    expect(screen.getByText("Assumptions")).toBeInTheDocument();
+    expect(screen.getAllByText("None")).toHaveLength(6);
+  });
+
   it("renders followup cards read-only", () => {
     render(<FinalReportView content={structuredPayload} />);
     expect(screen.getByText("Add create-card actions")).toBeInTheDocument();

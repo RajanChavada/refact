@@ -26,13 +26,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function stringArray(value: unknown): string[] | null {
-  return Array.isArray(value) && value.every((item) => typeof item === "string")
-    ? value
-    : null;
+function optionalStringArray(value: unknown): string[] | null {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return null;
+  return value.every((item) => typeof item === "string") ? value : null;
 }
 
 function parseVerification(value: unknown): VerificationResult[] | null {
+  if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) return null;
   const out: VerificationResult[] = [];
   for (const item of value) {
@@ -61,6 +62,7 @@ function parseVerification(value: unknown): VerificationResult[] | null {
 }
 
 function parseFollowups(value: unknown): SuggestedCard[] | null {
+  if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) return null;
   const out: SuggestedCard[] = [];
   for (const item of value) {
@@ -93,12 +95,12 @@ function parseFinalReport(content: string): FinalReport | null {
     typeof raw.success !== "boolean"
   )
     return null;
-  const files = stringArray(raw.files_changed);
-  const tests = stringArray(raw.tests_added_or_updated);
+  const files = optionalStringArray(raw.files_changed);
+  const tests = optionalStringArray(raw.tests_added_or_updated);
   const verification = parseVerification(raw.verification);
   const followups = parseFollowups(raw.followup_cards);
-  const risks = stringArray(raw.risks);
-  const assumptions = stringArray(raw.assumptions);
+  const risks = optionalStringArray(raw.risks);
+  const assumptions = optionalStringArray(raw.assumptions);
   if (!files || !tests || !verification || !followups || !risks || !assumptions)
     return null;
   return {
@@ -144,7 +146,13 @@ const TextDetails: React.FC<{ title: string; items: string[] }> = ({
         ))}
       </ul>
     </details>
-  ) : null;
+  ) : (
+    <Section title={title}>
+      <Text size="2" color="gray">
+        None
+      </Text>
+    </Section>
+  );
 
 export const FinalReportView: React.FC<FinalReportViewProps> = ({
   content,
@@ -188,15 +196,19 @@ export const FinalReportView: React.FC<FinalReportViewProps> = ({
           </Text>
         )}
       </Section>
-      {report.tests_added_or_updated.length > 0 && (
-        <Section title="Tests added or updated">
+      <Section title="Tests added or updated">
+        {report.tests_added_or_updated.length > 0 ? (
           <ul className={styles.list}>
             {report.tests_added_or_updated.map((test) => (
               <li key={test}>{test}</li>
             ))}
           </ul>
-        </Section>
-      )}
+        ) : (
+          <Text size="2" color="gray">
+            None
+          </Text>
+        )}
+      </Section>
       <Section title="Verification">
         {report.verification.length > 0 ? (
           <Flex direction="column" gap="2">
@@ -228,8 +240,8 @@ export const FinalReportView: React.FC<FinalReportViewProps> = ({
           </Text>
         )}
       </Section>
-      {report.followup_cards.length > 0 && (
-        <Section title="Followup cards">
+      <Section title="Followup cards">
+        {report.followup_cards.length > 0 ? (
           <Flex direction="column" gap="2">
             {report.followup_cards.map((card) => (
               <Box key={card.title} className={styles.followupCard}>
@@ -247,8 +259,12 @@ export const FinalReportView: React.FC<FinalReportViewProps> = ({
               </Box>
             ))}
           </Flex>
-        </Section>
-      )}
+        ) : (
+          <Text size="2" color="gray">
+            None
+          </Text>
+        )}
+      </Section>
       <TextDetails title="Risks" items={report.risks} />
       <TextDetails title="Assumptions" items={report.assumptions} />
     </Box>
