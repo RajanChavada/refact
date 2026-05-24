@@ -11,6 +11,7 @@ use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
 use crate::global_context::GlobalContext;
 use crate::tasks::storage;
 use crate::tasks::types::StatusUpdate;
+use crate::tools::task_tool_helpers::required_string;
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 use refact_chat_api::ChatCommand;
 
@@ -76,15 +77,6 @@ impl ToolTaskBroadcast {
     pub fn new() -> Self {
         Self
     }
-}
-
-fn required_string(args: &HashMap<String, Value>, key: &str) -> Result<String, String> {
-    args.get(key)
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| format!("Missing '{}'", key))
 }
 
 fn parse_exclude_cards(args: &HashMap<String, Value>) -> Result<HashSet<String>, String> {
@@ -850,7 +842,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_broadcast_still_records_status_updates() {
+    async fn task_broadcast_appends_delivered_status_on_success() {
         let temp = tempfile::tempdir().unwrap();
         let gcx = write_task(
             temp.path(),
