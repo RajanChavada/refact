@@ -80,9 +80,38 @@ fn visible_tier1_messages(messages: &[ChatMessage]) -> Vec<ChatMessage> {
     filter_ui_only_messages(messages.to_vec())
 }
 
+fn visible_tier1_messages_with_original_indices(
+    messages: &[ChatMessage],
+) -> (Vec<ChatMessage>, Vec<usize>) {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| !is_ui_only_message(message))
+        .map(|(idx, message)| (message.clone(), idx))
+        .unzip()
+}
+
+fn translate_summarized_range_to_original(
+    summ_msg: &mut ChatMessage,
+    original_indices: &[usize],
+) {
+    if let Some((start, end)) = summ_msg.summarized_range {
+        if let (Some(original_start), Some(original_end)) =
+            (original_indices.get(start), original_indices.get(end))
+        {
+            summ_msg.summarized_range = Some((*original_start, *original_end));
+        }
+    }
+}
+
 pub fn find_summarization_boundary(messages: &[ChatMessage]) -> (usize, usize) {
-    let visible_messages = visible_tier1_messages(messages);
-    find_summarization_boundary_visible(&visible_messages)
+    let (visible_messages, original_indices) =
+        visible_tier1_messages_with_original_indices(messages);
+    let (start, end) = find_summarization_boundary_visible(&visible_messages);
+    (
+        original_indices.get(start).copied().unwrap_or(start),
+        original_indices.get(end).copied().unwrap_or(end),
+    )
 }
 
 fn find_summarization_boundary_visible(messages: &[ChatMessage]) -> (usize, usize) {
@@ -280,7 +309,8 @@ pub async fn maybe_apply_tier1(
         None => return,
     };
 
-    let messages_clone = visible_tier1_messages(&messages_clone);
+    let (messages_clone, original_indices) =
+        visible_tier1_messages_with_original_indices(&messages_clone);
     if messages_clone.is_empty() {
         return;
     }
@@ -298,8 +328,9 @@ pub async fn maybe_apply_tier1(
     );
 
     match tier1_summarize(gcx, &messages_clone, effective_n_ctx).await {
-        Ok(summ_msg) => {
+        Ok(mut summ_msg) => {
             *tier1_compact_count += 1;
+            translate_summarized_range_to_original(&mut summ_msg, &original_indices);
             let mut session = session_arc.lock().await;
             session.add_message(summ_msg);
             session.cache_guard_force_next = true;
@@ -441,6 +472,49 @@ mod tests {
         assert!(filtered
             .iter()
             .all(|msg| !msg.content.content_text_only().contains("context_length_exceeded")));
+    }
+
+    #[test]
+    fn tier1_summarization_range_skips_ui_only_messages() {
+        let messages: Vec<ChatMessage> = (0..10)
+            .map(|i| {
+                if matches!(i, 0 | 3 | 5) {
+                    make_ui_only_reactive_report(&format!("hidden {i}"))
+                } else if i % 2 == 0 {
+                    make_user_msg(&format!("user {i}"))
+                } else {
+                    make_assistant_msg(&format!("assistant {i}"))
+                }
+            })
+            .collect();
+        let (filtered, original_indices) = visible_tier1_messages_with_original_indices(&messages);
+        let mut summ_msg = make_summarization_msg((2, 4));
+
+        translate_summarized_range_to_original(&mut summ_msg, &original_indices);
+
+        assert_eq!(filtered.len(), 7);
+        assert_eq!(original_indices, vec![1, 2, 4, 6, 7, 8, 9]);
+        assert_eq!(summ_msg.summarized_range, Some((4, 7)));
+    }
+
+    #[test]
+    fn tier1_summarization_range_no_ui_only_unchanged() {
+        let messages: Vec<ChatMessage> = (0..10)
+            .map(|i| {
+                if i % 2 == 0 {
+                    make_user_msg(&format!("user {i}"))
+                } else {
+                    make_assistant_msg(&format!("assistant {i}"))
+                }
+            })
+            .collect();
+        let (_, original_indices) = visible_tier1_messages_with_original_indices(&messages);
+        let mut summ_msg = make_summarization_msg((2, 4));
+
+        translate_summarized_range_to_original(&mut summ_msg, &original_indices);
+
+        assert_eq!(original_indices, (0..10).collect::<Vec<usize>>());
+        assert_eq!(summ_msg.summarized_range, Some((2, 4)));
     }
 
     #[test]
