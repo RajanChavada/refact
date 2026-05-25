@@ -2426,11 +2426,7 @@ async fn trajectory_data_to_meta_validated(app: AppState, data: &TrajectoryData)
     meta
 }
 
-fn apply_task_trajectory_context(
-    path: &Path,
-    task_roots: &[PathBuf],
-    meta: &mut TrajectoryMeta,
-) {
+fn apply_task_trajectory_context(path: &Path, task_roots: &[PathBuf], meta: &mut TrajectoryMeta) {
     if let Some((task_id, role, agent_id)) = task_trajectory_context_from_path(path, task_roots) {
         if meta.task_id.is_none() {
             meta.task_id = Some(task_id);
@@ -2911,7 +2907,9 @@ mod tests {
     }
 
     async fn write_trajectory_file(path: &Path, id: &str, title: &str, updated_at: &str) {
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
         tokio::fs::write(
             path,
             serde_json::to_string(&sample_trajectory(id, title, updated_at)).unwrap(),
@@ -3691,6 +3689,9 @@ mod tests {
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),
+            last_stream_delta_at: None,
+            last_tool_started_at: None,
+            last_tool_progress_at: None,
             trajectory_dirty: false,
             trajectory_version: 5,
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -3759,6 +3760,9 @@ mod tests {
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),
+            last_stream_delta_at: None,
+            last_tool_started_at: None,
+            last_tool_progress_at: None,
             trajectory_dirty: false,
             trajectory_version: 1,
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -3820,7 +3824,9 @@ mod tests {
         session.add_message(ChatMessage::new("user".to_string(), "wait".to_string()));
 
         let snapshot = trajectory_snapshot_from_session(&session);
-        save_trajectory_snapshot(gcx.clone(), snapshot).await.unwrap();
+        save_trajectory_snapshot(gcx.clone(), snapshot)
+            .await
+            .unwrap();
 
         drop(session);
 
@@ -3863,9 +3869,7 @@ mod tests {
         .await
         .unwrap();
 
-        let loaded = load_trajectory_for_chat(gcx, "legacy-wake")
-            .await
-            .unwrap();
+        let loaded = load_trajectory_for_chat(gcx, "legacy-wake").await.unwrap();
         assert!(loaded.wake_up_at.is_none());
     }
 
@@ -3890,7 +3894,9 @@ mod tests {
 
         let snapshot = trajectory_snapshot_from_session(&session);
         assert_eq!(snapshot.waiting_for_card_ids, card_ids);
-        save_trajectory_snapshot(gcx.clone(), snapshot).await.unwrap();
+        save_trajectory_snapshot(gcx.clone(), snapshot)
+            .await
+            .unwrap();
 
         let loaded = load_trajectory_for_chat(gcx, "wait-card-roundtrip")
             .await

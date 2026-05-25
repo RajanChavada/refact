@@ -1162,7 +1162,6 @@ mod tests {
         std::fs::write(worktree.join("file.txt"), "changed in worktree\n").unwrap();
         let gcx = crate::global_context::tests::make_test_gcx().await;
 
-
         let commit = auto_commit_worktree_with_message(
             gcx,
             &worktree,

@@ -21,10 +21,7 @@ const MAX_WAITING_CARD_IDS: usize = 50;
 
 fn wait_for_agents_input_schema() -> Value {
     let mut schema = agent_status_input_schema();
-    if let Some(props) = schema
-        .get_mut("properties")
-        .and_then(|p| p.as_object_mut())
-    {
+    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
         props.insert(
             "wake_up_after_secs".to_string(),
             json!({
@@ -143,11 +140,9 @@ impl Tool for ToolTaskWaitForAgents {
             .unwrap_or(false);
 
         if !is_planner {
-            return Err(
-                "wait_agents can only be called by the task planner. \
+            return Err("wait_agents can only be called by the task planner. \
                  Switch to the planner chat to check agent status."
-                    .to_string(),
-            );
+                .to_string());
         }
 
         drop(ccx_lock);
@@ -184,8 +179,7 @@ impl Tool for ToolTaskWaitForAgents {
             if let Some(session_arc) = sessions.get(&chat_id) {
                 let mut session = session_arc.lock().await;
                 if let Some(secs) = wake_up_secs {
-                    session.wake_up_at =
-                        Some(Utc::now() + chrono::Duration::seconds(secs as i64));
+                    session.wake_up_at = Some(Utc::now() + chrono::Duration::seconds(secs as i64));
                 }
                 session.waiting_for_card_ids = resolved_card_ids;
                 session.mark_persisted_runtime_changed();
@@ -274,10 +268,9 @@ mod tests {
 
         let secs = 120u64;
         let before = Utc::now();
-        let args: HashMap<String, Value> =
-            [("wake_up_after_secs".to_string(), json!(secs))]
-                .into_iter()
-                .collect();
+        let args: HashMap<String, Value> = [("wake_up_after_secs".to_string(), json!(secs))]
+            .into_iter()
+            .collect();
 
         let wake_up_secs = parse_wake_up_after_secs(&args).unwrap();
         assert_eq!(wake_up_secs, Some(secs));

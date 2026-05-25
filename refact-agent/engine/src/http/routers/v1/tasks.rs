@@ -819,16 +819,23 @@ async fn scan_persisted_agent_trajectory(
     task_id: &str,
     planner_chat_id: &str,
 ) -> Result<Option<AgentReference>, String> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("Failed to read persisted agent trajectory {:?}: {}", path, e))?;
-    let trajectory: PersistedAgentTrajectoryBlock = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse persisted agent trajectory {:?}: {}", path, e))?;
+    let content = tokio::fs::read_to_string(path).await.map_err(|e| {
+        format!(
+            "Failed to read persisted agent trajectory {:?}: {}",
+            path, e
+        )
+    })?;
+    let trajectory: PersistedAgentTrajectoryBlock =
+        serde_json::from_str(&content).map_err(|e| {
+            format!(
+                "Failed to parse persisted agent trajectory {:?}: {}",
+                path, e
+            )
+        })?;
     let Some(task_meta) = trajectory.task_meta else {
         return Ok(None);
     };
-    if task_meta.task_id != task_id
-        || task_meta.planner_chat_id.as_deref() != Some(planner_chat_id)
+    if task_meta.task_id != task_id || task_meta.planner_chat_id.as_deref() != Some(planner_chat_id)
     {
         return Ok(None);
     }
@@ -889,17 +896,24 @@ async fn find_planner_referencing_agents(
     if !agents_dir.exists() {
         return Ok(refs);
     }
-    let mut agent_dirs = tokio::fs::read_dir(&agents_dir)
-        .await
-        .map_err(|e| format!("Failed to read persisted agent trajectories {:?}: {}", agents_dir, e))?;
+    let mut agent_dirs = tokio::fs::read_dir(&agents_dir).await.map_err(|e| {
+        format!(
+            "Failed to read persisted agent trajectories {:?}: {}",
+            agents_dir, e
+        )
+    })?;
     while let Some(agent_dir) = agent_dirs.next_entry().await.map_err(|e| e.to_string())? {
         let file_type = agent_dir.file_type().await.map_err(|e| e.to_string())?;
         if !file_type.is_dir() {
             continue;
         }
-        let mut trajectories = tokio::fs::read_dir(agent_dir.path())
-            .await
-            .map_err(|e| format!("Failed to read persisted agent directory {:?}: {}", agent_dir.path(), e))?;
+        let mut trajectories = tokio::fs::read_dir(agent_dir.path()).await.map_err(|e| {
+            format!(
+                "Failed to read persisted agent directory {:?}: {}",
+                agent_dir.path(),
+                e
+            )
+        })?;
         while let Some(entry) = trajectories.next_entry().await.map_err(|e| e.to_string())? {
             let file_type = entry.file_type().await.map_err(|e| e.to_string())?;
             if !file_type.is_file()
@@ -907,7 +921,9 @@ async fn find_planner_referencing_agents(
             {
                 continue;
             }
-            let Some(agent_ref) = scan_persisted_agent_trajectory(&entry.path(), task_id, planner_chat_id).await? else {
+            let Some(agent_ref) =
+                scan_persisted_agent_trajectory(&entry.path(), task_id, planner_chat_id).await?
+            else {
                 continue;
             };
             if seen.insert((agent_ref.chat_id.clone(), agent_ref.source)) {
@@ -972,7 +988,12 @@ pub async fn handle_delete_planner_chat(
     } else {
         match crate::chat::trajectories::find_trajectory_path(gcx.clone(), &chat_id).await {
             Some(found_path) if found_path.exists() => found_path,
-            _ => return Err(delete_error(StatusCode::NOT_FOUND, "Planner chat not found")),
+            _ => {
+                return Err(delete_error(
+                    StatusCode::NOT_FOUND,
+                    "Planner chat not found",
+                ))
+            }
         }
     };
     let canon_dir = tokio::fs::canonicalize(&planner_dir)
@@ -1381,11 +1402,7 @@ mod tests {
     }
 
     async fn save_planner(gcx: Arc<GlobalContext>, task_id: &str, chat_id: &str) {
-        save_snapshot(
-            gcx,
-            snapshot(chat_id, task_id, "planner", None, None, None),
-        )
-        .await;
+        save_snapshot(gcx, snapshot(chat_id, task_id, "planner", None, None, None)).await;
     }
 
     async fn save_agent(
@@ -1657,140 +1674,139 @@ mod tests {
 
         #[tokio::test]
         async fn delete_planner_chat_rejected_when_live_agent_references_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let gcx = setup_task(temp.path(), "task-1").await;
-        save_planner(gcx.clone(), "task-1", "planner-chat").await;
-        insert_live_agent_session(
-            gcx.clone(),
-            "task-1",
-            "agent-chat",
-            "agent-1",
-            Some("card-a"),
-            "planner-chat",
-        )
-        .await;
-        let planner_path = temp
-            .path()
-            .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
+            let temp = tempfile::tempdir().unwrap();
+            let gcx = setup_task(temp.path(), "task-1").await;
+            save_planner(gcx.clone(), "task-1", "planner-chat").await;
+            insert_live_agent_session(
+                gcx.clone(),
+                "task-1",
+                "agent-chat",
+                "agent-1",
+                Some("card-a"),
+                "planner-chat",
+            )
+            .await;
+            let planner_path = temp
+                .path()
+                .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
 
-        let result = handle_delete_planner_chat(
-            State(app(gcx)),
-            Path(("task-1".to_string(), "planner-chat".to_string())),
-            no_force(),
-        )
-        .await;
-        let (status, body) = delete_error_body(result);
+            let result = handle_delete_planner_chat(
+                State(app(gcx)),
+                Path(("task-1".to_string(), "planner-chat".to_string())),
+                no_force(),
+            )
+            .await;
+            let (status, body) = delete_error_body(result);
 
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(
-            body["error"],
-            "planner chat has active or persisted agent references"
-        );
-        assert_eq!(body["hint"], "Pass ?force=true to delete anyway.");
-        assert_eq!(body["agent_refs"][0]["chat_id"], "agent-chat");
-        assert_eq!(body["agent_refs"][0]["card_id"], "card-a");
-        assert_eq!(body["agent_refs"][0]["source"], "live");
-        assert!(planner_path.exists());
-    }
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(
+                body["error"],
+                "planner chat has active or persisted agent references"
+            );
+            assert_eq!(body["hint"], "Pass ?force=true to delete anyway.");
+            assert_eq!(body["agent_refs"][0]["chat_id"], "agent-chat");
+            assert_eq!(body["agent_refs"][0]["card_id"], "card-a");
+            assert_eq!(body["agent_refs"][0]["source"], "live");
+            assert!(planner_path.exists());
+        }
 
         #[tokio::test]
         async fn delete_planner_chat_rejected_when_persisted_agent_references_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let gcx = setup_task(temp.path(), "task-1").await;
-        save_planner(gcx.clone(), "task-1", "planner-chat").await;
-        save_agent(
-            gcx.clone(),
-            "task-1",
-            "agent-chat",
-            "agent-1",
-            Some("card-a"),
-            "planner-chat",
-        )
-        .await;
-        let planner_path = temp
-            .path()
-            .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
+            let temp = tempfile::tempdir().unwrap();
+            let gcx = setup_task(temp.path(), "task-1").await;
+            save_planner(gcx.clone(), "task-1", "planner-chat").await;
+            save_agent(
+                gcx.clone(),
+                "task-1",
+                "agent-chat",
+                "agent-1",
+                Some("card-a"),
+                "planner-chat",
+            )
+            .await;
+            let planner_path = temp
+                .path()
+                .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
 
-        let result = handle_delete_planner_chat(
-            State(app(gcx)),
-            Path(("task-1".to_string(), "planner-chat".to_string())),
-            no_force(),
-        )
-        .await;
-        let (status, body) = delete_error_body(result);
+            let result = handle_delete_planner_chat(
+                State(app(gcx)),
+                Path(("task-1".to_string(), "planner-chat".to_string())),
+                no_force(),
+            )
+            .await;
+            let (status, body) = delete_error_body(result);
 
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["agent_refs"].as_array().unwrap().len(), 1);
-        assert_eq!(body["agent_refs"][0]["chat_id"], "agent-chat");
-        assert_eq!(body["agent_refs"][0]["card_id"], "card-a");
-        assert_eq!(body["agent_refs"][0]["source"], "persisted");
-        assert!(planner_path.exists());
-    }
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["agent_refs"].as_array().unwrap().len(), 1);
+            assert_eq!(body["agent_refs"][0]["chat_id"], "agent-chat");
+            assert_eq!(body["agent_refs"][0]["card_id"], "card-a");
+            assert_eq!(body["agent_refs"][0]["source"], "persisted");
+            assert!(planner_path.exists());
+        }
 
         #[tokio::test]
         async fn delete_planner_chat_force_true_proceeds_with_warning_and_status_update() {
-        let temp = tempfile::tempdir().unwrap();
-        let gcx = setup_task(temp.path(), "task-1").await;
-        save_planner(gcx.clone(), "task-1", "planner-chat").await;
-        let _ = handle_patch_board(
-            State(app(gcx.clone())),
-            Path("task-1".to_string()),
-            Json(create_card_request(0, "card-a")),
-        )
-        .await
-        .unwrap();
-        save_agent(
-            gcx.clone(),
-            "task-1",
-            "agent-chat",
-            "agent-1",
-            Some("card-a"),
-            "planner-chat",
-        )
-        .await;
-        let planner_path = temp
-            .path()
-            .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
+            let temp = tempfile::tempdir().unwrap();
+            let gcx = setup_task(temp.path(), "task-1").await;
+            save_planner(gcx.clone(), "task-1", "planner-chat").await;
+            let _ = handle_patch_board(
+                State(app(gcx.clone())),
+                Path("task-1".to_string()),
+                Json(create_card_request(0, "card-a")),
+            )
+            .await
+            .unwrap();
+            save_agent(
+                gcx.clone(),
+                "task-1",
+                "agent-chat",
+                "agent-1",
+                Some("card-a"),
+                "planner-chat",
+            )
+            .await;
+            let planner_path = temp
+                .path()
+                .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
 
-        let result = handle_delete_planner_chat(
-            State(app(gcx.clone())),
-            Path(("task-1".to_string(), "planner-chat".to_string())),
-            force(),
-        )
-        .await;
+            let result = handle_delete_planner_chat(
+                State(app(gcx.clone())),
+                Path(("task-1".to_string(), "planner-chat".to_string())),
+                force(),
+            )
+            .await;
 
-        assert!(result.is_ok());
-        assert!(!planner_path.exists());
-        let board = storage::load_board(gcx, "task-1").await.unwrap();
-        let card = board.get_card("card-a").unwrap();
-        let status_update = card.status_updates.last().unwrap();
-        assert_eq!(
+            assert!(result.is_ok());
+            assert!(!planner_path.exists());
+            let board = storage::load_board(gcx, "task-1").await.unwrap();
+            let card = board.get_card("card-a").unwrap();
+            let status_update = card.status_updates.last().unwrap();
+            assert_eq!(
             status_update.message,
             "Planner chat planner-chat deleted while this agent still referenced it; planner_chat_id link is now dangling."
         );
-    }
+        }
 
         #[tokio::test]
         async fn delete_planner_chat_with_no_refs_succeeds_without_force() {
-        let temp = tempfile::tempdir().unwrap();
-        let gcx = setup_task(temp.path(), "task-1").await;
-        save_planner(gcx.clone(), "task-1", "planner-chat").await;
-        let planner_path = temp
-            .path()
-            .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
-        assert!(planner_path.exists());
+            let temp = tempfile::tempdir().unwrap();
+            let gcx = setup_task(temp.path(), "task-1").await;
+            save_planner(gcx.clone(), "task-1", "planner-chat").await;
+            let planner_path = temp
+                .path()
+                .join(".refact/tasks/task-1/trajectories/planner/planner-chat.json");
+            assert!(planner_path.exists());
 
-        let result = handle_delete_planner_chat(
-            State(app(gcx)),
-            Path(("task-1".to_string(), "planner-chat".to_string())),
-            no_force(),
-        )
-        .await;
+            let result = handle_delete_planner_chat(
+                State(app(gcx)),
+                Path(("task-1".to_string(), "planner-chat".to_string())),
+                no_force(),
+            )
+            .await;
 
-        assert!(result.is_ok());
-        assert!(!planner_path.exists());
-    }
-
+            assert!(result.is_ok());
+            assert!(!planner_path.exists());
+        }
     }
 
     #[tokio::test]

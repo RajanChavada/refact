@@ -32,8 +32,10 @@ const AGENT_STUCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// How often to check for stuck agents (2 minutes)
 const MONITOR_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
-/// Timeout for in-flight stream stall (Generating/ExecutingTools with no activity)
+/// Timeout for in-flight stream stall (Generating with no token activity)
 const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(4 * 60);
+
+const TOOL_STALL_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 
 const MAX_IDLE_AGENT_NUDGES_PER_CARD: usize = 4;
 const IDLE_AGENT_NUDGE_GRACE: Duration = Duration::from_secs(60);
@@ -178,9 +180,7 @@ async fn record_idle_agent_nudge(
     let timestamp = now.to_rfc3339();
     let message = format!(
         "{} {} ({})",
-        IDLE_AGENT_NUDGE_STATUS_PREFIX,
-        agent_chat_id,
-        reason
+        IDLE_AGENT_NUDGE_STATUS_PREFIX, agent_chat_id, reason
     );
 
     storage::update_board_atomic(app.gcx.clone(), task_id, move |board| {
@@ -933,12 +933,8 @@ async fn sweep_planner_wake_ups(app: AppState) -> Result<(), String> {
                 if !is_planner_for_task {
                     (false, String::new())
                 } else {
-                    let is_waiting =
-                        session.runtime.state == SessionState::WaitingUserInput;
-                    let past_deadline = session
-                        .wake_up_at
-                        .map(|t| now >= t)
-                        .unwrap_or(false);
+                    let is_waiting = session.runtime.state == SessionState::WaitingUserInput;
+                    let past_deadline = session.wake_up_at.map(|t| now >= t).unwrap_or(false);
                     let chat_id = session.chat_id.clone();
                     (is_waiting && past_deadline, chat_id)
                 }
@@ -964,14 +960,13 @@ async fn sweep_planner_wake_ups(app: AppState) -> Result<(), String> {
 
             let empty_args: std::collections::HashMap<String, serde_json::Value> =
                 std::collections::HashMap::new();
-            let query =
-                crate::tools::tool_task_check_agents::parse_agent_status_query(&empty_args)
-                    .unwrap_or_else(|_| {
-                        crate::tools::tool_task_check_agents::parse_agent_status_query(
-                            &std::collections::HashMap::new(),
-                        )
-                        .unwrap()
-                    });
+            let query = crate::tools::tool_task_check_agents::parse_agent_status_query(&empty_args)
+                .unwrap_or_else(|_| {
+                    crate::tools::tool_task_check_agents::parse_agent_status_query(
+                        &std::collections::HashMap::new(),
+                    )
+                    .unwrap()
+                });
             let status_text =
                 crate::tools::tool_task_check_agents::format_agent_statuses(&statuses, &query)
                     .unwrap_or_else(|_| "(status unavailable)".to_string());
@@ -1176,12 +1171,39 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                 continue;
             }
 
-            // Stream stall detection: Generating/ExecutingTools with no activity
-            if matches!(
-                session.runtime.state,
-                SessionState::Generating | SessionState::ExecutingTools
-            ) && elapsed > STREAM_STALL_TIMEOUT
-            {
+            let stalled = match session.runtime.state {
+                SessionState::Generating => session
+                    .last_stream_delta_at
+                    .map(|t| t.elapsed() > STREAM_STALL_TIMEOUT)
+                    .unwrap_or_else(|| session.last_activity.elapsed() > STREAM_STALL_TIMEOUT),
+                SessionState::ExecutingTools => session
+                    .last_tool_progress_at
+                    .or(session.last_tool_started_at)
+                    .map(|t| t.elapsed() > TOOL_STALL_TIMEOUT)
+                    .unwrap_or(false),
+                _ => false,
+            };
+
+            if stalled {
+                let stall_elapsed = match session.runtime.state {
+                    SessionState::Generating => session
+                        .last_stream_delta_at
+                        .unwrap_or(session.last_activity)
+                        .elapsed(),
+                    SessionState::ExecutingTools => session
+                        .last_tool_progress_at
+                        .or(session.last_tool_started_at)
+                        .map(|t| t.elapsed())
+                        .unwrap_or(elapsed),
+                    _ => elapsed,
+                };
+                let stall_reason = match session.runtime.state {
+                    SessionState::Generating => "stream appears stalled, no token activity",
+                    SessionState::ExecutingTools => {
+                        "tool execution appears stalled, no tool progress"
+                    }
+                    _ => "agent appears stalled",
+                };
                 let (nudge_count, _) = idle_agent_nudge_updates(card);
                 drop(session);
 
@@ -1194,7 +1216,7 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                         &card.id,
                         agent_chat_id,
                         session_arc.clone(),
-                        "stream appears stalled, no token activity",
+                        stall_reason,
                     )
                     .await?;
                 } else {
@@ -1205,8 +1227,9 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                         None,
                         planner_chat_id.as_deref(),
                         &format!(
-                            "stream appears stalled (no token activity for {}), nudge retries exhausted",
-                            humantime::format_duration(elapsed)
+                            "{} for {}, nudge retries exhausted",
+                            stall_reason,
+                            humantime::format_duration(stall_elapsed)
                         ),
                         AgentFailureKind::TransientExhausted,
                     )
@@ -1306,9 +1329,15 @@ mod tests {
             planner_chat_id: Some("planner-test".to_string()),
         });
         session.runtime.state = state;
-        session.last_activity = Instant::now()
+        let activity_at = Instant::now()
             .checked_sub(idle_for)
             .unwrap_or_else(Instant::now);
+        session.last_activity = activity_at;
+        match state {
+            SessionState::Generating => session.last_stream_delta_at = Some(activity_at),
+            SessionState::ExecutingTools => session.last_tool_started_at = Some(activity_at),
+            _ => {}
+        }
         session
             .queue_processor_running
             .store(true, Ordering::SeqCst);
@@ -1428,12 +1457,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_agent_is_not_nudged() {
-        for state in [
-            SessionState::Generating,
-            SessionState::ExecutingTools,
-            SessionState::WaitingUserInput,
-            SessionState::WaitingIde,
-        ] {
+        for state in [SessionState::WaitingUserInput, SessionState::WaitingIde] {
             let (_temp, app, task_id, _agent_chat_id, session_arc) =
                 setup_monitor_case("doing", state, Duration::from_secs(90), vec![]).await;
 
@@ -1558,6 +1582,11 @@ mod tests {
     #[test]
     fn test_monitor_interval_constant() {
         assert_eq!(MONITOR_INTERVAL.as_secs(), 2 * 60);
+    }
+
+    #[test]
+    fn test_tool_stall_timeout_constant() {
+        assert_eq!(TOOL_STALL_TIMEOUT.as_secs(), 8 * 60);
     }
 
     #[test]
@@ -1757,18 +1786,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_state_without_progress_for_long_time_is_flagged_stalled() {
+        let (_temp, app, task_id, agent_chat_id, session_arc) = setup_monitor_case(
+            "doing",
+            SessionState::ExecutingTools,
+            TOOL_STALL_TIMEOUT + Duration::from_secs(10),
+            vec![],
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let board = storage::load_board(app.gcx.clone(), &task_id)
+            .await
+            .unwrap();
+        let card = board.get_card("T-1").unwrap();
+        assert!(
+            card.status_updates.iter().any(|u| {
+                u.message.starts_with(IDLE_AGENT_NUDGE_STATUS_PREFIX)
+                    && u.message.contains(&agent_chat_id)
+                    && u.message.contains("tool execution appears stalled")
+            }),
+            "expected tool-stall nudge status update"
+        );
+
+        let session = session_arc.lock().await;
+        assert_eq!(session.command_queue.len(), 1, "nudge command queued");
+    }
+
+    #[tokio::test]
+    async fn tool_state_with_recent_progress_is_not_flagged_stalled() {
+        let (_temp, app, task_id, _agent_chat_id, session_arc) = setup_monitor_case(
+            "doing",
+            SessionState::ExecutingTools,
+            TOOL_STALL_TIMEOUT + Duration::from_secs(10),
+            vec![],
+        )
+        .await;
+        {
+            let mut session = session_arc.lock().await;
+            session.last_tool_progress_at = Some(Instant::now());
+        }
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let board = storage::load_board(app.gcx.clone(), &task_id)
+            .await
+            .unwrap();
+        let card = board.get_card("T-1").unwrap();
+        assert!(card
+            .status_updates
+            .iter()
+            .all(|u| { !u.message.starts_with(IDLE_AGENT_NUDGE_STATUS_PREFIX) }));
+        assert!(session_arc.lock().await.command_queue.is_empty());
+    }
+
+    #[tokio::test]
     async fn stream_stall_after_max_nudges_marks_failed_transient() {
         let old_ts = (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
         let maxed = (0..MAX_IDLE_AGENT_NUDGES_PER_CARD)
             .map(|_| StatusUpdate {
                 timestamp: old_ts.clone(),
-                message: format!("{} agent-T-1 (stream appears stalled, no token activity)", IDLE_AGENT_NUDGE_STATUS_PREFIX),
+                message: format!(
+                    "{} agent-T-1 (stream appears stalled, no token activity)",
+                    IDLE_AGENT_NUDGE_STATUS_PREFIX
+                ),
             })
             .collect::<Vec<_>>();
 
         let (_temp, app, task_id, _agent_chat_id, session_arc) = setup_monitor_case(
             "doing",
-            SessionState::ExecutingTools,
+            SessionState::Generating,
             STREAM_STALL_TIMEOUT + Duration::from_secs(10),
             maxed,
         )
@@ -1885,12 +1973,8 @@ mod tests {
     #[tokio::test]
     async fn planner_wake_up_fires_when_deadline_passes() {
         let past = Utc::now() - chrono::Duration::seconds(10);
-        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
-            SessionState::WaitingUserInput,
-            Some(past),
-            false,
-        )
-        .await;
+        let (_temp, app, _task_id, planner_arc) =
+            setup_planner_wake_case(SessionState::WaitingUserInput, Some(past), false).await;
 
         check_for_stuck_agents(app.clone()).await.unwrap();
 
@@ -1900,7 +1984,10 @@ mod tests {
             1,
             "wake-up message should be queued"
         );
-        assert!(session.wake_up_at.is_none(), "wake_up_at cleared after fire");
+        assert!(
+            session.wake_up_at.is_none(),
+            "wake_up_at cleared after fire"
+        );
         let cmd = session.command_queue.front().unwrap();
         assert!(cmd.priority);
         match &cmd.command {
@@ -1917,12 +2004,8 @@ mod tests {
     #[tokio::test]
     async fn planner_wake_up_does_not_double_fire() {
         let past = Utc::now() - chrono::Duration::seconds(10);
-        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
-            SessionState::WaitingUserInput,
-            Some(past),
-            false,
-        )
-        .await;
+        let (_temp, app, _task_id, planner_arc) =
+            setup_planner_wake_case(SessionState::WaitingUserInput, Some(past), false).await;
 
         check_for_stuck_agents(app.clone()).await.unwrap();
         check_for_stuck_agents(app.clone()).await.unwrap();
@@ -1938,12 +2021,8 @@ mod tests {
     #[tokio::test]
     async fn planner_wake_up_skipped_when_state_changed() {
         let past = Utc::now() - chrono::Duration::seconds(10);
-        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
-            SessionState::Generating,
-            Some(past),
-            false,
-        )
-        .await;
+        let (_temp, app, _task_id, planner_arc) =
+            setup_planner_wake_case(SessionState::Generating, Some(past), false).await;
 
         check_for_stuck_agents(app.clone()).await.unwrap();
 
@@ -1957,12 +2036,8 @@ mod tests {
     #[tokio::test]
     async fn planner_wake_up_message_contains_agent_status_snapshot() {
         let past = Utc::now() - chrono::Duration::seconds(10);
-        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
-            SessionState::WaitingUserInput,
-            Some(past),
-            true,
-        )
-        .await;
+        let (_temp, app, _task_id, planner_arc) =
+            setup_planner_wake_case(SessionState::WaitingUserInput, Some(past), true).await;
 
         check_for_stuck_agents(app.clone()).await.unwrap();
 

@@ -411,6 +411,7 @@ fn spawn_subchat_bridge(
                         }
 
                         let mut session = session_arc.lock().await;
+                        session.mark_tool_progress();
                         session.emit(ChatEvent::SubchatUpdate {
                             tool_call_id: tool_call_id.to_string(),
                             subchat_id: subchat_id.to_string(),
@@ -1674,6 +1675,7 @@ pub async fn execute_tools_with_session(
     let context_files = get_context_files_from_messages(&result.0);
     if !context_files.is_empty() {
         let mut session = session_arc.lock().await;
+        session.mark_tool_progress();
         for tc in tool_calls {
             session.emit(ChatEvent::SubchatUpdate {
                 tool_call_id: tc.id.clone(),
@@ -1749,6 +1751,14 @@ async fn execute_single_tool(
         let pd = get_project_dir_string(app.clone()).await;
         (sid, pd)
     };
+
+    if let Some(session_arc) = {
+        let sessions_read = app.chat.sessions.read().await;
+        sessions_read.get(&session_id).cloned()
+    } {
+        let mut session = session_arc.lock().await;
+        session.mark_tool_started();
+    }
 
     if !allow_parallel {
         let resolved_name = crate::llm::adapters::claude_code_compat::cc_resolve_tool_name(

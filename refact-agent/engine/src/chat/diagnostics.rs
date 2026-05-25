@@ -62,10 +62,7 @@ pub fn make_ui_only_retry_status_message(
         "Retrying — {} (attempt {}/{})",
         base_info.title, attempt, max_attempts
     );
-    let explanation = format!(
-        "{} Next retry in {}s.",
-        base_info.explanation, delay_secs
-    );
+    let explanation = format!("{} Next retry in {}s.", base_info.explanation, delay_secs);
     let summary = format!(
         "{} — retrying in {}s (attempt {}/{}).",
         base_info.title, delay_secs, attempt, max_attempts,

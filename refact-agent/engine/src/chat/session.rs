@@ -81,6 +81,9 @@ impl ChatSession {
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),
+            last_stream_delta_at: None,
+            last_tool_started_at: None,
+            last_tool_progress_at: None,
             trajectory_dirty: false,
             trajectory_version: 0,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -135,6 +138,9 @@ impl ChatSession {
             queue_processor_running: Arc::new(AtomicBool::new(false)),
             queue_notify: Arc::new(Notify::new()),
             last_activity: Instant::now(),
+            last_stream_delta_at: None,
+            last_tool_started_at: None,
+            last_tool_progress_at: None,
             external_reload_pending: false,
             trajectory_dirty: false,
             trajectory_version: 0,
@@ -176,9 +182,36 @@ impl ChatSession {
         self.last_activity = Instant::now();
     }
 
+    pub fn mark_tool_started(&mut self) {
+        let now = Instant::now();
+        self.last_tool_started_at = Some(now);
+        self.last_tool_progress_at = None;
+        self.last_activity = now;
+    }
+
+    pub fn mark_tool_progress(&mut self) {
+        let now = Instant::now();
+        self.last_tool_progress_at = Some(now);
+        self.last_activity = now;
+    }
+
+    fn mark_stream_delta(&mut self) {
+        let now = Instant::now();
+        self.last_stream_delta_at = Some(now);
+        self.last_activity = now;
+    }
+
     pub(crate) fn mark_persisted_runtime_changed(&mut self) {
         self.increment_version();
         self.touch();
+    }
+
+    pub fn is_pending_wake_up(&self) -> bool {
+        self.runtime.state == SessionState::WaitingUserInput
+            && self
+                .wake_up_at
+                .as_ref()
+                .is_some_and(|deadline| *deadline > chrono::Utc::now())
     }
 
     pub fn is_idle_for_cleanup(&self) -> bool {
@@ -187,6 +220,7 @@ impl ChatSession {
             SessionState::Idle | SessionState::Completed | SessionState::WaitingUserInput
         );
         is_idle_like
+            && !self.is_pending_wake_up()
             && self.command_queue.is_empty()
             && self.last_activity.elapsed() > session_idle_timeout()
     }
@@ -408,6 +442,16 @@ impl ChatSession {
         let old_error = self.runtime.error.clone();
         let was_paused = old_state == SessionState::Paused;
         let had_pause_reasons = !self.runtime.pause_reasons.is_empty();
+
+        if state == SessionState::ExecutingTools {
+            self.mark_tool_started();
+        } else if old_state == SessionState::ExecutingTools {
+            self.last_tool_started_at = None;
+            self.last_tool_progress_at = None;
+        }
+        if state == SessionState::Generating && old_state != SessionState::Generating {
+            self.last_stream_delta_at = None;
+        }
 
         self.runtime.state = state;
         self.runtime.paused = state == SessionState::Paused;
@@ -633,7 +677,7 @@ impl ChatSession {
         };
         self.emit(ChatEvent::StreamDelta { message_id, ops });
         if applied {
-            self.touch();
+            self.mark_stream_delta();
         }
     }
 
@@ -1044,6 +1088,9 @@ pub fn start_session_cleanup_task(app: AppState) {
             let mut to_cleanup = Vec::new();
             for (chat_id, session_arc) in candidates {
                 let session = session_arc.lock().await;
+                if session.is_pending_wake_up() {
+                    continue;
+                }
                 if session.is_idle_for_cleanup() {
                     drop(session);
                     to_cleanup.push((chat_id, session_arc));
@@ -1604,6 +1651,25 @@ mod tests {
     }
 
     #[test]
+    fn tool_execution_progress_updates_last_tool_progress_at() {
+        let mut session = make_session();
+        session.set_runtime_state(SessionState::ExecutingTools, None);
+        let started = session.last_tool_started_at.unwrap();
+        assert!(session.last_tool_progress_at.is_none());
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        session.mark_tool_progress();
+
+        let progress = session.last_tool_progress_at.unwrap();
+        assert!(progress > started);
+        assert_eq!(session.last_activity, progress);
+
+        session.set_runtime_state(SessionState::Idle, None);
+        assert!(session.last_tool_started_at.is_none());
+        assert!(session.last_tool_progress_at.is_none());
+    }
+
+    #[test]
     fn test_set_runtime_state_clears_pause_on_transition() {
         let mut session = make_session();
         session.runtime.pause_reasons.push(PauseReason {
@@ -1644,6 +1710,32 @@ mod tests {
 
         assert!(session.waiting_for_card_ids.is_empty());
         assert!(session.trajectory_dirty);
+    }
+
+    #[test]
+    fn waiting_planner_with_future_wake_up_survives_cleanup() {
+        let mut session = make_session();
+        session.runtime.state = SessionState::WaitingUserInput;
+        session.wake_up_at = Some(chrono::Utc::now() + chrono::Duration::minutes(10));
+        session.last_activity = Instant::now()
+            .checked_sub(session_idle_timeout() + std::time::Duration::from_secs(1))
+            .unwrap();
+
+        assert!(session.is_pending_wake_up());
+        assert!(!session.is_idle_for_cleanup());
+    }
+
+    #[test]
+    fn waiting_planner_with_past_wake_up_can_be_cleaned_up() {
+        let mut session = make_session();
+        session.runtime.state = SessionState::WaitingUserInput;
+        session.wake_up_at = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+        session.last_activity = Instant::now()
+            .checked_sub(session_idle_timeout() + std::time::Duration::from_secs(1))
+            .unwrap();
+
+        assert!(!session.is_pending_wake_up());
+        assert!(session.is_idle_for_cleanup());
     }
 
     #[test]
@@ -1914,6 +2006,28 @@ mod tests {
         }]);
 
         assert!(session.last_activity > before);
+    }
+
+    #[tokio::test]
+    async fn stream_delta_only_resets_stream_timestamp_not_tool_timestamp() {
+        let mut session = make_session();
+        session.set_runtime_state(SessionState::ExecutingTools, None);
+        let tool_started = session.last_tool_started_at;
+        session.mark_tool_progress();
+        let tool_progress = session.last_tool_progress_at;
+        session.set_runtime_state(SessionState::Idle, None);
+        session.last_tool_started_at = tool_started;
+        session.last_tool_progress_at = tool_progress;
+
+        session.start_stream();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        session.emit_stream_delta(vec![DeltaOp::AppendContent {
+            text: "hello".into(),
+        }]);
+
+        assert!(session.last_stream_delta_at.is_some());
+        assert_eq!(session.last_tool_started_at, tool_started);
+        assert_eq!(session.last_tool_progress_at, tool_progress);
     }
 
     #[tokio::test]
