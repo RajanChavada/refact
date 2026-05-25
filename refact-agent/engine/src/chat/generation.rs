@@ -820,6 +820,10 @@ pub fn start_generation(
                         .await;
                     }
                 }
+                if abort_flag.load(Ordering::SeqCst) {
+                    let mut session = session_arc.lock().await;
+                    session.clear_stream_for_retry();
+                }
                 break;
             }
 

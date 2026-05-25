@@ -728,9 +728,10 @@ pub async fn process_command_queue(
                     return;
                 }
                 if session.command_queue.is_empty() {
-                    let waiter2 = notify.notified();
                     drop(session);
-                    waiter2.await;
+                    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+                        .await
+                        .ok();
                     continue;
                 }
                 drop(session);

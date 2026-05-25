@@ -103,7 +103,7 @@ impl LlmStreamError {
     }
 
     pub fn should_retry(&self, attempt: usize, abort: &AtomicBool) -> bool {
-        if self.partial_output_emitted {
+        if self.partial_output_emitted || self.retry_decision().is_user_cancelled() {
             return false;
         }
         should_retry_llm_error(&self.message, attempt, abort)
@@ -138,24 +138,53 @@ impl From<String> for LlmStreamError {
     }
 }
 
+async fn wait_for_abort_signal(abort_flag: Option<Arc<AtomicBool>>) {
+    let Some(abort_flag) = abort_flag else {
+        std::future::pending::<()>().await;
+        return;
+    };
+
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_millis(200));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        heartbeat.tick().await;
+        if abort_flag.load(Ordering::SeqCst) {
+            return;
+        }
+    }
+}
+
+fn abort_requested(abort_flag: Option<&Arc<AtomicBool>>) -> bool {
+    abort_flag.is_some_and(|flag| flag.load(Ordering::SeqCst))
+}
+
+fn is_abort_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("aborted") || lower.contains("cancelled") || lower.contains("canceled")
+}
+
 async fn send_llm_http_request(
     client: &reqwest::Client,
     http_parts: &HttpParts,
     wire_format: WireFormat,
+    abort_flag: Option<Arc<AtomicBool>>,
 ) -> Result<reqwest::Response, String> {
     let accept = match wire_format {
         WireFormat::OllamaNative => "application/x-ndjson",
         _ => "text/event-stream",
     };
 
-    client
+    let request = client
         .post(&http_parts.url)
         .headers(http_parts.headers.clone())
         .header(reqwest::header::ACCEPT, accept)
         .json(&http_parts.body)
-        .send()
-        .await
-        .map_err(|e| format!("LLM request failed: {}", e))
+        .send();
+
+    tokio::select! {
+        result = request => result.map_err(|e| format!("LLM request failed: {}", e)),
+        _ = wait_for_abort_signal(abort_flag) => Err("Aborted".to_string()),
+    }
 }
 
 fn should_commit_cache_guard_after_http_success(status: reqwest::StatusCode, text: &str) -> bool {
@@ -1028,19 +1057,23 @@ async fn run_llm_websocket_request<C: StreamCollector>(
         }
     }
 
-    let (mut websocket, _) = tokio::time::timeout(
+    let connect = tokio::time::timeout(
         stream_idle_timeout(),
         tokio_tungstenite::connect_async(request),
-    )
-    .await
-    .map_err(|_| "OpenAI Codex WebSocket connect timed out".to_string())?
-    .map_err(|e| format!("OpenAI Codex WebSocket connect failed: {}", e))?;
-    websocket
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            build_openai_codex_websocket_message(&http_parts.body).to_string(),
-        ))
-        .await
-        .map_err(|e| format!("OpenAI Codex WebSocket send failed: {}", e))?;
+    );
+    let (mut websocket, _) = tokio::select! {
+        result = connect => result
+            .map_err(|_| "OpenAI Codex WebSocket connect timed out".to_string())?
+            .map_err(|e| format!("OpenAI Codex WebSocket connect failed: {}", e))?,
+        _ = wait_for_abort_signal(abort_flag.clone()) => return Err("Aborted".to_string()),
+    };
+    let send = websocket.send(tokio_tungstenite::tungstenite::Message::Text(
+        build_openai_codex_websocket_message(&http_parts.body).to_string(),
+    ));
+    tokio::select! {
+        result = send => result.map_err(|e| format!("OpenAI Codex WebSocket send failed: {}", e))?,
+        _ = wait_for_abort_signal(abort_flag.clone()) => return Err("Aborted".to_string()),
+    };
 
     let mut accumulators: Vec<ChoiceAccumulator> = vec![ChoiceAccumulator::default()];
     let mut stream_done = false;
@@ -1067,6 +1100,9 @@ async fn run_llm_websocket_request<C: StreamCollector>(
                     return Err("OpenAI Codex WebSocket stream stalled".to_string());
                 }
                 continue;
+            }
+            _ = wait_for_abort_signal(abort_flag.clone()) => {
+                return Err("Aborted".to_string());
             }
             maybe_message = websocket.next() => {
                 match maybe_message {
@@ -1149,6 +1185,9 @@ async fn run_llm_ndjson_request<C: StreamCollector>(
                     return Err("LLM stream stalled".to_string());
                 }
                 continue;
+            }
+            _ = wait_for_abort_signal(abort_flag.clone()) => {
+                return Err("Aborted".to_string());
             }
             maybe_bytes = stream.next() => {
                 match maybe_bytes {
@@ -1287,6 +1326,9 @@ pub async fn run_llm_stream<C: StreamCollector>(
                 return Ok(results);
             }
             Err(error) => {
+                if abort_requested(params.abort_flag.as_ref()) || is_abort_error(&error) {
+                    return Err(LlmStreamError::new(error, partial_output_emitted));
+                }
                 tracing::warn!(
                     "OpenAI Codex WebSocket streaming failed, falling back to HTTP SSE: {}",
                     error
@@ -1295,9 +1337,14 @@ pub async fn run_llm_stream<C: StreamCollector>(
         }
     }
 
-    let mut response = send_llm_http_request(&client, &http_parts, wire_format)
-        .await
-        .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
+    let mut response = send_llm_http_request(
+        &client,
+        &http_parts,
+        wire_format,
+        params.abort_flag.clone(),
+    )
+    .await
+    .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
     let mut status = response.status();
     if !status.is_success()
         && is_openai_codex_chatgpt_backend(&params.model_rec)
@@ -1335,9 +1382,14 @@ pub async fn run_llm_stream<C: StreamCollector>(
                 retry_parts
                     .headers
                     .insert(reqwest::header::AUTHORIZATION, auth_value);
-                response = send_llm_http_request(&client, &retry_parts, wire_format)
-                    .await
-                    .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
+                response = send_llm_http_request(
+                    &client,
+                    &retry_parts,
+                    wire_format,
+                    params.abort_flag.clone(),
+                )
+                .await
+                .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
                 status = response.status();
             }
             None => {}
@@ -1429,6 +1481,12 @@ pub async fn run_llm_stream<C: StreamCollector>(
                     ));
                 }
                 continue;
+            }
+            _ = wait_for_abort_signal(params.abort_flag.clone()) => {
+                return Err(LlmStreamError::new(
+                    "Aborted",
+                    *tracking_collector.partial_output_emitted,
+                ));
             }
             maybe_event = stream.next() => {
                 match maybe_event {
