@@ -2,6 +2,7 @@
 import { describe, test, expect } from "vitest";
 import { isLspChatMessage } from "../services/refact/chat";
 import { applyDeltaOps } from "../services/refact/chatSubscription";
+import { isDiffMessage } from "../services/refact/types";
 import type { ChatMessage } from "../services/refact/types";
 
 describe("Chat Validation Fixes", () => {
@@ -59,6 +60,33 @@ describe("Chat Validation Fixes", () => {
         content: "not an array",
       };
       expect(isLspChatMessage(msg)).toBe(false);
+      expect(isDiffMessage(msg as ChatMessage)).toBe(false);
+    });
+
+    test("accepts only array-backed messages in the runtime diff type guard", () => {
+      const validMessage = {
+        role: "diff",
+        tool_call_id: "call_123",
+        content: [
+          {
+            file_name: "test.ts",
+            file_action: "edit",
+            line1: 1,
+            line2: 1,
+            lines_remove: "old\n",
+            lines_add: "new\n",
+          },
+        ],
+      };
+
+      const invalidMessage = {
+        role: "diff",
+        tool_call_id: "call_123",
+        content: "not an array",
+      };
+
+      expect(isDiffMessage(validMessage as ChatMessage)).toBe(true);
+      expect(isDiffMessage(invalidMessage as ChatMessage)).toBe(false);
     });
   });
 

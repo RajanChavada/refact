@@ -345,7 +345,7 @@ export function isToolMessage(message: ChatMessage): message is ToolMessage {
 }
 
 export function isDiffMessage(message: ChatMessage): message is DiffMessage {
-  return message.role === "diff";
+  return message.role === "diff" && Array.isArray(message.content);
 }
 
 export function isSystemMessage(
