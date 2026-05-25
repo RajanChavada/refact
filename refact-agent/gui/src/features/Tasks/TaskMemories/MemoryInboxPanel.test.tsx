@@ -7,7 +7,7 @@ import {
   waitFor,
   createDefaultChatState,
 } from "../../../utils/test-utils";
-import { server } from "../../../utils/mockServer";
+import { goodCaps, server } from "../../../utils/mockServer";
 import { setUpStore } from "../../../app/store";
 import { tasksApi } from "../../../services/refact/tasks";
 import { MemoryInboxPanel } from "./MemoryInboxPanel";
@@ -67,6 +67,12 @@ function mockMemories(response: TaskMemoriesResponse = memoriesResponse) {
   );
 }
 
+type TestUser = ReturnType<typeof render>["user"];
+
+async function openTagCloud(user: TestUser) {
+  await user.click(await screen.findByRole("button", { name: /Show all \d+ tags/ }));
+}
+
 describe("MemoryInboxPanel", () => {
   it("renders memory list with mock data", async () => {
     mockMemories();
@@ -80,10 +86,10 @@ describe("MemoryInboxPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Archive stale notes")).toBeInTheDocument();
     expect(screen.getByText(/5 new since/)).toBeInTheDocument();
-    expect(screen.getByText("pinned")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unpin" })).toBeInTheDocument();
   });
 
-  it("collapses tags and expands memory previews inline", async () => {
+  it("clicking a row toggles expansion", async () => {
     mockMemories();
 
     const { user } = render(<MemoryInboxPanel taskId="task-1" />, {
@@ -92,22 +98,52 @@ describe("MemoryInboxPanel", () => {
 
     const card = await screen.findByTestId("memory-card-decision.md");
     expect(
-      within(card).getByRole("button", { name: "Show 2 more" }),
-    ).toBeInTheDocument();
-    expect(within(card).queryByText("handoff")).not.toBeInTheDocument();
-
-    await user.click(within(card).getByRole("button", { name: "Show 2 more" }));
-    expect(within(card).getByText("handoff")).toBeInTheDocument();
-
-    expect(
-      within(card).queryByText(/Extra words keep it long\./),
+      within(card).queryByTestId("memory-card-expanded-decision.md"),
     ).not.toBeInTheDocument();
-    await user.click(within(card).getByRole("button", { name: "Expand" }));
+
+    await user.click(
+      within(card).getByRole("button", {
+        name: /Expand memory Use scoped memory index/i,
+      }),
+    );
+
     expect(
-      within(card).getByText(/Extra words keep it long\./),
+      within(card).getByTestId("memory-card-expanded-decision.md"),
     ).toBeInTheDocument();
+    expect(within(card).getByText("handoff")).toBeInTheDocument();
+    expect(within(card).getByText("created_at")).toBeInTheDocument();
+  });
+
+  it("expanding row B collapses row A", async () => {
+    mockMemories();
+
+    const { user } = render(<MemoryInboxPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    const firstCard = await screen.findByTestId("memory-card-decision.md");
+    const secondCard = await screen.findByTestId("memory-card-risk.md");
+
+    await user.click(
+      within(firstCard).getByRole("button", {
+        name: /Expand memory Use scoped memory index/i,
+      }),
+    );
     expect(
-      within(card).getByRole("button", { name: "Collapse" }),
+      within(firstCard).getByTestId("memory-card-expanded-decision.md"),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(secondCard).getByRole("button", {
+        name: /Expand memory Archive stale notes/i,
+      }),
+    );
+
+    expect(
+      within(firstCard).queryByTestId("memory-card-expanded-decision.md"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(secondCard).getByTestId("memory-card-expanded-risk.md"),
     ).toBeInTheDocument();
   });
 
@@ -181,6 +217,7 @@ describe("MemoryInboxPanel", () => {
       screen.getByRole("combobox", { name: "Memory namespace filter" }),
     );
     await user.click(await screen.findByRole("option", { name: "card:T-2" }));
+    await openTagCloud(user);
     await user.click(screen.getByRole("button", { name: "cleanup" }));
 
     await waitFor(() => {
@@ -224,6 +261,7 @@ describe("MemoryInboxPanel", () => {
       screen.getByRole("combobox", { name: "Memory kind filter" }),
     );
     await user.click(await screen.findByRole("option", { name: "risk" }));
+    await openTagCloud(user);
 
     await waitFor(() => {
       expect(
@@ -260,6 +298,48 @@ describe("MemoryInboxPanel", () => {
       ).not.toBeInTheDocument();
       expect(screen.getByText("Archive stale notes")).toBeInTheDocument();
     });
+  });
+
+  it("tag filter section is collapsed by default", async () => {
+    mockMemories();
+
+    render(<MemoryInboxPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    await screen.findByText("Use scoped memory index");
+    expect(
+      screen.getByRole("button", { name: /Show all \d+ tags/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Filter tags")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "cleanup" })).not.toBeInTheDocument();
+  });
+
+  it("clicking all tags reveals the chip cloud", async () => {
+    mockMemories();
+
+    const { user } = render(<MemoryInboxPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    await openTagCloud(user);
+
+    expect(screen.getByLabelText("Filter tags")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "cleanup" })).toBeInTheDocument();
+  });
+
+  it("tag search input filters visible chips", async () => {
+    mockMemories();
+
+    const { user } = render(<MemoryInboxPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    await openTagCloud(user);
+    await user.type(screen.getByLabelText("Filter tags"), "clean");
+
+    expect(screen.getByRole("button", { name: "cleanup" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "planner" })).not.toBeInTheDocument();
   });
 
   it("isolates optimistic pin state across task ids", async () => {
@@ -385,6 +465,13 @@ describe("MemoryInboxPanel", () => {
       http.get("http://127.0.0.1:8001/v1/chat-modes", () =>
         HttpResponse.json({ chat_modes: [], error: null }),
       ),
+      http.post("http://127.0.0.1:8001/v1/buddy/diagnostics/collect", () =>
+        HttpResponse.json({ ok: true }),
+      ),
+      http.post("http://127.0.0.1:8001/v1/chats/:chatId/commands", () =>
+        HttpResponse.json({ status: "queued" }),
+      ),
+      goodCaps,
     );
     mockMemories({ ...memoriesResponse, memories: [] });
 

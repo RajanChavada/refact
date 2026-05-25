@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import type React from "react";
 import { render, screen } from "../../../utils/test-utils";
 import { MemoryCard } from "./MemoryCard";
 import type { TaskMemoryEntry } from "../../../services/refact/taskMemoriesApi";
@@ -33,12 +34,51 @@ const mockMemory: TaskMemoryEntry = {
   status: "active",
 };
 
+function renderCard(
+  memory: TaskMemoryEntry,
+  options: Partial<React.ComponentProps<typeof MemoryCard>> = {},
+) {
+  return render(
+    <MemoryCard
+      memory={memory}
+      onPin={vi.fn()}
+      onArchive={vi.fn()}
+      {...options}
+    />,
+    { preloadedState: CONFIG_STATE },
+  );
+}
+
 describe("MemoryCard", () => {
+  it("renders title from frontmatter when present", () => {
+    renderCard(mockMemory);
+
+    expect(screen.getByText("Use scoped memory index")).toBeInTheDocument();
+    expect(screen.queryByText("decision.md")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the first content line when title is empty", () => {
+    renderCard({
+      ...mockMemory,
+      title: "",
+      content: "First useful content line\nSecond line",
+    });
+
+    expect(screen.getByText("First useful content line")).toBeInTheDocument();
+    expect(screen.queryByText("decision.md")).not.toBeInTheDocument();
+  });
+
+  it("shows no title placeholder when title and content are empty", () => {
+    renderCard({ ...mockMemory, title: "", content: "" });
+
+    const title = screen.getByText("(no title)");
+    expect(title).toBeInTheDocument();
+    expect(title.className).toContain("cardTitleEmpty");
+    expect(screen.queryByText("decision.md")).not.toBeInTheDocument();
+  });
+
   it("memory card shows pin and archive icon buttons", () => {
-    render(
-      <MemoryCard memory={mockMemory} onPin={vi.fn()} onArchive={vi.fn()} />,
-      { preloadedState: CONFIG_STATE },
-    );
+    renderCard(mockMemory);
 
     expect(screen.getByRole("button", { name: "Pin" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
@@ -46,10 +86,7 @@ describe("MemoryCard", () => {
 
   it("clicking the pin icon button toggles pinned", async () => {
     const onPin = vi.fn();
-    const { user } = render(
-      <MemoryCard memory={mockMemory} onPin={onPin} onArchive={vi.fn()} />,
-      { preloadedState: CONFIG_STATE },
-    );
+    const { user } = renderCard(mockMemory, { onPin });
 
     await user.click(screen.getByRole("button", { name: "Pin" }));
     expect(onPin).toHaveBeenCalledWith(mockMemory.filename, !mockMemory.pinned);
@@ -57,10 +94,7 @@ describe("MemoryCard", () => {
 
   it("archive icon opens confirm popover and confirm archives", async () => {
     const onArchive = vi.fn();
-    const { user } = render(
-      <MemoryCard memory={mockMemory} onPin={vi.fn()} onArchive={onArchive} />,
-      { preloadedState: CONFIG_STATE },
-    );
+    const { user } = renderCard(mockMemory, { onArchive });
 
     await user.click(screen.getByRole("button", { name: "Archive" }));
     expect(screen.getByText("Archive this memory?")).toBeInTheDocument();
@@ -70,11 +104,27 @@ describe("MemoryCard", () => {
     expect(onArchive).toHaveBeenCalledWith(mockMemory.filename);
   });
 
+  it("clicking the row body toggles expansion", async () => {
+    const { user } = renderCard(mockMemory);
+
+    expect(screen.queryByTestId("memory-card-expanded-decision.md")).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: /Expand memory Use scoped memory index/i }),
+    );
+
+    expect(screen.getByTestId("memory-card-expanded-decision.md")).toBeInTheDocument();
+    expect(screen.getByTestId("memory-card-frontmatter-decision.md")).toBeInTheDocument();
+    expect(screen.getByText("created_at")).toBeInTheDocument();
+  });
+
   it("tag overflow uses shared thin scrollbar class", () => {
     const css = readFileSync(
       resolve(__dirname, "MemoryInboxPanel.module.css"),
       "utf-8",
     );
     expect(css).toMatch(/\.tagChips\s*\{[^}]*composes:[^}]*scrollbarThin/s);
+    expect(css).toMatch(
+      /\.expandedContent\s*\{[^}]*composes:[^}]*scrollbarThin/s,
+    );
   });
 });

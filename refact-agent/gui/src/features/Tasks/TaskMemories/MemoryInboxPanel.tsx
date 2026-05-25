@@ -11,9 +11,11 @@ import {
   TextField,
 } from "@radix-ui/themes";
 import {
+  ChevronDownIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
 } from "@radix-ui/react-icons";
+import * as Collapsible from "@radix-ui/react-collapsible";
 import classNames from "classnames";
 import {
   taskMemoriesApi,
@@ -87,6 +89,11 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
     () => new Set(),
   );
   const [search, setSearch] = useState("");
+  const [tagCloudOpen, setTagCloudOpen] = useState(false);
+  const [tagSearch, setTagSearch] = useState("");
+  const [expandedMemoryFilename, setExpandedMemoryFilename] = useState<
+    string | null
+  >(null);
   const [optimisticPinned, setOptimisticPinned] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
@@ -102,6 +109,9 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
     setOptimisticPinned(new Map());
     setArchived(new Set());
     setPendingMemoryKeys(new Set());
+    setExpandedMemoryFilename(null);
+    setTagCloudOpen(false);
+    setTagSearch("");
   }, [taskId]);
 
   const serverSearch = debouncedSearch.trim();
@@ -142,10 +152,11 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
     [selectedTags],
   );
 
-  const staleSelectedTags = useMemo(() => {
-    const currentTags = new Set(tags);
-    return selectedTagList.filter((tag) => !currentTags.has(tag));
-  }, [selectedTagList, tags]);
+  const filteredTags = useMemo(() => {
+    const normalized = tagSearch.trim().toLowerCase();
+    if (!normalized) return tags;
+    return tags.filter((tag) => tag.toLowerCase().includes(normalized));
+  }, [tagSearch, tags]);
 
   const hasSelectedTags = selectedTagList.length > 0;
 
@@ -158,6 +169,15 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
       return true;
     });
   }, [memoriesWithOptimisticState, search, selectedTags]);
+
+  useEffect(() => {
+    if (
+      expandedMemoryFilename &&
+      !visibleMemories.some((memory) => memory.filename === expandedMemoryFilename)
+    ) {
+      setExpandedMemoryFilename(null);
+    }
+  }, [expandedMemoryFilename, visibleMemories]);
 
   const handleToggleTag = useCallback((tag: string) => {
     setSelectedTags((previous) => {
@@ -174,6 +194,13 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
   const handleClearFilters = useCallback(() => {
     setSelectedTags(new Set());
   }, []);
+
+  const handleExpandedChange = useCallback(
+    (filename: string, expanded: boolean) => {
+      setExpandedMemoryFilename(expanded ? filename : null);
+    },
+    [],
+  );
 
   const handlePin = useCallback(
     async (filename: string, pinned: boolean) => {
@@ -200,6 +227,9 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
       const key = optimisticKey(taskId, filename);
       setPendingMemoryKeys((previous) => new Set(previous).add(key));
       setArchived((previous) => new Set(previous).add(key));
+      setExpandedMemoryFilename((current) =>
+        current === filename ? null : current,
+      );
       try {
         await archiveMemory({ taskId, filename }).unwrap();
       } catch {
@@ -312,45 +342,84 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
         </Flex>
 
         {(tags.length > 0 || hasSelectedTags) && (
-          <Flex gap="1" wrap="wrap" align="center" className={styles.tagChips}>
-            {tags.map((tag) => {
-              const active = selectedTags.has(tag);
-              return (
-                <Badge
-                  key={tag}
-                  asChild
-                  color={active ? "blue" : "gray"}
-                  variant={active ? "solid" : "outline"}
-                  className={classNames(
-                    styles.tagChip,
-                    active && styles.tagChipActive,
-                  )}
-                >
-                  <button type="button" onClick={() => handleToggleTag(tag)}>
-                    {tag}
-                  </button>
-                </Badge>
-              );
-            })}
-            {staleSelectedTags.map((tag) => (
-              <Badge
-                key={tag}
-                asChild
-                color="gray"
-                variant="outline"
-                className={classNames(styles.tagChip, styles.tagChipStale)}
-              >
-                <button type="button" onClick={() => handleToggleTag(tag)}>
-                  {tag}
-                </button>
-              </Badge>
-            ))}
-            {hasSelectedTags && (
-              <Button size="1" variant="ghost" onClick={handleClearFilters}>
-                Clear filters
-              </Button>
-            )}
-          </Flex>
+          <Collapsible.Root open={tagCloudOpen} onOpenChange={setTagCloudOpen}>
+            <Flex align="center" justify="between" gap="2" className={styles.tagSummary}>
+              <Flex gap="1" wrap="wrap" align="center" className={styles.tagSelectedChips}>
+                {selectedTagList.map((tag) => (
+                  <Badge
+                    key={tag}
+                    asChild
+                    color="blue"
+                    variant="solid"
+                    className={classNames(styles.tagChip, styles.tagChipActive)}
+                  >
+                    <button type="button" onClick={() => handleToggleTag(tag)}>
+                      {tag}
+                    </button>
+                  </Badge>
+                ))}
+                {!hasSelectedTags && (
+                  <Text size="1" color="gray">
+                    No tag filters selected
+                  </Text>
+                )}
+              </Flex>
+              <Flex align="center" gap="1">
+                {hasSelectedTags && (
+                  <Button size="1" variant="ghost" onClick={handleClearFilters}>
+                    Clear filters
+                  </Button>
+                )}
+                <Collapsible.Trigger asChild>
+                  <Button size="1" variant="soft" color="gray">
+                    <ChevronDownIcon />
+                    {tagCloudOpen ? "Hide tags" : `Show all ${tags.length} tags`}
+                  </Button>
+                </Collapsible.Trigger>
+              </Flex>
+            </Flex>
+            <Collapsible.Content>
+              <Flex gap="1" wrap="wrap" align="center" className={styles.tagChips}>
+                <Box className={styles.tagSearchBox}>
+                  <TextField.Root
+                    value={tagSearch}
+                    onChange={(event) => setTagSearch(event.target.value)}
+                    placeholder="Filter tags..."
+                    aria-label="Filter tags"
+                    size="1"
+                  >
+                    <TextField.Slot>
+                      <MagnifyingGlassIcon />
+                    </TextField.Slot>
+                  </TextField.Root>
+                </Box>
+                {filteredTags.map((tag) => {
+                  const active = selectedTags.has(tag);
+                  return (
+                    <Badge
+                      key={tag}
+                      asChild
+                      color={active ? "blue" : "gray"}
+                      variant={active ? "solid" : "outline"}
+                      className={classNames(
+                        styles.tagChip,
+                        active && styles.tagChipActive,
+                      )}
+                    >
+                      <button type="button" onClick={() => handleToggleTag(tag)}>
+                        {tag}
+                      </button>
+                    </Badge>
+                  );
+                })}
+                {filteredTags.length === 0 && (
+                  <Text size="1" color="gray">
+                    No tags match.
+                  </Text>
+                )}
+              </Flex>
+            </Collapsible.Content>
+          </Collapsible.Root>
         )}
       </Flex>
 
@@ -381,6 +450,8 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
                 onArchive={handleArchive}
                 disabled={triageState.isLoading || pending}
                 pending={pending}
+                expanded={expandedMemoryFilename === memory.filename}
+                onExpandedChange={handleExpandedChange}
               />
             );
           })
