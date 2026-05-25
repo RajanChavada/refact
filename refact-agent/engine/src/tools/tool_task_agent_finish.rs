@@ -80,6 +80,22 @@ async fn get_finish_lock(task_id: &str, card_id: &str) -> Arc<AMutex<()>> {
         .clone()
 }
 
+async fn ensure_lock_for<T>(
+    task_id: &str,
+    card_id: &str,
+    finish: impl std::future::Future<Output = T>,
+) -> T {
+    let key = format!("{}:{}", task_id, card_id);
+    let finish_lock = get_finish_lock(task_id, card_id).await;
+    let result = {
+        let _finish_guard = finish_lock.lock().await;
+        finish.await
+    };
+    let mut locks = get_finish_locks().lock().await;
+    locks.remove(&key);
+    result
+}
+
 fn parse_success_arg(args: &HashMap<String, Value>) -> Result<bool, String> {
     match args.get("success") {
         Some(Value::Bool(b)) => Ok(*b),
@@ -570,8 +586,10 @@ impl Tool for ToolTaskAgentFinish {
         let report = parse_finish_report(args, success)?;
 
         let gcx = ccx.lock().await.app.gcx.clone();
-        let finish_lock = get_finish_lock(&task_id, &card_id).await;
-        let _finish_guard = finish_lock.lock().await;
+        let lock_task_id = task_id.clone();
+        let lock_card_id = card_id.clone();
+
+        ensure_lock_for(&lock_task_id, &lock_card_id, async move {
 
         let _ = crate::chat::task_agent_monitor::update_card_heartbeat(
             crate::app_state::AppState::from_gcx(gcx.clone()).await,
@@ -742,6 +760,8 @@ impl Tool for ToolTaskAgentFinish {
                 ..Default::default()
             })],
         ))
+        })
+        .await
     }
 
     fn tool_depends_on(&self) -> Vec<String> {
@@ -832,6 +852,18 @@ mod tests {
 
     async fn test_gcx() -> Arc<GlobalContext> {
         crate::global_context::tests::make_test_gcx().await
+    }
+
+    #[tokio::test]
+    async fn finish_locks_pruned_after_completion() {
+        let key = "task-1:T-1".to_string();
+
+        ensure_lock_for("task-1", "T-1", async {
+            assert!(get_finish_locks().lock().await.contains_key(&key));
+        })
+        .await;
+
+        assert!(!get_finish_locks().lock().await.contains_key(&key));
     }
 
     #[test]
