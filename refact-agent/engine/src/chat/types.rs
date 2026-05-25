@@ -69,6 +69,7 @@ pub struct ChatSession {
     pub pending_skill_deactivation: Option<PendingSkillDeactivation>,
     pub stop_hook_handle: Option<tokio::task::JoinHandle<()>>,
     pub suppress_auto_enrichment_for_next_turn: bool,
+    pub wake_up_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone)]

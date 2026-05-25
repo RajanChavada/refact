@@ -97,6 +97,7 @@ impl ChatSession {
             pending_skill_deactivation: None,
             stop_hook_handle: None,
             suppress_auto_enrichment_for_next_turn: false,
+            wake_up_at: None,
         }
     }
 
@@ -146,6 +147,7 @@ impl ChatSession {
             pending_skill_deactivation: None,
             stop_hook_handle: None,
             suppress_auto_enrichment_for_next_turn: false,
+            wake_up_at: None,
         }
     }
 
@@ -408,6 +410,10 @@ impl ChatSession {
             self.runtime.accepted_tool_ids.clear();
             self.runtime.paused_message_index = None;
             self.emit(ChatEvent::PauseCleared {});
+        }
+
+        if old_state == SessionState::WaitingUserInput && state != SessionState::WaitingUserInput {
+            self.wake_up_at = None;
         }
 
         let state_changed = old_state != state;

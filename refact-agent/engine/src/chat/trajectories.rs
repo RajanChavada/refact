@@ -3384,6 +3384,7 @@ mod tests {
             pending_skill_deactivation: None,
             stop_hook_handle: None,
             suppress_auto_enrichment_for_next_turn: false,
+            wake_up_at: None,
         };
 
         let snapshot = trajectory_snapshot_from_session(&session);
@@ -3449,6 +3450,7 @@ mod tests {
             pending_skill_deactivation: None,
             stop_hook_handle: None,
             suppress_auto_enrichment_for_next_turn: false,
+            wake_up_at: None,
         };
 
         let snapshot = trajectory_snapshot_from_session(&session);

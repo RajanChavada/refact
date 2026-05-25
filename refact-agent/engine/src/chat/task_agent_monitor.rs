@@ -29,12 +29,15 @@ use uuid::Uuid;
 /// Timeout for agent inactivity before considering it stuck (20 minutes)
 const AGENT_STUCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// How often to check for stuck agents (5 minutes)
-const MONITOR_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How often to check for stuck agents (2 minutes)
+const MONITOR_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
-const MAX_IDLE_AGENT_NUDGES_PER_CARD: usize = 2;
+/// Timeout for in-flight stream stall (Generating/ExecutingTools with no activity)
+const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(4 * 60);
+
+const MAX_IDLE_AGENT_NUDGES_PER_CARD: usize = 4;
 const IDLE_AGENT_NUDGE_GRACE: Duration = Duration::from_secs(60);
-const IDLE_AGENT_NUDGE_COOLDOWN_SECONDS: i64 = 300;
+const IDLE_AGENT_NUDGE_COOLDOWN_SECONDS: i64 = 180;
 const IDLE_AGENT_NUDGE_STATUS_PREFIX: &str = "Auto-nudged idle agent:";
 const IDLE_AGENT_REMINDER_MESSAGE: &str = concat!(
     "Automatic reminder: this task card is still marked as doing, but your chat stopped without calling `task_agent_finish`.\n",
@@ -167,17 +170,17 @@ async fn record_idle_agent_nudge(
     task_id: &str,
     card_id: &str,
     agent_chat_id: &str,
-    idle_for: Duration,
+    reason: &str,
 ) -> Result<bool, String> {
     let card_id_owned = card_id.to_string();
     let agent_chat_id_owned = agent_chat_id.to_string();
     let now = Utc::now();
     let timestamp = now.to_rfc3339();
     let message = format!(
-        "{} {} (idle for {})",
+        "{} {} ({})",
         IDLE_AGENT_NUDGE_STATUS_PREFIX,
         agent_chat_id,
-        humantime::format_duration(idle_for)
+        reason
     );
 
     storage::update_board_atomic(app.gcx.clone(), task_id, move |board| {
@@ -250,17 +253,18 @@ async fn nudge_idle_agent(
     card_id: &str,
     agent_chat_id: &str,
     session_arc: Arc<tokio::sync::Mutex<ChatSession>>,
-    idle_for: Duration,
+    reason: &str,
 ) -> Result<bool, String> {
-    if !record_idle_agent_nudge(app.clone(), task_id, card_id, agent_chat_id, idle_for).await? {
+    if !record_idle_agent_nudge(app.clone(), task_id, card_id, agent_chat_id, reason).await? {
         return Ok(false);
     }
 
     enqueue_idle_agent_nudge_command(app, session_arc).await?;
     tracing::info!(
-        "Auto-nudged idle task agent for card {} in chat {}",
+        "Auto-nudged task agent for card {} in chat {}: {}",
         card_id,
-        agent_chat_id
+        agent_chat_id,
+        reason
     );
     Ok(true)
 }
@@ -902,6 +906,118 @@ pub async fn start_agent_monitor(app: AppState) {
     }
 }
 
+async fn sweep_planner_wake_ups(app: AppState) -> Result<(), String> {
+    let now = Utc::now();
+    let task_metas = storage::list_tasks(app.gcx.clone()).await?;
+
+    for task_meta in task_metas {
+        if task_meta.status != crate::tasks::types::TaskStatus::Active {
+            continue;
+        }
+        let task_id = task_meta.id.clone();
+
+        let all_session_arcs: Vec<_> = {
+            let sessions_read = app.chat.sessions.read().await;
+            sessions_read.values().cloned().collect()
+        };
+
+        for session_arc in all_session_arcs {
+            let (should_wake, chat_id) = {
+                let session = session_arc.lock().await;
+                let is_planner_for_task = session
+                    .thread
+                    .task_meta
+                    .as_ref()
+                    .map(|m| m.role == "planner" && m.task_id == task_id)
+                    .unwrap_or(false);
+                if !is_planner_for_task {
+                    (false, String::new())
+                } else {
+                    let is_waiting =
+                        session.runtime.state == SessionState::WaitingUserInput;
+                    let past_deadline = session
+                        .wake_up_at
+                        .map(|t| now >= t)
+                        .unwrap_or(false);
+                    let chat_id = session.chat_id.clone();
+                    (is_waiting && past_deadline, chat_id)
+                }
+            };
+
+            if !should_wake {
+                continue;
+            }
+
+            {
+                let mut session = session_arc.lock().await;
+                session.wake_up_at = None;
+            }
+
+            let statuses = crate::tools::tool_task_check_agents::get_agent_statuses(
+                app.gcx.clone(),
+                app.chat.facade.clone(),
+                &task_id,
+            )
+            .await
+            .unwrap_or_default();
+
+            let empty_args: std::collections::HashMap<String, serde_json::Value> =
+                std::collections::HashMap::new();
+            let query =
+                crate::tools::tool_task_check_agents::parse_agent_status_query(&empty_args)
+                    .unwrap_or_else(|_| {
+                        crate::tools::tool_task_check_agents::parse_agent_status_query(
+                            &std::collections::HashMap::new(),
+                        )
+                        .unwrap()
+                    });
+            let status_text =
+                crate::tools::tool_task_check_agents::format_agent_statuses(&statuses, &query)
+                    .unwrap_or_else(|_| "(status unavailable)".to_string());
+
+            let message = format!(
+                "[AUTO WAKE] Your requested wait window expired. Current agent status:\n\n{}\n\nDecide whether to continue waiting, merge ready cards, or move on.",
+                status_text
+            );
+
+            let request = CommandRequest {
+                client_request_id: format!("planner-wake-up-{}", uuid::Uuid::new_v4()),
+                priority: true,
+                command: ChatCommand::UserMessage {
+                    content: serde_json::Value::String(message),
+                    attachments: vec![],
+                    context_files: vec![],
+                    suppress_auto_enrichment: false,
+                },
+            };
+
+            let processor_flag = {
+                let mut session = session_arc.lock().await;
+                session.command_queue.push_back(request);
+                session.emit_queue_update();
+                session.queue_notify.notify_one();
+                session.queue_processor_running.clone()
+            };
+
+            if !processor_flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                tokio::spawn(process_command_queue(
+                    app.clone(),
+                    session_arc.clone(),
+                    processor_flag,
+                ));
+            }
+
+            tracing::info!(
+                "Auto-woke planner {} for task {} (wake_up_at deadline passed)",
+                chat_id,
+                task_id
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Check all active tasks for stuck agents
 async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
     let task_metas = storage::list_tasks(app.gcx.clone()).await?;
@@ -1053,9 +1169,48 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                     &card.id,
                     agent_chat_id,
                     session_arc.clone(),
-                    elapsed,
+                    &format!("idle for {}", humantime::format_duration(elapsed)),
                 )
                 .await?;
+                continue;
+            }
+
+            // Stream stall detection: Generating/ExecutingTools with no activity
+            if matches!(
+                session.runtime.state,
+                SessionState::Generating | SessionState::ExecutingTools
+            ) && elapsed > STREAM_STALL_TIMEOUT
+            {
+                let (nudge_count, _) = idle_agent_nudge_updates(card);
+                drop(session);
+
+                if nudge_count < MAX_IDLE_AGENT_NUDGES_PER_CARD
+                    && idle_agent_nudge_allowed_at(card, Utc::now())
+                {
+                    let _ = nudge_idle_agent(
+                        app.clone(),
+                        task_id,
+                        &card.id,
+                        agent_chat_id,
+                        session_arc.clone(),
+                        "stream appears stalled, no token activity",
+                    )
+                    .await?;
+                } else {
+                    mark_agent_as_failed(
+                        app.clone(),
+                        task_id,
+                        &card.id,
+                        None,
+                        planner_chat_id.as_deref(),
+                        &format!(
+                            "stream appears stalled (no token activity for {}), nudge retries exhausted",
+                            humantime::format_duration(elapsed)
+                        ),
+                        AgentFailureKind::TransientExhausted,
+                    )
+                    .await?;
+                }
                 continue;
             }
 
@@ -1088,6 +1243,8 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
             }
         }
     }
+
+    sweep_planner_wake_ups(app).await?;
 
     Ok(())
 }
@@ -1399,7 +1556,7 @@ mod tests {
 
     #[test]
     fn test_monitor_interval_constant() {
-        assert_eq!(MONITOR_INTERVAL.as_secs(), 5 * 60);
+        assert_eq!(MONITOR_INTERVAL.as_secs(), 2 * 60);
     }
 
     #[test]
@@ -1568,5 +1725,254 @@ mod tests {
         assert!(report.contains("context limit"));
         assert!(report.contains("Context too large"));
         assert!(report.contains("Suggested action: Compact the chat"));
+    }
+
+    #[tokio::test]
+    async fn stream_stall_triggers_nudge() {
+        let (_temp, app, task_id, agent_chat_id, session_arc) = setup_monitor_case(
+            "doing",
+            SessionState::Generating,
+            STREAM_STALL_TIMEOUT + Duration::from_secs(10),
+            vec![],
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let board = storage::load_board(app.gcx.clone(), &task_id)
+            .await
+            .unwrap();
+        let card = board.get_card("T-1").unwrap();
+        assert!(
+            card.status_updates.iter().any(|u| {
+                u.message.starts_with(IDLE_AGENT_NUDGE_STATUS_PREFIX)
+                    && u.message.contains(&agent_chat_id)
+            }),
+            "expected nudge status update"
+        );
+
+        let session = session_arc.lock().await;
+        assert_eq!(session.command_queue.len(), 1, "nudge command queued");
+    }
+
+    #[tokio::test]
+    async fn stream_stall_after_max_nudges_marks_failed_transient() {
+        let old_ts = (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+        let maxed = (0..MAX_IDLE_AGENT_NUDGES_PER_CARD)
+            .map(|_| StatusUpdate {
+                timestamp: old_ts.clone(),
+                message: format!("{} agent-T-1 (stream appears stalled, no token activity)", IDLE_AGENT_NUDGE_STATUS_PREFIX),
+            })
+            .collect::<Vec<_>>();
+
+        let (_temp, app, task_id, _agent_chat_id, session_arc) = setup_monitor_case(
+            "doing",
+            SessionState::ExecutingTools,
+            STREAM_STALL_TIMEOUT + Duration::from_secs(10),
+            maxed,
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let board = storage::load_board(app.gcx.clone(), &task_id)
+            .await
+            .unwrap();
+        let card = board.get_card("T-1").unwrap();
+        assert_eq!(card.column, "failed", "card should be failed");
+        assert!(
+            card.final_report
+                .as_deref()
+                .unwrap_or("")
+                .contains("stalled"),
+            "report should mention stalled"
+        );
+        assert!(
+            session_arc.lock().await.command_queue.is_empty(),
+            "no nudge command when marking failed"
+        );
+    }
+
+    async fn setup_planner_wake_case(
+        state: SessionState,
+        wake_up_at: Option<chrono::DateTime<Utc>>,
+        with_agent_card: bool,
+    ) -> (
+        tempfile::TempDir,
+        AppState,
+        String,
+        Arc<tokio::sync::Mutex<ChatSession>>,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx.clone()).await;
+        *app.workspace
+            .documents_state
+            .workspace_folders
+            .lock()
+            .unwrap() = vec![temp.path().to_path_buf()];
+
+        let task = crate::tasks::storage::create_task(gcx.clone(), "Planner wake task")
+            .await
+            .unwrap();
+        let now = Utc::now().to_rfc3339();
+        let meta = crate::tasks::types::TaskMeta {
+            schema_version: 1,
+            id: task.id.clone(),
+            name: task.name.clone(),
+            status: crate::tasks::types::TaskStatus::Active,
+            created_at: now.clone(),
+            updated_at: now,
+            cards_total: if with_agent_card { 1 } else { 0 },
+            cards_done: 0,
+            cards_failed: 0,
+            agents_active: if with_agent_card { 1 } else { 0 },
+            base_branch: None,
+            base_commit: None,
+            default_agent_model: None,
+            is_name_generated: true,
+            last_agents_summary_at: None,
+            planner_session_state: None,
+        };
+        crate::tasks::storage::save_task_meta(gcx.clone(), &task.id, &meta)
+            .await
+            .unwrap();
+
+        let cards = if with_agent_card {
+            let mut c = create_test_card("T-1", "doing", Some("agent-1".to_string()));
+            c.agent_chat_id = Some("agent-T-1".to_string());
+            vec![c]
+        } else {
+            vec![]
+        };
+        crate::tasks::storage::save_board(
+            gcx.clone(),
+            &task.id,
+            &crate::tasks::types::TaskBoard {
+                cards,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let planner_chat_id = "planner-wake-chat".to_string();
+        let mut planner_session = ChatSession::new(planner_chat_id.clone());
+        planner_session.thread.task_meta = Some(TaskMeta {
+            task_id: task.id.clone(),
+            role: "planner".to_string(),
+            agent_id: None,
+            card_id: None,
+            planner_chat_id: None,
+        });
+        planner_session.runtime.state = state;
+        planner_session.wake_up_at = wake_up_at;
+        planner_session
+            .queue_processor_running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let planner_arc = Arc::new(tokio::sync::Mutex::new(planner_session));
+        app.chat
+            .sessions
+            .write()
+            .await
+            .insert(planner_chat_id.clone(), planner_arc.clone());
+
+        (temp, app, task.id, planner_arc)
+    }
+
+    #[tokio::test]
+    async fn planner_wake_up_fires_when_deadline_passes() {
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
+            SessionState::WaitingUserInput,
+            Some(past),
+            false,
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let session = planner_arc.lock().await;
+        assert_eq!(
+            session.command_queue.len(),
+            1,
+            "wake-up message should be queued"
+        );
+        assert!(session.wake_up_at.is_none(), "wake_up_at cleared after fire");
+        let cmd = session.command_queue.front().unwrap();
+        assert!(cmd.priority);
+        match &cmd.command {
+            ChatCommand::UserMessage { content, .. } => {
+                assert!(
+                    content.as_str().unwrap().contains("[AUTO WAKE]"),
+                    "message should contain AUTO WAKE"
+                );
+            }
+            _ => panic!("expected UserMessage"),
+        }
+    }
+
+    #[tokio::test]
+    async fn planner_wake_up_does_not_double_fire() {
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
+            SessionState::WaitingUserInput,
+            Some(past),
+            false,
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let session = planner_arc.lock().await;
+        assert_eq!(
+            session.command_queue.len(),
+            1,
+            "only one wake-up message after two sweeps"
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_wake_up_skipped_when_state_changed() {
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
+            SessionState::Generating,
+            Some(past),
+            false,
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let session = planner_arc.lock().await;
+        assert!(
+            session.command_queue.is_empty(),
+            "no wake message when state is not WaitingUserInput"
+        );
+    }
+
+    #[tokio::test]
+    async fn planner_wake_up_message_contains_agent_status_snapshot() {
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let (_temp, app, _task_id, planner_arc) = setup_planner_wake_case(
+            SessionState::WaitingUserInput,
+            Some(past),
+            true,
+        )
+        .await;
+
+        check_for_stuck_agents(app.clone()).await.unwrap();
+
+        let session = planner_arc.lock().await;
+        assert_eq!(session.command_queue.len(), 1);
+        match &session.command_queue.front().unwrap().command {
+            ChatCommand::UserMessage { content, .. } => {
+                let text = content.as_str().unwrap();
+                assert!(text.contains("T-1"), "message should contain card T-1");
+            }
+            _ => panic!("expected UserMessage"),
+        }
     }
 }
