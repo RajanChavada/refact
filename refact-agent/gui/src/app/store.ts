@@ -28,6 +28,7 @@ import {
   trajectoryApi,
   tasksApi,
   taskMemoriesApi,
+  taskDocumentsApi,
   browserApi,
   worktreesApi,
 } from "../services/refact";
@@ -112,6 +113,7 @@ const rootReducer = combineSlices(
     [trajectoryApi.reducerPath]: trajectoryApi.reducer,
     [tasksApi.reducerPath]: tasksApi.reducer,
     [taskMemoriesApi.reducerPath]: taskMemoriesApi.reducer,
+    [taskDocumentsApi.reducerPath]: taskDocumentsApi.reducer,
     [browserApi.reducerPath]: browserApi.reducer,
     [worktreesApi.reducerPath]: worktreesApi.reducer,
     [skillsStatusApi.reducerPath]: skillsStatusApi.reducer,
@@ -215,6 +217,7 @@ export function setUpStore(preloadedState?: Partial<RootState>) {
           trajectoryApi.middleware,
           tasksApi.middleware,
           taskMemoriesApi.middleware,
+          taskDocumentsApi.middleware,
           browserApi.middleware,
           worktreesApi.middleware,
           skillsStatusApi.middleware,

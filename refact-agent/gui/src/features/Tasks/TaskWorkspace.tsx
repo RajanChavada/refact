@@ -85,6 +85,7 @@ import {
   saveTaskWorkspaceLayout,
 } from "../../utils/chatUiPersistence";
 import { MemoryInboxPanel } from "./TaskMemories/MemoryInboxPanel";
+import { DocumentsPanel } from "./TaskDocuments/DocumentsPanel";
 
 type ActiveChat =
   | { type: "planner"; chatId: string }
@@ -1402,6 +1403,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
             <Tabs.List size="1">
               <Tabs.Trigger value="chat">Chat</Tabs.Trigger>
               <Tabs.Trigger value="memories">Memories</Tabs.Trigger>
+              <Tabs.Trigger value="documents">Documents</Tabs.Trigger>
             </Tabs.List>
           </div>
           <Box className={styles.chatContent}>
@@ -1427,9 +1429,13 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
                   </Flex>
                 )}
               </Box>
-            ) : (
+            ) : workspaceTab === "memories" ? (
               <Box className={styles.workspaceTabContent}>
                 <MemoryInboxPanel taskId={taskId} />
+              </Box>
+            ) : (
+              <Box className={styles.workspaceTabContent}>
+                <DocumentsPanel taskId={taskId} />
               </Box>
             )}
           </Box>
