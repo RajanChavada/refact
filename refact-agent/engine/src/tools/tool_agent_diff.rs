@@ -20,6 +20,9 @@ use crate::worktrees::service::WorktreeService;
 
 const DEFAULT_MAX_LINES: usize = 300;
 const GIT_DIFF_TIMEOUT: Duration = Duration::from_secs(10);
+const UNTRACKED_PER_FILE_CAP_BYTES: usize = 64 * 1024;
+const UNTRACKED_TOTAL_CAP_BYTES: usize = 256 * 1024;
+const UNTRACKED_BINARY_PROBE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentDiffMode {
@@ -124,24 +127,123 @@ async fn base_from_worktree_meta(
     (None, None)
 }
 
-fn canonical_worktree(card: &BoardCard) -> Result<PathBuf, String> {
+fn canonical_existing_path(path: &Path) -> Result<PathBuf, String> {
+    std::fs::canonicalize(path)
+        .map_err(|e| format!("Failed to canonicalize '{}': {}", path.display(), e))
+}
+
+fn validated_cache_root(gcx: &GlobalContext) -> Result<PathBuf, String> {
+    if !gcx.cache_dir.exists() {
+        std::fs::create_dir_all(&gcx.cache_dir).map_err(|e| {
+            format!(
+                "Failed to create cache directory '{}': {}",
+                gcx.cache_dir.display(),
+                e
+            )
+        })?;
+    }
+    let cache_root = gcx.cache_dir.join("worktrees");
+    if !cache_root.exists() {
+        std::fs::create_dir_all(&cache_root).map_err(|e| {
+            format!(
+                "Failed to create worktree cache '{}': {}",
+                cache_root.display(),
+                e
+            )
+        })?;
+    }
+    canonical_existing_path(&cache_root)
+}
+
+fn validate_fallback_worktree_path(
+    gcx: &GlobalContext,
+    card_id: &str,
+    worktree: &Path,
+) -> Result<PathBuf, String> {
+    if !worktree.exists() {
+        return Err(format!(
+            "Agent worktree '{}' for card {} does not exist",
+            worktree.display(),
+            card_id
+        ));
+    }
+    let worktree = canonical_existing_path(worktree)?;
+    let cache_root = validated_cache_root(gcx)?;
+    let cache_dir = canonical_existing_path(&gcx.cache_dir)?;
+    if worktree == Path::new("/") || worktree == cache_dir || worktree == cache_root {
+        return Err(format!(
+            "Refusing to use unsafe agent worktree path '{}' for card {}.",
+            worktree.display(),
+            card_id
+        ));
+    }
+    if !worktree.starts_with(&cache_root) {
+        return Err(format!(
+            "Agent worktree '{}' for card {} is outside worktree cache '{}'.",
+            worktree.display(),
+            card_id,
+            cache_root.display()
+        ));
+    }
+    Ok(worktree)
+}
+
+async fn registered_worktree_path(
+    gcx: Arc<GlobalContext>,
+    task_id: &str,
+    card: &BoardCard,
+    worktree_name: &str,
+) -> Result<PathBuf, String> {
+    let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
+    for source_root in project_dirs {
+        let Ok(service) = WorktreeService::new(gcx.cache_dir.clone(), source_root) else {
+            continue;
+        };
+        let Ok(view) = service.get_worktree(worktree_name).await else {
+            continue;
+        };
+        if view.meta.task_id.as_deref() != Some(task_id)
+            || view.meta.card_id.as_deref() != Some(card.id.as_str())
+        {
+            return Err(format!(
+                "Registered worktree '{}' does not match task {} card {}.",
+                worktree_name, task_id, card.id
+            ));
+        }
+        if !view.meta.root.exists() {
+            return Err(format!(
+                "Registered worktree '{}' path '{}' for card {} does not exist",
+                worktree_name,
+                view.meta.root.display(),
+                card.id
+            ));
+        }
+        return canonical_existing_path(&view.meta.root);
+    }
+    Err(format!(
+        "Registered worktree '{}' for card {} was not found",
+        worktree_name, card.id
+    ))
+}
+
+async fn canonical_worktree(
+    gcx: Arc<GlobalContext>,
+    task_id: &str,
+    card: &BoardCard,
+) -> Result<PathBuf, String> {
+    if let Some(worktree_name) = card
+        .agent_worktree_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return registered_worktree_path(gcx, task_id, card, worktree_name).await;
+    }
     let worktree = card
         .agent_worktree
         .as_ref()
         .ok_or_else(|| format!("Card {} has no agent worktree", card.id))?;
-    let path = Path::new(worktree);
-    if !path.exists() {
-        return Err(format!(
-            "Agent worktree '{}' for card {} does not exist",
-            worktree, card.id
-        ));
-    }
-    std::fs::canonicalize(path).map_err(|e| {
-        format!(
-            "Failed to canonicalize agent worktree '{}' for card {}: {}",
-            worktree, card.id, e
-        )
-    })
+    validate_fallback_worktree_path(&gcx, &card.id, Path::new(worktree))
 }
 
 fn join_reader(
@@ -278,6 +380,107 @@ fn join_untracked(untracked: &[String]) -> String {
     }
 }
 
+fn usize_from_file_len(len: u64) -> usize {
+    usize::try_from(len).unwrap_or(usize::MAX)
+}
+
+fn read_file_prefix(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open '{}': {}", path.display(), e))?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
+    Ok(bytes)
+}
+
+fn render_untracked_text_diff(relative_path: &str, bytes: &[u8], more_bytes: u64) -> String {
+    let mut lines = String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if more_bytes > 0 {
+        lines.push(format!("... (truncated, {} more bytes)", more_bytes));
+    }
+    let mut output = String::new();
+    output.push_str("--- /dev/null\n");
+    output.push_str(&format!("+++ b/{}\n", relative_path));
+    output.push_str(&format!("@@ -0,0 +1,{} @@\n", lines.len()));
+    for line in lines {
+        output.push('+');
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output
+}
+
+fn render_untracked_unified_entry(
+    worktree: &Path,
+    relative_path: &str,
+    remaining_budget: usize,
+) -> (String, usize) {
+    let path = worktree.join(relative_path);
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) => return (format!("{} (failed to stat: {})\n", relative_path, e), 0),
+    };
+    if !metadata.is_file() {
+        return (format!("{} (not a regular file)\n", relative_path), 0);
+    }
+
+    let file_len = metadata.len();
+    let file_len_usize = usize_from_file_len(file_len);
+    let content_limit = remaining_budget.min(UNTRACKED_PER_FILE_CAP_BYTES);
+    let read_limit = file_len_usize
+        .min(UNTRACKED_PER_FILE_CAP_BYTES)
+        .min(content_limit.max(UNTRACKED_BINARY_PROBE_BYTES));
+    let bytes = match read_file_prefix(&path, read_limit) {
+        Ok(bytes) => bytes,
+        Err(e) => return (format!("{} ({})\n", relative_path, e), 0),
+    };
+    let probe_len = bytes.len().min(UNTRACKED_BINARY_PROBE_BYTES);
+    if bytes[..probe_len].contains(&0) {
+        return (
+            format!("{} (binary, {} bytes)\n", relative_path, file_len),
+            0,
+        );
+    }
+
+    let embedded_len = bytes.len().min(content_limit);
+    let more_bytes = file_len.saturating_sub(embedded_len as u64);
+    (
+        render_untracked_text_diff(relative_path, &bytes[..embedded_len], more_bytes),
+        embedded_len,
+    )
+}
+
+fn render_untracked_unified(worktree: &Path, untracked: &[String]) -> String {
+    let mut output = String::new();
+    let mut used_bytes = 0usize;
+    for (index, relative_path) in untracked.iter().enumerate() {
+        let remaining_budget = UNTRACKED_TOTAL_CAP_BYTES.saturating_sub(used_bytes);
+        if remaining_budget == 0 {
+            for omitted_path in &untracked[index..] {
+                output.push_str(omitted_path);
+                output.push('\n');
+            }
+            output.push_str(&format!(
+                "({} more untracked files omitted due to size cap)\n",
+                untracked.len().saturating_sub(index)
+            ));
+            break;
+        }
+        let (entry, consumed_bytes) =
+            render_untracked_unified_entry(worktree, relative_path, remaining_budget);
+        output.push_str(&entry);
+        if !entry.ends_with('\n') {
+            output.push('\n');
+        }
+        used_bytes = used_bytes.saturating_add(consumed_bytes);
+    }
+    output
+}
+
 fn push_name_only(names: &mut Vec<String>, seen: &mut HashSet<String>, output: &str) {
     for line in output
         .lines()
@@ -329,7 +532,11 @@ fn run_git_diff(worktree: &Path, mode: AgentDiffMode, base: &DiffBase) -> Result
             append_section(&mut output, "Committed changes since base", &committed);
             append_section(&mut output, "Staged changes", &staged);
             append_section(&mut output, "Unstaged changes", &unstaged);
-            append_section(&mut output, "Untracked files", &join_untracked(&untracked));
+            append_section(
+                &mut output,
+                "Untracked files",
+                &render_untracked_unified(worktree, &untracked),
+            );
             Ok(output)
         }
         AgentDiffMode::NameOnly => {
@@ -469,6 +676,7 @@ impl Tool for ToolAgentDiff {
         let card = board
             .get_card(&card_id)
             .ok_or_else(|| format!("Card {} not found", card_id))?;
+        let worktree = canonical_worktree(gcx.clone(), &task_id, card).await?;
         let task_meta = storage::load_task_meta(gcx.clone(), &task_id).await?;
         let (worktree_commit, worktree_branch) = base_from_worktree_meta(gcx.clone(), card).await;
         let base = resolve_base(
@@ -481,7 +689,6 @@ impl Tool for ToolAgentDiff {
             .agent_branch
             .as_ref()
             .ok_or_else(|| format!("Card {} has no agent branch", card.id))?;
-        let worktree = canonical_worktree(card)?;
         let output = run_git_diff(&worktree, mode, &base)?;
         let result = render_agent_diff(card, branch, &base, mode, &output, max_lines);
 
@@ -509,6 +716,7 @@ mod tests {
     use crate::chat::types::TaskMeta as ThreadTaskMeta;
     use crate::tasks::types::{TaskBoard, TaskMeta, TaskStatus};
     use crate::tools::tools_description::Tool;
+    use crate::worktrees::types::CreateWorktreeRequest;
     use std::process::Command as StdCommand;
 
     fn run_git(cwd: &Path, args: &[&str]) -> String {
@@ -532,6 +740,7 @@ mod tests {
         run_git(root, &["checkout", "-b", "main"]);
         run_git(root, &["config", "user.email", "test@example.com"]);
         run_git(root, &["config", "user.name", "Test User"]);
+        std::fs::write(root.join(".git").join("info").join("exclude"), ".refact/\n").unwrap();
         std::fs::write(root.join("file.txt"), "hello\n").unwrap();
         run_git(root, &["add", "file.txt"]);
         run_git(root, &["commit", "-m", "initial"]);
@@ -544,9 +753,45 @@ mod tests {
         run_git(root, &["rev-parse", "HEAD"]).trim().to_string()
     }
 
+    fn legacy_repo_path(root: &Path) -> PathBuf {
+        root.join("cache").join("worktrees").join("repo")
+    }
+
+    async fn make_gcx_for_root(root: &Path) -> Arc<crate::global_context::GlobalContext> {
+        if let Some(worktrees_dir) = root.parent() {
+            if worktrees_dir.file_name().and_then(|value| value.to_str()) == Some("worktrees") {
+                if let Some(cache_dir) = worktrees_dir.parent() {
+                    return crate::global_context::tests::make_test_gcx_with_dirs(
+                        cache_dir.to_path_buf(),
+                        cache_dir.join("config"),
+                    )
+                    .await;
+                }
+            }
+        }
+        crate::global_context::tests::make_test_gcx().await
+    }
+
     fn test_card(branch: Option<String>, worktree: Option<String>) -> BoardCard {
+        test_card_with_id("T-1", branch, worktree, None)
+    }
+
+    fn test_card_with_worktree_name(
+        branch: Option<String>,
+        worktree: Option<String>,
+        worktree_name: Option<String>,
+    ) -> BoardCard {
+        test_card_with_id("T-1", branch, worktree, worktree_name)
+    }
+
+    fn test_card_with_id(
+        id: &str,
+        branch: Option<String>,
+        worktree: Option<String>,
+        worktree_name: Option<String>,
+    ) -> BoardCard {
         BoardCard {
-            id: "T-1".to_string(),
+            id: id.to_string(),
             title: "Diff card".to_string(),
             column: "done".to_string(),
             priority: "P1".to_string(),
@@ -565,7 +810,7 @@ mod tests {
             completed_at: Some(chrono::Utc::now().to_rfc3339()),
             agent_branch: branch,
             agent_worktree: worktree,
-            agent_worktree_name: None,
+            agent_worktree_name: worktree_name,
             ab_variants: None,
             team_members: vec![],
             target_files: vec![],
@@ -586,6 +831,74 @@ mod tests {
         for path in expected {
             assert!(paths.contains(path), "missing {path} in {output}");
         }
+    }
+
+    fn count_lines_with_prefix(output: &str, prefix: &str) -> usize {
+        output
+            .lines()
+            .filter(|line| line.starts_with(prefix))
+            .count()
+    }
+
+    async fn execute_diff(
+        gcx: Arc<crate::global_context::GlobalContext>,
+        mode: &str,
+    ) -> Result<String, String> {
+        execute_diff_with_max_lines(gcx, mode, 2000).await
+    }
+
+    async fn execute_diff_with_max_lines(
+        gcx: Arc<crate::global_context::GlobalContext>,
+        mode: &str,
+        max_lines: usize,
+    ) -> Result<String, String> {
+        let ccx = planner_ccx(gcx, "planner").await;
+        let mut tool = ToolAgentDiff::new();
+        let output = tool
+            .tool_execute(
+                ccx,
+                &"call".to_string(),
+                &HashMap::from([
+                    ("card_id".to_string(), json!("T-1")),
+                    ("mode".to_string(), json!(mode)),
+                    ("max_lines".to_string(), json!(max_lines)),
+                ]),
+            )
+            .await
+            .map(tool_output_text)?;
+        Ok(output)
+    }
+
+    async fn create_registered_worktree(
+        temp: &tempfile::TempDir,
+        task_id: &str,
+        card_id: &str,
+    ) -> (
+        Arc<crate::global_context::GlobalContext>,
+        PathBuf,
+        crate::worktrees::types::WorktreeRecordView,
+    ) {
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let cache_dir = temp.path().join("cache");
+        let config_dir = temp.path().join("config");
+        let gcx =
+            crate::global_context::tests::make_test_gcx_with_dirs(cache_dir, config_dir).await;
+        let service =
+            WorktreeService::new(gcx.cache_dir.clone(), source.canonicalize().unwrap()).unwrap();
+        let created = service
+            .create_worktree(CreateWorktreeRequest {
+                branch: Some(format!("refact/task/{}/card/{}/agent", task_id, card_id)),
+                kind: Some("task_agent".to_string()),
+                task_id: Some(task_id.to_string()),
+                card_id: Some(card_id.to_string()),
+                agent_id: Some("agent-1".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        (gcx, source, created.worktree)
     }
 
     fn task_meta() -> TaskMeta {
@@ -623,7 +936,16 @@ mod tests {
         card: BoardCard,
         meta: TaskMeta,
     ) -> Arc<crate::global_context::GlobalContext> {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let gcx = make_gcx_for_root(root).await;
+        write_task_with_gcx(gcx, root, card, meta).await
+    }
+
+    async fn write_task_with_gcx(
+        gcx: Arc<crate::global_context::GlobalContext>,
+        root: &Path,
+        card: BoardCard,
+        meta: TaskMeta,
+    ) -> Arc<crate::global_context::GlobalContext> {
         let task_dir = root.join(".refact").join("tasks").join("task-1");
         tokio::fs::create_dir_all(&task_dir).await.unwrap();
         let mut board = TaskBoard::default();
@@ -751,7 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn tool_agent_diff_git_diff_between_branches_works() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
+        let repo = legacy_repo_path(temp.path());
         std::fs::create_dir_all(&repo).unwrap();
         init_repo(&repo);
         run_git(&repo, &["checkout", "-b", "agent-branch"]);
@@ -814,7 +1136,7 @@ mod tests {
     #[tokio::test]
     async fn tool_agent_diff_name_only_includes_all_worktree_states() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
+        let repo = legacy_repo_path(temp.path());
         std::fs::create_dir_all(&repo).unwrap();
         init_repo(&repo);
         commit_file(&repo, "unstaged.txt", "base\n", "add tracked unstaged file");
@@ -859,7 +1181,7 @@ mod tests {
     #[tokio::test]
     async fn tool_agent_diff_unified_sections_include_dirty_state() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
+        let repo = legacy_repo_path(temp.path());
         std::fs::create_dir_all(&repo).unwrap();
         init_repo(&repo);
         run_git(&repo, &["checkout", "-b", "agent-branch"]);
@@ -900,9 +1222,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_diff_unified_includes_untracked_file_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = legacy_repo_path(temp.path());
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        run_git(&repo, &["checkout", "-b", "agent-branch"]);
+        write_file(&repo, "new.txt", "alpha\nbeta\n");
+        let card = test_card(
+            Some("agent-branch".to_string()),
+            Some(repo.to_string_lossy().to_string()),
+        );
+        let gcx = write_task(&repo, card).await;
+
+        let unified = execute_diff(gcx, "unified").await.unwrap();
+
+        assert!(unified.contains("--- /dev/null"));
+        assert!(unified.contains("+++ b/new.txt"));
+        assert!(unified.contains("+alpha"));
+        assert!(unified.contains("+beta"));
+    }
+
+    #[tokio::test]
+    async fn agent_diff_unified_truncates_large_untracked_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = legacy_repo_path(temp.path());
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        run_git(&repo, &["checkout", "-b", "agent-branch"]);
+        write_file(&repo, "big.txt", &"a".repeat(200 * 1024));
+        let card = test_card(
+            Some("agent-branch".to_string()),
+            Some(repo.to_string_lossy().to_string()),
+        );
+        let gcx = write_task(&repo, card).await;
+
+        let unified = execute_diff_with_max_lines(gcx, "unified", 20)
+            .await
+            .unwrap();
+
+        assert!(unified.contains("+++ b/big.txt"));
+        assert!(unified.contains("... (truncated, 139264 more bytes)"));
+        assert!(count_lines_with_prefix(&unified, "+a") <= 1);
+    }
+
+    #[tokio::test]
+    async fn agent_diff_unified_skips_binary_untracked_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = legacy_repo_path(temp.path());
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        run_git(&repo, &["checkout", "-b", "agent-branch"]);
+        std::fs::write(repo.join("binary.bin"), b"abc\0def").unwrap();
+        let card = test_card(
+            Some("agent-branch".to_string()),
+            Some(repo.to_string_lossy().to_string()),
+        );
+        let gcx = write_task(&repo, card).await;
+
+        let unified = execute_diff(gcx, "unified").await.unwrap();
+
+        assert!(unified.contains("binary.bin (binary, 7 bytes)"));
+        assert!(!unified.contains("+++ b/binary.bin"));
+        assert!(!unified.contains("+abc"));
+    }
+
+    #[tokio::test]
+    async fn agent_diff_unified_respects_total_size_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = legacy_repo_path(temp.path());
+        std::fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        run_git(&repo, &["checkout", "-b", "agent-branch"]);
+        for index in 0..6 {
+            write_file(&repo, &format!("file-{index}.txt"), &"x".repeat(64 * 1024));
+        }
+        let card = test_card(
+            Some("agent-branch".to_string()),
+            Some(repo.to_string_lossy().to_string()),
+        );
+        let gcx = write_task(&repo, card).await;
+
+        let unified = execute_diff(gcx, "unified").await.unwrap();
+
+        assert_eq!(
+            unified
+                .matches("more untracked files omitted due to size cap")
+                .count(),
+            1
+        );
+        assert!(unified.contains("(2 more untracked files omitted due to size cap)"));
+        assert!(unified.contains("file-4.txt"));
+        assert!(unified.contains("file-5.txt"));
+    }
+
+    #[tokio::test]
     async fn tool_agent_diff_prefers_original_base_commit_after_base_branch_advances() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
+        let repo = legacy_repo_path(temp.path());
         std::fs::create_dir_all(&repo).unwrap();
         init_repo(&repo);
         let base_commit = run_git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
@@ -945,7 +1362,7 @@ mod tests {
     #[tokio::test]
     async fn tool_agent_diff_reports_no_changes() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("repo");
+        let repo = legacy_repo_path(temp.path());
         std::fs::create_dir_all(&repo).unwrap();
         init_repo(&repo);
         run_git(&repo, &["checkout", "-b", "agent-branch"]);
@@ -953,7 +1370,7 @@ mod tests {
             Some("agent-branch".to_string()),
             Some(repo.to_string_lossy().to_string()),
         );
-        let gcx = write_task(temp.path(), card).await;
+        let gcx = write_task(&repo, card).await;
         let ccx = planner_ccx(gcx, "planner").await;
         let mut tool = ToolAgentDiff::new();
 
@@ -971,6 +1388,97 @@ mod tests {
         );
 
         assert!(output.contains("(no changes detected)"));
+    }
+
+    #[tokio::test]
+    async fn agent_diff_rejects_path_outside_worktree_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let outside = temp.path().join("random-repo");
+        std::fs::create_dir_all(&outside).unwrap();
+        init_repo(&outside);
+        run_git(&outside, &["checkout", "-b", "agent-branch"]);
+        write_file(&outside, "evil.txt", "nope\n");
+        let cache_dir = temp.path().join("cache");
+        let config_dir = temp.path().join("config");
+        let gcx =
+            crate::global_context::tests::make_test_gcx_with_dirs(cache_dir, config_dir).await;
+        let card = test_card(
+            Some("agent-branch".to_string()),
+            Some(outside.to_string_lossy().to_string()),
+        );
+        let gcx = write_task_with_gcx(gcx, &source, card, task_meta()).await;
+        let ccx = planner_ccx(gcx, "planner").await;
+        let mut tool = ToolAgentDiff::new();
+
+        let err = tool
+            .tool_execute(
+                ccx,
+                &"call".to_string(),
+                &HashMap::from([
+                    ("card_id".to_string(), json!("T-1")),
+                    ("mode".to_string(), json!("unified")),
+                ]),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("outside worktree cache"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn agent_diff_uses_registry_when_worktree_name_set() {
+        let temp = tempfile::tempdir().unwrap();
+        let (gcx, source, registered) = create_registered_worktree(&temp, "task-1", "T-1").await;
+        write_file(&registered.meta.root, "trusted.txt", "trusted\n");
+        let stale = temp.path().join("stale");
+        std::fs::create_dir_all(&stale).unwrap();
+        init_repo(&stale);
+        run_git(&stale, &["checkout", "-b", "agent-branch"]);
+        write_file(&stale, "stale.txt", "stale\n");
+        let card = test_card_with_worktree_name(
+            registered.meta.branch.clone(),
+            Some(stale.to_string_lossy().to_string()),
+            Some(registered.meta.id.clone()),
+        );
+        let gcx = write_task_with_gcx(gcx, &source, card, task_meta()).await;
+
+        let unified = execute_diff(gcx, "unified").await.unwrap();
+
+        assert!(unified.contains("trusted.txt"));
+        assert!(unified.contains("+trusted"));
+        assert!(!unified.contains("stale.txt"));
+    }
+
+    #[tokio::test]
+    async fn agent_diff_registry_metadata_mismatch_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let (gcx, source, registered) =
+            create_registered_worktree(&temp, "other-task", "T-1").await;
+        let card = test_card_with_worktree_name(
+            registered.meta.branch.clone(),
+            Some(registered.meta.root.to_string_lossy().to_string()),
+            Some(registered.meta.id.clone()),
+        );
+        let gcx = write_task_with_gcx(gcx, &source, card, task_meta()).await;
+        let ccx = planner_ccx(gcx, "planner").await;
+        let mut tool = ToolAgentDiff::new();
+
+        let err = tool
+            .tool_execute(
+                ccx,
+                &"call".to_string(),
+                &HashMap::from([
+                    ("card_id".to_string(), json!("T-1")),
+                    ("mode".to_string(), json!("unified")),
+                ]),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("does not match task task-1 card T-1"), "{err}");
     }
 
     #[test]
