@@ -796,6 +796,7 @@ mod tests {
                 ..Default::default()
             },
             session_state: SessionState::ExecutingTools,
+            pause_reasons: vec![],
         };
         facade
             .snapshots

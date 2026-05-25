@@ -255,12 +255,61 @@ impl Tool for ToolHandoffToMode {
         let thread = session_snapshot.thread;
         let existing_task_meta = thread.task_meta.clone();
         let session_state = session_snapshot.session_state;
+        let pause_reasons = session_snapshot.pause_reasons;
 
-        if matches!(session_state, SessionState::Generating) {
-            return Err("Cannot handoff while generating".to_string());
+        match session_state {
+            SessionState::Generating => {
+                return Err("Cannot handoff while model is generating. Wait for the current response to complete.".to_string());
+            }
+            SessionState::ExecutingTools => {
+                return Err("Cannot handoff while tools are executing. Wait for tools to finish.".to_string());
+            }
+            SessionState::Paused => {
+                return Err("Cannot handoff while session is paused. Resume or abort first.".to_string());
+            }
+            SessionState::WaitingIde => {
+                return Err("Cannot handoff while waiting for IDE response. Cancel the IDE wait or wait for it to complete.".to_string());
+            }
+            SessionState::Error => {
+                return Err("Cannot handoff from an error state. Acknowledge the error first.".to_string());
+            }
+            SessionState::WaitingUserInput => {
+                if !pause_reasons.is_empty() {
+                    return Err("Cannot handoff while pending tool approvals exist. Resolve them first.".to_string());
+                }
+            }
+            SessionState::Idle | SessionState::Completed => {}
         }
         if messages.is_empty() {
             return Err("Cannot handoff an empty chat".to_string());
+        }
+        let last_assistant_with_tools = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant" && m.tool_calls.is_some());
+        if let Some(asst) = last_assistant_with_tools {
+            let call_ids: std::collections::HashSet<&str> = asst
+                .tool_calls
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect();
+            let result_ids: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter(|m| m.role == "tool")
+                .map(|m| m.tool_call_id.as_str())
+                .collect();
+            let mut missing_ids: Vec<&str> =
+                call_ids.difference(&result_ids).copied().collect();
+            if !missing_ids.is_empty() {
+                missing_ids.sort();
+                return Err(format!(
+                    "Cannot handoff: the latest assistant message has {} tool calls without results: {:?}",
+                    missing_ids.len(),
+                    missing_ids
+                ));
+            }
         }
 
         let canonical_mode = map_legacy_mode_to_id(&target_mode).to_string();
@@ -543,6 +592,7 @@ mod tests {
             )],
             thread,
             session_state: SessionState::Idle,
+            pause_reasons: vec![],
         }
     }
 
@@ -597,6 +647,123 @@ mod tests {
         assert!(raw.contains("kind: \"plan\""));
         assert!(raw.contains("pinned: true"));
         assert!(raw.contains("Card T-1"));
+    }
+
+    async fn tool_with_snapshot(snapshot: ChatSessionSnapshot) -> Result<(bool, Vec<ContextEnum>), String> {
+        let temp = tempfile::tempdir().unwrap();
+        let facade = Arc::new(MockChatFacade::default());
+        facade.snapshot.lock().unwrap().replace(snapshot);
+        let app = test_app_with_workspace(temp.path(), facade).await;
+        let ccx = handoff_ccx(app).await;
+        let mut tool = ToolHandoffToMode {
+            config_path: String::new(),
+        };
+        let args = HashMap::from([("target_mode".to_string(), json!("task_planner"))]);
+        tool.tool_execute(ccx, &"call-id".to_string(), &args).await
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_generating_state() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::Generating;
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("model is generating"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_executing_tools_state() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::ExecutingTools;
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("tools are executing"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_paused_state() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::Paused;
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("session is paused"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_waiting_ide_state() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::WaitingIde;
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("waiting for IDE response"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_error_state() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::Error;
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("error state"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_waiting_user_input_with_pause_reasons() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::WaitingUserInput;
+        snap.pause_reasons = vec![refact_chat_api::PauseReason {
+            reason_type: "tool_approval".to_string(),
+            tool_name: "shell".to_string(),
+            command: "ls".to_string(),
+            rule: "default".to_string(),
+            tool_call_id: "tc1".to_string(),
+            integr_config_path: None,
+        }];
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("pending tool approvals"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn handoff_allows_idle_state() {
+        let snap = source_snapshot();
+        assert_eq!(snap.session_state, SessionState::Idle);
+        tool_with_snapshot(snap).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handoff_allows_completed_state() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::Completed;
+        tool_with_snapshot(snap).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handoff_allows_waiting_user_input_with_no_pause_reasons() {
+        let mut snap = source_snapshot();
+        snap.session_state = SessionState::WaitingUserInput;
+        snap.pause_reasons = vec![];
+        tool_with_snapshot(snap).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handoff_rejects_unmatched_tool_calls_in_history() {
+        use crate::call_validation::{ChatContent, ChatToolCall, ChatToolFunction};
+        let mut snap = source_snapshot();
+        snap.messages = vec![
+            ChatMessage::new("user".to_string(), "Please help.".to_string()),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatContent::SimpleText("".to_string()),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: "call-unmatched".to_string(),
+                    index: Some(0),
+                    function: ChatToolFunction {
+                        name: "shell".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    tool_type: "function".to_string(),
+                    extra_content: None,
+                }]),
+                ..Default::default()
+            },
+        ];
+        let err = tool_with_snapshot(snap).await.unwrap_err();
+        assert!(err.contains("tool calls without results"), "{err}");
     }
 
     #[tokio::test]

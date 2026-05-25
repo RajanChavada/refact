@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use refact_buddy_core::snapshot::BuddySnapshot;
 use refact_buddy_core::types::{BuddyRuntimeEvent, BuddySuggestion};
 use refact_buddy_core::user_action::UserAction;
-use refact_chat_api::{ChatCommand, ChatMessage, ContextFile, ThreadParams};
+use refact_chat_api::{ChatCommand, ChatMessage, ContextFile, PauseReason, ThreadParams};
 use refact_chat_history::trajectory_snapshot::TrajectorySnapshot;
 use refact_tool_api::ToolDesc;
 
@@ -106,6 +106,7 @@ pub struct ChatSessionSnapshot {
     pub messages: Vec<ChatMessage>,
     pub thread: ThreadParams,
     pub session_state: SessionState,
+    pub pause_reasons: Vec<PauseReason>,
 }
 
 #[derive(Clone)]
