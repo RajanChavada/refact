@@ -48,6 +48,7 @@ export interface PersistedPlannerInfo {
   createdAt: string;
   updatedAt: string;
   sessionState?: string;
+  waitingForCardIds?: string[];
 }
 
 export interface PersistedOpenTask {
@@ -364,12 +365,19 @@ function normalizePlannerInfo(value: unknown): PersistedPlannerInfo | null {
   const id = stringOrUndefined(value.id)?.trim();
   if (!id) return null;
 
+  const rawWaiting = Array.isArray(value.waitingForCardIds)
+    ? value.waitingForCardIds
+        .filter((item): item is string => typeof item === "string")
+        .slice(0, 50)
+    : undefined;
+
   return {
     id,
     title: stringOrUndefined(value.title) ?? "",
     createdAt: stringOrUndefined(value.createdAt) ?? "",
     updatedAt: stringOrUndefined(value.updatedAt) ?? "",
     sessionState: stringOrUndefined(value.sessionState),
+    waitingForCardIds: rawWaiting,
   };
 }
 

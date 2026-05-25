@@ -388,3 +388,13 @@
 .agentDotFailed {
   background-color: var(--red-9);
 }
+
+.plannerWaitingChips {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+}
+
+.plannerWaitingMore {
+  white-space: nowrap;
+}

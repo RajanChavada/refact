@@ -55,7 +55,7 @@ import {
   selectTaskActiveChat,
   PlannerInfo,
 } from "./tasksSlice";
-import { selectThreadById } from "../Chat/Thread";
+import { selectThreadById, selectRuntimeById } from "../Chat/Thread";
 import { InternalLinkProvider } from "../../contexts/InternalLinkContext";
 import { parseRefactLink } from "../../contexts/internalLinkUtils";
 import {
@@ -224,19 +224,29 @@ function defaultTaskWorkspaceLayout() {
   };
 }
 
-const PlannerItem: React.FC<PlannerItemProps> = ({
+export const PlannerItem: React.FC<PlannerItemProps> = ({
   planner,
   isSelected,
   onSelect,
   onRemove,
 }) => {
   const thread = useAppSelector((state) => selectThreadById(state, planner.id));
+  const runtime = useAppSelector((state) =>
+    selectRuntimeById(state, planner.id),
+  );
   const title = thread?.title ?? planner.title;
   const hasGeneratedTitle =
     title && title !== "New Chat" && title.trim() !== "";
   const displayTitle = hasGeneratedTitle
     ? title
     : formatPlannerDate(planner.createdAt);
+
+  const sessionState = runtime?.session_state;
+  const isWaiting = sessionState === "waiting_user_input";
+  const waitingCards = planner.waitingForCardIds ?? [];
+  const showWaitingChips = isWaiting && waitingCards.length > 0;
+  const visibleCards = waitingCards.slice(0, 5);
+  const hiddenCount = Math.max(0, waitingCards.length - 5);
 
   return (
     <Box
@@ -255,6 +265,32 @@ const PlannerItem: React.FC<PlannerItemProps> = ({
           {displayTitle}
         </Text>
       </Box>
+      {showWaitingChips && (
+        <Flex
+          gap="1"
+          wrap="nowrap"
+          align="center"
+          className={styles.plannerWaitingChips}
+          data-testid={`planner-waiting-chips-${planner.id}`}
+        >
+          {visibleCards.map((cardId) => (
+            <Badge
+              key={cardId}
+              size="1"
+              color="amber"
+              variant="soft"
+              title={`Waiting for ${cardId}`}
+            >
+              {cardId}
+            </Badge>
+          ))}
+          {hiddenCount > 0 && (
+            <Text size="1" color="gray" className={styles.plannerWaitingMore}>
+              … and {hiddenCount} more
+            </Text>
+          )}
+        </Flex>
+      )}
       <Tooltip content="Delete planner chat">
         <Button
           size="1"
@@ -744,6 +780,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
             createdAt: traj.created_at,
             updatedAt: traj.updated_at,
             sessionState: traj.session_state,
+            waitingForCardIds: traj.waiting_for_card_ids,
           },
         }),
       );
