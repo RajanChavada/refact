@@ -50,11 +50,13 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
 }) => {
   const isEditMode = mode === "edit";
 
-  const { data: existingDoc, isLoading: isDocumentLoading } =
-    useGetTaskDocumentQuery(
-      { taskId, slug: slug ?? "" },
-      { skip: !isEditMode || !slug || !open },
-    );
+  const { currentData: requestedDoc } = useGetTaskDocumentQuery(
+    { taskId, slug: slug ?? "" },
+    { skip: !isEditMode || !slug || !open },
+  );
+  const existingDoc = requestedDoc?.slug === slug ? requestedDoc : undefined;
+  const isEditDocumentReady =
+    !isEditMode || (Boolean(slug) && existingDoc?.slug === slug);
 
   const [formSlug, setFormSlug] = useState("");
   const [name, setName] = useState("");
@@ -91,7 +93,7 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
       setSlugError(null);
       setMutationError(null);
     }
-  }, [open, isEditMode, existingDoc]);
+  }, [open, isEditMode, existingDoc, slug]);
 
   const handleSlugChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -111,9 +113,13 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
   const handleSave = useCallback(async () => {
     setMutationError(null);
     try {
-      if (isEditMode && slug) {
+      if (isEditMode) {
+        if (!slug || existingDoc?.slug !== slug) {
+          setMutationError("Document is still loading. Please wait.");
+          return;
+        }
         await updateDocument({ taskId, slug, content }).unwrap();
-        if (existingDoc && pinned !== existingDoc.pinned) {
+        if (pinned !== existingDoc.pinned) {
           await pinDocument({ taskId, slug, pinned }).unwrap();
         }
       } else {
@@ -157,9 +163,9 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
         <Dialog.Title>
           {isEditMode ? "Edit document" : "New document"}
         </Dialog.Title>
-        {isEditMode && isDocumentLoading ? (
+        {isEditMode && !isEditDocumentReady ? (
           <Flex justify="center" p="6">
-            <Spinner />
+            <Spinner aria-label="Loading document" />
           </Flex>
         ) : (
           <Flex direction="column" gap="3" mt="2">
@@ -229,7 +235,6 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
                 onChange={(e) => setContent(e.target.value)}
                 placeholder="Write markdown content here..."
                 aria-label="Content"
-                style={{ minHeight: "200px", fontFamily: "monospace" }}
                 rows={12}
               />
             </Box>
@@ -249,7 +254,9 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
               </Dialog.Close>
               <Button
                 onClick={() => void handleSave()}
-                disabled={isSaving || Boolean(slugError)}
+                disabled={
+                  isSaving || Boolean(slugError) || !isEditDocumentReady
+                }
               >
                 {isSaving ? "Saving..." : "Save"}
               </Button>

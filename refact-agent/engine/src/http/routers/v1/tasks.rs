@@ -1026,7 +1026,7 @@ fn map_doc_error(e: String) -> (StatusCode, String) {
         || e.contains("slug cannot")
     {
         (StatusCode::BAD_REQUEST, e)
-    } else if e.contains("does not exist") {
+    } else if e.contains("does not exist") || e.contains("not found") {
         (StatusCode::NOT_FOUND, e)
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, e)
@@ -1114,7 +1114,7 @@ pub async fn handle_history_task_document(
 ) -> Result<Json<TaskDocumentHistoryResponse>, (StatusCode, String)> {
     let result = history_task_document_for_api(app.gcx.clone(), &task_id, &slug)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(map_doc_error)?;
     Ok(Json(result))
 }
 
@@ -1584,6 +1584,55 @@ mod tests {
             Json(UpdateTaskDocumentRequest {
                 content: "whatever".to_string(),
             }),
+        )
+        .await;
+        assert!(matches!(result, Err((StatusCode::NOT_FOUND, _))));
+    }
+
+    #[tokio::test]
+    async fn handle_pin_task_document_returns_detail() {
+        use crate::tools::tool_task_documents::CreateDocumentRequest;
+        let temp = tempfile::tempdir().unwrap();
+        let gcx = setup_task(temp.path(), "task-doc-pin").await;
+        handle_create_task_document(
+            State(app(gcx.clone())),
+            Path("task-doc-pin".to_string()),
+            Json(CreateDocumentRequest {
+                slug: "pin-plan".to_string(),
+                name: "Pin Plan".to_string(),
+                kind: "plan".to_string(),
+                content: "body text".to_string(),
+                pinned: Some(false),
+                relevant_cards: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let result = handle_pin_task_document(
+            State(app(gcx.clone())),
+            Path(("task-doc-pin".to_string(), "pin-plan".to_string())),
+            Json(PinTaskDocumentRequest { pinned: true }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.0.slug, "pin-plan");
+        assert_eq!(result.0.content, "body text");
+        assert!(result.0.pinned);
+        assert_eq!(result.0.version, 2);
+    }
+
+    #[tokio::test]
+    async fn handle_history_task_document_returns_404_for_unknown_slug() {
+        let temp = tempfile::tempdir().unwrap();
+        let gcx = setup_task(temp.path(), "task-doc-history-404").await;
+        let result = handle_history_task_document(
+            State(app(gcx.clone())),
+            Path((
+                "task-doc-history-404".to_string(),
+                "no-such-slug".to_string(),
+            )),
         )
         .await;
         assert!(matches!(result, Err((StatusCode::NOT_FOUND, _))));

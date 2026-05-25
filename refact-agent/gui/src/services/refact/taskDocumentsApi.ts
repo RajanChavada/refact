@@ -17,6 +17,8 @@ export interface TaskDocumentSummary {
   version: number;
   updated_at: string;
   created_at: string;
+  author_role: string;
+  relevant_cards: string[];
 }
 
 export interface TaskDocumentListResponse {
@@ -33,12 +35,15 @@ export interface TaskDocumentDetail {
   content: string;
   created_at: string;
   updated_at: string;
+  author_role: string;
+  relevant_cards: string[];
 }
 
 export interface TaskDocumentHistoryEntry {
   version: number;
   updated_at: string;
-  content: string;
+  author_role: string;
+  size_bytes: number;
 }
 
 export interface TaskDocumentHistoryResponse {
@@ -77,12 +82,59 @@ export interface PinTaskDocumentRequest {
   pinned: boolean;
 }
 
-export interface PinTaskDocumentResponse {
-  ok: boolean;
+export interface AppendTaskDocumentRequest {
+  taskId: string;
   slug: string;
-  pinned: boolean;
-  changed: boolean;
+  section: string;
 }
+
+export type TaskDocumentsTag = { type: "TaskDocuments"; id: string };
+
+export const taskDocumentListTag = (taskId: string): TaskDocumentsTag => ({
+  type: "TaskDocuments",
+  id: taskId,
+});
+
+export const taskDocumentDetailTag = (
+  taskId: string,
+  slug: string,
+): TaskDocumentsTag => ({
+  type: "TaskDocuments",
+  id: `${taskId}:${slug}:detail`,
+});
+
+export const taskDocumentHistoryTag = (
+  taskId: string,
+  slug: string,
+): TaskDocumentsTag => ({
+  type: "TaskDocuments",
+  id: `${taskId}:${slug}:history`,
+});
+
+export const taskDocumentMutationInvalidation = {
+  createTaskDocument: (taskId: string): TaskDocumentsTag[] => [
+    taskDocumentListTag(taskId),
+  ],
+  updateTaskDocument: (taskId: string, slug: string): TaskDocumentsTag[] => [
+    taskDocumentListTag(taskId),
+    taskDocumentDetailTag(taskId, slug),
+    taskDocumentHistoryTag(taskId, slug),
+  ],
+  pinTaskDocument: (taskId: string, slug: string): TaskDocumentsTag[] => [
+    taskDocumentListTag(taskId),
+    taskDocumentDetailTag(taskId, slug),
+  ],
+  deleteTaskDocument: (taskId: string, slug: string): TaskDocumentsTag[] => [
+    taskDocumentListTag(taskId),
+    taskDocumentDetailTag(taskId, slug),
+    taskDocumentHistoryTag(taskId, slug),
+  ],
+  appendTaskDocument: (taskId: string, slug: string): TaskDocumentsTag[] => [
+    taskDocumentListTag(taskId),
+    taskDocumentDetailTag(taskId, slug),
+    taskDocumentHistoryTag(taskId, slug),
+  ],
+};
 
 export const taskDocumentsApi = createApi({
   reducerPath: "taskDocumentsApi",
@@ -112,7 +164,7 @@ export const taskDocumentsApi = createApi({
         return { data: result.data as TaskDocumentListResponse };
       },
       providesTags: (_result, _error, { taskId }) => [
-        { type: "TaskDocuments", id: taskId },
+        taskDocumentListTag(taskId),
       ],
     }),
 
@@ -135,7 +187,7 @@ export const taskDocumentsApi = createApi({
         return { data: result.data as TaskDocumentDetail };
       },
       providesTags: (_result, _error, { taskId, slug }) => [
-        { type: "TaskDocuments", id: `${taskId}:${slug}` },
+        taskDocumentDetailTag(taskId, slug),
       ],
     }),
 
@@ -160,9 +212,8 @@ export const taskDocumentsApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as TaskDocumentDetail };
       },
-      invalidatesTags: (_result, _error, { taskId }) => [
-        { type: "TaskDocuments", id: taskId },
-      ],
+      invalidatesTags: (_result, _error, { taskId }) =>
+        taskDocumentMutationInvalidation.createTaskDocument(taskId),
     }),
 
     updateTaskDocument: builder.mutation<
@@ -183,10 +234,30 @@ export const taskDocumentsApi = createApi({
         if (result.error) return { error: result.error };
         return { data: result.data as TaskDocumentDetail };
       },
-      invalidatesTags: (_result, _error, { taskId, slug }) => [
-        { type: "TaskDocuments", id: taskId },
-        { type: "TaskDocuments", id: `${taskId}:${slug}` },
-      ],
+      invalidatesTags: (_result, _error, { taskId, slug }) =>
+        taskDocumentMutationInvalidation.updateTaskDocument(taskId, slug),
+    }),
+
+    appendTaskDocument: builder.mutation<
+      TaskDocumentDetail,
+      AppendTaskDocumentRequest
+    >({
+      queryFn: async ({ taskId, slug, section }, api, _opts, baseQuery) => {
+        const state = api.getState() as RootState;
+        const result = await baseQuery({
+          url: `http://127.0.0.1:${
+            state.config.lspPort
+          }/v1/task/${encodeURIComponent(
+            taskId,
+          )}/documents/${encodeURIComponent(slug)}/append`,
+          method: "POST",
+          body: { section },
+        });
+        if (result.error) return { error: result.error };
+        return { data: result.data as TaskDocumentDetail };
+      },
+      invalidatesTags: (_result, _error, { taskId, slug }) =>
+        taskDocumentMutationInvalidation.appendTaskDocument(taskId, slug),
     }),
 
     deleteTaskDocument: builder.mutation<
@@ -206,13 +277,12 @@ export const taskDocumentsApi = createApi({
         if (result.error) return { error: result.error };
         return { data: { ok: true } };
       },
-      invalidatesTags: (_result, _error, { taskId }) => [
-        { type: "TaskDocuments", id: taskId },
-      ],
+      invalidatesTags: (_result, _error, { taskId, slug }) =>
+        taskDocumentMutationInvalidation.deleteTaskDocument(taskId, slug),
     }),
 
     pinTaskDocument: builder.mutation<
-      PinTaskDocumentResponse,
+      TaskDocumentDetail,
       PinTaskDocumentRequest
     >({
       queryFn: async ({ taskId, slug, pinned }, api, _opts, baseQuery) => {
@@ -227,11 +297,42 @@ export const taskDocumentsApi = createApi({
           body: { pinned },
         });
         if (result.error) return { error: result.error };
-        return { data: result.data as PinTaskDocumentResponse };
+        return { data: result.data as TaskDocumentDetail };
       },
-      invalidatesTags: (_result, _error, { taskId }) => [
-        { type: "TaskDocuments", id: taskId },
-      ],
+      invalidatesTags: (_result, _error, { taskId, slug }) =>
+        taskDocumentMutationInvalidation.pinTaskDocument(taskId, slug),
+      async onQueryStarted(
+        { taskId, slug, pinned },
+        { dispatch, queryFulfilled },
+      ) {
+        const listPatch = dispatch(
+          taskDocumentsApi.util.updateQueryData(
+            "listTaskDocuments",
+            { taskId },
+            (draft) => {
+              const document = draft.documents.find((doc) => doc.slug === slug);
+              if (document) {
+                document.pinned = pinned;
+              }
+            },
+          ),
+        );
+        const detailPatch = dispatch(
+          taskDocumentsApi.util.updateQueryData(
+            "getTaskDocument",
+            { taskId, slug },
+            (draft) => {
+              draft.pinned = pinned;
+            },
+          ),
+        );
+        try {
+          await queryFulfilled;
+        } catch {
+          listPatch.undo();
+          detailPatch.undo();
+        }
+      },
     }),
 
     getTaskDocumentHistory: builder.query<
@@ -251,7 +352,7 @@ export const taskDocumentsApi = createApi({
         return { data: result.data as TaskDocumentHistoryResponse };
       },
       providesTags: (_result, _error, { taskId, slug }) => [
-        { type: "TaskDocuments", id: `${taskId}:${slug}:history` },
+        taskDocumentHistoryTag(taskId, slug),
       ],
     }),
   }),
@@ -262,6 +363,7 @@ export const {
   useGetTaskDocumentQuery,
   useCreateTaskDocumentMutation,
   useUpdateTaskDocumentMutation,
+  useAppendTaskDocumentMutation,
   useDeleteTaskDocumentMutation,
   usePinTaskDocumentMutation,
   useGetTaskDocumentHistoryQuery,

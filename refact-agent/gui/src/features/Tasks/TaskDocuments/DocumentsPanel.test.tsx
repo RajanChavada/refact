@@ -31,6 +31,8 @@ const listResponse: TaskDocumentListResponse = {
       version: 3,
       updated_at: "2026-05-25T10:00:00Z",
       created_at: "2026-05-20T10:00:00Z",
+      author_role: "planner",
+      relevant_cards: [],
     },
     {
       slug: "api-design",
@@ -40,6 +42,8 @@ const listResponse: TaskDocumentListResponse = {
       version: 1,
       updated_at: "2026-05-24T10:00:00Z",
       created_at: "2026-05-24T10:00:00Z",
+      author_role: "planner",
+      relevant_cards: [],
     },
   ],
 };
@@ -53,6 +57,15 @@ const detailResponse: TaskDocumentDetail = {
   content: "# Initial Plan\n\nThis is the initial plan content.",
   created_at: "2026-05-20T10:00:00Z",
   updated_at: "2026-05-25T10:00:00Z",
+  author_role: "planner",
+  relevant_cards: [],
+};
+
+const historicalDetailResponse: TaskDocumentDetail = {
+  ...detailResponse,
+  version: 1,
+  content: "# Historical Plan\n\nThis is the historical content.",
+  updated_at: "2026-05-21T10:00:00Z",
 };
 
 function mockDocuments(response: TaskDocumentListResponse = listResponse) {
@@ -120,10 +133,8 @@ describe("DocumentsPanel", () => {
         async ({ request }) => {
           pinRequests.push(await request.json());
           return HttpResponse.json({
-            ok: true,
-            slug: "initial-plan",
+            ...detailResponse,
             pinned: false,
-            changed: true,
           });
         },
       ),
@@ -271,6 +282,94 @@ describe("DocumentsPanel", () => {
     });
   });
 
+
+
+  it("clicking a history version loads and renders historical content", async () => {
+    mockDocuments();
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/task/:taskId/documents/:slug/history",
+        ({ params }) => {
+          if (params.slug === "initial-plan") {
+            return HttpResponse.json({
+              task_id: "task-1",
+              slug: "initial-plan",
+              history: [
+                {
+                  version: 1,
+                  updated_at: "2026-05-21T10:00:00Z",
+                  author_role: "planner",
+                  size_bytes: 128,
+                },
+              ],
+            });
+          }
+          return HttpResponse.json({ status: 404 }, { status: 404 });
+        },
+      ),
+      http.get(
+        "http://127.0.0.1:8001/v1/task/:taskId/documents/:slug",
+        ({ request, params }) => {
+          const version = new URL(request.url).searchParams.get("version");
+          if (params.slug === "initial-plan" && version === "1") {
+            return HttpResponse.json(historicalDetailResponse);
+          }
+          return HttpResponse.json({ status: 404 }, { status: 404 });
+        },
+      ),
+    );
+
+    const { user } = render(<DocumentsPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    const row = await screen.findByTestId("document-row-initial-plan");
+    await user.click(within(row).getByRole("button", { name: "History" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "History: initial-plan",
+    });
+    await user.click(within(dialog).getByRole("button", { name: /v1/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("This is the historical content.")).toBeInTheDocument();
+    });
+  });
+
+  it("escape key closes the history dialog", async () => {
+    mockDocuments();
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/task/:taskId/documents/:slug/history",
+        () =>
+          HttpResponse.json({
+            task_id: "task-1",
+            slug: "initial-plan",
+            history: [],
+          }),
+      ),
+    );
+
+    const { user } = render(<DocumentsPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    const row = await screen.findByTestId("document-row-initial-plan");
+    await user.click(within(row).getByRole("button", { name: "History" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "History: initial-plan" }),
+    ).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "History: initial-plan" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   it("pinned documents render before unpinned in the list", async () => {
     mockDocuments({
       task_id: "task-1",
@@ -283,6 +382,8 @@ describe("DocumentsPanel", () => {
           version: 1,
           updated_at: "2026-05-24T10:00:00Z",
           created_at: "2026-05-24T10:00:00Z",
+          author_role: "planner",
+          relevant_cards: [],
         },
         {
           slug: "initial-plan",
@@ -292,6 +393,8 @@ describe("DocumentsPanel", () => {
           version: 3,
           updated_at: "2026-05-25T10:00:00Z",
           created_at: "2026-05-20T10:00:00Z",
+          author_role: "planner",
+          relevant_cards: [],
         },
       ],
     });
@@ -366,6 +469,8 @@ describe("DocumentsPanel", () => {
           version: 1,
           updated_at: "2026-05-24T10:00:00Z",
           created_at: "2026-05-24T10:00:00Z",
+          author_role: "planner",
+          relevant_cards: [],
         },
       ],
     });

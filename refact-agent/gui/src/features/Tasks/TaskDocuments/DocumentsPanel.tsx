@@ -6,6 +6,7 @@ import {
   Callout,
   Card,
   Checkbox,
+  Dialog,
   Flex,
   IconButton,
   Popover,
@@ -34,7 +35,7 @@ import {
   useListTaskDocumentsQuery,
   usePinTaskDocumentMutation,
 } from "../../../services/refact/taskDocumentsApi";
-import styles from "./DocumentsPanel.module.css";
+import styles from "./TaskDocuments.module.css";
 
 const ALL_VALUE = "all";
 
@@ -70,15 +71,11 @@ function formatUpdatedAt(value: string): string {
   });
 }
 
-function optimisticKey(taskId: string, slug: string): string {
-  return `${taskId}:${slug}`;
-}
-
 type DocumentRowProps = {
   document: TaskDocumentSummary;
   isExpanded: boolean;
   expandedContent?: string;
-  optimisticPinned?: boolean;
+  isExpandedLoading: boolean;
   onToggleExpand: () => void;
   onPin: (slug: string, pinned: boolean) => void | Promise<void>;
   onEdit: (slug: string) => void;
@@ -90,14 +87,14 @@ const DocumentRow: React.FC<DocumentRowProps> = ({
   document,
   isExpanded,
   expandedContent,
-  optimisticPinned,
+  isExpandedLoading,
   onToggleExpand,
   onPin,
   onEdit,
   onHistory,
   onDelete,
 }) => {
-  const pinned = optimisticPinned ?? document.pinned;
+  const pinned = document.pinned;
 
   return (
     <Card
@@ -217,14 +214,18 @@ const DocumentRow: React.FC<DocumentRowProps> = ({
 
       {isExpanded && (
         <Box className={styles.content}>
-          {expandedContent !== undefined ? (
+          {isExpandedLoading ? (
+            <Flex justify="center" p="2">
+              <Spinner size="1" />
+            </Flex>
+          ) : expandedContent !== undefined ? (
             <Markdown canHaveInteractiveElements={false}>
               {expandedContent}
             </Markdown>
           ) : (
-            <Flex justify="center" p="2">
-              <Spinner />
-            </Flex>
+            <Text size="2" color="gray">
+              Document content is unavailable.
+            </Text>
           )}
         </Box>
       )}
@@ -245,40 +246,82 @@ export const DocumentsPanel: React.FC<DocumentsPanelProps> = ({ taskId }) => {
   const [editorSlug, setEditorSlug] = useState<string | undefined>(undefined);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySlug, setHistorySlug] = useState<string | null>(null);
-  const [optimisticPinned, setOptimisticPinned] = useState<
-    ReadonlyMap<string, boolean>
-  >(() => new Map());
+  const [selectedHistoryVersion, setSelectedHistoryVersion] = useState<
+    number | null
+  >(null);
 
   const { data, isFetching, error } = useListTaskDocumentsQuery({ taskId });
 
-  const { data: expandedDoc } = useGetTaskDocumentQuery(
+  const {
+    currentData: requestedExpandedDoc,
+    isFetching: isExpandedFetching,
+    isError: isExpandedError,
+  } = useGetTaskDocumentQuery(
     { taskId, slug: expandedSlug ?? "" },
     { skip: !expandedSlug },
   );
+  const expandedDoc =
+    requestedExpandedDoc?.slug === expandedSlug
+      ? requestedExpandedDoc
+      : undefined;
 
-  const { data: historyData } = useGetTaskDocumentHistoryQuery(
-    { taskId, slug: historySlug ?? "" },
-    { skip: !historySlug || !historyOpen },
+  const { currentData: historyData, isFetching: isHistoryFetching } =
+    useGetTaskDocumentHistoryQuery(
+      { taskId, slug: historySlug ?? "" },
+      { skip: !historySlug || !historyOpen },
+    );
+
+  const {
+    currentData: selectedHistoryDoc,
+    isFetching: isHistoryDocFetching,
+    isError: isHistoryDocError,
+  } = useGetTaskDocumentQuery(
+    {
+      taskId,
+      slug: historySlug ?? "",
+      version: selectedHistoryVersion ?? undefined,
+    },
+    {
+      skip: !historyOpen || !historySlug || selectedHistoryVersion === null,
+    },
+  );
+  const currentHistoryDoc =
+    selectedHistoryDoc?.slug === historySlug &&
+    selectedHistoryDoc.version === selectedHistoryVersion
+      ? selectedHistoryDoc
+      : undefined;
+
+  const historyRows =
+    historyData?.slug === historySlug ? historyData.history : undefined;
+  const isHistoryContentLoading =
+    selectedHistoryVersion !== null &&
+    (isHistoryDocFetching || (!isHistoryDocError && !currentHistoryDoc));
+
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    setSelectedHistoryVersion(null);
+  }, []);
+
+  const handleHistoryOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        closeHistory();
+      } else {
+        setHistoryOpen(true);
+      }
+    },
+    [closeHistory],
   );
 
   const [pinDocument] = usePinTaskDocumentMutation();
   const [deleteDocument] = useDeleteTaskDocumentMutation();
 
-  const documentsWithOptimistic = useMemo(() => {
-    const docs = data?.documents ?? [];
-    return docs.map((doc) => ({
-      ...doc,
-      pinned:
-        optimisticPinned.get(optimisticKey(taskId, doc.slug)) ?? doc.pinned,
-    }));
-  }, [data?.documents, optimisticPinned, taskId]);
-
   const sorted = useMemo(() => {
-    return [...documentsWithOptimistic].sort((a, b) => {
+    return [...(data?.documents ?? [])].sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       return b.updated_at.localeCompare(a.updated_at);
     });
-  }, [documentsWithOptimistic]);
+  }, [data?.documents]);
 
   const visible = useMemo(() => {
     return sorted.filter((doc) => {
@@ -294,13 +337,9 @@ export const DocumentsPanel: React.FC<DocumentsPanelProps> = ({ taskId }) => {
 
   const handlePin = useCallback(
     async (slug: string, pinned: boolean) => {
-      const key = optimisticKey(taskId, slug);
-      setOptimisticPinned((prev) => new Map(prev).set(key, pinned));
-      try {
-        await pinDocument({ taskId, slug, pinned }).unwrap();
-      } catch {
-        setOptimisticPinned((prev) => new Map(prev).set(key, !pinned));
-      }
+      await pinDocument({ taskId, slug, pinned })
+        .unwrap()
+        .catch(() => undefined);
     },
     [pinDocument, taskId],
   );
@@ -313,6 +352,7 @@ export const DocumentsPanel: React.FC<DocumentsPanelProps> = ({ taskId }) => {
 
   const handleHistory = useCallback((slug: string) => {
     setHistorySlug(slug);
+    setSelectedHistoryVersion(null);
     setHistoryOpen(true);
   }, []);
 
@@ -392,11 +432,15 @@ export const DocumentsPanel: React.FC<DocumentsPanelProps> = ({ taskId }) => {
               document={doc}
               isExpanded={expandedSlug === doc.slug}
               expandedContent={
-                expandedSlug === doc.slug ? expandedDoc?.content : undefined
+                expandedSlug === doc.slug && expandedDoc?.slug === doc.slug
+                  ? expandedDoc.content
+                  : undefined
               }
-              optimisticPinned={optimisticPinned.get(
-                optimisticKey(taskId, doc.slug),
-              )}
+              isExpandedLoading={
+                expandedSlug === doc.slug &&
+                (isExpandedFetching ||
+                  (!isExpandedError && expandedDoc?.slug !== doc.slug))
+              }
               onToggleExpand={() => handleToggleExpand(doc.slug)}
               onPin={handlePin}
               onEdit={handleEdit}
@@ -419,56 +463,70 @@ export const DocumentsPanel: React.FC<DocumentsPanelProps> = ({ taskId }) => {
         onOpenChange={setEditorOpen}
       />
 
-      {historyOpen && historySlug && (
-        <Box
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.4)",
-            zIndex: 100,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          onClick={() => setHistoryOpen(false)}
-        >
-          <Card
-            style={{ minWidth: 320, maxWidth: 480, maxHeight: "80vh" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Flex direction="column" gap="3">
-              <Text weight="bold" size="3">
-                History: {historySlug}
-              </Text>
-              {historyData?.history.length ? (
-                historyData.history.map((entry) => (
-                  <Box key={entry.version}>
-                    <Text size="2" weight="medium">
+      <Dialog.Root open={historyOpen} onOpenChange={handleHistoryOpenChange}>
+        <Dialog.Content className={styles.historyDialog}>
+          <Dialog.Title>History: {historySlug}</Dialog.Title>
+          <Flex gap="3" className={styles.historyBody}>
+            <Flex direction="column" gap="2" className={styles.historyList}>
+              {isHistoryFetching && historyRows === undefined ? (
+                <Flex justify="center" p="3">
+                  <Spinner size="1" />
+                </Flex>
+              ) : historyRows?.length ? (
+                historyRows.map((entry) => (
+                  <button
+                    key={entry.version}
+                    type="button"
+                    className={classNames(
+                      styles.historyVersionButton,
+                      selectedHistoryVersion === entry.version &&
+                        styles.historyVersionButtonActive,
+                    )}
+                    onClick={() => setSelectedHistoryVersion(entry.version)}
+                  >
+                    <Text size="2" weight="medium" as="span">
                       v{entry.version}
                     </Text>
-                    <Text size="1" color="gray" as="div">
+                    <Text size="1" color="gray" as="span">
                       {formatUpdatedAt(entry.updated_at)}
                     </Text>
-                  </Box>
+                  </button>
                 ))
               ) : (
                 <Text size="2" color="gray">
                   No history available.
                 </Text>
               )}
-              <Flex justify="end">
-                <Button
-                  size="1"
-                  variant="soft"
-                  onClick={() => setHistoryOpen(false)}
-                >
-                  Close
-                </Button>
-              </Flex>
             </Flex>
-          </Card>
-        </Box>
-      )}
+            <Box className={styles.historyContent}>
+              {selectedHistoryVersion === null ? (
+                <Text size="2" color="gray">
+                  Select a version to view its content.
+                </Text>
+              ) : isHistoryContentLoading ? (
+                <Flex justify="center" p="3">
+                  <Spinner size="1" />
+                </Flex>
+              ) : currentHistoryDoc ? (
+                <Markdown canHaveInteractiveElements={false}>
+                  {currentHistoryDoc.content}
+                </Markdown>
+              ) : (
+                <Text size="2" color="gray">
+                  Historical content is unavailable.
+                </Text>
+              )}
+            </Box>
+          </Flex>
+          <Flex justify="end" mt="3">
+            <Dialog.Close>
+              <Button size="1" variant="soft">
+                Close
+              </Button>
+            </Dialog.Close>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
     </Box>
   );
 };

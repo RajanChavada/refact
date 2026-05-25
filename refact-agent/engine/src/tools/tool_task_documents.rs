@@ -834,6 +834,9 @@ pub async fn history_task_document_for_api(
 ) -> Result<TaskDocumentHistoryResponse, String> {
     let documents_dir = documents_dir_for_task(gcx, task_id).await?;
     let items = history_document_at(&documents_dir, slug).await?;
+    if !document_path(&documents_dir, slug).exists() && items.is_empty() {
+        return Err(format!("document `{}` does not exist", slug));
+    }
     let mut history = Vec::new();
     for item in &items {
         let document = read_document(&item.path).await?;

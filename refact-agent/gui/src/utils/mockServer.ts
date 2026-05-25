@@ -7,6 +7,7 @@ import {
   toolsApi,
   commandsApi,
   pingApi,
+  taskDocumentsApi,
 } from "../services/refact";
 
 export * from "../__fixtures__/msw";
@@ -17,6 +18,7 @@ export const resetApi = (store: Store) => {
   store.dispatch(toolsApi.util.resetApiState());
   store.dispatch(commandsApi.util.resetApiState());
   store.dispatch(pingApi.util.resetApiState());
+  store.dispatch(taskDocumentsApi.util.resetApiState());
 };
 export const server = setupServer();
 
