@@ -1327,9 +1327,7 @@ startListening({
         break;
       case "board_changed":
         listenerApi.dispatch(
-          tasksApi.util.invalidateTags([
-            { type: "Board", id: event.task_id },
-          ]),
+          tasksApi.util.invalidateTags([{ type: "Board", id: event.task_id }]),
         );
         break;
     }

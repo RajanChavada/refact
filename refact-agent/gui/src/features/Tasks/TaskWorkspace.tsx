@@ -50,6 +50,7 @@ import {
   openTask,
   addPlannerChat,
   removePlannerChat,
+  restorePlannerChat,
   selectOpenTasksFromRoot,
   setTaskActiveChat,
   selectTaskActiveChat,
@@ -240,6 +241,30 @@ function formatAgentChatTitle(
   return cardId ? `Agent: ${cardId} ${cardTitle}` : `Agent: ${cardTitle}`;
 }
 
+type AgentRef = { chat_id: string };
+
+function parsePlannerDeleteError(err: unknown): string {
+  if (typeof err === "object" && err && "status" in err) {
+    const e = err as {
+      status: number;
+      data?: { error?: string; agent_refs?: AgentRef[] };
+    };
+    if (e.status === 409 && e.data?.agent_refs) {
+      const ids = e.data.agent_refs
+        .map((r) => r.chat_id)
+        .slice(0, 3)
+        .join(", ");
+      const extra =
+        e.data.agent_refs.length > 3
+          ? ` (+${e.data.agent_refs.length - 3} more)`
+          : "";
+      return `${e.data.error ?? "Conflict"}: ${ids}${extra}`;
+    }
+    if (e.data?.error) return e.data.error;
+  }
+  return "Unknown error";
+}
+
 const DEFAULT_BOARD_HEIGHT_PX = 180;
 const MIN_BOARD_HEIGHT_PX = 80;
 const MAX_BOARD_HEIGHT_RATIO = 0.6;
@@ -332,6 +357,7 @@ export const PlannerItem: React.FC<PlannerItemProps> = ({
           size="1"
           variant="ghost"
           color="gray"
+          aria-label="Delete planner chat"
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
@@ -753,12 +779,13 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const [deletePlannerChat] = useDeletePlannerChatMutation();
   const openTasks = useAppSelector(selectOpenTasksFromRoot);
   const currentTaskUI = openTasks.find((t) => t.id === taskId);
-  const plannerChats = useMemo(() => {
-    const visible = (currentTaskUI?.plannerChats ?? []).filter(
-      (planner) => !planner.removed,
-    );
-    return [...visible].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [currentTaskUI?.plannerChats]);
+  const plannerChats = useMemo(
+    () =>
+      [...(currentTaskUI?.plannerChats ?? [])].sort((a, b) =>
+        b.updatedAt.localeCompare(a.updatedAt),
+      ),
+    [currentTaskUI?.plannerChats],
+  );
   const activeChat = useAppSelector((state) =>
     selectTaskActiveChat(state, taskId),
   );
@@ -766,7 +793,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   const selectedCard = useMemo(
     () =>
       selectedCardId
-        ? (board?.cards.find((c) => c.id === selectedCardId) ?? null)
+        ? board?.cards.find((c) => c.id === selectedCardId) ?? null
         : null,
     [board, selectedCardId],
   );
@@ -857,10 +884,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
         }),
       );
 
-      if (
-        currentTaskUI.plannerChats.some((p) => p.id === traj.id && !p.removed)
-      )
-        continue;
+      if (currentTaskUI.plannerChats.some((p) => p.id === traj.id)) continue;
 
       dispatch(
         addPlannerChat({
@@ -878,14 +902,7 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     }
 
     if (savedPlanners.length > 0 && !activeChat) {
-      const visibleSavedPlanners = savedPlanners.filter(
-        (traj) =>
-          !currentTaskUI.plannerChats.some(
-            (p) => p.id === traj.id && p.removed,
-          ),
-      );
-      if (visibleSavedPlanners.length === 0) return;
-      const mostRecent = visibleSavedPlanners.reduce((latest, p) =>
+      const mostRecent = savedPlanners.reduce((latest, p) =>
         p.updated_at > latest.updated_at ? p : latest,
       );
       dispatch(
@@ -970,6 +987,11 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     setSelectedCardId(card.id);
   }, []);
 
+  const showNotification = useCallback((message: string) => {
+    setNotification(message);
+    window.setTimeout(() => setNotification(null), 3000);
+  }, []);
+
   const handleNewPlanner = useCallback(() => {
     if (isCreatingPlanner) return;
     createPlannerChat(taskId)
@@ -1008,15 +1030,21 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
           }),
         );
       })
-      .catch(() => undefined);
-  }, [dispatch, taskId, createPlannerChat, isCreatingPlanner]);
+      .catch((err: unknown) => {
+        showNotification(`Create failed: ${parsePlannerDeleteError(err)}`);
+      });
+  }, [
+    dispatch,
+    taskId,
+    createPlannerChat,
+    isCreatingPlanner,
+    showNotification,
+  ]);
 
   const handleRemovePlanner = useCallback(
     (chatId: string) => {
+      const previous = plannerChats.find((p) => p.id === chatId);
       dispatch(removePlannerChat({ taskId, chatId }));
-      void deletePlannerChat({ taskId, chatId })
-        .unwrap()
-        .catch(() => undefined);
       if (activeChat?.type === "planner" && activeChat.chatId === chatId) {
         const remaining = plannerChats.filter((p) => p.id !== chatId);
         dispatch(
@@ -1028,8 +1056,30 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
           }),
         );
       }
+      void deletePlannerChat({ taskId, chatId })
+        .unwrap()
+        .then(() => {
+          dispatch(
+            tasksApi.util.invalidateTags([
+              { type: "TaskTrajectories", id: taskId },
+            ]),
+          );
+          showNotification("Planner chat deleted.");
+        })
+        .catch((err: unknown) => {
+          if (previous)
+            dispatch(restorePlannerChat({ taskId, planner: previous }));
+          showNotification(`Delete failed: ${parsePlannerDeleteError(err)}`);
+        });
     },
-    [dispatch, taskId, activeChat, plannerChats, deletePlannerChat],
+    [
+      dispatch,
+      taskId,
+      activeChat,
+      plannerChats,
+      deletePlannerChat,
+      showNotification,
+    ],
   );
 
   const handleSelectPlanner = useCallback(
@@ -1178,11 +1228,6 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
     },
     [taskId, updateTaskMeta],
   );
-
-  const showNotification = useCallback((message: string) => {
-    setNotification(message);
-    window.setTimeout(() => setNotification(null), 3000);
-  }, []);
 
   useEffect(() => {
     if (!board || !selectedCardId) return;

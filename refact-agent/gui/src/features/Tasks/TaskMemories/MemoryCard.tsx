@@ -81,7 +81,9 @@ function buildPreview(content: string): string {
   return `${normalized.slice(0, PREVIEW_LENGTH).trimEnd()}…`;
 }
 
-function frontmatterRows(memory: TaskMemoryEntry): { label: string; value: string }[] {
+function frontmatterRows(
+  memory: TaskMemoryEntry,
+): { label: string; value: string }[] {
   return [
     { label: "kind", value: memory.kind },
     { label: "namespace", value: memory.namespace },
@@ -144,7 +146,9 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
             className={styles.cardBodyButton}
             onClick={handleToggleExpanded}
             aria-expanded={isExpanded}
-            aria-label={`${isExpanded ? "Collapse" : "Expand"} memory ${title.text}`}
+            aria-label={`${isExpanded ? "Collapse" : "Expand"} memory ${
+              title.text
+            }`}
           >
             <Flex direction="column" gap="1" className={styles.cardBodyColumn}>
               <Flex align="center" gap="2" className={styles.cardTitleRow}>
@@ -168,7 +172,12 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
                 </Text>
               </Flex>
 
-              <Flex align="end" justify="between" gap="2" className={styles.cardPreviewRow}>
+              <Flex
+                align="end"
+                justify="between"
+                gap="2"
+                className={styles.cardPreviewRow}
+              >
                 {preview ? (
                   <Text size="1" color="gray" className={styles.cardPreview}>
                     {preview}
@@ -183,7 +192,12 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
             </Flex>
           </button>
 
-          <Flex direction="column" align="end" gap="1" className={styles.cardControls}>
+          <Flex
+            direction="column"
+            align="end"
+            gap="1"
+            className={styles.cardControls}
+          >
             <Flex gap="1" align="center">
               <Tooltip content={memory.pinned ? "Unpin" : "Pin memory"}>
                 <IconButton
@@ -255,7 +269,9 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
           >
             {content ? (
               <Box className={styles.expandedMarkdown}>
-                <Markdown canHaveInteractiveElements={false}>{content}</Markdown>
+                <Markdown canHaveInteractiveElements={false}>
+                  {content}
+                </Markdown>
               </Box>
             ) : (
               <Text size="2" color="gray" className={styles.emptyContent}>
@@ -263,7 +279,12 @@ export const MemoryCard: React.FC<MemoryCardProps> = ({
               </Text>
             )}
 
-            <Flex gap="1" wrap="wrap" align="center" className={styles.expandedTags}>
+            <Flex
+              gap="1"
+              wrap="wrap"
+              align="center"
+              className={styles.expandedTags}
+            >
               {memory.tags.length > 0 ? (
                 memory.tags.map((tag) => (
                   <Badge key={tag} color="gray" variant="outline">

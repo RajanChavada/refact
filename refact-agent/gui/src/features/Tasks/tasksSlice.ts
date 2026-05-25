@@ -19,7 +19,6 @@ export interface PlannerInfo {
   updatedAt: string;
   sessionState?: string;
   waitingForCardIds?: string[];
-  removed?: boolean;
 }
 
 export interface OpenTask {
@@ -96,7 +95,7 @@ export const tasksSlice = createSlice({
         (p) => p.id === action.payload.planner.id,
       );
       if (existing) {
-        Object.assign(existing, action.payload.planner, { removed: false });
+        Object.assign(existing, action.payload.planner);
       } else {
         task.plannerChats.push(action.payload.planner);
       }
@@ -135,13 +134,23 @@ export const tasksSlice = createSlice({
     ) => {
       const task = state.openTasks.find((t) => t.id === action.payload.taskId);
       if (task) {
-        const planner = task.plannerChats.find(
-          (p) => p.id === action.payload.chatId,
-        );
-        if (planner) planner.removed = true;
         task.plannerChats = task.plannerChats.filter(
           (p) => p.id !== action.payload.chatId,
         );
+        persistTasksUIState(state);
+      }
+    },
+    restorePlannerChat: (
+      state,
+      action: PayloadAction<{ taskId: string; planner: PlannerInfo }>,
+    ) => {
+      const task = state.openTasks.find((t) => t.id === action.payload.taskId);
+      if (!task) return;
+      const existing = task.plannerChats.find(
+        (p) => p.id === action.payload.planner.id,
+      );
+      if (!existing) {
+        task.plannerChats.push(action.payload.planner);
         persistTasksUIState(state);
       }
     },
@@ -177,6 +186,7 @@ export const {
   addPlannerChat,
   updatePlannerChat,
   removePlannerChat,
+  restorePlannerChat,
   setTaskActiveChat,
 } = tasksSlice.actions;
 export const { selectOpenTasks } = tasksSlice.selectors;

@@ -70,7 +70,9 @@ function mockMemories(response: TaskMemoriesResponse = memoriesResponse) {
 type TestUser = ReturnType<typeof render>["user"];
 
 async function openTagCloud(user: TestUser) {
-  await user.click(await screen.findByRole("button", { name: /Show all \d+ tags/ }));
+  await user.click(
+    await screen.findByRole("button", { name: /Show all \d+ tags/ }),
+  );
 }
 
 describe("MemoryInboxPanel", () => {
@@ -312,7 +314,9 @@ describe("MemoryInboxPanel", () => {
       screen.getByRole("button", { name: /Show all \d+ tags/ }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Filter tags")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "cleanup" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "cleanup" }),
+    ).not.toBeInTheDocument();
   });
 
   it("clicking all tags reveals the chip cloud", async () => {
@@ -339,7 +343,9 @@ describe("MemoryInboxPanel", () => {
     await user.type(screen.getByLabelText("Filter tags"), "clean");
 
     expect(screen.getByRole("button", { name: "cleanup" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "planner" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "planner" }),
+    ).not.toBeInTheDocument();
   });
 
   it("isolates optimistic pin state across task ids", async () => {

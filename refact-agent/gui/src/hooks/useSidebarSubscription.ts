@@ -402,7 +402,11 @@ export function useSidebarSubscription() {
 
   const processTaskEvent = useCallback(
     (event: Extract<SidebarSectionUpdate, { type: string }>) => {
-      dispatch(taskSseEventReceived(event as Parameters<typeof taskSseEventReceived>[0]));
+      dispatch(
+        taskSseEventReceived(
+          event as Parameters<typeof taskSseEventReceived>[0],
+        ),
+      );
       switch (event.type) {
         case "snapshot":
           tasksSnapshotRef.current = event.tasks;

@@ -105,7 +105,9 @@ function sidebarRawHandler(blocks: string[]) {
   );
 }
 
-function subscribeForTest(overrides: Partial<SidebarSubscriptionCallbacks> = {}) {
+function subscribeForTest(
+  overrides: Partial<SidebarSubscriptionCallbacks> = {},
+) {
   const events: Parameters<SidebarSubscriptionCallbacks["onEvent"]>[0][] = [];
   const errors: Error[] = [];
   const liveness = vi.fn();
@@ -211,7 +213,9 @@ describe("useSidebarSubscription", () => {
     server.use(
       sidebarRawHandler([
         "data: {not json}\n\n",
-        `data: ${JSON.stringify(sectionSnapshot(0, "tasks", { tasks: [taskA] }))}\n\n`,
+        `data: ${JSON.stringify(
+          sectionSnapshot(0, "tasks", { tasks: [taskA] }),
+        )}\n\n`,
       ]),
     );
 

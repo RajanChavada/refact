@@ -107,13 +107,21 @@ describe("MemoryCard", () => {
   it("clicking the row body toggles expansion", async () => {
     const { user } = renderCard(mockMemory);
 
-    expect(screen.queryByTestId("memory-card-expanded-decision.md")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("memory-card-expanded-decision.md"),
+    ).not.toBeInTheDocument();
     await user.click(
-      screen.getByRole("button", { name: /Expand memory Use scoped memory index/i }),
+      screen.getByRole("button", {
+        name: /Expand memory Use scoped memory index/i,
+      }),
     );
 
-    expect(screen.getByTestId("memory-card-expanded-decision.md")).toBeInTheDocument();
-    expect(screen.getByTestId("memory-card-frontmatter-decision.md")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("memory-card-expanded-decision.md"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("memory-card-frontmatter-decision.md"),
+    ).toBeInTheDocument();
     expect(screen.getByText("created_at")).toBeInTheDocument();
   });
 

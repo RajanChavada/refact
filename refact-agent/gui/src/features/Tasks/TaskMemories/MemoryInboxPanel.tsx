@@ -173,7 +173,9 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
   useEffect(() => {
     if (
       expandedMemoryFilename &&
-      !visibleMemories.some((memory) => memory.filename === expandedMemoryFilename)
+      !visibleMemories.some(
+        (memory) => memory.filename === expandedMemoryFilename,
+      )
     ) {
       setExpandedMemoryFilename(null);
     }
@@ -343,8 +345,18 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
 
         {(tags.length > 0 || hasSelectedTags) && (
           <Collapsible.Root open={tagCloudOpen} onOpenChange={setTagCloudOpen}>
-            <Flex align="center" justify="between" gap="2" className={styles.tagSummary}>
-              <Flex gap="1" wrap="wrap" align="center" className={styles.tagSelectedChips}>
+            <Flex
+              align="center"
+              justify="between"
+              gap="2"
+              className={styles.tagSummary}
+            >
+              <Flex
+                gap="1"
+                wrap="wrap"
+                align="center"
+                className={styles.tagSelectedChips}
+              >
                 {selectedTagList.map((tag) => (
                   <Badge
                     key={tag}
@@ -373,13 +385,20 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
                 <Collapsible.Trigger asChild>
                   <Button size="1" variant="soft" color="gray">
                     <ChevronDownIcon />
-                    {tagCloudOpen ? "Hide tags" : `Show all ${tags.length} tags`}
+                    {tagCloudOpen
+                      ? "Hide tags"
+                      : `Show all ${tags.length} tags`}
                   </Button>
                 </Collapsible.Trigger>
               </Flex>
             </Flex>
             <Collapsible.Content>
-              <Flex gap="1" wrap="wrap" align="center" className={styles.tagChips}>
+              <Flex
+                gap="1"
+                wrap="wrap"
+                align="center"
+                className={styles.tagChips}
+              >
                 <Box className={styles.tagSearchBox}>
                   <TextField.Root
                     value={tagSearch}
@@ -406,7 +425,10 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
                         active && styles.tagChipActive,
                       )}
                     >
-                      <button type="button" onClick={() => handleToggleTag(tag)}>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleTag(tag)}
+                      >
                         {tag}
                       </button>
                     </Badge>

@@ -204,14 +204,19 @@ function toSeq(value: unknown): number | null {
 
 function getEnvelopeParts(
   parsed: unknown,
-): { seq: number; subscriptionId: string; event: Record<string, unknown> } | null {
+): {
+  seq: number;
+  subscriptionId: string;
+  event: Record<string, unknown>;
+} | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const envelope = parsed as Record<string, unknown>;
   if (envelope.protocol_version !== 2) return null;
   const seq = toSeq(envelope.seq);
   if (seq === null) return null;
   if (typeof envelope.subscription_id !== "string") return null;
-  if (typeof envelope.event !== "object" || envelope.event === null) return null;
+  if (typeof envelope.event !== "object" || envelope.event === null)
+    return null;
   const event = envelope.event as Record<string, unknown>;
   if (typeof event.type !== "string") return null;
   return { seq, subscriptionId: envelope.subscription_id, event };
@@ -288,9 +293,7 @@ function tryParseSidebarEvent(raw: string): SidebarEventEnvelope | null {
         return null;
       }
       if (
-        !isValidNotificationEvent(
-          event.notification as Record<string, unknown>,
-        )
+        !isValidNotificationEvent(event.notification as Record<string, unknown>)
       ) {
         return null;
       }

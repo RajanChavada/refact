@@ -282,8 +282,6 @@ describe("DocumentsPanel", () => {
     });
   });
 
-
-
   it("clicking a history version loads and renders historical content", async () => {
     mockDocuments();
     server.use(
@@ -332,7 +330,9 @@ describe("DocumentsPanel", () => {
     await user.click(within(dialog).getByRole("button", { name: /v1/i }));
 
     await waitFor(() => {
-      expect(screen.getByText("This is the historical content.")).toBeInTheDocument();
+      expect(
+        screen.getByText("This is the historical content."),
+      ).toBeInTheDocument();
     });
   });
 

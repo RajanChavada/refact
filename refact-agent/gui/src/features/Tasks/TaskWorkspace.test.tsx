@@ -13,6 +13,7 @@ import type {
   BoardCard,
   TaskBoard,
   TaskMeta,
+  TrajectoryInfo,
 } from "../../services/refact/tasks";
 import type {
   WorktreeListResponse,
@@ -913,5 +914,129 @@ describe("TaskWorkspace SSE invalidation", () => {
     document.dispatchEvent(new Event("visibilitychange"));
 
     await waitFor(() => expect(boardFetchCount).toBeGreaterThan(initialCount));
+  });
+});
+
+describe("TaskWorkspace planner CRUD", () => {
+  function makePlannerTrajectory(): TrajectoryInfo {
+    return {
+      id: PLANNER_ID,
+      title: "Test Planner",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  it("delete_planner_failure_restores_local_state", async () => {
+    server.use(...taskWorkspaceHandlers(makeCard(), []));
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/tasks/task-1/trajectories/planner",
+        () => HttpResponse.json([makePlannerTrajectory()]),
+      ),
+      http.delete(
+        `http://127.0.0.1:8001/v1/tasks/${TASK_ID}/planner-chats/${PLANNER_ID}`,
+        () => HttpResponse.json({ error: "Internal error" }, { status: 500 }),
+      ),
+    );
+
+    const { user } = render(<TaskWorkspace taskId={TASK_ID} />, {
+      preloadedState: workspacePreloadedState(),
+    });
+
+    const deleteBtn = await screen.findByRole("button", {
+      name: "Delete planner chat",
+      hidden: true,
+    });
+    await user.click(deleteBtn);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Delete failed/)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "Delete planner chat", hidden: true }),
+    ).toBeInTheDocument();
+  });
+
+  it("delete_planner_409_shows_agent_refs_in_notification", async () => {
+    server.use(...taskWorkspaceHandlers(makeCard(), []));
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/tasks/task-1/trajectories/planner",
+        () => HttpResponse.json([makePlannerTrajectory()]),
+      ),
+      http.delete(
+        `http://127.0.0.1:8001/v1/tasks/${TASK_ID}/planner-chats/${PLANNER_ID}`,
+        () =>
+          HttpResponse.json(
+            {
+              error: "Referenced by agents",
+              agent_refs: [{ chat_id: "agent-ref-1" }],
+            },
+            { status: 409 },
+          ),
+      ),
+    );
+
+    const { user } = render(<TaskWorkspace taskId={TASK_ID} />, {
+      preloadedState: workspacePreloadedState(),
+    });
+
+    const deleteBtn = await screen.findByRole("button", {
+      name: "Delete planner chat",
+      hidden: true,
+    });
+    await user.click(deleteBtn);
+
+    await screen.findByText(/agent-ref-1/);
+  });
+
+  it("cached_savedPlanners_does_not_resurrect_deleted_planner", async () => {
+    server.use(...taskWorkspaceHandlers(makeCard(), []));
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/tasks/task-1/trajectories/planner",
+        () => HttpResponse.json([]),
+      ),
+    );
+
+    render(<TaskWorkspace taskId={TASK_ID} />, {
+      preloadedState: workspacePreloadedState(),
+    });
+
+    await screen.findAllByText(makeCard().title);
+
+    await waitFor(() =>
+      expect(screen.getByText("No planner chats yet")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "Delete planner chat",
+        hidden: true,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("create_planner_failure_shows_notification", async () => {
+    server.use(...taskWorkspaceHandlers(makeCard(), []));
+    server.use(
+      http.get(
+        "http://127.0.0.1:8001/v1/tasks/task-1/trajectories/planner",
+        () => HttpResponse.json([]),
+      ),
+      http.post(`http://127.0.0.1:8001/v1/tasks/${TASK_ID}/planner-chats`, () =>
+        HttpResponse.json({ error: "Server error" }, { status: 500 }),
+      ),
+    );
+
+    const { user } = render(<TaskWorkspace taskId={TASK_ID} />, {
+      preloadedState: workspacePreloadedState(),
+    });
+
+    await screen.findAllByText(makeCard().title);
+
+    await user.click(screen.getByRole("button", { name: "New planner" }));
+
+    await screen.findByText(/Create failed/);
   });
 });
