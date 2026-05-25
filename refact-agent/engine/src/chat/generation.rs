@@ -36,7 +36,10 @@ use super::queue::inject_priority_messages_if_any;
 use super::config::tokens;
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, get_project_dir_string, run_hooks};
-use crate::chat::diagnostics::{make_ui_only_compaction_report_message, make_ui_only_error_message};
+use crate::chat::diagnostics::{
+    make_ui_only_compaction_report_message, make_ui_only_error_message,
+    make_ui_only_retry_status_message,
+};
 use crate::chat::history_limit::{tier0_deterministic_compact_with, CompactAggression};
 use crate::chat::trajectory_ops::approx_token_count;
 
@@ -549,6 +552,7 @@ pub fn start_generation(
     Box::pin(async move {
         let gcx = app.gcx.clone();
         let mut network_retry_attempt = 0usize;
+        let mut retry_status_message_id: Option<String> = None;
         let mut context_limit_compact_count = 0usize;
         let mut tier1_compact_count = 0usize;
         let mut tier1_disabled_for_session = false;
@@ -709,7 +713,41 @@ pub fn start_generation(
                         let mut session = session_arc.lock().await;
                         if !session.abort_flag.load(Ordering::SeqCst) {
                             session.clear_stream_for_retry();
+                            let retry_msg = make_ui_only_retry_status_message(
+                                &error.message,
+                                network_retry_attempt,
+                                super::retry_policy::MAX_LLM_RETRY_ATTEMPTS,
+                                delay.as_secs(),
+                            );
+                            let new_id = retry_msg.message_id.clone();
+                            let updated_in_place = retry_status_message_id
+                                .as_deref()
+                                .and_then(|id| session.update_message(id, retry_msg.clone()))
+                                .is_some();
+                            if !updated_in_place {
+                                retry_status_message_id = Some(new_id);
+                                session.add_message(retry_msg);
+                            }
                         }
+                    }
+                    {
+                        let mut ev = make_runtime_event(
+                            "chat_retrying",
+                            &format!(
+                                "Retrying '{}' in {}s (attempt {}/{})",
+                                chat_label,
+                                delay.as_secs(),
+                                network_retry_attempt,
+                                super::retry_policy::MAX_LLM_RETRY_ATTEMPTS,
+                            ),
+                            "chat",
+                            &format!("chat_{}", chat_id),
+                            "retrying",
+                            None,
+                        );
+                        ev.chat_id = Some(chat_id.to_string());
+                        ev.persistent = true;
+                        app.buddy_event_sink.enqueue_event(ev).await;
                     }
                     warn!(
                         "Retrying chat generation after retryable LLM error in {}s (attempt {}/{}, reason={})",
@@ -851,6 +889,7 @@ pub fn start_generation(
             }
 
             network_retry_attempt = 0;
+            retry_status_message_id = None;
             context_limit_compact_count = 0;
             tier1_compact_count = 0;
 

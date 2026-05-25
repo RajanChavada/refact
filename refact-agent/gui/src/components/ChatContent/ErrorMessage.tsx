@@ -1,9 +1,10 @@
 import React from "react";
 import { Badge, Box, Button, Card, Flex, Text } from "@radix-ui/themes";
-import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import { ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
 import styles from "./ChatContent.module.css";
 import type {
   ErrorMessage,
+  RetryStatus,
   UserErrorCategory,
   UserErrorInfo,
 } from "../../services/refact/types";
@@ -15,6 +16,7 @@ export type ErrorMessageCardProps = {
 type ParsedError = {
   message: string;
   info?: UserErrorInfo;
+  retry?: RetryStatus;
 };
 
 const CATEGORY_COLORS: Record<
@@ -73,18 +75,40 @@ function isUserErrorInfo(value: unknown): value is UserErrorInfo {
   );
 }
 
+function isRetryStatus(value: unknown): value is RetryStatus {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.attempt === "number" &&
+    typeof record.max_attempts === "number" &&
+    typeof record.delay_secs === "number" &&
+    typeof record.in_progress === "boolean"
+  );
+}
+
+function pickRetryStatus(error: ErrorMessage): RetryStatus | undefined {
+  if (error.retry_status && isRetryStatus(error.retry_status)) {
+    return error.retry_status;
+  }
+  if (isRetryStatus(error.extra?.retry_status)) {
+    return error.extra.retry_status;
+  }
+  return undefined;
+}
+
 function parseStructuredError(error: ErrorMessage): ParsedError {
+  const retry = pickRetryStatus(error);
   if (error.error_info) {
-    return { message: error.content, info: error.error_info };
+    return { message: error.content, info: error.error_info, retry };
   }
   if (isUserErrorInfo(error.extra?.error_info)) {
-    return { message: error.content, info: error.extra.error_info };
+    return { message: error.content, info: error.extra.error_info, retry };
   }
 
   try {
     const parsed = JSON.parse(error.content) as unknown;
     if (!parsed || typeof parsed !== "object")
-      return { message: error.content };
+      return { message: error.content, retry };
     const record = parsed as Record<string, unknown>;
     const nested = record.error;
     if (nested && typeof nested === "object") {
@@ -96,6 +120,7 @@ function parseStructuredError(error: ErrorMessage): ParsedError {
               ? nestedRecord.message
               : nestedRecord.error_info.raw_error ?? error.content,
           info: nestedRecord.error_info,
+          retry,
         };
       }
     }
@@ -106,12 +131,13 @@ function parseStructuredError(error: ErrorMessage): ParsedError {
             ? record.message
             : record.error_info.raw_error ?? error.content,
         info: record.error_info,
+        retry,
       };
     }
   } catch {
-    return { message: error.content };
+    return { message: error.content, retry };
   }
-  return { message: error.content };
+  return { message: error.content, retry };
 }
 
 function errorActionLabel(action: string): string {
@@ -124,6 +150,16 @@ function shouldShowRawError(rawError: string, error: ParsedError): boolean {
   if (rawError === error.info?.explanation) return false;
   return true;
 }
+
+const RetryingBadge: React.FC<{
+  retry: RetryStatus;
+  color: React.ComponentProps<typeof Badge>["color"];
+}> = ({ retry, color }) => (
+  <Badge color={color} variant="soft">
+    <UpdateIcon className={styles.retryingBadgeIcon} />
+    Retrying {retry.delay_secs}s · {retry.attempt}/{retry.max_attempts}
+  </Badge>
+);
 
 const ClassifiedError: React.FC<{
   error: ParsedError;
@@ -140,6 +176,7 @@ const ClassifiedError: React.FC<{
 
   const color = CATEGORY_COLORS[info.category];
   const rawError = info.raw_error ?? error.message;
+  const retry = error.retry?.in_progress ? error.retry : undefined;
 
   return (
     <Flex direction="column" gap="2" className={styles.errorMessageBody}>
@@ -153,16 +190,22 @@ const ClassifiedError: React.FC<{
               {info.category}
             </Badge>
           </Flex>
-          <Button size="1" variant="soft" color={color}>
-            {errorActionLabel(info.suggested_action)}
-          </Button>
+          {retry ? (
+            <RetryingBadge retry={retry} color={color} />
+          ) : (
+            <Button size="1" variant="soft" color={color}>
+              {errorActionLabel(info.suggested_action)}
+            </Button>
+          )}
         </Flex>
       )}
       <Text size="2">{info.explanation}</Text>
       <Text size="1" color="gray">
-        {info.is_retryable
-          ? "Retrying may succeed after the condition clears."
-          : "Retrying unchanged is unlikely to fix this."}
+        {retry
+          ? `Auto-retrying in ${retry.delay_secs}s (attempt ${retry.attempt}/${retry.max_attempts}).`
+          : info.is_retryable
+            ? "Retrying may succeed after the condition clears."
+            : "Retrying unchanged is unlikely to fix this."}
       </Text>
       {shouldShowRawError(rawError, error) && (
         <Text as="div" size="1" className={styles.errorMessageRaw}>
@@ -178,6 +221,10 @@ export const ErrorMessageCard: React.FC<ErrorMessageCardProps> = ({
 }) => {
   const parsedErrors = errors.map(parseStructuredError);
   const firstClassified = parsedErrors.find((error) => error.info)?.info;
+  const latestRetry = parsedErrors
+    .map((error) => error.retry)
+    .filter((retry): retry is RetryStatus => Boolean(retry?.in_progress))
+    .pop();
   const title = firstClassified
     ? firstClassified.title
     : errors.length === 1
@@ -205,11 +252,15 @@ export const ErrorMessageCard: React.FC<ErrorMessageCardProps> = ({
               </Badge>
             )}
           </Flex>
-          {firstClassified && !showPerErrorHeader && (
-            <Button size="1" variant="soft" color={color}>
-              {errorActionLabel(firstClassified.suggested_action)}
-            </Button>
-          )}
+          {firstClassified &&
+            !showPerErrorHeader &&
+            (latestRetry ? (
+              <RetryingBadge retry={latestRetry} color={color} />
+            ) : (
+              <Button size="1" variant="soft" color={color}>
+                {errorActionLabel(firstClassified.suggested_action)}
+              </Button>
+            ))}
         </Flex>
         <Flex direction="column" gap="3">
           {parsedErrors.map((error, index) => (

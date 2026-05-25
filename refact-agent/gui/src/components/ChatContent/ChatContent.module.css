@@ -255,6 +255,20 @@
   word-break: break-word;
 }
 
+.retryingBadgeIcon {
+  width: 11px;
+  height: 11px;
+  margin-right: var(--space-1);
+  animation: retryingSpin 1.8s linear infinite;
+  vertical-align: -1px;
+}
+
+@keyframes retryingSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .errorMessageRaw {
   color: var(--gray-11);
   white-space: pre-wrap;

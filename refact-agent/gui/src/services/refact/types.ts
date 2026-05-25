@@ -207,10 +207,18 @@ export type UserErrorInfo = {
   raw_error?: string;
 };
 
+export type RetryStatus = {
+  attempt: number;
+  max_attempts: number;
+  delay_secs: number;
+  in_progress: boolean;
+};
+
 export interface ErrorMessage extends BaseMessage {
   role: "error";
   content: string;
   error_info?: UserErrorInfo;
+  retry_status?: RetryStatus;
 }
 
 export interface ToolCallMessage extends AssistantMessage {
