@@ -250,23 +250,15 @@
 }
 
 .errorMessageBody {
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-3);
-  background: var(--red-a2);
   color: var(--red-12);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.errorMessageBody :global(p) {
-  margin: 0;
-}
-
 .errorMessageRaw {
-  padding: var(--space-2);
-  border-radius: var(--radius-2);
-  background: var(--gray-a2);
-  color: var(--gray-12);
+  color: var(--gray-11);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .virtuosoScroller {

@@ -1,7 +1,6 @@
 import React from "react";
 import { Badge, Box, Button, Card, Flex, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
-import { Markdown } from "../Markdown";
 import styles from "./ChatContent.module.css";
 import type {
   ErrorMessage,
@@ -119,13 +118,23 @@ function errorActionLabel(action: string): string {
   return ACTION_LABELS[action] ?? ACTION_LABELS.none ?? "Review error";
 }
 
-const ClassifiedError: React.FC<{ error: ParsedError }> = ({ error }) => {
+function shouldShowRawError(rawError: string, error: ParsedError): boolean {
+  if (!rawError.trim()) return false;
+  if (rawError === error.message) return !error.info;
+  if (rawError === error.info?.explanation) return false;
+  return true;
+}
+
+const ClassifiedError: React.FC<{
+  error: ParsedError;
+  showHeader: boolean;
+}> = ({ error, showHeader }) => {
   const info = error.info;
   if (!info) {
     return (
-      <Box className={styles.errorMessageBody}>
-        <Markdown>{error.message}</Markdown>
-      </Box>
+      <Text as="div" size="2" className={styles.errorMessageBody}>
+        {error.message}
+      </Text>
     );
   }
 
@@ -133,8 +142,8 @@ const ClassifiedError: React.FC<{ error: ParsedError }> = ({ error }) => {
   const rawError = info.raw_error ?? error.message;
 
   return (
-    <Box className={styles.errorMessageBody}>
-      <Flex direction="column" gap="2">
+    <Flex direction="column" gap="2" className={styles.errorMessageBody}>
+      {showHeader && (
         <Flex align="center" justify="between" gap="2" wrap="wrap">
           <Flex align="center" gap="2" wrap="wrap">
             <Text size="2" weight="bold" color={color}>
@@ -148,19 +157,19 @@ const ClassifiedError: React.FC<{ error: ParsedError }> = ({ error }) => {
             {errorActionLabel(info.suggested_action)}
           </Button>
         </Flex>
-        <Text size="2">{info.explanation}</Text>
-        <Text size="1" color="gray">
-          {info.is_retryable
-            ? "Retrying may succeed after the condition clears."
-            : "Retrying unchanged is unlikely to fix this."}
+      )}
+      <Text size="2">{info.explanation}</Text>
+      <Text size="1" color="gray">
+        {info.is_retryable
+          ? "Retrying may succeed after the condition clears."
+          : "Retrying unchanged is unlikely to fix this."}
+      </Text>
+      {shouldShowRawError(rawError, error) && (
+        <Text as="div" size="1" className={styles.errorMessageRaw}>
+          {rawError}
         </Text>
-        {rawError && (
-          <Box className={styles.errorMessageRaw}>
-            <Markdown>{rawError}</Markdown>
-          </Box>
-        )}
-      </Flex>
-    </Box>
+      )}
+    </Flex>
   );
 };
 
@@ -177,23 +186,37 @@ export const ErrorMessageCard: React.FC<ErrorMessageCardProps> = ({
   const color = firstClassified
     ? CATEGORY_COLORS[firstClassified.category]
     : "red";
+  const showPerErrorHeader = parsedErrors.length > 1;
 
   return (
     <Card className={styles.errorMessageCard} variant="surface">
       <Flex direction="column" gap="2">
-        <Flex align="center" gap="2">
-          <Box className={styles.errorMessageIcon}>
-            <ExclamationTriangleIcon width="15" height="15" />
-          </Box>
-          <Text size="2" weight="medium" color={color}>
-            {title}
-          </Text>
+        <Flex align="center" justify="between" gap="2" wrap="wrap">
+          <Flex align="center" gap="2" wrap="wrap">
+            <Box className={styles.errorMessageIcon}>
+              <ExclamationTriangleIcon width="15" height="15" />
+            </Box>
+            <Text size="2" weight="medium" color={color}>
+              {title}
+            </Text>
+            {firstClassified && (
+              <Badge color={color} variant="soft">
+                {firstClassified.category}
+              </Badge>
+            )}
+          </Flex>
+          {firstClassified && !showPerErrorHeader && (
+            <Button size="1" variant="soft" color={color}>
+              {errorActionLabel(firstClassified.suggested_action)}
+            </Button>
+          )}
         </Flex>
-        <Flex direction="column" gap="2">
+        <Flex direction="column" gap="3">
           {parsedErrors.map((error, index) => (
             <ClassifiedError
               key={`${index}-${error.message}-${error.info?.category ?? "raw"}`}
               error={error}
+              showHeader={showPerErrorHeader}
             />
           ))}
         </Flex>
