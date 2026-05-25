@@ -32,10 +32,9 @@ pub async fn scratchpad_interaction_not_stream_json(
 ) -> Result<serde_json::Value, ScratchError> {
     let t2 = std::time::SystemTime::now();
     let gcx = ccx.lock().await.global_context.clone();
-    let (client, slowdown_arc) = { (gcx.http_client.clone(), gcx.http_client_slowdown.clone()) };
+    let client = gcx.http_client.clone();
 
     let mut save_url: String = String::new();
-    let _ = slowdown_arc.acquire().await;
     let mut model_says = if only_deterministic_messages {
         save_url = "only-det-messages".to_string();
         Ok(Value::Object(serde_json::Map::new()))
@@ -254,12 +253,7 @@ pub async fn scratchpad_interaction_stream(
         let my_ccx = ccx.clone();
 
         let gcx = ccx.lock().await.global_context.clone();
-        let (client, slowdown_arc) = {
-            (
-                gcx.http_client.clone(),
-                gcx.http_client_slowdown.clone()
-            )
-        };
+        let client = gcx.http_client.clone();
 
         let t0 = std::time::Instant::now();
         let mut prompt = String::new();
@@ -328,7 +322,6 @@ pub async fn scratchpad_interaction_stream(
             }
         }
 
-        let _ = slowdown_arc.acquire().await;
         loop {
             let value_maybe = my_scratchpad.response_spontaneous();
             if let Ok(value) = value_maybe {

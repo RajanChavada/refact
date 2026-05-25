@@ -1825,7 +1825,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn no_auth_returns_empty_when_no_custom_models() {
+        let _lock = CODEX_HOME_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = CodexHomeGuard::new(dir.path());
+
         let p = OpenAICodexProvider::default();
         let client = reqwest::Client::new();
         let models = p.fetch_available_models(&client, &HashMap::new()).await;

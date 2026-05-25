@@ -30,7 +30,7 @@ use super::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
 use super::stream_core::{
     run_llm_stream, StreamRunParams, StreamCollector, normalize_tool_call, ChoiceFinal,
-    LlmStreamError,
+    LlmStreamError, ABORT_ERROR_MESSAGE,
 };
 use super::queue::inject_priority_messages_if_any;
 use super::config::tokens;
@@ -46,6 +46,19 @@ const TOKEN_BUDGET_MARKER: &str = "token_budget_info";
 const MCP_LAZY_INDEX_MARKER: &str = "mcp_lazy_index";
 const PARTIAL_OUTPUT_STREAM_ERROR: &str =
     "Stream interrupted after partial output. Not retrying to avoid corruption.";
+
+async fn user_stop_requested(session_arc: &Arc<AMutex<ChatSession>>) -> bool {
+    let session = session_arc.lock().await;
+    session.user_interrupt_flag.load(Ordering::SeqCst)
+}
+
+fn check_aborted_before_stream(abort_flag: &AtomicBool) -> Result<(), LlmStreamError> {
+    if abort_flag.load(Ordering::SeqCst) {
+        Err(LlmStreamError::from(ABORT_ERROR_MESSAGE.to_string()))
+    } else {
+        Ok(())
+    }
+}
 
 fn make_runtime_event(
     signal_type: &str,
@@ -628,6 +641,10 @@ pub fn start_generation(
             )
             .await;
 
+            if user_stop_requested(&session_arc).await {
+                break;
+            }
+
             let abort_flag = {
                 let mut session = session_arc.lock().await;
                 match session.start_stream() {
@@ -820,9 +837,11 @@ pub fn start_generation(
                         .await;
                     }
                 }
-                if abort_flag.load(Ordering::SeqCst) {
+                {
                     let mut session = session_arc.lock().await;
-                    session.clear_stream_for_retry();
+                    if session.user_interrupt_flag.load(Ordering::SeqCst) {
+                        session.clear_stream_for_retry();
+                    }
                 }
                 break;
             }
@@ -983,10 +1002,12 @@ pub async fn run_llm_generation(
     abort_flag: Arc<AtomicBool>,
 ) -> Result<(), LlmStreamError> {
     let gcx = app.gcx.clone();
+    check_aborted_before_stream(&abort_flag)?;
     let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0)
         .await
         .map_err(|e| e.message)?;
     let model_rec = crate::caps::resolve_chat_model(caps.clone(), &thread.model)?;
+    check_aborted_before_stream(&abort_flag)?;
 
     let tools_for_gen = app
         .tool_registry
@@ -1011,6 +1032,7 @@ pub async fn run_llm_generation(
         Some(cap) if cap > 0 => cap.min(model_n_ctx),
         _ => model_n_ctx,
     };
+    check_aborted_before_stream(&abort_flag)?;
     let tokenizer_arc = crate::tokens::cached_tokenizer(gcx.clone(), &model_rec.base).await?;
     let t = HasTokenizerAndEot::new(tokenizer_arc);
 
@@ -1101,6 +1123,7 @@ pub async fn run_llm_generation(
         ..Default::default()
     };
 
+    check_aborted_before_stream(&abort_flag)?;
     let prepared = prepare_chat_passthrough(
         gcx.clone(),
         ccx_arc.clone(),
@@ -1122,6 +1145,7 @@ pub async fn run_llm_generation(
         save_rag_results_to_session(&mut session, &prepared.rag_results);
     }
 
+    check_aborted_before_stream(&abort_flag)?;
     run_streaming_generation(
         app,
         session_arc,

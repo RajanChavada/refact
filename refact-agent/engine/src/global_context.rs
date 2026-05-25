@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 use std::sync::RwLock as StdRwLock;
+use std::time::Duration;
 use hyper::StatusCode;
 use structopt::StructOpt;
 use tokio::signal;
-use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, Semaphore};
+use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::{error, info};
 
 use crate::ast::ast_indexer_thread::AstIndexService;
@@ -219,7 +220,6 @@ pub struct GlobalContext {
     pub shutdown_flag: Arc<AtomicBool>,
     pub cmdline: CommandLine,
     pub http_client: reqwest::Client,
-    pub http_client_slowdown: Arc<Semaphore>,
     pub cache_dir: PathBuf,
     pub config_dir: PathBuf,
     pub caps_state: Arc<ARwLock<CapsState>>,
@@ -275,7 +275,6 @@ impl GlobalContext {
                 shutdown_flag: self.shutdown_flag.clone(),
                 cmdline: Arc::new(self.cmdline.clone()),
                 http_client: self.http_client.clone(),
-                http_client_slowdown: self.http_client_slowdown.clone(),
                 ask_shutdown_sender: self.ask_shutdown_sender.clone(),
             },
             paths: PathServices {
@@ -601,6 +600,16 @@ pub async fn block_until_signal(
     }
 }
 
+fn build_shared_http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .pool_idle_timeout(Some(Duration::from_secs(60)))
+        .http2_keep_alive_interval(Some(Duration::from_secs(20)))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
+}
+
 pub async fn create_global_context(
     cache_dir: PathBuf,
     config_dir: PathBuf,
@@ -611,7 +620,7 @@ pub async fn create_global_context(
 ) {
     let cmdline = CommandLine::from_args();
     let (ask_shutdown_sender, ask_shutdown_receiver) = std::sync::mpsc::channel::<String>();
-    let mut http_client_builder = reqwest::Client::builder();
+    let mut http_client_builder = build_shared_http_client_builder();
     if cmdline.insecure {
         http_client_builder = http_client_builder.danger_accept_invalid_certs(true)
     }
@@ -633,7 +642,6 @@ pub async fn create_global_context(
         shutdown_flag: Arc::new(AtomicBool::new(false)),
         cmdline: cmdline.clone(),
         http_client: http_client.clone(),
-        http_client_slowdown: Arc::new(Semaphore::new(2)),
         cache_dir,
         config_dir: config_dir.clone(),
         caps_state: Arc::new(ARwLock::new(CapsState {
@@ -765,7 +773,7 @@ pub mod tests {
             privacy_yaml: String::new(),
         };
 
-        let http_client = reqwest::Client::builder()
+        let http_client = build_shared_http_client_builder()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap();
@@ -774,7 +782,6 @@ pub mod tests {
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             cmdline,
             http_client,
-            http_client_slowdown: Arc::new(Semaphore::new(2)),
             cache_dir,
             config_dir,
             caps_state: Arc::new(ARwLock::new(CapsState {

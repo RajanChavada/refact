@@ -158,9 +158,10 @@ fn abort_requested(abort_flag: Option<&Arc<AtomicBool>>) -> bool {
     abort_flag.is_some_and(|flag| flag.load(Ordering::SeqCst))
 }
 
+pub(crate) const ABORT_ERROR_MESSAGE: &str = "Aborted";
+
 fn is_abort_error(error: &str) -> bool {
-    let lower = error.to_lowercase();
-    lower.contains("aborted") || lower.contains("cancelled") || lower.contains("canceled")
+    error == ABORT_ERROR_MESSAGE
 }
 
 async fn send_llm_http_request(
@@ -183,7 +184,7 @@ async fn send_llm_http_request(
 
     tokio::select! {
         result = request => result.map_err(|e| format!("LLM request failed: {}", e)),
-        _ = wait_for_abort_signal(abort_flag) => Err("Aborted".to_string()),
+        _ = wait_for_abort_signal(abort_flag) => Err(ABORT_ERROR_MESSAGE.to_string()),
     }
 }
 
@@ -1065,14 +1066,14 @@ async fn run_llm_websocket_request<C: StreamCollector>(
         result = connect => result
             .map_err(|_| "OpenAI Codex WebSocket connect timed out".to_string())?
             .map_err(|e| format!("OpenAI Codex WebSocket connect failed: {}", e))?,
-        _ = wait_for_abort_signal(abort_flag.clone()) => return Err("Aborted".to_string()),
+        _ = wait_for_abort_signal(abort_flag.clone()) => return Err(ABORT_ERROR_MESSAGE.to_string()),
     };
     let send = websocket.send(tokio_tungstenite::tungstenite::Message::Text(
         build_openai_codex_websocket_message(&http_parts.body).to_string(),
     ));
     tokio::select! {
         result = send => result.map_err(|e| format!("OpenAI Codex WebSocket send failed: {}", e))?,
-        _ = wait_for_abort_signal(abort_flag.clone()) => return Err("Aborted".to_string()),
+        _ = wait_for_abort_signal(abort_flag.clone()) => return Err(ABORT_ERROR_MESSAGE.to_string()),
     };
 
     let mut accumulators: Vec<ChoiceAccumulator> = vec![ChoiceAccumulator::default()];
@@ -1090,7 +1091,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
             _ = heartbeat.tick() => {
                 if let Some(ref flag) = abort_flag {
                     if flag.load(Ordering::SeqCst) {
-                        return Err("Aborted".to_string());
+                        return Err(ABORT_ERROR_MESSAGE.to_string());
                     }
                 }
                 if stream_started_at.elapsed() > stream_total_timeout() {
@@ -1102,7 +1103,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
                 continue;
             }
             _ = wait_for_abort_signal(abort_flag.clone()) => {
-                return Err("Aborted".to_string());
+                return Err(ABORT_ERROR_MESSAGE.to_string());
             }
             maybe_message = websocket.next() => {
                 match maybe_message {
@@ -1175,7 +1176,7 @@ async fn run_llm_ndjson_request<C: StreamCollector>(
             _ = heartbeat.tick() => {
                 if let Some(ref flag) = abort_flag {
                     if flag.load(Ordering::SeqCst) {
-                        return Err("Aborted".to_string());
+                        return Err(ABORT_ERROR_MESSAGE.to_string());
                     }
                 }
                 if stream_started_at.elapsed() > stream_total_timeout() {
@@ -1187,7 +1188,7 @@ async fn run_llm_ndjson_request<C: StreamCollector>(
                 continue;
             }
             _ = wait_for_abort_signal(abort_flag.clone()) => {
-                return Err("Aborted".to_string());
+                return Err(ABORT_ERROR_MESSAGE.to_string());
             }
             maybe_bytes = stream.next() => {
                 match maybe_bytes {
@@ -1239,9 +1240,6 @@ pub async fn run_llm_stream<C: StreamCollector>(
     }
 
     let client = app.runtime.http_client.clone();
-    let slowdown_arc = app.runtime.http_client_slowdown.clone();
-
-    let _ = slowdown_arc.acquire().await;
 
     let wire_format = params.model_rec.wire_format;
     let adapter = get_adapter(wire_format);
@@ -1278,14 +1276,17 @@ pub async fn run_llm_stream<C: StreamCollector>(
             sessions.get(chat_id).cloned()
         };
         if let Some(session_arc) = session_arc_opt {
-            sanitized_for_commit = crate::chat::cache_guard::check_or_pause_cache_guard(
-                app.clone(),
-                session_arc,
-                &params.llm_request.model_id,
-                &http_parts.body,
-            )
-            .await
-            .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
+            sanitized_for_commit = tokio::select! {
+                res = crate::chat::cache_guard::check_or_pause_cache_guard(
+                    app.clone(),
+                    session_arc,
+                    &params.llm_request.model_id,
+                    &http_parts.body,
+                ) => res.map_err(|e| LlmStreamError::new(e, partial_output_emitted))?,
+                _ = wait_for_abort_signal(params.abort_flag.clone()) => {
+                    return Err(LlmStreamError::new(ABORT_ERROR_MESSAGE, partial_output_emitted));
+                }
+            };
         }
     }
 
@@ -1337,14 +1338,10 @@ pub async fn run_llm_stream<C: StreamCollector>(
         }
     }
 
-    let mut response = send_llm_http_request(
-        &client,
-        &http_parts,
-        wire_format,
-        params.abort_flag.clone(),
-    )
-    .await
-    .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
+    let mut response =
+        send_llm_http_request(&client, &http_parts, wire_format, params.abort_flag.clone())
+            .await
+            .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
     let mut status = response.status();
     if !status.is_success()
         && is_openai_codex_chatgpt_backend(&params.model_rec)
@@ -1355,16 +1352,19 @@ pub async fn run_llm_stream<C: StreamCollector>(
     {
         let provider_instance_id =
             openai_codex_instance_id(&params.model_rec).unwrap_or("openai_codex");
-        match force_refresh_openai_codex_for_retry(
-            app.clone(),
-            &client,
-            provider_instance_id,
-            status,
-            &params.model_rec.api_key,
-        )
-        .await
-        .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?
-        {
+        let refresh_outcome = tokio::select! {
+            res = force_refresh_openai_codex_for_retry(
+                app.clone(),
+                &client,
+                provider_instance_id,
+                status,
+                &params.model_rec.api_key,
+            ) => res,
+            _ = wait_for_abort_signal(params.abort_flag.clone()) => {
+                return Err(LlmStreamError::new(ABORT_ERROR_MESSAGE, partial_output_emitted));
+            }
+        };
+        match refresh_outcome.map_err(|e| LlmStreamError::new(e, partial_output_emitted))? {
             Some(new_access_token) => {
                 let mut retry_parts = HttpParts {
                     url: http_parts.url.clone(),
@@ -1397,7 +1397,12 @@ pub async fn run_llm_stream<C: StreamCollector>(
     }
 
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
+        let text = tokio::select! {
+            body = read_error_body_bounded(response) => body,
+            _ = wait_for_abort_signal(params.abort_flag.clone()) => {
+                return Err(LlmStreamError::new(ABORT_ERROR_MESSAGE, partial_output_emitted));
+            }
+        };
         if should_commit_cache_guard_after_http_success(status, &text) {
             commit_cache_guard_snapshot_if_needed(
                 app.clone(),
@@ -1458,7 +1463,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
                 if let Some(ref flag) = params.abort_flag {
                     if flag.load(Ordering::SeqCst) {
                         return Err(LlmStreamError::new(
-                            "Aborted",
+                            ABORT_ERROR_MESSAGE,
                             *tracking_collector.partial_output_emitted,
                         ));
                     }
@@ -1484,7 +1489,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
             }
             _ = wait_for_abort_signal(params.abort_flag.clone()) => {
                 return Err(LlmStreamError::new(
-                    "Aborted",
+                    ABORT_ERROR_MESSAGE,
                     *tracking_collector.partial_output_emitted,
                 ));
             }
@@ -1670,6 +1675,48 @@ fn should_finish_on_anthropic_stop_reason_eof(
                 Some("end_turn" | "stop_sequence")
             )
         })
+}
+
+async fn read_error_body_bounded(response: reqwest::Response) -> String {
+    const ERROR_BODY_MAX_BYTES: usize = 64 * 1024;
+    const ERROR_BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    let timeout = ERROR_BODY_READ_TIMEOUT;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut truncated = false;
+
+    let read_fut = async {
+        while let Some(chunk_res) = stream.next().await {
+            match chunk_res {
+                Ok(chunk) => {
+                    let remaining = ERROR_BODY_MAX_BYTES.saturating_sub(buffer.len());
+                    if remaining == 0 {
+                        truncated = true;
+                        break;
+                    }
+                    if chunk.len() > remaining {
+                        buffer.extend_from_slice(&chunk[..remaining]);
+                        truncated = true;
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk);
+                }
+                Err(_) => break,
+            }
+        }
+    };
+
+    let timed_out = tokio::time::timeout(timeout, read_fut).await.is_err();
+
+    let mut text = String::from_utf8_lossy(&buffer).into_owned();
+    if truncated {
+        text.push_str(" [error body truncated]");
+    }
+    if timed_out {
+        text.push_str(" [error body read timeout]");
+    }
+    text
 }
 
 fn format_llm_error_body(status_label: &str, text: &str) -> String {

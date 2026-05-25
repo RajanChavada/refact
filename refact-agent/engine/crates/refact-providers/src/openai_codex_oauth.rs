@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -16,6 +17,49 @@ const SCOPE: &str = "openid profile email offline_access";
 const CODEX_HOME_DIR: &str = ".codex";
 const CODEX_CALLBACK_PORT: u16 = 1455;
 const SESSION_TTL_SECS: i64 = 600;
+
+const OAUTH_TOKEN_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn read_oauth_error_body_bounded(mut response: reqwest::Response) -> String {
+    const MAX_BYTES: usize = 16 * 1024;
+    const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
+
+    let read_fut = async {
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    let remaining = MAX_BYTES.saturating_sub(buf.len());
+                    if remaining == 0 {
+                        truncated = true;
+                        break;
+                    }
+                    if chunk.len() > remaining {
+                        buf.extend_from_slice(&chunk[..remaining]);
+                        truncated = true;
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+    };
+
+    let timed_out = tokio::time::timeout(READ_TIMEOUT, read_fut).await.is_err();
+
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        text.push_str(" [error body truncated]");
+    }
+    if timed_out {
+        text.push_str(" [error body read timeout]");
+    }
+    text
+}
 
 #[derive(Debug, Clone)]
 pub struct PkceSession {
@@ -367,13 +411,14 @@ pub async fn exchange_code_for_session(
     let response = http_client
         .post(TOKEN_URL)
         .form(&params)
+        .timeout(OAUTH_TOKEN_HTTP_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("Token exchange request failed: {}", e))?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let text = read_oauth_error_body_bounded(response).await;
         return Err(format!("Token exchange failed ({}): {}", status, text));
     }
 
@@ -437,13 +482,14 @@ pub async fn refresh_access_token(
     let response = http_client
         .post(TOKEN_URL)
         .form(&params)
+        .timeout(OAUTH_TOKEN_HTTP_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("Token refresh request failed: {}", e))?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let text = read_oauth_error_body_bounded(response).await;
         return Err(format!("Token refresh failed ({}): {}", status, text));
     }
 
@@ -502,13 +548,14 @@ async fn obtain_openai_api_key(
     let response = http_client
         .post(TOKEN_URL)
         .form(&params)
+        .timeout(OAUTH_TOKEN_HTTP_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("API key token-exchange request failed: {e}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let text = read_oauth_error_body_bounded(response).await;
         return Err(format!("API key token-exchange failed ({status}): {text}"));
     }
 
@@ -555,11 +602,16 @@ pub async fn start_callback_listener(
 
         use tokio::io::AsyncReadExt;
 
+        const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
         let mut buf = vec![0u8; 8192];
-        let n = match stream.read(&mut buf).await {
-            Ok(n) => n,
-            Err(e) => {
+        let n = match tokio::time::timeout(CALLBACK_READ_TIMEOUT, stream.read(&mut buf)).await {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
                 tracing::warn!("OpenAI Codex OAuth: failed to read callback request: {}", e);
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!("OpenAI Codex OAuth: callback request read timed out");
                 return None;
             }
         };

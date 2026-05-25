@@ -59,6 +59,22 @@ fn apply_manual_context_files(
     }
 }
 
+async fn aborted_before_start_generation(
+    session_arc: &Arc<AMutex<super::types::ChatSession>>,
+) -> bool {
+    let mut session = session_arc.lock().await;
+    if !session.user_interrupt_flag.load(Ordering::SeqCst) {
+        return false;
+    }
+    session.abort_flag.store(false, Ordering::SeqCst);
+    session.user_interrupt_flag.store(false, Ordering::SeqCst);
+    if session.runtime.state == SessionState::Generating {
+        session.set_runtime_state(SessionState::Idle, None);
+    }
+    session.queue_notify.notify_one();
+    true
+}
+
 fn command_triggers_generation(cmd: &ChatCommand) -> bool {
     matches!(
         cmd,
@@ -686,10 +702,11 @@ pub async fn process_command_queue(
 
             let notify = session.queue_notify.clone();
             let waiter = notify.notified();
+            const QUEUE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
             if is_busy {
                 drop(session);
-                waiter.await;
+                let _ = tokio::time::timeout(QUEUE_WAIT_TIMEOUT, waiter).await;
                 continue;
             }
 
@@ -700,7 +717,7 @@ pub async fn process_command_queue(
                     cmd
                 } else {
                     drop(session);
-                    waiter.await;
+                    let _ = tokio::time::timeout(QUEUE_WAIT_TIMEOUT, waiter).await;
                     continue;
                 }
             } else if state == SessionState::Paused {
@@ -710,7 +727,7 @@ pub async fn process_command_queue(
                     cmd
                 } else {
                     drop(session);
-                    waiter.await;
+                    let _ = tokio::time::timeout(QUEUE_WAIT_TIMEOUT, waiter).await;
                     continue;
                 }
             } else if session.command_queue.is_empty() {
@@ -1083,6 +1100,9 @@ pub async fn process_command_queue(
 
                 maybe_save_trajectory(app.clone(), session_arc.clone()).await;
                 prepare_session_preamble_and_knowledge(app.clone(), session_arc.clone()).await;
+                if aborted_before_start_generation(&session_arc).await {
+                    continue;
+                }
                 start_generation(app.clone(), session_arc.clone()).await;
             }
             ChatCommand::RetryFromIndex {
@@ -1104,6 +1124,9 @@ pub async fn process_command_queue(
 
                 maybe_save_trajectory(app.clone(), session_arc.clone()).await;
                 prepare_session_preamble_and_knowledge(app.clone(), session_arc.clone()).await;
+                if aborted_before_start_generation(&session_arc).await {
+                    continue;
+                }
                 start_generation(app.clone(), session_arc.clone()).await;
             }
             ChatCommand::SetParams { patch } => {
@@ -1209,6 +1232,9 @@ pub async fn process_command_queue(
                 session.add_message(tool_message);
                 session.set_runtime_state(SessionState::Idle, None);
                 drop(session);
+                if aborted_before_start_generation(&session_arc).await {
+                    continue;
+                }
                 start_generation(app.clone(), session_arc.clone()).await;
             }
             ChatCommand::UpdateMessage {
@@ -1236,6 +1262,9 @@ pub async fn process_command_queue(
                         maybe_save_trajectory(app.clone(), session_arc.clone()).await;
                         prepare_session_preamble_and_knowledge(app.clone(), session_arc.clone())
                             .await;
+                        if aborted_before_start_generation(&session_arc).await {
+                            continue;
+                        }
                         start_generation(app.clone(), session_arc.clone()).await;
                     }
                 }
@@ -1255,12 +1284,18 @@ pub async fn process_command_queue(
                         maybe_save_trajectory(app.clone(), session_arc.clone()).await;
                         prepare_session_preamble_and_knowledge(app.clone(), session_arc.clone())
                             .await;
+                        if aborted_before_start_generation(&session_arc).await {
+                            continue;
+                        }
                         start_generation(app.clone(), session_arc.clone()).await;
                     }
                 }
             }
             ChatCommand::Regenerate {} => {
                 prepare_session_preamble_and_knowledge(app.clone(), session_arc.clone()).await;
+                if aborted_before_start_generation(&session_arc).await {
+                    continue;
+                }
                 start_generation(app.clone(), session_arc.clone()).await;
             }
             ChatCommand::RestoreMessages { messages } => {
@@ -1441,6 +1476,9 @@ pub async fn process_command_queue(
                 browser_context::commit_browser_cursors(app.gcx.clone(), &browser_chat_id).await;
                 maybe_save_trajectory(app.clone(), session_arc.clone()).await;
                 prepare_session_preamble_and_knowledge(app.clone(), session_arc.clone()).await;
+                if aborted_before_start_generation(&session_arc).await {
+                    continue;
+                }
                 start_generation(app.clone(), session_arc.clone()).await;
             }
         }
@@ -1532,7 +1570,9 @@ async fn handle_tool_decisions(
         }
 
         if accepted_any {
-            start_generation(app.clone(), session_arc.clone()).await;
+            if !aborted_before_start_generation(&session_arc).await {
+                start_generation(app.clone(), session_arc.clone()).await;
+            }
         } else {
             maybe_save_trajectory(app.clone(), session_arc.clone()).await;
         }
@@ -1746,7 +1786,9 @@ async fn handle_tool_decisions(
         }
         maybe_save_trajectory(app, session_arc).await;
     } else if had_tool_calls {
-        start_generation(app, session_arc).await;
+        if !aborted_before_start_generation(&session_arc).await {
+            start_generation(app, session_arc).await;
+        }
     } else {
         {
             let mut session = session_arc.lock().await;

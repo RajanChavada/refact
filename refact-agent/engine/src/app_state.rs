@@ -14,7 +14,7 @@ use refact_runtime_api::{
     ToolRegistry, ToolRegistryIndex,
 };
 use tokenizers::Tokenizer;
-use tokio::sync::{Mutex as AMutex, RwLock as ARwLock, Semaphore};
+use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 
 use crate::ast::ast_indexer_thread::AstIndexService;
 use crate::buddy::actor::BuddyService;
@@ -48,7 +48,6 @@ pub struct RuntimeServices {
     pub shutdown_flag: Arc<AtomicBool>,
     pub cmdline: Arc<CommandLine>,
     pub http_client: reqwest::Client,
-    pub http_client_slowdown: Arc<Semaphore>,
     pub ask_shutdown_sender: Arc<StdMutex<std::sync::mpsc::Sender<String>>>,
 }
 
