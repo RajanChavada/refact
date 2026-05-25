@@ -944,23 +944,23 @@ pub async fn run_subchat(
     let mut current_messages = messages;
 
     if let Some(ref wrap_up) = config.wrap_up {
-        current_messages = run_subchat_with_wrap_up(
+        current_messages = Box::pin(run_subchat_with_wrap_up(
             ccx.clone(),
             &config,
             current_messages,
             &config.tools,
             wrap_up,
             &mut _usage,
-        )
+        ))
         .await?;
     } else {
-        current_messages = run_subchat_loop(
+        current_messages = Box::pin(run_subchat_loop(
             ccx.clone(),
             &config,
             current_messages,
             &config.tools,
             &mut _usage,
-        )
+        ))
         .await?;
     }
 
