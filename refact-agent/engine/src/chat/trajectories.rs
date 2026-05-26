@@ -2834,6 +2834,7 @@ mod tests {
     use super::*;
     use crate::chat::diagnostics::make_ui_only_error_message;
     use crate::chat::types::ActiveCommandContext;
+    use serial_test::serial;
     use std::path::Path;
     use std::process::Command;
 
@@ -3002,10 +3003,7 @@ mod tests {
         }
     }
 
-    // FLAKY under parallel cargo test load (inotify_max_user_instances default 512
-    // exceeded with 200+ parallel watcher instances). Test passes deterministically
-    // when run in isolation or with --test-threads=1. Tracked as T-182.
-    #[ignore = "inotify instance limit exceeded under parallel load; T-182"]
+    #[serial]
     #[tokio::test]
     async fn watcher_picks_up_external_edit_to_task_planner_trajectory() {
         let dir = tempfile::tempdir().unwrap();
@@ -3032,7 +3030,7 @@ mod tests {
         assert_eq!(event.title.as_deref(), Some("Planner Watch"));
     }
 
-    #[ignore = "inotify instance limit exceeded under parallel load; T-182"]
+    #[serial]
     #[tokio::test]
     async fn watcher_ignores_non_trajectory_files_in_tasks_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -3052,7 +3050,7 @@ mod tests {
         assert_no_trajectory_event_for(&mut rx, std::time::Duration::from_millis(700)).await;
     }
 
-    #[ignore = "inotify instance limit exceeded under parallel load; T-182"]
+    #[serial]
     #[tokio::test]
     async fn watcher_picks_up_new_task_dir_created_after_startup() {
         let dir = tempfile::tempdir().unwrap();
