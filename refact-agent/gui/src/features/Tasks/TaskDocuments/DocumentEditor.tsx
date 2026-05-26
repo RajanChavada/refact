@@ -32,6 +32,7 @@ const DOCUMENT_KINDS: TaskDocumentKind[] = [
 ];
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
+const SLUG_MIN_LENGTH = 3;
 
 type DocumentEditorProps = {
   taskId: string;
@@ -64,6 +65,8 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
   const [pinned, setPinned] = useState(false);
   const [content, setContent] = useState("");
   const [slugError, setSlugError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
   const [createDocument, { isLoading: isCreating }] =
@@ -83,6 +86,8 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
       setPinned(existingDoc.pinned);
       setContent(existingDoc.content);
       setSlugError(null);
+      setNameError(null);
+      setContentError(null);
       setMutationError(null);
     } else if (!isEditMode) {
       setFormSlug("");
@@ -91,6 +96,8 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
       setPinned(false);
       setContent("");
       setSlugError(null);
+      setNameError(null);
+      setContentError(null);
       setMutationError(null);
     }
   }, [open, isEditMode, existingDoc, slug]);
@@ -103,9 +110,29 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
         setSlugError(
           "Slug must start with a-z or 0-9 and contain only a-z, 0-9, _, -",
         );
+      } else if (value && value.length < SLUG_MIN_LENGTH) {
+        setSlugError("Slug must be at least 3 characters");
       } else {
         setSlugError(null);
       }
+    },
+    [],
+  );
+
+  const handleNameChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const value = event.target.value;
+      setName(value);
+      setNameError(value.trim().length === 0 ? "Name is required" : null);
+    },
+    [],
+  );
+
+  const handleContentChange = useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const value = event.target.value;
+      setContent(value);
+      setContentError(value.trim().length === 0 ? "Content is required" : null);
     },
     [],
   );
@@ -123,7 +150,7 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
           await pinDocument({ taskId, slug, pinned }).unwrap();
         }
       } else {
-        if (!formSlug || !SLUG_PATTERN.test(formSlug)) {
+        if (!formSlug || !SLUG_PATTERN.test(formSlug) || formSlug.length < SLUG_MIN_LENGTH) {
           setSlugError("Slug is required and must be valid.");
           return;
         }
@@ -156,6 +183,14 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
     createDocument,
     onOpenChange,
   ]);
+
+  const isSlugValid =
+    SLUG_PATTERN.test(formSlug) && formSlug.length >= SLUG_MIN_LENGTH;
+  const isNameValid = name.trim().length > 0;
+  const isContentValid = content.trim().length > 0;
+  const canSave = isEditMode
+    ? isContentValid
+    : isSlugValid && isNameValid && isContentValid;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -192,11 +227,16 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
               </Text>
               <TextField.Root
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={handleNameChange}
                 placeholder="Document name"
                 aria-label="Name"
                 readOnly={isEditMode}
               />
+              {!isEditMode && nameError && (
+                <Text size="1" color="red" as="div" mt="1">
+                  {nameError}
+                </Text>
+              )}
             </Box>
             <Box>
               <Text size="2" weight="medium" as="div" mb="1">
@@ -232,11 +272,16 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
               </Text>
               <TextArea
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
+                onChange={handleContentChange}
                 placeholder="Write markdown content here..."
                 aria-label="Content"
                 rows={12}
               />
+              {contentError && (
+                <Text size="1" color="red" as="div" mt="1">
+                  {contentError}
+                </Text>
+              )}
             </Box>
             {mutationError && (
               <Callout.Root color="red" size="1">
@@ -254,9 +299,7 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({
               </Dialog.Close>
               <Button
                 onClick={() => void handleSave()}
-                disabled={
-                  isSaving || Boolean(slugError) || !isEditDocumentReady
-                }
+                disabled={isSaving || !isEditDocumentReady || !canSave}
               >
                 {isSaving ? "Saving..." : "Save"}
               </Button>

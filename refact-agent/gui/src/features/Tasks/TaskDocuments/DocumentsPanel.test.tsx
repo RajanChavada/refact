@@ -73,6 +73,30 @@ function mockDocuments(response: TaskDocumentListResponse = listResponse) {
     http.get("http://127.0.0.1:8001/v1/task/:taskId/documents", () =>
       HttpResponse.json(response),
     ),
+    http.get(
+      "http://127.0.0.1:8001/v1/task/:taskId/documents/:slug",
+      ({ request, params }) => {
+        const slug = String(params.slug);
+        const version = new URL(request.url).searchParams.get("version");
+        if (version) {
+          return HttpResponse.json({ error: "not found" }, { status: 404 });
+        }
+        const found = response.documents.find((d) => d.slug === slug);
+        if (found) {
+          return HttpResponse.json({ ...found, content: "" });
+        }
+        return HttpResponse.json({ error: "not found" }, { status: 404 });
+      },
+    ),
+    http.get(
+      "http://127.0.0.1:8001/v1/task/:taskId/documents/:slug/history",
+      ({ params }) =>
+        HttpResponse.json({
+          task_id: String(params.taskId),
+          slug: String(params.slug),
+          history: [],
+        }),
+    ),
   );
 }
 
@@ -526,6 +550,54 @@ describe("DocumentsPanel", () => {
         within(row).getByRole("button", { name: "Pin" }),
       ).toBeInTheDocument();
     });
+  });
+
+  it("editor save disabled until slug name and content are valid", async () => {
+    mockDocuments();
+
+    const { user } = render(<DocumentsPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    await screen.findByText("Initial Plan");
+    await user.click(screen.getByRole("button", { name: /New/i }));
+
+    await screen.findByText("New document");
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Slug"), "my-doc");
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Name"), "My Doc");
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Content"), "Some content");
+
+    expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled();
+  });
+
+  it("editor shows error for invalid slug format", async () => {
+    mockDocuments();
+
+    const { user } = render(<DocumentsPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    await screen.findByText("Initial Plan");
+    await user.click(screen.getByRole("button", { name: /New/i }));
+
+    await screen.findByText("New document");
+
+    await user.type(screen.getByLabelText("Slug"), "Invalid Slug!");
+
+    expect(
+      await screen.findByText(
+        "Slug must start with a-z or 0-9 and contain only a-z, 0-9, _, -",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("optimistic pin state reverts on error", async () => {
