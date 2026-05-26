@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,8 @@ use crate::caps::model_caps::{
     get_model_caps, model_caps_pricing_metadata, resolve_model_caps, ModelCapabilities,
 };
 use refact_core::provider_types::AvailableModel;
+
+const PROVIDER_MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub use refact_core::llm_types::{
     BaseModelRecord, EmbeddingModelRecord, HasBaseModelRecord, WireFormat, default_embedding_batch,
@@ -395,9 +398,21 @@ pub async fn populate_chat_models_from_providers(
         base_provider_names.sort();
         base_provider_names.dedup();
 
-        let available_models = provider
-            .fetch_available_models(&http_client, model_caps)
-            .await;
+        let available_models = match tokio::time::timeout(
+            PROVIDER_MODEL_DISCOVERY_TIMEOUT,
+            provider.fetch_available_models(&http_client, model_caps),
+        )
+        .await
+        {
+            Ok(models) => models,
+            Err(_) => {
+                warn!(
+                    "Timed out fetching available models for provider '{}'; using model_caps fallback",
+                    provider.name()
+                );
+                provider.get_available_models_from_caps(model_caps)
+            }
+        };
 
         for model in available_models {
             if !model.enabled {

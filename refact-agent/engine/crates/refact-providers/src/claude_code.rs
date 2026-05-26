@@ -91,16 +91,12 @@ impl ClaudeCodeProvider {
     /// provider instance, or an actionable error if not logged in / expired.
     fn resolve_auth(&self) -> Result<String, String> {
         if self.oauth_tokens.access_token.is_empty() {
-            return Err(
-                "Claude Code: not logged in for this provider instance. \
+            return Err("Claude Code: not logged in for this provider instance. \
                 Click 'Login with Anthropic' in provider settings."
-                    .to_string(),
-            );
+                .to_string());
         }
         if self.oauth_tokens.is_expired() {
-            return Err(
-                "Claude Code: OAuth token expired — refresh needed.".to_string(),
-            );
+            return Err("Claude Code: OAuth token expired — refresh needed.".to_string());
         }
         Ok(self.oauth_tokens.access_token.clone())
     }

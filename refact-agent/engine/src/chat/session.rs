@@ -105,6 +105,7 @@ impl ChatSession {
             skills_included: Vec::new(),
             pending_skill_deactivation: None,
             stop_hook_handle: None,
+            openai_codex_websocket: Default::default(),
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at: None,
             waiting_for_card_ids: Vec::new(),
@@ -162,6 +163,7 @@ impl ChatSession {
             skills_included: Vec::new(),
             pending_skill_deactivation: None,
             stop_hook_handle: None,
+            openai_codex_websocket: Default::default(),
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at,
             waiting_for_card_ids,
@@ -881,7 +883,10 @@ impl ChatSession {
             .any(|r| r.tool_call_id == tool_call_id)
     }
 
-    pub fn process_tool_decisions(&mut self, decisions: &[ToolDecisionItem]) -> ToolDecisionOutcome {
+    pub fn process_tool_decisions(
+        &mut self,
+        decisions: &[ToolDecisionItem],
+    ) -> ToolDecisionOutcome {
         let mut accepted_ids = Vec::new();
         let mut denied_ids = Vec::new();
 
@@ -944,7 +949,10 @@ impl ChatSession {
             }
         }
 
-        ToolDecisionOutcome { accepted_ids, denied_ids }
+        ToolDecisionOutcome {
+            accepted_ids,
+            denied_ids,
+        }
     }
 }
 
@@ -2873,7 +2881,11 @@ mod tests {
 
         assert_eq!(outcome.denied_ids, vec!["tc1"]);
         assert!(outcome.accepted_ids.is_empty());
-        let tool_msgs: Vec<_> = session.messages.iter().filter(|m| m.role == "tool").collect();
+        let tool_msgs: Vec<_> = session
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .collect();
         assert_eq!(tool_msgs.len(), 1);
         assert_eq!(tool_msgs[0].tool_call_id, "tc1");
         assert_eq!(
@@ -2891,13 +2903,23 @@ mod tests {
         session.set_runtime_state(SessionState::Paused, None);
 
         let outcome = session.process_tool_decisions(&[
-            ToolDecisionItem { tool_call_id: "tc1".into(), accepted: false },
-            ToolDecisionItem { tool_call_id: "tc2".into(), accepted: true },
+            ToolDecisionItem {
+                tool_call_id: "tc1".into(),
+                accepted: false,
+            },
+            ToolDecisionItem {
+                tool_call_id: "tc2".into(),
+                accepted: true,
+            },
         ]);
 
         assert_eq!(outcome.accepted_ids, vec!["tc2"]);
         assert_eq!(outcome.denied_ids, vec!["tc1"]);
-        let tool_msgs: Vec<_> = session.messages.iter().filter(|m| m.role == "tool").collect();
+        let tool_msgs: Vec<_> = session
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .collect();
         assert_eq!(tool_msgs.len(), 1);
         assert_eq!(tool_msgs[0].tool_call_id, "tc1");
     }
@@ -2917,7 +2939,10 @@ mod tests {
         assert_eq!(outcome.denied_ids, vec!["tc1"]);
         assert!(session.runtime.pause_reasons.is_empty());
         assert_eq!(session.runtime.state, SessionState::Idle);
-        assert_eq!(session.messages.iter().filter(|m| m.role == "tool").count(), 1);
+        assert_eq!(
+            session.messages.iter().filter(|m| m.role == "tool").count(),
+            1
+        );
     }
 
     #[test]
@@ -2941,7 +2966,10 @@ mod tests {
     fn synthesized_tool_result_message_has_correct_tool_call_id() {
         let mut session = make_session();
         session.add_message(make_assistant_with_tool_calls(&["unique-call-abc"]));
-        session.runtime.pause_reasons.push(make_pause_reason("unique-call-abc"));
+        session
+            .runtime
+            .pause_reasons
+            .push(make_pause_reason("unique-call-abc"));
         session.set_runtime_state(SessionState::Paused, None);
 
         session.process_tool_decisions(&[ToolDecisionItem {

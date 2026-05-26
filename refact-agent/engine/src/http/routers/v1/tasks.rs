@@ -34,8 +34,7 @@ use crate::tools::tool_task_memory::{
     MemoryKind, MemoryNamespace, TaskMemoriesApiResponse, TaskMemoryArchiveApiResponse,
     TaskMemoryFacetsResponse, TaskMemoryListFilters, TaskMemoryPinApiResponse,
     TaskMemoryTriageApiResponse, archive_task_memory_for_api, list_task_memories_for_api,
-    mark_task_memories_triaged_for_api, set_task_memory_pinned_for_api,
-    task_memory_facets_for_api,
+    mark_task_memories_triaged_for_api, set_task_memory_pinned_for_api, task_memory_facets_for_api,
 };
 
 #[derive(Deserialize)]
@@ -298,16 +297,17 @@ pub async fn handle_delete_task(
             .cards
             .iter()
             .filter(|c| {
-                c.column == "doing"
-                    || c.agent_worktree.is_some()
-                    || c.agent_branch.is_some()
+                c.column == "doing" || c.agent_worktree.is_some() || c.agent_branch.is_some()
             })
             .map(|c| c.id.clone())
             .collect();
         if !active_card_ids.is_empty() {
             return Err((
                 StatusCode::CONFLICT,
-                format!("task has active agent cards: {}", active_card_ids.join(", ")),
+                format!(
+                    "task has active agent cards: {}",
+                    active_card_ids.join(", ")
+                ),
             ));
         }
     }
@@ -1914,7 +1914,9 @@ mod tests {
         })
         .await
         .unwrap();
-        let board = storage::load_board(gcx.clone(), "task-del-active").await.unwrap();
+        let board = storage::load_board(gcx.clone(), "task-del-active")
+            .await
+            .unwrap();
 
         let result = handle_patch_board(
             State(app(gcx.clone())),
@@ -1952,7 +1954,9 @@ mod tests {
         })
         .await
         .unwrap();
-        let board = storage::load_board(gcx.clone(), "task-del-force").await.unwrap();
+        let board = storage::load_board(gcx.clone(), "task-del-force")
+            .await
+            .unwrap();
 
         let result = handle_patch_board(
             State(app(gcx.clone())),
@@ -2061,11 +2065,8 @@ mod tests {
             serde_json::from_str(s1.strip_prefix("data: ").unwrap().trim_end()).unwrap();
         assert_eq!(event1["type"], "snapshot");
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            body_stream.next(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), body_stream.next()).await;
         assert!(
             result.is_err(),
             "No duplicate event should appear within 100ms of initial snapshot"

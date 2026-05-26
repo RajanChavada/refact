@@ -72,6 +72,7 @@ pub struct ChatSession {
     pub skills_included: Vec<String>,
     pub pending_skill_deactivation: Option<PendingSkillDeactivation>,
     pub stop_hook_handle: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) openai_codex_websocket: super::openai_codex_ws::OpenAICodexWebSocketSession,
     pub suppress_auto_enrichment_for_next_turn: bool,
     pub wake_up_at: Option<chrono::DateTime<chrono::Utc>>,
     pub waiting_for_card_ids: Vec<String>,

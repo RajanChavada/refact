@@ -2095,16 +2095,14 @@ async fn execute_parallel_batch(
     join_all(futures).await
 }
 
+#[cfg(test)]
 async fn tool_runtime_event_lines(
     app: AppState,
     tool_name: &str,
     chat_label: &str,
 ) -> (String, Option<String>) {
-    let fallback_title = format!("Running {} in '{}'", tool_name, chat_label);
-    let fallback_speech = Some(format!(
-        "Using {} to help with '{}'...",
-        tool_name, chat_label
-    ));
+    let (fallback_title, fallback_speech) =
+        fallback_tool_runtime_event_lines(tool_name, chat_label);
     let workflow_summary = format!("Using {} to help with '{}'...", tool_name, chat_label);
     let Some((title, speech)) = app
         .buddy_event_sink
@@ -2116,6 +2114,20 @@ async fn tool_runtime_event_lines(
     runtime_event_lines_with_fallback(title, speech, fallback_title, fallback_speech)
 }
 
+fn fallback_tool_runtime_event_lines(
+    tool_name: &str,
+    chat_label: &str,
+) -> (String, Option<String>) {
+    (
+        format!("Running {} in '{}'", tool_name, chat_label),
+        Some(format!(
+            "Using {} to help with '{}'...",
+            tool_name, chat_label
+        )),
+    )
+}
+
+#[cfg(test)]
 fn runtime_event_lines_with_fallback(
     title: String,
     speech: Option<String>,
@@ -2201,7 +2213,7 @@ pub async fn execute_tools(
         .collect();
     for (tc, (_, dedupe_key)) in tool_calls.iter().zip(tool_meta.iter()) {
         let (title, speech_text) =
-            tool_runtime_event_lines(app.clone(), &tc.function.name, &chat_label).await;
+            fallback_tool_runtime_event_lines(&tc.function.name, &chat_label);
         let mut ev = make_runtime_event("tool_used", &title, "tool", dedupe_key, "started", None);
         ev.speech_text = speech_text;
         ev.scene = Some("working".to_string());

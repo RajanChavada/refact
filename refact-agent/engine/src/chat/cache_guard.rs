@@ -197,9 +197,8 @@ pub async fn check_or_pause_cache_guard(
             .store(true, std::sync::atomic::Ordering::SeqCst);
         session.abort_notify.notify_waiters();
 
-        let mut summary = format!(
-            "Prompt cache append-only prefix check failed for model `{model_id}`.\n\n"
-        );
+        let mut summary =
+            format!("Prompt cache append-only prefix check failed for model `{model_id}`.\n\n");
         if let Some(extra) = estimated_extra_usd {
             summary.push_str(&format!(
                 "Estimated extra cost if cache miss occurs: `${extra:.6}` USD.\n\n"
@@ -435,7 +434,8 @@ mod tests {
         }
 
         let session = crate::chat::types::ChatSession::new("test-paused".to_string());
-        let prev_body = json!({"messages": [{"role": "user", "content": "hello"}], "model": "test"});
+        let prev_body =
+            json!({"messages": [{"role": "user", "content": "hello"}], "model": "test"});
         let session_arc = Arc::new(tokio::sync::Mutex::new(session));
 
         {
@@ -443,11 +443,16 @@ mod tests {
             s.cache_guard_snapshot = Some(sanitize_body_for_cache_guard(&prev_body));
         }
 
-        let next_body = json!({"messages": [{"role": "assistant", "content": "hi"}], "model": "test"});
-        let outcome =
-            check_or_pause_cache_guard(app, session_arc.clone(), "test/model-with-cache", &next_body)
-                .await
-                .unwrap();
+        let next_body =
+            json!({"messages": [{"role": "assistant", "content": "hi"}], "model": "test"});
+        let outcome = check_or_pause_cache_guard(
+            app,
+            session_arc.clone(),
+            "test/model-with-cache",
+            &next_body,
+        )
+        .await
+        .unwrap();
 
         assert!(matches!(outcome, CacheGuardOutcome::Paused { .. }));
         let session = session_arc.lock().await;

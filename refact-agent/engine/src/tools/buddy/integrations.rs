@@ -49,10 +49,16 @@ fn valid_provider(provider: &Value) -> bool {
 
 fn prepare_forwarded_args(args: &HashMap<String, Value>) -> Result<HashMap<String, Value>, String> {
     let known = ["title", "body", "labels", "provider", "confidence"];
-    let mut unknown: Vec<_> = args.keys().filter(|k| !known.contains(&k.as_str())).collect();
+    let mut unknown: Vec<_> = args
+        .keys()
+        .filter(|k| !known.contains(&k.as_str()))
+        .collect();
     if !unknown.is_empty() {
         unknown.sort();
-        return Err(format!("Unknown arguments for buddy_open_issue: {:?}", unknown));
+        return Err(format!(
+            "Unknown arguments for buddy_open_issue: {:?}",
+            unknown
+        ));
     }
 
     if let Some(provider) = args.get("provider") {
@@ -85,7 +91,10 @@ fn prepare_forwarded_args(args: &HashMap<String, Value>) -> Result<HashMap<Strin
             .collect::<Result<Vec<_>, _>>()?;
         let processed: Vec<Value> = raw
             .into_iter()
-            .filter(|v| v.as_str().map_or(false, |s| s.chars().count() <= LABEL_MAX_CHARS))
+            .filter(|v| {
+                v.as_str()
+                    .map_or(false, |s| s.chars().count() <= LABEL_MAX_CHARS)
+            })
             .take(MAX_LABELS)
             .collect();
         Some(Value::Array(processed))
@@ -107,7 +116,10 @@ fn prepare_forwarded_args(args: &HashMap<String, Value>) -> Result<HashMap<Strin
         forwarded.insert("provider".to_string(), Value::String(provider.to_string()));
     }
     // The autonomous subchat owns the issue-filing decision; reaching this wrapper means confirmed.
-    forwarded.insert("confidence".to_string(), Value::String("confirmed".to_string()));
+    forwarded.insert(
+        "confidence".to_string(),
+        Value::String("confirmed".to_string()),
+    );
     Ok(forwarded)
 }
 

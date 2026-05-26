@@ -28,7 +28,10 @@ fn validate_id(id: &str, name: &str) -> Result<(), String> {
     if id.len() > MAX_ID_LEN {
         return Err(format!("ID '{id}' is too long (max {MAX_ID_LEN} chars)"));
     }
-    if id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         Ok(())
     } else {
         Err(format!(
@@ -133,7 +136,8 @@ impl PreparedWorktree {
         tracing::info!(
             "Retaining worktree '{}' / branch '{}' after spawn failure for inspection.",
             self.worktree_name(),
-            self.branch_name().unwrap_or_else(|| "<unknown>".to_string())
+            self.branch_name()
+                .unwrap_or_else(|| "<unknown>".to_string())
         );
     }
 }
@@ -222,7 +226,9 @@ pub(crate) async fn prepare_agent_worktree_with_suffix(
         branch_suffix.unwrap_or("")
     );
     if branch_name.len() > 200 {
-        return Err(format!("Generated branch name '{branch_name}' exceeds 200 chars"));
+        return Err(format!(
+            "Generated branch name '{branch_name}' exceeds 200 chars"
+        ));
     }
     let cache_dir = gcx.cache_dir.clone();
     let service = WorktreeService::new(cache_dir, workspace_root.clone())?;
@@ -303,7 +309,9 @@ fn validate_files_to_open(args: &HashMap<String, Value>) -> Result<Vec<String>, 
                     Value::Object(_) => "object",
                     Value::String(_) => unreachable!(),
                 };
-                return Err(format!("files_to_open[{idx}] must be a string, got {type_name}"));
+                return Err(format!(
+                    "files_to_open[{idx}] must be a string, got {type_name}"
+                ));
             }
             Some(s) if s.is_empty() => {
                 return Err(format!("files_to_open[{idx}] is empty"));
@@ -408,7 +416,10 @@ pub(crate) async fn rollback_retain(
     let card_id = card_id.to_string();
     let guard_chat_id = guard_chat_id.to_string();
     let truncated: String = error_msg.chars().take(300).collect();
-    let msg = format!("Spawn rolled back: {}. Worktree retained for inspection.", truncated);
+    let msg = format!(
+        "Spawn rolled back: {}. Worktree retained for inspection.",
+        truncated
+    );
     let _ = storage::update_board_atomic(gcx.clone(), task_id, move |board| {
         if let Some(card) = board.get_card_mut(&card_id) {
             if card.agent_chat_id.as_deref() == Some(&guard_chat_id) {
@@ -1096,7 +1107,10 @@ mod tests {
         assert!(validate_id("short-id", "test_id").is_ok());
         assert!(validate_id(&"a".repeat(MAX_ID_LEN), "test_id").is_ok());
         let err = validate_id(&"a".repeat(MAX_ID_LEN + 1), "test_id").unwrap_err();
-        assert!(err.contains("too long"), "expected 'too long' in error: {err}");
+        assert!(
+            err.contains("too long"),
+            "expected 'too long' in error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1121,7 +1135,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("exceeds 200 chars"), "expected branch-too-long error: {err}");
+        assert!(
+            err.contains("exceeds 200 chars"),
+            "expected branch-too-long error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -1688,11 +1705,16 @@ mod tests {
             last_agents_summary_at: None,
             planner_session_state: None,
         };
-        storage::save_task_meta(gcx.clone(), task_id, &meta).await.unwrap();
+        storage::save_task_meta(gcx.clone(), task_id, &meta)
+            .await
+            .unwrap();
         storage::save_board(
             gcx.clone(),
             task_id,
-            &TaskBoard { cards: vec![card], ..Default::default() },
+            &TaskBoard {
+                cards: vec![card],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1753,18 +1775,33 @@ mod tests {
         card.agent_chat_id = Some("agent-T-1-abcdef12".to_string());
         setup_task_storage(gcx.clone(), &source, task_id, card).await;
 
-        rollback_retain(gcx.clone(), task_id, "T-1", "agent-T-1-abcdef12", "model unavailable").await;
+        rollback_retain(
+            gcx.clone(),
+            task_id,
+            "T-1",
+            "agent-T-1-abcdef12",
+            "model unavailable",
+        )
+        .await;
         prepared.retain(gcx.clone()).await;
 
-        assert!(root.exists(), "worktree dir should still exist after retain");
+        assert!(
+            root.exists(),
+            "worktree dir should still exist after retain"
+        );
         let branches = run_git(&source, &["branch", "--list", &branch]);
-        assert!(!branches.trim().is_empty(), "branch should still exist after retain");
+        assert!(
+            !branches.trim().is_empty(),
+            "branch should still exist after retain"
+        );
 
         let board = storage::load_board(gcx.clone(), task_id).await.unwrap();
         let card = board.get_card("T-1").unwrap();
         assert_eq!(card.column, "failed");
         assert!(
-            card.status_updates.iter().any(|u| u.message.contains("retained for inspection")),
+            card.status_updates
+                .iter()
+                .any(|u| u.message.contains("retained for inspection")),
             "status update should mention retained for inspection"
         );
     }
@@ -1784,7 +1821,14 @@ mod tests {
         setup_task_storage(gcx.clone(), &source, task_id, card).await;
 
         let long_error: String = "x".repeat(400);
-        rollback_retain(gcx.clone(), task_id, "T-2", "agent-T-2-msgtest", &long_error).await;
+        rollback_retain(
+            gcx.clone(),
+            task_id,
+            "T-2",
+            "agent-T-2-msgtest",
+            &long_error,
+        )
+        .await;
 
         let board = storage::load_board(gcx.clone(), task_id).await.unwrap();
         let card = board.get_card("T-2").unwrap();

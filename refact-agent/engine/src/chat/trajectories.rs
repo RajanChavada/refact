@@ -3736,6 +3736,7 @@ mod tests {
             skills_included: Vec::new(),
             pending_skill_deactivation: None,
             stop_hook_handle: None,
+            openai_codex_websocket: Default::default(),
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at: None,
             waiting_for_card_ids: Vec::new(),
@@ -3807,6 +3808,7 @@ mod tests {
             skills_included: Vec::new(),
             pending_skill_deactivation: None,
             stop_hook_handle: None,
+            openai_codex_websocket: Default::default(),
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at: None,
             waiting_for_card_ids: Vec::new(),
@@ -4341,7 +4343,9 @@ mod tests {
         session.add_message(make_ui_only_error_message("context_length_exceeded"));
 
         let snapshot = trajectory_snapshot_from_session(&session);
-        save_trajectory_snapshot(gcx.clone(), snapshot).await.unwrap();
+        save_trajectory_snapshot(gcx.clone(), snapshot)
+            .await
+            .unwrap();
 
         let loaded = load_trajectory_for_chat(gcx, "ui-only-roundtrip")
             .await
@@ -4367,7 +4371,9 @@ mod tests {
         ));
 
         let snapshot = trajectory_snapshot_from_session(&session);
-        save_trajectory_snapshot(gcx.clone(), snapshot).await.unwrap();
+        save_trajectory_snapshot(gcx.clone(), snapshot)
+            .await
+            .unwrap();
 
         let loaded = load_trajectory_for_chat(gcx, "normal-error-roundtrip")
             .await

@@ -11,6 +11,9 @@ AI coding assistant: Rust engine (LSP/HTTP server) + React chat UI + IDE plugins
 | VSCode Extension | `plugins/vscode/` | TypeScript | — |
 | JetBrains Plugin | `plugins/intellij/` | Kotlin, Gradle | — |
 | Documentation | `docs/` | Astro (static site) | — |
+| IDE metadata | `.idea/` | IntelliJ project config | keep local/editor files out of commits; `.idea/workspace.xml` is ignored |
+| Agent notes | `.agents/` | onboarding notes | checked for repo-specific guidance when present |
+| Codex workspace | `.codex/` | Codex config/data | checked for repo-specific guidance when present |
 
 Sub-project `AGENTS.md` files contain detailed architecture, patterns, and checklists. Read them before working in those directories.
 

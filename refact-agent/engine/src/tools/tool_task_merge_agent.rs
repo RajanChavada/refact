@@ -1677,7 +1677,9 @@ mod worktree_merge_tool_tests {
     fn task_merge_agent_allows_done_card_with_final_report() {
         let card = test_card("wt", "agent", Path::new("/tmp/worktree"));
 
-        assert!(ensure_card_done_allows_merge(&card, false).unwrap().is_none());
+        assert!(ensure_card_done_allows_merge(&card, false)
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

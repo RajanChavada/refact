@@ -23,6 +23,8 @@ pub const CODEX_WEBSOCKET_ENDPOINT_HEADER: &str =
     "x-refact-internal-openai-codex-websocket-endpoint";
 #[allow(dead_code)]
 const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
+const CODEX_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
+const CODEX_USAGE_TIMEOUT: Duration = Duration::from_secs(8);
 
 lazy_static::lazy_static! {
     static ref OPENAI_CODEX_REFRESH_GUARD: AMutex<()> = AMutex::new(());
@@ -30,6 +32,10 @@ lazy_static::lazy_static! {
 
 fn new_codex_session_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+fn default_use_websocket() -> bool {
+    true
 }
 
 fn normalized_model_id(id: &str) -> String {
@@ -130,7 +136,7 @@ pub struct OpenAICodexProvider {
     pub oauth_tokens: OAuthTokens,
     #[serde(default = "new_codex_session_id")]
     pub session_id: String,
-    #[serde(default)]
+    #[serde(default = "default_use_websocket")]
     pub use_websocket: bool,
 }
 
@@ -141,7 +147,7 @@ impl Default for OpenAICodexProvider {
             custom_models: HashMap::new(),
             oauth_tokens: OAuthTokens::default(),
             session_id: new_codex_session_id(),
-            use_websocket: false,
+            use_websocket: default_use_websocket(),
         }
     }
 }
@@ -302,6 +308,7 @@ impl OpenAICodexProvider {
     ) -> Result<OpenAICodexUsage, UsageRequestError> {
         let mut req = http_client
             .get("https://chatgpt.com/backend-api/wham/usage")
+            .timeout(CODEX_USAGE_TIMEOUT)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json");
         for (key, value) in self.chatgpt_backend_metadata_headers(chatgpt_account_id) {
@@ -541,10 +548,13 @@ impl OpenAICodexProvider {
         access_token: &str,
         chatgpt_account_id: &str,
     ) -> Vec<AvailableModel> {
-        let mut req = http_client.get(CHATGPT_CODEX_MODELS_URL).header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {access_token}"),
-        );
+        let mut req = http_client
+            .get(CHATGPT_CODEX_MODELS_URL)
+            .timeout(CODEX_DISCOVERY_TIMEOUT)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {access_token}"),
+            );
         for (key, value) in self.chatgpt_backend_metadata_headers(chatgpt_account_id) {
             req = req.header(key, value);
         }
@@ -604,6 +614,7 @@ impl OpenAICodexProvider {
     ) -> Vec<AvailableModel> {
         let response = match http_client
             .get(OPENAI_MODELS_URL)
+            .timeout(CODEX_DISCOVERY_TIMEOUT)
             .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
             .send()
             .await
@@ -1135,9 +1146,9 @@ impl ProviderTrait for OpenAICodexProvider {
 fields:
   use_websocket:
     f_type: boolean
-    f_desc: "Use experimental WebSocket streaming for ChatGPT backend OAuth requests. HTTP SSE remains the fallback."
+    f_desc: "Use WebSocket streaming for ChatGPT backend OAuth requests. HTTP SSE remains the fallback."
     f_label: "Use WebSocket streaming"
-    f_default: false
+    f_default: true
 oauth:
   supported: true
   methods:
@@ -1439,7 +1450,10 @@ mod tests {
     fn unauthenticated_provider_reports_not_configured() {
         let p = OpenAICodexProvider::default();
         assert!(!p.has_credentials());
-        assert_eq!(p.diagnose_auth_status(), "Not configured — log in via OAuth");
+        assert_eq!(
+            p.diagnose_auth_status(),
+            "Not configured — log in via OAuth"
+        );
         assert!(p.resolve_wham_context().is_err());
     }
 
@@ -1510,16 +1524,10 @@ mod tests {
     }
 
     #[test]
-    fn websocket_setting_adds_chatgpt_backend_runtime_marker_only_when_enabled() {
+    fn websocket_setting_adds_chatgpt_backend_runtime_marker_by_default() {
         let mut p = provider_with_oauth("tok", "acct-123");
         p.enabled_models = vec!["gpt-5-codex".to_string()];
 
-        let runtime = p.build_runtime().unwrap();
-        assert!(!runtime
-            .extra_headers
-            .contains_key(super::CODEX_WEBSOCKET_ENDPOINT_HEADER));
-
-        p.use_websocket = true;
         let runtime = p.build_runtime().unwrap();
         assert_eq!(
             runtime
@@ -1528,6 +1536,12 @@ mod tests {
                 .map(String::as_str),
             Some(super::CHATGPT_CODEX_RESPONSES_WEBSOCKET_URL)
         );
+
+        p.use_websocket = false;
+        let runtime = p.build_runtime().unwrap();
+        assert!(!runtime
+            .extra_headers
+            .contains_key(super::CODEX_WEBSOCKET_ENDPOINT_HEADER));
     }
 
     #[test]
@@ -1557,13 +1571,19 @@ mod tests {
 
         // Top-level claim
         let jwt = make_jwt(json!({ "chatgpt_account_id": "top" }));
-        assert_eq!(extract_chatgpt_account_id_from_jwt(&jwt).as_deref(), Some("top"));
+        assert_eq!(
+            extract_chatgpt_account_id_from_jwt(&jwt).as_deref(),
+            Some("top")
+        );
 
         // Namespaced claim
         let jwt = make_jwt(json!({
             "https://api.openai.com/auth": { "chatgpt_account_id": "ns" }
         }));
-        assert_eq!(extract_chatgpt_account_id_from_jwt(&jwt).as_deref(), Some("ns"));
+        assert_eq!(
+            extract_chatgpt_account_id_from_jwt(&jwt).as_deref(),
+            Some("ns")
+        );
 
         // organizations[0].id
         let jwt = make_jwt(json!({ "organizations": [{ "id": "org-1" }] }));

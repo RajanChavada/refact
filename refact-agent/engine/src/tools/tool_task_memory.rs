@@ -3361,8 +3361,7 @@ mod tests {
     async fn handle_task_memory_facets_returns_sorted_deduplicated_namespaces() {
         let temp = tempfile::tempdir().unwrap();
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        *gcx.documents_state.workspace_folders.lock().unwrap() =
-            vec![temp.path().to_path_buf()];
+        *gcx.documents_state.workspace_folders.lock().unwrap() = vec![temp.path().to_path_buf()];
         let task_dir = temp.path().join(".refact/tasks/task-1");
         let memories_dir = task_dir.join(MEMORIES_DIR);
         tokio::fs::create_dir_all(&memories_dir).await.unwrap();
@@ -3415,13 +3414,16 @@ mod tests {
     async fn handle_task_memory_facets_counts_pinned_correctly() {
         let temp = tempfile::tempdir().unwrap();
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        *gcx.documents_state.workspace_folders.lock().unwrap() =
-            vec![temp.path().to_path_buf()];
+        *gcx.documents_state.workspace_folders.lock().unwrap() = vec![temp.path().to_path_buf()];
         let task_dir = temp.path().join(".refact/tasks/task-1");
         let memories_dir = task_dir.join(MEMORIES_DIR);
         tokio::fs::create_dir_all(&memories_dir).await.unwrap();
 
-        for (file, pinned) in &[("pinned.md", true), ("active.md", false), ("also-pinned.md", true)] {
+        for (file, pinned) in &[
+            ("pinned.md", true),
+            ("active.md", false),
+            ("also-pinned.md", true),
+        ] {
             tokio::fs::write(
                 memories_dir.join(file),
                 render_memory_file(
@@ -3445,8 +3447,7 @@ mod tests {
     async fn handle_task_memory_facets_does_not_load_memory_bodies() {
         let temp = tempfile::tempdir().unwrap();
         let gcx = crate::global_context::tests::make_test_gcx().await;
-        *gcx.documents_state.workspace_folders.lock().unwrap() =
-            vec![temp.path().to_path_buf()];
+        *gcx.documents_state.workspace_folders.lock().unwrap() = vec![temp.path().to_path_buf()];
         let task_dir = temp.path().join(".refact/tasks/task-1");
         let memories_dir = task_dir.join(MEMORIES_DIR);
         tokio::fs::create_dir_all(&memories_dir).await.unwrap();

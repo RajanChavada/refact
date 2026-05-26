@@ -262,20 +262,30 @@ impl Tool for ToolHandoffToMode {
                 return Err("Cannot handoff while model is generating. Wait for the current response to complete.".to_string());
             }
             SessionState::ExecutingTools => {
-                return Err("Cannot handoff while tools are executing. Wait for tools to finish.".to_string());
+                return Err(
+                    "Cannot handoff while tools are executing. Wait for tools to finish."
+                        .to_string(),
+                );
             }
             SessionState::Paused => {
-                return Err("Cannot handoff while session is paused. Resume or abort first.".to_string());
+                return Err(
+                    "Cannot handoff while session is paused. Resume or abort first.".to_string(),
+                );
             }
             SessionState::WaitingIde => {
                 return Err("Cannot handoff while waiting for IDE response. Cancel the IDE wait or wait for it to complete.".to_string());
             }
             SessionState::Error => {
-                return Err("Cannot handoff from an error state. Acknowledge the error first.".to_string());
+                return Err(
+                    "Cannot handoff from an error state. Acknowledge the error first.".to_string(),
+                );
             }
             SessionState::WaitingUserInput => {
                 if !pause_reasons.is_empty() {
-                    return Err("Cannot handoff while pending tool approvals exist. Resolve them first.".to_string());
+                    return Err(
+                        "Cannot handoff while pending tool approvals exist. Resolve them first."
+                            .to_string(),
+                    );
                 }
             }
             SessionState::Idle | SessionState::Completed => {}
@@ -300,8 +310,7 @@ impl Tool for ToolHandoffToMode {
                 .filter(|m| m.role == "tool")
                 .map(|m| m.tool_call_id.as_str())
                 .collect();
-            let mut missing_ids: Vec<&str> =
-                call_ids.difference(&result_ids).copied().collect();
+            let mut missing_ids: Vec<&str> = call_ids.difference(&result_ids).copied().collect();
             if !missing_ids.is_empty() {
                 missing_ids.sort();
                 return Err(format!(
@@ -445,7 +454,6 @@ impl Tool for ToolHandoffToMode {
             "initial_plan_document": initial_plan_doc_slug,
             "initial_plan_error": initial_plan_doc_error,
         });
-
 
         Ok((
             false,
@@ -650,7 +658,9 @@ mod tests {
         assert!(raw.contains("Card T-1"));
     }
 
-    async fn tool_with_snapshot(snapshot: ChatSessionSnapshot) -> Result<(bool, Vec<ContextEnum>), String> {
+    async fn tool_with_snapshot(
+        snapshot: ChatSessionSnapshot,
+    ) -> Result<(bool, Vec<ContextEnum>), String> {
         let temp = tempfile::tempdir().unwrap();
         let facade = Arc::new(MockChatFacade::default());
         facade.snapshot.lock().unwrap().replace(snapshot);
@@ -801,7 +811,10 @@ mod tests {
         assert_eq!(facade.saved.lock().unwrap().len(), 1);
         let result = tool_result_json(&messages);
         assert!(result["initial_plan_document"].is_null());
-        assert!(result["initial_plan_error"].is_string(), "error should surface in output");
+        assert!(
+            result["initial_plan_error"].is_string(),
+            "error should surface in output"
+        );
     }
 
     #[tokio::test]
@@ -811,10 +824,16 @@ mod tests {
         facade.snapshot.lock().unwrap().replace(source_snapshot());
         let app = test_app_with_workspace(temp.path(), facade.clone()).await;
         let ccx = handoff_ccx(app).await;
-        let mut tool = ToolHandoffToMode { config_path: String::new() };
+        let mut tool = ToolHandoffToMode {
+            config_path: String::new(),
+        };
 
         let (_, messages) = tool
-            .tool_execute(ccx, &"call-id".to_string(), &handoff_args("# Wave 0\n- Card T-1"))
+            .tool_execute(
+                ccx,
+                &"call-id".to_string(),
+                &handoff_args("# Wave 0\n- Card T-1"),
+            )
             .await
             .unwrap();
 
@@ -840,13 +859,18 @@ mod tests {
         facade.snapshot.lock().unwrap().replace(source_snapshot());
         let app = test_app_with_workspace(temp.path(), facade.clone()).await;
         let ccx = handoff_ccx(app).await;
-        let mut tool = ToolHandoffToMode { config_path: String::new() };
+        let mut tool = ToolHandoffToMode {
+            config_path: String::new(),
+        };
         let args = HashMap::from([
             ("target_mode".to_string(), json!("task_planner")),
             ("summary".to_string(), json!("Summary plan content here")),
         ]);
 
-        let (_, messages) = tool.tool_execute(ccx, &"call-id".to_string(), &args).await.unwrap();
+        let (_, messages) = tool
+            .tool_execute(ccx, &"call-id".to_string(), &args)
+            .await
+            .unwrap();
 
         let saved = facade.saved.lock().unwrap().clone();
         let task_meta = saved[0].task_meta.as_ref().unwrap();
@@ -868,13 +892,18 @@ mod tests {
         facade.snapshot.lock().unwrap().replace(source_snapshot());
         let app = test_app_with_workspace(temp.path(), facade.clone()).await;
         let ccx = handoff_ccx(app).await;
-        let mut tool = ToolHandoffToMode { config_path: String::new() };
+        let mut tool = ToolHandoffToMode {
+            config_path: String::new(),
+        };
         let args = HashMap::from([
             ("target_mode".to_string(), json!("task_planner")),
             ("handoff_message".to_string(), json!("Handoff message body")),
         ]);
 
-        let (_, messages) = tool.tool_execute(ccx, &"call-id".to_string(), &args).await.unwrap();
+        let (_, messages) = tool
+            .tool_execute(ccx, &"call-id".to_string(), &args)
+            .await
+            .unwrap();
 
         let saved = facade.saved.lock().unwrap().clone();
         let task_meta = saved[0].task_meta.as_ref().unwrap();
@@ -896,10 +925,15 @@ mod tests {
         facade.snapshot.lock().unwrap().replace(source_snapshot());
         let app = test_app_with_workspace(temp.path(), facade.clone()).await;
         let ccx = handoff_ccx(app).await;
-        let mut tool = ToolHandoffToMode { config_path: String::new() };
+        let mut tool = ToolHandoffToMode {
+            config_path: String::new(),
+        };
         let args = HashMap::from([("target_mode".to_string(), json!("task_planner"))]);
 
-        let (_, messages) = tool.tool_execute(ccx, &"call-id".to_string(), &args).await.unwrap();
+        let (_, messages) = tool
+            .tool_execute(ccx, &"call-id".to_string(), &args)
+            .await
+            .unwrap();
 
         let saved = facade.saved.lock().unwrap().clone();
         let task_meta = saved[0].task_meta.as_ref().unwrap();
@@ -929,13 +963,18 @@ mod tests {
         facade.snapshot.lock().unwrap().replace(snapshot);
         let app = test_app_with_workspace(temp.path(), facade.clone()).await;
         let ccx = handoff_ccx(app).await;
-        let mut tool = ToolHandoffToMode { config_path: String::new() };
+        let mut tool = ToolHandoffToMode {
+            config_path: String::new(),
+        };
         let args = HashMap::from([
             ("target_mode".to_string(), json!("task_planner")),
             ("initial_plan".to_string(), json!("Some plan content")),
         ]);
 
-        let (_, messages) = tool.tool_execute(ccx, &"call-id".to_string(), &args).await.unwrap();
+        let (_, messages) = tool
+            .tool_execute(ccx, &"call-id".to_string(), &args)
+            .await
+            .unwrap();
 
         let result = tool_result_json(&messages);
         assert!(result["initial_plan_document"].is_null());

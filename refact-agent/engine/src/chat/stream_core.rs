@@ -5,6 +5,7 @@ use std::time::Instant;
 use futures::{SinkExt, StreamExt};
 use eventsource_stream::Eventsource;
 use serde_json::{json, Value};
+use tokio_tungstenite::connect_async_tls_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::app_state::AppState;
@@ -13,9 +14,16 @@ use crate::caps::BaseModelRecord;
 use crate::llm::{LlmRequest, LlmStreamDelta, WireFormat, get_adapter, safe_truncate};
 use crate::llm::adapter::{AdapterSettings, HttpParts, StreamParseError};
 
+use super::openai_codex_ws::{OpenAICodexWebSocketResponseTracker, OpenAICodexWebSocketSession};
 use super::types::{DeltaOp, stream_heartbeat, stream_idle_timeout, stream_total_timeout};
 use super::retry_policy::{classify_llm_error_for_retry, should_retry_llm_error, RetryDecision};
 use super::openai_merge::ToolCallAccumulator;
+
+lazy_static::lazy_static! {
+    static ref OPENAI_CODEX_UNBOUND_WEBSOCKET_SESSIONS:
+        tokio::sync::Mutex<HashMap<String, OpenAICodexWebSocketSession>> =
+        tokio::sync::Mutex::new(HashMap::new());
+}
 
 fn merge_usage(existing: Option<ChatUsage>, incoming: ChatUsage) -> ChatUsage {
     match existing {
@@ -77,6 +85,7 @@ pub struct StreamRunParams {
     pub llm_request: LlmRequest,
     pub model_rec: BaseModelRecord,
     pub chat_id: Option<String>,
+    pub allow_websocket: bool,
     pub abort_flag: Option<Arc<AtomicBool>>,
     pub abort_notify: Option<Arc<tokio::sync::Notify>>,
     pub supports_tools: bool,
@@ -1004,6 +1013,17 @@ fn build_openai_codex_websocket_message(body: &Value) -> Value {
     let mut message = body.clone();
     if let Some(obj) = message.as_object_mut() {
         obj.insert("type".to_string(), json!("response.create"));
+        obj.entry("client_metadata".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(meta) = obj
+            .get_mut("client_metadata")
+            .and_then(|v| v.as_object_mut())
+        {
+            meta.insert(
+                "x-codex-ws-stream-request-start-ms".to_string(),
+                json!(chrono::Utc::now().timestamp_millis().to_string()),
+            );
+        }
         message
     } else {
         json!({"type": "response.create", "request": body})
@@ -1012,6 +1032,7 @@ fn build_openai_codex_websocket_message(body: &Value) -> Value {
 
 fn websocket_header_entries(
     headers: &reqwest::header::HeaderMap,
+    turn_state: Option<&str>,
 ) -> Result<Vec<(String, String)>, String> {
     let mut entries = Vec::new();
     for (key, value) in headers {
@@ -1035,7 +1056,170 @@ fn websocket_header_entries(
         "openai-beta".to_string(),
         "responses_websockets=2026-02-06".to_string(),
     ));
+    if let Some(turn_state) = turn_state.filter(|s| !s.trim().is_empty()) {
+        entries.push(("x-codex-turn-state".to_string(), turn_state.to_string()));
+    }
     Ok(entries)
+}
+
+fn openai_codex_websocket_connection_key(
+    websocket_endpoint: &str,
+    http_parts: &HttpParts,
+) -> String {
+    let mut key = websocket_endpoint.to_string();
+    for header in [
+        reqwest::header::AUTHORIZATION.as_str(),
+        "chatgpt-account-id",
+        "originator",
+        "session_id",
+    ] {
+        if let Some(value) = http_parts.headers.get(header).and_then(|v| v.to_str().ok()) {
+            key.push('\n');
+            key.push_str(header);
+            key.push('=');
+            key.push_str(value);
+        }
+    }
+    key
+}
+
+fn openai_codex_body_without_stateful_fields(body: &Value) -> Value {
+    let mut cloned = body.clone();
+    if let Some(obj) = cloned.as_object_mut() {
+        obj.remove("input");
+        obj.remove("previous_response_id");
+        obj.remove("generate");
+        obj.remove("client_metadata");
+    }
+    cloned
+}
+
+fn openai_codex_input_items(body: &Value) -> Option<&Vec<Value>> {
+    body.get("input").and_then(|v| v.as_array())
+}
+
+fn openai_codex_delta_input(
+    current_body: &Value,
+    last_request_body: &Value,
+    session: &OpenAICodexWebSocketSession,
+) -> Option<(String, Vec<Value>)> {
+    let last_response = session.last_response.as_ref()?;
+    if last_response.response_id.is_empty() {
+        return None;
+    }
+    if openai_codex_body_without_stateful_fields(current_body)
+        != openai_codex_body_without_stateful_fields(last_request_body)
+    {
+        return None;
+    }
+
+    let last_input = openai_codex_input_items(last_request_body)?;
+    let current_input = openai_codex_input_items(current_body)?;
+    let mut baseline = last_input.clone();
+    baseline.extend(last_response.output_items.clone());
+    if current_input.len() < baseline.len() {
+        return None;
+    }
+    if !current_input
+        .iter()
+        .zip(baseline.iter())
+        .all(|(a, b)| a == b)
+    {
+        return None;
+    }
+
+    Some((
+        last_response.response_id.clone(),
+        current_input[baseline.len()..].to_vec(),
+    ))
+}
+
+fn prepare_openai_codex_websocket_body(
+    body: &Value,
+    session: &OpenAICodexWebSocketSession,
+    prewarm: bool,
+) -> Value {
+    let mut prepared = body.clone();
+    if let Some(obj) = prepared.as_object_mut() {
+        if prewarm {
+            obj.insert("generate".to_string(), json!(false));
+        } else if let Some(last_request_body) = session.last_request_body.as_ref() {
+            if let Some((previous_response_id, input_delta)) =
+                openai_codex_delta_input(body, last_request_body, session)
+            {
+                obj.insert(
+                    "previous_response_id".to_string(),
+                    json!(previous_response_id),
+                );
+                obj.insert("input".to_string(), json!(input_delta));
+            }
+        }
+    }
+    build_openai_codex_websocket_message(&prepared)
+}
+
+fn clear_openai_codex_websocket_incremental_state(
+    session: &mut OpenAICodexWebSocketSession,
+    clear_turn_state: bool,
+) {
+    session.connection = None;
+    session.last_request_body = None;
+    session.last_response = None;
+    if clear_turn_state {
+        session.turn_state = None;
+    }
+}
+
+async fn take_openai_codex_websocket_session(
+    app: &AppState,
+    chat_id: Option<&String>,
+) -> OpenAICodexWebSocketSession {
+    let Some(chat_id) = chat_id else {
+        return OpenAICodexWebSocketSession::default();
+    };
+    let session_arc_opt = {
+        let sessions = app.chat.sessions.read().await;
+        sessions.get(chat_id).cloned()
+    };
+    let Some(session_arc) = session_arc_opt else {
+        return OPENAI_CODEX_UNBOUND_WEBSOCKET_SESSIONS
+            .lock()
+            .await
+            .remove(chat_id)
+            .unwrap_or_default();
+    };
+    let mut session = session_arc.lock().await;
+    std::mem::take(&mut session.openai_codex_websocket)
+}
+
+async fn store_openai_codex_websocket_session(
+    app: &AppState,
+    chat_id: Option<&String>,
+    websocket_session: OpenAICodexWebSocketSession,
+) {
+    let Some(chat_id) = chat_id else {
+        return;
+    };
+    let session_arc_opt = {
+        let sessions = app.chat.sessions.read().await;
+        sessions.get(chat_id).cloned()
+    };
+    if let Some(session_arc) = session_arc_opt {
+        let mut session = session_arc.lock().await;
+        session.openai_codex_websocket = websocket_session;
+    } else {
+        OPENAI_CODEX_UNBOUND_WEBSOCKET_SESSIONS
+            .lock()
+            .await
+            .insert(chat_id.clone(), websocket_session);
+    }
+}
+
+pub(crate) async fn clear_unbound_openai_codex_websocket_session(chat_id: &str) {
+    OPENAI_CODEX_UNBOUND_WEBSOCKET_SESSIONS
+        .lock()
+        .await
+        .remove(chat_id);
 }
 
 async fn commit_cache_guard_snapshot_if_needed(
@@ -1055,21 +1239,30 @@ async fn commit_cache_guard_snapshot_if_needed(
     }
 }
 
-async fn run_llm_websocket_request<C: StreamCollector>(
+async fn ensure_openai_codex_websocket_connected(
     websocket_endpoint: &str,
     http_parts: &HttpParts,
-    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
-    auth_token: &str,
     abort_flag: Option<Arc<AtomicBool>>,
     abort_notify: Option<Arc<tokio::sync::Notify>>,
-    collector: &mut C,
-) -> Result<Vec<ChoiceFinal>, String> {
+    session: &mut OpenAICodexWebSocketSession,
+) -> Result<(), String> {
+    let connection_key = openai_codex_websocket_connection_key(websocket_endpoint, http_parts);
+    if session.connection_key.as_deref() != Some(connection_key.as_str()) {
+        clear_openai_codex_websocket_incremental_state(session, true);
+        session.connection_key = Some(connection_key);
+    }
+    if session.connection.is_some() {
+        return Ok(());
+    }
+
     let mut request = websocket_endpoint
         .into_client_request()
         .map_err(|e| format!("OpenAI Codex WebSocket request build failed: {}", e))?;
     {
         let headers = request.headers_mut();
-        for (key, value) in websocket_header_entries(&http_parts.headers)? {
+        for (key, value) in
+            websocket_header_entries(&http_parts.headers, session.turn_state.as_deref())?
+        {
             let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(key.as_bytes())
                 .map_err(|e| {
                     format!("OpenAI Codex WebSocket header '{}' is invalid: {}", key, e)
@@ -1087,16 +1280,53 @@ async fn run_llm_websocket_request<C: StreamCollector>(
 
     let connect = tokio::time::timeout(
         stream_idle_timeout(),
-        tokio_tungstenite::connect_async(request),
+        connect_async_tls_with_config(request, None, false, None),
     );
-    let (mut websocket, _) = tokio::select! {
+    let (websocket, response) = tokio::select! {
         result = connect => result
             .map_err(|_| "OpenAI Codex WebSocket connect timed out".to_string())?
             .map_err(|e| format!("OpenAI Codex WebSocket connect failed: {}", e))?,
         _ = wait_for_abort_signal(abort_flag.clone(), abort_notify.clone()) => return Err(ABORT_ERROR_MESSAGE.to_string()),
     };
+    if let Some(turn_state) = response
+        .headers()
+        .get("x-codex-turn-state")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+    {
+        session.turn_state = Some(turn_state.to_string());
+    }
+    session.connection = Some(websocket);
+    Ok(())
+}
+
+async fn run_openai_codex_websocket_exchange<C: StreamCollector>(
+    websocket_endpoint: &str,
+    http_parts: &HttpParts,
+    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
+    auth_token: &str,
+    abort_flag: Option<Arc<AtomicBool>>,
+    abort_notify: Option<Arc<tokio::sync::Notify>>,
+    session: &mut OpenAICodexWebSocketSession,
+    prewarm: bool,
+    collector: &mut C,
+) -> Result<Vec<ChoiceFinal>, String> {
+    ensure_openai_codex_websocket_connected(
+        websocket_endpoint,
+        http_parts,
+        abort_flag.clone(),
+        abort_notify.clone(),
+        session,
+    )
+    .await?;
+
+    let request_body = prepare_openai_codex_websocket_body(&http_parts.body, session, prewarm);
+    let mut websocket = session
+        .connection
+        .take()
+        .ok_or_else(|| "OpenAI Codex WebSocket connection is unavailable".to_string())?;
     let send = websocket.send(tokio_tungstenite::tungstenite::Message::Text(
-        build_openai_codex_websocket_message(&http_parts.body).to_string(),
+        request_body.to_string(),
     ));
     tokio::select! {
         result = send => result.map_err(|e| format!("OpenAI Codex WebSocket send failed: {}", e))?,
@@ -1104,6 +1334,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
     };
 
     let mut accumulators: Vec<ChoiceAccumulator> = vec![ChoiceAccumulator::default()];
+    let mut response_tracker = OpenAICodexWebSocketResponseTracker::default();
     let mut stream_done = false;
     let stream_started_at = Instant::now();
     let mut last_event_at = Instant::now();
@@ -1166,6 +1397,13 @@ async fn run_llm_websocket_request<C: StreamCollector>(
             tokio_tungstenite::tungstenite::Message::Frame(_) => continue,
         };
 
+        if let Ok(event) = serde_json::from_str::<Value>(&data) {
+            if let Some(error) = openai_codex_websocket_error_message(&event) {
+                return Err(error);
+            }
+            response_tracker.observe_event(&event);
+        }
+
         stream_done = process_stream_event_data(
             adapter,
             auth_token,
@@ -1176,7 +1414,110 @@ async fn run_llm_websocket_request<C: StreamCollector>(
         )?;
     }
 
+    session.last_request_body = Some(http_parts.body.clone());
+    session.last_response = response_tracker.into_last_response();
+    session.connection = Some(websocket);
     Ok(finalize_accumulators(accumulators, collector))
+}
+
+async fn run_llm_websocket_request<C: StreamCollector>(
+    websocket_endpoint: &str,
+    http_parts: &HttpParts,
+    adapter: &dyn crate::llm::adapter::LlmWireAdapter,
+    auth_token: &str,
+    abort_flag: Option<Arc<AtomicBool>>,
+    abort_notify: Option<Arc<tokio::sync::Notify>>,
+    session: &mut OpenAICodexWebSocketSession,
+    collector: &mut C,
+) -> Result<Vec<ChoiceFinal>, String> {
+    session.turn_state = None;
+    if session.last_request_body.is_none() {
+        let mut prewarm_collector = ReplayCollector::default();
+        run_openai_codex_websocket_exchange(
+            websocket_endpoint,
+            http_parts,
+            adapter,
+            auth_token,
+            abort_flag.clone(),
+            abort_notify.clone(),
+            session,
+            true,
+            &mut prewarm_collector,
+        )
+        .await?;
+    }
+
+    let result = run_openai_codex_websocket_exchange(
+        websocket_endpoint,
+        http_parts,
+        adapter,
+        auth_token,
+        abort_flag.clone(),
+        abort_notify.clone(),
+        session,
+        false,
+        collector,
+    )
+    .await;
+
+    match result {
+        Err(error) if is_openai_codex_previous_response_missing_error(&error) => {
+            tracing::warn!(
+                "OpenAI Codex WebSocket previous_response_id was rejected; retrying this request without incremental state: {}",
+                error
+            );
+            clear_openai_codex_websocket_incremental_state(session, true);
+            run_openai_codex_websocket_exchange(
+                websocket_endpoint,
+                http_parts,
+                adapter,
+                auth_token,
+                abort_flag,
+                abort_notify,
+                session,
+                false,
+                collector,
+            )
+            .await
+        }
+        other => other,
+    }
+}
+
+fn openai_codex_websocket_error_message(event: &Value) -> Option<String> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("error") {
+        return None;
+    }
+    let status = event
+        .get("status")
+        .or_else(|| event.get("status_code"))
+        .and_then(|v| v.as_u64());
+    let nested = event.get("error");
+    let code = nested
+        .and_then(|e| e.get("code"))
+        .or_else(|| event.get("code"))
+        .and_then(|v| v.as_str());
+    let message = nested
+        .and_then(|e| e.get("message"))
+        .or_else(|| event.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("websocket error");
+    Some(match (status, code) {
+        (Some(status), Some(code)) => {
+            format!("OpenAI Codex WebSocket error status={status} code={code}: {message}")
+        }
+        (Some(status), None) => {
+            format!("OpenAI Codex WebSocket error status={status}: {message}")
+        }
+        (None, Some(code)) => format!("OpenAI Codex WebSocket error code={code}: {message}"),
+        (None, None) => format!("OpenAI Codex WebSocket error: {message}"),
+    })
+}
+
+fn is_openai_codex_previous_response_missing_error(error: &str) -> bool {
+    error.contains("previous_response_not_found")
+        || error.contains("Previous response with id")
+        || error.contains("previous_response_id")
 }
 
 async fn run_llm_ndjson_request<C: StreamCollector>(
@@ -1349,37 +1690,74 @@ pub async fn run_llm_stream<C: StreamCollector>(
         "LLM streaming request"
     );
 
-    if let Some(websocket_endpoint) = openai_codex_websocket_endpoint(&params.model_rec) {
-        let mut replay_collector = ReplayCollector::default();
-        match run_llm_websocket_request(
-            websocket_endpoint,
-            &http_parts,
-            adapter,
-            &params.model_rec.auth_token,
-            params.abort_flag.clone(),
-            params.abort_notify.clone(),
-            &mut replay_collector,
-        )
-        .await
-        {
-            Ok(results) => {
-                commit_cache_guard_snapshot_if_needed(
-                    app.clone(),
+    if params.allow_websocket {
+        if let Some(websocket_endpoint) = openai_codex_websocket_endpoint(&params.model_rec) {
+            let mut websocket_session =
+                take_openai_codex_websocket_session(&app, params.chat_id.as_ref()).await;
+            if !websocket_session.disabled {
+                let mut replay_collector = ReplayCollector::default();
+                match run_llm_websocket_request(
+                    websocket_endpoint,
+                    &http_parts,
+                    adapter,
+                    &params.model_rec.auth_token,
+                    params.abort_flag.clone(),
+                    params.abort_notify.clone(),
+                    &mut websocket_session,
+                    &mut replay_collector,
+                )
+                .await
+                {
+                    Ok(results) => {
+                        store_openai_codex_websocket_session(
+                            &app,
+                            params.chat_id.as_ref(),
+                            websocket_session,
+                        )
+                        .await;
+                        commit_cache_guard_snapshot_if_needed(
+                            app.clone(),
+                            params.chat_id.as_ref(),
+                            sanitized_for_commit.clone(),
+                        )
+                        .await;
+                        replay_collector.replay(collector);
+                        return Ok(LlmStreamOutcome::Choices(results));
+                    }
+                    Err(error) => {
+                        if abort_requested(params.abort_flag.as_ref()) || is_abort_error(&error) {
+                            store_openai_codex_websocket_session(
+                                &app,
+                                params.chat_id.as_ref(),
+                                websocket_session,
+                            )
+                            .await;
+                            return Err(LlmStreamError::new(error, partial_output_emitted));
+                        }
+                        websocket_session.disabled = true;
+                        clear_openai_codex_websocket_incremental_state(
+                            &mut websocket_session,
+                            true,
+                        );
+                        store_openai_codex_websocket_session(
+                            &app,
+                            params.chat_id.as_ref(),
+                            websocket_session,
+                        )
+                        .await;
+                        tracing::warn!(
+                        "OpenAI Codex WebSocket streaming failed; disabling WebSocket for this chat session and falling back to HTTP SSE: {}",
+                        error
+                    );
+                    }
+                }
+            } else {
+                store_openai_codex_websocket_session(
+                    &app,
                     params.chat_id.as_ref(),
-                    sanitized_for_commit.clone(),
+                    websocket_session,
                 )
                 .await;
-                replay_collector.replay(collector);
-                return Ok(LlmStreamOutcome::Choices(results));
-            }
-            Err(error) => {
-                if abort_requested(params.abort_flag.as_ref()) || is_abort_error(&error) {
-                    return Err(LlmStreamError::new(error, partial_output_emitted));
-                }
-                tracing::warn!(
-                    "OpenAI Codex WebSocket streaming failed, falling back to HTTP SSE: {}",
-                    error
-                );
             }
         }
     }
@@ -1836,6 +2214,60 @@ mod tests {
     }
 
     #[test]
+    fn websocket_body_uses_previous_response_delta_when_history_matches() {
+        let previous_user = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "one"}]
+        });
+        let previous_assistant = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "two"}]
+        });
+        let next_user = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "three"}]
+        });
+        let last_request_body = json!({
+            "model": "gpt-5.6-codex",
+            "stream": true,
+            "input": [previous_user.clone()]
+        });
+        let current_body = json!({
+            "model": "gpt-5.6-codex",
+            "stream": true,
+            "input": [previous_user, previous_assistant.clone(), next_user.clone()]
+        });
+        let mut session = OpenAICodexWebSocketSession::default();
+        session.last_request_body = Some(last_request_body);
+        session.last_response = Some(
+            crate::chat::openai_codex_ws::OpenAICodexWebSocketLastResponse {
+                response_id: "resp_1".to_string(),
+                output_items: vec![previous_assistant],
+            },
+        );
+
+        let message = prepare_openai_codex_websocket_body(&current_body, &session, false);
+
+        assert_eq!(message["type"], json!("response.create"));
+        assert_eq!(message["previous_response_id"], json!("resp_1"));
+        assert_eq!(message["input"], json!([next_user]));
+    }
+
+    #[test]
+    fn websocket_previous_response_missing_error_is_incremental_only() {
+        assert!(is_openai_codex_previous_response_missing_error(
+            "OpenAI Codex WebSocket error status=400 code=previous_response_not_found: Previous response with id 'resp_1' not found."
+        ));
+        assert!(!is_openai_codex_previous_response_missing_error(
+            "OpenAI Codex WebSocket stream stalled"
+        ));
+    }
+
+    #[test]
     fn cache_guard_is_not_committed_for_retryable_http_errors() {
         assert!(!should_commit_cache_guard_after_http_success(
             reqwest::StatusCode::TOO_MANY_REQUESTS,
@@ -2136,7 +2568,7 @@ mod tests {
             ),
         );
 
-        let entries = websocket_header_entries(&headers).unwrap();
+        let entries = websocket_header_entries(&headers, Some("turn-state-1")).unwrap();
         let map: HashMap<_, _> = entries.into_iter().collect();
 
         assert_eq!(
@@ -2146,6 +2578,10 @@ mod tests {
         assert_eq!(
             map.get("openai-beta").map(String::as_str),
             Some("responses_websockets=2026-02-06")
+        );
+        assert_eq!(
+            map.get("x-codex-turn-state").map(String::as_str),
+            Some("turn-state-1")
         );
         assert!(!map.contains_key("accept"));
         assert!(!map.contains_key("content-type"));

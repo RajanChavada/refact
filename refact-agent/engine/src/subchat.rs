@@ -20,7 +20,7 @@ use crate::chat::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use crate::llm::params::CacheControl;
 use crate::chat::stream_core::{
     run_llm_stream, StreamRunParams, ChoiceFinal, StreamCollector, normalize_tool_call,
-    LlmStreamError,
+    LlmStreamError, clear_unbound_openai_codex_websocket_session,
 };
 use crate::chat::diagnostics::{
     append_ui_only_reactive_compaction_diagnostics, format_tier0_compaction_report,
@@ -941,28 +941,34 @@ pub async fn run_subchat(
     }
 
     let mut _usage = ChatUsage::default();
-    let mut current_messages = messages;
 
-    if let Some(ref wrap_up) = config.wrap_up {
-        current_messages = Box::pin(run_subchat_with_wrap_up(
+    let current_messages_result = if let Some(ref wrap_up) = config.wrap_up {
+        Box::pin(run_subchat_with_wrap_up(
             ccx.clone(),
             &config,
-            current_messages,
+            messages,
             &config.tools,
             wrap_up,
             &mut _usage,
         ))
-        .await?;
+        .await
     } else {
-        current_messages = Box::pin(run_subchat_loop(
+        Box::pin(run_subchat_loop(
             ccx.clone(),
             &config,
-            current_messages,
+            messages,
             &config.tools,
             &mut _usage,
         ))
-        .await?;
-    }
+        .await
+    };
+    let current_messages = match current_messages_result {
+        Ok(messages) => messages,
+        Err(e) => {
+            clear_unbound_openai_codex_websocket_session(&chat_id).await;
+            return Err(e);
+        }
+    };
 
     if config.stateful {
         let mut thread = stateful_thread_from_config(&chat_id, &config);
@@ -977,6 +983,7 @@ pub async fn run_subchat(
     }
 
     let metering = aggregate_metering_from_messages(&current_messages);
+    clear_unbound_openai_codex_websocket_session(&chat_id).await;
 
     Ok(SubchatResult {
         messages: current_messages,
@@ -1656,7 +1663,8 @@ async fn subchat_stream(
         let params = StreamRunParams {
             llm_request: llm_request.clone(),
             model_rec: model_rec.base.clone(),
-            chat_id: None,
+            chat_id: Some(stats_chat_id.clone()),
+            allow_websocket: true,
             abort_flag: Some(abort_flag.clone()),
             abort_notify: None,
             supports_tools: model_rec.supports_tools,

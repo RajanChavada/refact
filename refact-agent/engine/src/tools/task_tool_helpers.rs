@@ -151,7 +151,12 @@ pub(crate) async fn preflight_agent_model(
     if caps.chat_models.contains_key(model_name) {
         return Ok(());
     }
-    let available: Vec<&str> = caps.chat_models.keys().map(|s| s.as_str()).take(5).collect();
+    let available: Vec<&str> = caps
+        .chat_models
+        .keys()
+        .map(|s| s.as_str())
+        .take(5)
+        .collect();
     let alternatives = if available.is_empty() {
         "no chat models configured".to_string()
     } else {
@@ -219,14 +224,35 @@ mod tests {
             ("str_upper", json!("TRUE")),
             ("str_mixed", json!("  False  ")),
         ]);
-        assert_eq!(parse_bool_arg_strict(&args, "flag_true", false).unwrap(), true);
-        assert_eq!(parse_bool_arg_strict(&args, "flag_false", true).unwrap(), false);
-        assert_eq!(parse_bool_arg_strict(&args, "str_true", false).unwrap(), true);
-        assert_eq!(parse_bool_arg_strict(&args, "str_false", true).unwrap(), false);
-        assert_eq!(parse_bool_arg_strict(&args, "str_upper", false).unwrap(), true);
-        assert_eq!(parse_bool_arg_strict(&args, "str_mixed", true).unwrap(), false);
+        assert_eq!(
+            parse_bool_arg_strict(&args, "flag_true", false).unwrap(),
+            true
+        );
+        assert_eq!(
+            parse_bool_arg_strict(&args, "flag_false", true).unwrap(),
+            false
+        );
+        assert_eq!(
+            parse_bool_arg_strict(&args, "str_true", false).unwrap(),
+            true
+        );
+        assert_eq!(
+            parse_bool_arg_strict(&args, "str_false", true).unwrap(),
+            false
+        );
+        assert_eq!(
+            parse_bool_arg_strict(&args, "str_upper", false).unwrap(),
+            true
+        );
+        assert_eq!(
+            parse_bool_arg_strict(&args, "str_mixed", true).unwrap(),
+            false
+        );
         assert_eq!(parse_bool_arg_strict(&args, "missing", true).unwrap(), true);
-        assert_eq!(parse_bool_arg_strict(&args, "missing", false).unwrap(), false);
+        assert_eq!(
+            parse_bool_arg_strict(&args, "missing", false).unwrap(),
+            false
+        );
     }
 
     #[test]
@@ -300,12 +326,27 @@ mod tests {
     #[test]
     fn human_age_at_is_deterministic() {
         let now = Utc::now();
-        assert_eq!(human_age_at(now - chrono::Duration::seconds(30), now), "30s ago");
-        assert_eq!(human_age_at(now - chrono::Duration::seconds(30), now), "30s ago");
-        assert_eq!(human_age_at(now - chrono::Duration::minutes(5), now), "5m ago");
-        assert_eq!(human_age_at(now - chrono::Duration::hours(2), now), "2h ago");
+        assert_eq!(
+            human_age_at(now - chrono::Duration::seconds(30), now),
+            "30s ago"
+        );
+        assert_eq!(
+            human_age_at(now - chrono::Duration::seconds(30), now),
+            "30s ago"
+        );
+        assert_eq!(
+            human_age_at(now - chrono::Duration::minutes(5), now),
+            "5m ago"
+        );
+        assert_eq!(
+            human_age_at(now - chrono::Duration::hours(2), now),
+            "2h ago"
+        );
         assert_eq!(human_age_at(now - chrono::Duration::days(3), now), "3d ago");
-        assert_eq!(human_age_at(now + chrono::Duration::seconds(10), now), "now");
+        assert_eq!(
+            human_age_at(now + chrono::Duration::seconds(10), now),
+            "now"
+        );
     }
 
     #[tokio::test]
@@ -356,12 +397,15 @@ mod tests {
         assert_eq!(err, "task agent context is required");
     }
 
-    async fn gcx_with_chat_models(model_names: &[&str]) -> Arc<crate::global_context::GlobalContext> {
+    async fn gcx_with_chat_models(
+        model_names: &[&str],
+    ) -> Arc<crate::global_context::GlobalContext> {
         use crate::caps::{ChatModelRecord, CodeAssistantCaps};
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let mut caps = CodeAssistantCaps::default();
         for &name in model_names {
-            caps.chat_models.insert(name.to_string(), Arc::new(ChatModelRecord::default()));
+            caps.chat_models
+                .insert(name.to_string(), Arc::new(ChatModelRecord::default()));
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -378,24 +422,42 @@ mod tests {
     #[tokio::test]
     async fn preflight_passes_for_configured_chat_model() {
         let gcx = gcx_with_chat_models(&["provider/test-model"]).await;
-        preflight_agent_model(gcx, "provider/test-model").await.unwrap();
+        preflight_agent_model(gcx, "provider/test-model")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn preflight_fails_with_helpful_message_for_unknown_model() {
         let gcx = gcx_with_chat_models(&["provider/available-model"]).await;
-        let err = preflight_agent_model(gcx, "provider/missing-model").await.unwrap_err();
-        assert!(err.contains("'provider/missing-model'"), "error should name the model: {err}");
-        assert!(err.contains("provider/available-model"), "error should list alternatives: {err}");
+        let err = preflight_agent_model(gcx, "provider/missing-model")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("'provider/missing-model'"),
+            "error should name the model: {err}"
+        );
+        assert!(
+            err.contains("provider/available-model"),
+            "error should list alternatives: {err}"
+        );
     }
 
     #[tokio::test]
     async fn spawn_agent_fails_before_worktree_when_model_unavailable() {
         let gcx = gcx_with_chat_models(&[]).await;
         let cache_dir = gcx.cache_dir.clone();
-        let err = preflight_agent_model(gcx, "unavailable/model").await.unwrap_err();
-        assert!(err.contains("'unavailable/model'"), "error should name the model: {err}");
-        assert!(err.contains("no chat models configured"), "error should indicate no models: {err}");
+        let err = preflight_agent_model(gcx, "unavailable/model")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("'unavailable/model'"),
+            "error should name the model: {err}"
+        );
+        assert!(
+            err.contains("no chat models configured"),
+            "error should indicate no models: {err}"
+        );
         assert!(
             !cache_dir.join("worktrees").exists(),
             "no worktree directory should be created before preflight passes"
@@ -406,8 +468,13 @@ mod tests {
     async fn restart_agent_fails_before_worktree_when_model_unavailable() {
         let gcx = gcx_with_chat_models(&[]).await;
         let cache_dir = gcx.cache_dir.clone();
-        let err = preflight_agent_model(gcx, "unavailable/model").await.unwrap_err();
-        assert!(err.contains("'unavailable/model'"), "error should name the model: {err}");
+        let err = preflight_agent_model(gcx, "unavailable/model")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("'unavailable/model'"),
+            "error should name the model: {err}"
+        );
         assert!(
             !cache_dir.join("worktrees").exists(),
             "no worktree directory should be created before preflight passes"

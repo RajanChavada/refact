@@ -7,6 +7,7 @@ mod generation;
 mod handlers;
 pub mod history_limit;
 pub mod linearize;
+pub(crate) mod openai_codex_ws;
 mod openai_merge;
 pub mod post_merge_check;
 pub mod prepare;

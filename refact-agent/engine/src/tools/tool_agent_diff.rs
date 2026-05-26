@@ -263,7 +263,14 @@ async fn run_git(worktree: &Path, args: &[&str], timeout: Duration) -> Result<St
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to run git {:?} in '{}': {}", args, worktree.display(), e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to run git {:?} in '{}': {}",
+                args,
+                worktree.display(),
+                e
+            )
+        })?;
 
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
@@ -271,29 +278,36 @@ async fn run_git(worktree: &Path, args: &[&str], timeout: Duration) -> Result<St
     let mut chunk = [0u8; 8192];
     let mut capped = false;
 
-    let read_result = run_with_timeout(async {
-        loop {
-            let n = stdout
-                .read(&mut chunk)
-                .await
-                .map_err(|e| format!("git stdout read failed: {e}"))?;
-            if n == 0 {
-                break;
+    let read_result = run_with_timeout(
+        async {
+            loop {
+                let n = stdout
+                    .read(&mut chunk)
+                    .await
+                    .map_err(|e| format!("git stdout read failed: {e}"))?;
+                if n == 0 {
+                    break;
+                }
+                if buf.len() + n > MAX_GIT_OUTPUT_BYTES {
+                    let remaining = MAX_GIT_OUTPUT_BYTES - buf.len();
+                    buf.extend_from_slice(&chunk[..remaining]);
+                    buf.extend_from_slice(b"\n... (truncated by byte cap)\n");
+                    capped = true;
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
             }
-            if buf.len() + n > MAX_GIT_OUTPUT_BYTES {
-                let remaining = MAX_GIT_OUTPUT_BYTES - buf.len();
-                buf.extend_from_slice(&chunk[..remaining]);
-                buf.extend_from_slice(b"\n... (truncated by byte cap)\n");
-                capped = true;
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-        }
-        Ok::<_, String>(())
-    }, timeout).await;
+            Ok::<_, String>(())
+        },
+        timeout,
+    )
+    .await;
 
     let _ = child.kill().await;
-    let status = child.wait().await.map_err(|e| format!("git wait failed: {e}"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("git wait failed: {e}"))?;
 
     match read_result {
         Err(()) => {
@@ -320,20 +334,29 @@ async fn run_git(worktree: &Path, args: &[&str], timeout: Duration) -> Result<St
         } else {
             stderr_text
         };
-        return Err(format!("git {:?} failed in '{}': {}", args, worktree.display(), msg));
+        return Err(format!(
+            "git {:?} failed in '{}': {}",
+            args,
+            worktree.display(),
+            msg
+        ));
     }
 
     String::from_utf8(buf).map_err(|e| format!("git output not utf-8: {e}"))
 }
 
 async fn list_untracked(worktree: &Path, timeout: Duration) -> Result<Vec<String>, String> {
-    Ok(run_git(worktree, &["ls-files", "--others", "--exclude-standard"], timeout)
-        .await?
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+    Ok(run_git(
+        worktree,
+        &["ls-files", "--others", "--exclude-standard"],
+        timeout,
+    )
+    .await?
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(str::to_string)
+    .collect())
 }
 
 fn append_section(output: &mut String, title: &str, body: &str) {
@@ -474,12 +497,18 @@ fn push_name_only(names: &mut Vec<String>, seen: &mut HashSet<String>, output: &
     }
 }
 
-async fn run_git_diff(worktree: &Path, mode: AgentDiffMode, base: &DiffBase) -> Result<String, String> {
+async fn run_git_diff(
+    worktree: &Path,
+    mode: AgentDiffMode,
+    base: &DiffBase,
+) -> Result<String, String> {
     let range = format!("{}...HEAD", base.refish);
     match mode {
         AgentDiffMode::Stat => {
-            let committed = run_git(worktree, &["diff", "--stat", &range], GIT_DIFF_TIMEOUT).await?;
-            let staged = run_git(worktree, &["diff", "--stat", "--cached"], GIT_DIFF_TIMEOUT).await?;
+            let committed =
+                run_git(worktree, &["diff", "--stat", &range], GIT_DIFF_TIMEOUT).await?;
+            let staged =
+                run_git(worktree, &["diff", "--stat", "--cached"], GIT_DIFF_TIMEOUT).await?;
             let unstaged = run_git(worktree, &["diff", "--stat"], GIT_DIFF_TIMEOUT).await?;
             let untracked = list_untracked(worktree, GIT_DIFF_TIMEOUT).await?;
             if committed.trim().is_empty()
@@ -520,8 +549,14 @@ async fn run_git_diff(worktree: &Path, mode: AgentDiffMode, base: &DiffBase) -> 
             Ok(output)
         }
         AgentDiffMode::NameOnly => {
-            let committed = run_git(worktree, &["diff", "--name-only", &range], GIT_DIFF_TIMEOUT).await?;
-            let staged = run_git(worktree, &["diff", "--name-only", "--cached"], GIT_DIFF_TIMEOUT).await?;
+            let committed =
+                run_git(worktree, &["diff", "--name-only", &range], GIT_DIFF_TIMEOUT).await?;
+            let staged = run_git(
+                worktree,
+                &["diff", "--name-only", "--cached"],
+                GIT_DIFF_TIMEOUT,
+            )
+            .await?;
             let unstaged = run_git(worktree, &["diff", "--name-only"], GIT_DIFF_TIMEOUT).await?;
             let untracked = list_untracked(worktree, GIT_DIFF_TIMEOUT).await?;
             let mut names = Vec::new();
@@ -1499,7 +1534,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(output.contains("truncated by byte cap"), "expected truncation footer");
+        assert!(
+            output.contains("truncated by byte cap"),
+            "expected truncation footer"
+        );
         assert!(
             output.len() <= MAX_GIT_OUTPUT_BYTES + 64,
             "output {} bytes exceeds cap + overhead",
@@ -1509,11 +1547,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_git_respects_timeout() {
-        let result = super::run_with_timeout(
-            std::future::pending::<()>(),
-            Duration::from_nanos(1),
-        )
-        .await;
+        let result =
+            super::run_with_timeout(std::future::pending::<()>(), Duration::from_nanos(1)).await;
 
         assert!(result.is_err(), "expected timeout");
     }
@@ -1524,9 +1559,13 @@ mod tests {
         let repo = temp.path();
         init_repo(repo);
 
-        let result = super::run_git(repo, &["rev-parse", "--is-inside-work-tree"], GIT_DIFF_TIMEOUT)
-            .await
-            .unwrap();
+        let result = super::run_git(
+            repo,
+            &["rev-parse", "--is-inside-work-tree"],
+            GIT_DIFF_TIMEOUT,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.trim(), "true");
     }

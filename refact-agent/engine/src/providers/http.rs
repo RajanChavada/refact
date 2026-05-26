@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::app_state::AppState;
 use crate::buddy::drafts::{draft_kind_str, DraftTarget, DraftValidationError};
@@ -54,6 +55,8 @@ use super::openrouter::OpenRouterProvider;
 use super::google_gemini::GoogleGeminiProvider;
 use super::claude_code::ClaudeCodeProvider;
 use super::openai_codex::{OpenAICodexProvider, UsageRequestError};
+
+const PROVIDER_AVAILABLE_MODELS_TIMEOUT: Duration = Duration::from_secs(8);
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -1188,9 +1191,21 @@ pub async fn handle_v1_provider_available_models(
             )
         }
     };
-    let models = provider
-        .fetch_available_models(&http_client, &model_caps)
-        .await;
+    let models = match tokio::time::timeout(
+        PROVIDER_AVAILABLE_MODELS_TIMEOUT,
+        provider.fetch_available_models(&http_client, &model_caps),
+    )
+    .await
+    {
+        Ok(models) => models,
+        Err(_) => {
+            tracing::warn!(
+                "Timed out fetching available models for provider '{}'; using model_caps fallback",
+                params.name
+            );
+            provider.get_available_models_from_caps(&model_caps)
+        }
+    };
     let error = caps_error;
 
     let source_str = match source {

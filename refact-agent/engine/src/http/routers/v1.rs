@@ -41,9 +41,8 @@ use crate::http::routers::v1::gui_help_handlers::handle_v1_fullpath;
 use crate::http::routers::v1::sync_files::handle_v1_sync_files_extract_tar;
 use crate::http::routers::v1::system_prompt::handle_v1_prepend_system_prompt_and_maybe_more_initial_messages;
 use crate::providers::http::{
-    handle_v1_defaults_get, handle_v1_defaults_update,
-    handle_v1_google_gemini_health, handle_v1_models,
-    handle_v1_openrouter_account_info, handle_v1_openrouter_health,
+    handle_v1_defaults_get, handle_v1_defaults_update, handle_v1_google_gemini_health,
+    handle_v1_models, handle_v1_openrouter_account_info, handle_v1_openrouter_health,
     handle_v1_openrouter_model_endpoints, handle_v1_provider_account_info,
     handle_v1_provider_add_custom_model, handle_v1_provider_available_models,
     handle_v1_provider_delete, handle_v1_provider_get, handle_v1_provider_health,
@@ -84,10 +83,9 @@ use crate::http::routers::v1::tasks::{
     handle_list_task_trajectories, handle_create_planner_chat, handle_delete_planner_chat,
     handle_tasks_subscribe, handle_list_task_memories, handle_pin_task_memory,
     handle_archive_task_memory, handle_task_memories_triage_done, handle_task_memory_facets,
-    handle_list_task_documents,
-    handle_get_task_document, handle_create_task_document, handle_update_task_document,
-    handle_append_task_document, handle_delete_task_document, handle_pin_task_document,
-    handle_history_task_document,
+    handle_list_task_documents, handle_get_task_document, handle_create_task_document,
+    handle_update_task_document, handle_append_task_document, handle_delete_task_document,
+    handle_pin_task_document, handle_history_task_document,
 };
 use crate::http::routers::v1::trajectory_ops::{
     handle_transform_preview, handle_transform_apply, handle_handoff_preview, handle_handoff_apply,

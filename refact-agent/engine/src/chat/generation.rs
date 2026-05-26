@@ -1271,6 +1271,7 @@ async fn run_streaming_generation(
             llm_request: llm_request.clone(),
             model_rec: model_rec.base.clone(),
             chat_id: Some(chat_id.clone()),
+            allow_websocket: true,
             abort_flag: Some(abort_flag.clone()),
             abort_notify: Some(abort_notify.clone()),
             supports_tools: model_rec.supports_tools,
@@ -2460,7 +2461,10 @@ mod tests {
             Ok(GenerationResult::PausedForUserDecision);
         let would_call_finish_stream_with_error = matches!(result, Err(_));
         let would_break_cleanly = matches!(result, Ok(GenerationResult::PausedForUserDecision));
-        assert!(would_break_cleanly, "PausedForUserDecision must break the loop cleanly");
+        assert!(
+            would_break_cleanly,
+            "PausedForUserDecision must break the loop cleanly"
+        );
         assert!(
             !would_call_finish_stream_with_error,
             "PausedForUserDecision must not trigger finish_stream_with_error"

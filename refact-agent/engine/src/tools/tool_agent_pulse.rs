@@ -876,8 +876,14 @@ mod tests {
                 .unwrap(),
         );
 
-        assert!(output.contains("**Last activity:** 30s ago"), "got: {output}");
-        assert!(!output.contains("1h ago"), "should not show stale heartbeat: {output}");
+        assert!(
+            output.contains("**Last activity:** 30s ago"),
+            "got: {output}"
+        );
+        assert!(
+            !output.contains("1h ago"),
+            "should not show stale heartbeat: {output}"
+        );
     }
 
     #[tokio::test]
@@ -903,6 +909,9 @@ mod tests {
                 .unwrap(),
         );
 
-        assert!(output.contains("**Last activity:** 5m ago"), "got: {output}");
+        assert!(
+            output.contains("**Last activity:** 5m ago"),
+            "got: {output}"
+        );
     }
 }
