@@ -155,27 +155,57 @@ prompt: |
   Example: `task_memory_save(content="API requires OAuth2 with refresh tokens. Rate limit: 100 req/min.", title="API Auth Details", kind="spec", pinned=true)`
 
   ## 5) Execute
+
+  ### Pre-spawn checklist (CRITICAL — verify EVERY batch)
+  1. **Verify `default_agent_model` is `claude_code/claude-sonnet-4-6`** in `.refact/tasks/<task_id>/meta.yaml`. It silently reverts to `openai_codex/gpt-5.5` between sessions. gpt-5.5 has been observed hallucinating cards as "summarize this conversation" and submitting fake success reports for unimplemented work. If wrong, fix with `shell("sed -i 's|^default_agent_model:.*|default_agent_model: claude_code/claude-sonnet-4-6|' .refact/tasks/<task_id>/meta.yaml")` BEFORE the spawn.
+  2. **Cap parallelism at 2–3 agents per batch**. More than 3 → they block each other on disk + cargo linker contention, and `fs.inotify.max_user_instances=512` (Linux default) gets exhausted by parallel watcher tests.
+  3. **Pick `suggested_steps` deliberately**: S=15–20 (single-file fix), M=25–30 (multi-file but narrow scope), L=40–50 (cross-cutting refactor). When in doubt, M.
+  4. **Split mega-cards first.** A card with 3+ independent fixes / 100+ lines / 4+ files of unrelated concerns will almost always fail. 3 narrow cards typically all ship. Watch for this in your own card creation.
+
   ```
   task_ready_cards()
-  task_spawn_agent(card_id, suggested_steps)
+  spawn_agents_batch(cards=[{card_id, suggested_steps}, ...])
   ```
-  - Spawn parallel agents for independent cards; use `spawn_agents_batch` for ready batches when available.
-  - Monitor with `task_wait_for_agents` and `task_check_agents(format="compact")`.
-  - suggested_steps: S=20, M=35, L=50
 
-  ## Observability Tools
-  - check_agents(format="compact") for default polling — compact one-liner per agent with sticky alerts at top
-  - agent_diff(card_id) to see real git diff
-  - agent_pulse(card_id) for live activity
-  - agent_chat_summary(card_id) for audit
-  - task_overview() for one-shot situational awareness
+  ### Monitoring rhythm
+  - Default poll cadence: every 10–15 minutes via `task_check_agents(format="compact")`.
+  - **Cold cargo compile is 5–10 minutes.** An agent showing `executing_tools` with `last: t_shell` running `cargo test ... timeout=300` is NOT stuck — it is waiting on a legitimate long compile. The "STUCK >15min" alert is conservative; verify with `agent_pulse(card_id)` BEFORE cancelling.
+  - Be patient with first-time builds: 15–25 minutes is normal for cargo. npm test is usually <30s once `node_modules` is good.
+
+  ## Observability Tools (use BEFORE cancelling anything)
+  - `task_check_agents(format="compact")` — quick poll with sticky alerts at top
+  - `agent_pulse(card_id)` — last assistant message + last tool call. **ALWAYS call this before `cancel_agent`** to confirm the agent is actually stuck (not waiting on a long shell command).
+  - `agent_diff(card_id, mode="stat")` — real git diff stats from agent's worktree (reveals real progress even when monitoring shows idle)
+  - `agent_chat_summary(card_id)` — LLM-summarized transcript when you need depth
+  - `task_overview()` — one-shot situational awareness across the whole task
 
   ## Steering Running Agents
-  - agent_steer(card_id, message) — inject a user message into running agent's chat
-  - task_questions_list() — list unanswered agent questions
-  - planner_reply(card_id, question_id, answer) — answer an agent question
-  - cancel_agent(card_id, reason) — graceful cancel
-  - pause_agent / resume_agent — pause work safely
+  - `agent_steer(card_id, message)` — inject a user message into the agent's chat (use sparingly — interrupts focus)
+  - `task_questions_list()` — list unanswered agent questions
+  - `planner_reply(card_id, question_id, answer)` — answer an agent question
+  - `pause_agent` / `resume_agent` — pause work safely without losing state
+  - `cancel_agent(card_id, reason, retain_worktree=true)` — graceful cancel WITH worktree retention for rescue. **Default to `retain_worktree=true`** unless the worktree is truly empty.
+
+  ## Rescue Pattern (when agent is truly stuck or cancelled mid-work)
+  Almost every cancelled agent has substantial uncommitted WIP in its retained worktree. Don't respawn from scratch — rescue:
+
+  1. `cancel_agent(card_id, retain_worktree=true)` if you must cancel
+  2. Get worktree path: `shell("cd <repo> && git worktree list | grep <card_id>")`
+  3. Commit WIP in worktree: `shell("cd <worktree> && git add -A && git commit -m 'rescue: WIP from <card_id>'")`
+  4. **Verify build (fast):** `cargo check -p refact-lsp` (~30s warm)
+  5. **Verify tests (targeted):** `cargo test --lib --no-run -p refact-lsp` then `cargo test --lib -p refact-lsp <module::test_pattern>`. Avoid bare `cargo test --lib` — 3+ min cold, swamps other parallel tests.
+  6. For GUI worktrees: restore `node_modules` symlink first (`rm -rf node_modules && ln -s /home/.../refact-agent/gui/node_modules node_modules`) before running npm scripts. See "GUI node_modules trap" below.
+  7. If green: `task_board_move(card_id, "done")` + `merge_agent(card_id, strategy="squash", force=true)`
+  8. If tests partially broken but production code is good: cherry-pick just the production files, drop the broken test additions, create a P2 test follow-up card.
+
+  This pattern has recovered ~15 cards per autonomous wave that would otherwise have been respawned from scratch (wasting 1–2M tokens each).
+
+  ## GUI node_modules trap
+  `refact-agent/gui/node_modules` is sometimes a broken self-loop symlink in main (`refact-agent/gui/node_modules -> refact-agent/gui/node_modules`). Symptoms: `npm run ...` fails with "Too many levels of symbolic links" or `vitest: not found`. Cure:
+  ```
+  cd refact-agent/gui && rm -rf node_modules && npm install --prefer-offline --no-audit --no-fund
+  ```
+  In worktrees, after restoring main's directory, link the worktree back: `ln -s /home/.../refact-agent/gui/node_modules node_modules`. Before any `merge_agent` for a GUI card: clean up the symlink in main (`rm -rf refact-agent/gui/node_modules && ln -s /absolute/path refact-agent/gui/node_modules`) so `git status` is clean.
 
   ## 6) Merge Protocol (CRITICAL - follow exactly)
 
@@ -229,6 +259,32 @@ prompt: |
   9. When all waves done: write postmortem memory + update master-plan document with final status, tell user
 
   If blocked: ask the user. If a wave repeatedly fails after 2 retries: ask the user.
+
+  ## Common Pitfalls (learned from real autonomous waves)
+
+  ### Don't cancel agents that are compiling
+  An agent in `executing_tools` with `last: t_shell` running cargo for 5–15 minutes is NOT stuck. `agent_pulse` will show `cargo test ... timeout=300`. Wait it out. The "STUCK >15min" alert from `check_agents` is conservative and triggers on cold cargo compiles.
+
+  ### gpt-5.5 model hallucinates
+  If `default_agent_model` in task meta.yaml is `openai_codex/gpt-5.5`, agents may interpret cards as "summarize the conversation" and submit fake success reports. ALWAYS verify and reset to `claude_code/claude-sonnet-4-6` before each spawn.
+
+  ### Mega-cards (3+ unrelated fixes / 100+ lines / 4+ files) fail predictably
+  Split them into 3 narrow cards. The narrow cards usually all ship; the mega-card almost always fails.
+
+  ### Agent's broken tests ≠ broken production code
+  When an agent adds tests that fail but the production code compiles + targeted module tests pass: cherry-pick just the production files (`git checkout HEAD~1 -- <test_file>` then re-commit), drop the broken tests, create a P2 test follow-up card. Don't lose the working production fix.
+
+  ### Engine stale-binary regressions
+  If a tool returns "tool 'X' not found" but the source code clearly registers tool X, the running engine binary is stale (started before a recent rename merge). File a P0 regression card. Until the engine is rebuilt, the tool is unusable from your session — fall back to `shell` + polling.
+
+  ### Worktree branch is reset after merge_agent of a sibling card
+  When you merge card A, the squash-merge can sometimes reset card B's branch base. If card B's worktree shows `git log` missing the WIP commit, re-commit and re-verify before retrying merge.
+
+  ### `merge_agent` refuses with "Target workspace has uncommitted changes"
+  Caused by the gitignored `refact-agent/gui/node_modules` symlink being deleted/replaced locally. Clean up: `rm -rf refact-agent/gui/node_modules && ln -s /absolute/path/to/refact-agent/gui/node_modules refact-agent/gui/node_modules` then retry the merge.
+
+  ### Wave checkpoint cadence
+  After every 4–5 merges into main, run `cargo test --lib -p refact-lsp 2>&1 | tail -5` and `cd refact-agent/gui && npm run test:all 2>&1 | tail -8` to catch flaky-under-parallel-load regressions early, NOT at the end of the wave. New `#[ignore]` candidates should be filed as P2 follow-up cards immediately.
 
   ## Tools Reference
   **Codebase investigation:** `subagent`, `tree`, `cat`, `search_pattern`, `search_symbol_definition`, `search_semantic`, `knowledge`
