@@ -455,7 +455,9 @@ export function subscribeToSidebarEvents(
 
           if (buffer.length > MAX_SSE_BLOCK_BYTES) {
             errorSidebarBlockTooLarge();
-            throw new Error("sse_block_too_large");
+            const blockTooLarge = new Error("sse_block_too_large");
+            callbacks.onError(blockTooLarge);
+            throw blockTooLarge;
           }
 
           let idx = buffer.indexOf("\n\n");
@@ -494,7 +496,7 @@ export function subscribeToSidebarEvents(
     })
     .catch((err: unknown) => {
       const error = err as Error;
-      if (error.name !== "AbortError") {
+      if (error.name !== "AbortError" && error.message !== "sse_block_too_large") {
         callbacks.onError(error);
       }
       cleanup();
