@@ -123,6 +123,14 @@ pub trait ProviderTrait: Send + Sync {
         false
     }
 
+    fn apply_oauth_refresh_tokens(
+        &mut self,
+        _access_token: &str,
+        _refresh_token: &str,
+        _expires_at: i64,
+    ) {
+    }
+
     fn custom_model_pricing(&self, _model_id: &str) -> Option<ModelPricing> {
         None
     }

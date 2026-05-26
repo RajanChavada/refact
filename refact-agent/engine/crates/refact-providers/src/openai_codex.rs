@@ -1432,6 +1432,17 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
+    fn apply_oauth_refresh_tokens(
+        &mut self,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: i64,
+    ) {
+        self.oauth_tokens.access_token = access_token.to_string();
+        self.oauth_tokens.refresh_token = refresh_token.to_string();
+        self.oauth_tokens.expires_at = expires_at;
+    }
+
     fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
         if let Some(config) = self.custom_models.get(model_id) {
             if config.pricing.is_some() {

@@ -175,6 +175,16 @@ impl ProviderTrait for ProviderInstance {
         self.inner.remove_custom_model(model_id)
     }
 
+    fn apply_oauth_refresh_tokens(
+        &mut self,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: i64,
+    ) {
+        self.inner
+            .apply_oauth_refresh_tokens(access_token, refresh_token, expires_at);
+    }
+
     fn custom_model_pricing(&self, model_id: &str) -> Option<ModelPricing> {
         self.inner.custom_model_pricing(model_id)
     }

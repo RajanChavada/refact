@@ -589,6 +589,17 @@ available:
         self.custom_models.remove(model_id).is_some()
     }
 
+    fn apply_oauth_refresh_tokens(
+        &mut self,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: i64,
+    ) {
+        self.oauth_tokens.access_token = access_token.to_string();
+        self.oauth_tokens.refresh_token = refresh_token.to_string();
+        self.oauth_tokens.expires_at = expires_at;
+    }
+
     async fn startup_refresh_and_sync(
         &mut self,
         http_client: &reqwest::Client,

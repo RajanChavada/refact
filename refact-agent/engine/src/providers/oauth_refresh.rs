@@ -553,20 +553,24 @@ pub(crate) async fn save_refreshed_tokens(
     {
         let mut registry = gcx.providers.write().await;
 
-        let mut provider = create_provider(base_provider)
-            .ok_or_else(|| format!("Failed to create provider '{}'", base_provider))?;
-        provider
-            .provider_settings_apply(updated)
-            .map_err(|e| format!("Failed to apply settings: {}", e))?;
-        if provider_name == base_provider {
-            registry.add(provider);
+        if let Some(existing) = registry.get_mut(provider_name) {
+            existing.apply_oauth_refresh_tokens(access_token, refresh_token, expires_at);
         } else {
-            registry.add(Box::new(crate::providers::instance::ProviderInstance::new(
-                provider_name.to_string(),
-                base_provider.to_string(),
-                display_name.to_string(),
-                provider,
-            )));
+            let mut provider = create_provider(base_provider)
+                .ok_or_else(|| format!("Failed to create provider '{}'", base_provider))?;
+            provider
+                .provider_settings_apply(updated)
+                .map_err(|e| format!("Failed to apply settings: {}", e))?;
+            if provider_name == base_provider {
+                registry.add(provider);
+            } else {
+                registry.add(Box::new(crate::providers::instance::ProviderInstance::new(
+                    provider_name.to_string(),
+                    base_provider.to_string(),
+                    display_name.to_string(),
+                    provider,
+                )));
+            }
         }
     }
 
