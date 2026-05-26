@@ -22,6 +22,20 @@ use refact_runtime_api::CreateSessionRequest;
 
 const FILES_TO_OPEN_PER_FILE_LIMIT: usize = 256 * 1024;
 const FILES_TO_OPEN_TOTAL_LIMIT: usize = 1024 * 1024;
+const MAX_ID_LEN: usize = 64;
+
+fn validate_id(id: &str, name: &str) -> Result<(), String> {
+    if id.len() > MAX_ID_LEN {
+        return Err(format!("ID '{id}' is too long (max {MAX_ID_LEN} chars)"));
+    }
+    if id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name} '{id}' contains invalid characters (only alphanumeric, '-', '_' allowed)"
+        ))
+    }
+}
 
 async fn get_task_id(
     ccx: &Arc<AMutex<AtCommandsContext>>,
@@ -207,6 +221,9 @@ pub(crate) async fn prepare_agent_worktree_with_suffix(
         agent_id_short,
         branch_suffix.unwrap_or("")
     );
+    if branch_name.len() > 200 {
+        return Err(format!("Generated branch name '{branch_name}' exceeds 200 chars"));
+    }
     let cache_dir = gcx.cache_dir.clone();
     let service = WorktreeService::new(cache_dir, workspace_root.clone())?;
     let task_base_branch = task_meta.base_branch.clone();
@@ -615,19 +632,6 @@ impl Tool for ToolTaskSpawnAgent {
         let model = resolve_agent_model(gcx.clone(), task_default_model, &current_model).await?;
         crate::tools::task_tool_helpers::preflight_agent_model(gcx.clone(), &model).await?;
 
-        fn validate_id(id: &str, name: &str) -> Result<(), String> {
-            if id
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-            {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{} '{}' contains invalid characters (only alphanumeric, '-', '_' allowed)",
-                    name, id
-                ))
-            }
-        }
         validate_id(&task_id, "task_id")?;
         validate_id(card_id, "card_id")?;
 
@@ -1051,6 +1055,39 @@ mod tests {
             target_files: vec![],
             scope_guard_mode: Default::default(),
         }
+    }
+
+    #[test]
+    fn validate_id_rejects_overlong_ids() {
+        assert!(validate_id("short-id", "test_id").is_ok());
+        assert!(validate_id(&"a".repeat(MAX_ID_LEN), "test_id").is_ok());
+        let err = validate_id(&"a".repeat(MAX_ID_LEN + 1), "test_id").unwrap_err();
+        assert!(err.contains("too long"), "expected 'too long' in error: {err}");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_overlong_branch_combination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        set_workspace(gcx.clone(), &source).await;
+        // 100-char IDs: "refact/task/" (12) + 100 + "/card/" (6) + 100 + "/" (1) + 8 = 227 > 200
+        let task_id = "a".repeat(100);
+        let card_id = "b".repeat(100);
+        let task_meta = sample_task_meta(None);
+        let err = prepare_agent_worktree_with_suffix(
+            gcx,
+            &task_meta,
+            &task_id,
+            "agent-12345678",
+            &card_id,
+            "agent-chat-id",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("exceeds 200 chars"), "expected branch-too-long error: {err}");
     }
 
     #[tokio::test]

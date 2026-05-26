@@ -145,21 +145,12 @@ fn merge_response_message(
     message
 }
 
-fn parse_bool_arg(args: &HashMap<String, Value>, name: &str) -> Result<bool, String> {
-    match args.get(name) {
-        Some(Value::Bool(value)) => Ok(*value),
-        Some(Value::String(value)) => Ok(value.eq_ignore_ascii_case("true")),
-        Some(_) => Err(format!("{} must be a boolean", name)),
-        None => Ok(false),
-    }
-}
-
 fn parse_force(args: &HashMap<String, Value>) -> Result<bool, String> {
-    parse_bool_arg(args, "force")
+    crate::tools::task_tool_helpers::parse_bool_arg_strict(args, "force", false)
 }
 
 fn parse_auto_revert(args: &HashMap<String, Value>) -> Result<bool, String> {
-    parse_bool_arg(args, "auto_revert")
+    crate::tools::task_tool_helpers::parse_bool_arg_strict(args, "auto_revert", false)
 }
 
 fn parse_auto_revert_timeout(args: &HashMap<String, Value>) -> Result<Duration, String> {
