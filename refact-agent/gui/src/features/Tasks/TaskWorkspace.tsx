@@ -57,6 +57,7 @@ import {
 import { selectThreadById, selectRuntimeById } from "../Chat/Thread";
 import { InternalLinkProvider } from "../../contexts/InternalLinkContext";
 import { parseRefactLink } from "../../contexts/internalLinkUtils";
+import { resolveChatLink } from "./internalLinkResolver";
 import {
   useDeleteWorktreeMutation,
   useListWorktreesQuery,
@@ -1159,40 +1160,23 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
       if (!parsed) return false;
 
       if (parsed.type === "chat") {
-        const chatId = parsed.id;
-
-        const planner = plannerChats.find((p) => p.id === chatId);
-        if (planner) {
-          dispatch(
-            setTaskActiveChat({
-              taskId,
-              activeChat: { type: "planner", chatId },
-            }),
-          );
-          return true;
+        const action = resolveChatLink(parsed.id, plannerChats, board);
+        switch (action.kind) {
+          case "planner":
+            dispatch(
+              setTaskActiveChat({
+                taskId,
+                activeChat: { type: "planner", chatId: action.chatId },
+              }),
+            );
+            return true;
+          case "agent":
+            handleSelectAgent(action.cardId, action.chatId);
+            return true;
+          case "unknown":
+            showNotification(`Chat not found: ${action.chatId}`);
+            return true;
         }
-
-        const card = board?.cards.find((c) => c.agent_chat_id === chatId);
-        if (card) {
-          handleSelectAgent(card.id, chatId);
-          return true;
-        }
-
-        if (chatId.startsWith("agent-")) {
-          const withoutPrefix = chatId.slice("agent-".length);
-          const lastDashIdx = withoutPrefix.lastIndexOf("-");
-          if (lastDashIdx > 0) {
-            const cardId = withoutPrefix.slice(0, lastDashIdx);
-            const legacyCard = board?.cards.find((c) => c.id === cardId);
-            if (legacyCard) {
-              handleSelectAgent(cardId, chatId);
-              return true;
-            }
-          }
-        }
-
-        showNotification(`Chat not found: ${chatId}`);
-        return true;
       }
 
       return false;
