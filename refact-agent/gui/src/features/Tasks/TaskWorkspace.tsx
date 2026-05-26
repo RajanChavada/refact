@@ -837,6 +837,12 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
   }, [board, deleteTargetId, deleteTargetWorktree]);
   const [deleteBranch, setDeleteBranch] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
+  const notificationTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    };
+  }, []);
   const [layout, setLayout] = useState(() =>
     loadTaskWorkspaceLayout(taskId, defaultTaskWorkspaceLayout()),
   );
@@ -987,7 +993,8 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
 
     if (prevStatus === "planning" && currentStatus === "active") {
       setNotification("Planning complete! You can now spawn agents.");
-      setTimeout(() => setNotification(null), 3000);
+      if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+      notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
     }
   }, [task]);
 
@@ -1008,7 +1015,8 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
 
   const showNotification = useCallback((message: string) => {
     setNotification(message);
-    window.setTimeout(() => setNotification(null), 3000);
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    notificationTimerRef.current = window.setTimeout(() => setNotification(null), 3000);
   }, []);
 
   const handleNewPlanner = useCallback(() => {
@@ -1768,6 +1776,8 @@ export const TaskWorkspace: React.FC<TaskWorkspaceProps> = ({ taskId }) => {
 
       {notification && (
         <Box
+          role="status"
+          aria-live="polite"
           style={{
             position: "fixed",
             bottom: "var(--space-4)",
