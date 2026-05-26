@@ -87,6 +87,90 @@ export interface MultiModalToolResult extends BaseToolResult {
 
 export type ToolResult = SingleModelToolResult | MultiModalToolResult;
 
+export type ExecProcessStatus =
+  | "starting"
+  | "running"
+  | "exited"
+  | "failed"
+  | "killed"
+  | "timed_out";
+
+export type ExecTranscriptMetadata = {
+  process_id?: string;
+  found?: boolean;
+  since_seq?: number;
+  next_seq?: number;
+  latest_seq?: number;
+  total_bytes_appended?: number;
+  total_lines_appended?: number;
+  dropped_chunks?: number;
+  dropped_bytes?: number;
+  truncated_chunks?: number;
+  current_bytes?: number;
+  max_bytes?: number;
+  chunk_count?: number;
+  is_truncated?: boolean;
+};
+
+export type ExecProcessMetadata = {
+  process_id?: string;
+  status?: ExecProcessStatus;
+  status_detail?: unknown;
+  mode?: string;
+  service_name?: string | null;
+  chat_id?: string | null;
+  tool_call_id?: string | null;
+  workspace?: string | null;
+  command?: string;
+  cwd?: string | null;
+  short_description?: string;
+  created_at?: number;
+  created_at_ms?: number;
+  started_at?: number;
+  started_at_ms?: number;
+  ended_at?: number | null;
+  ended_at_ms?: number | null;
+  duration_secs?: number;
+  timeout_secs?: number;
+  exit_code?: number | null;
+  stream?: string;
+  transcript?: ExecTranscriptMetadata;
+};
+
+export type ExecToolMetadata = ExecProcessMetadata & {
+  count?: number;
+  status_filter?: string;
+  scope_filter?: string;
+  processes?: ExecProcessMetadata[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isExecProcessStatus(
+  value: unknown,
+): value is ExecProcessStatus {
+  return (
+    value === "starting" ||
+    value === "running" ||
+    value === "exited" ||
+    value === "failed" ||
+    value === "killed" ||
+    value === "timed_out"
+  );
+}
+
+export function isExecToolMetadata(value: unknown): value is ExecToolMetadata {
+  if (!isRecord(value)) return false;
+  if (typeof value.process_id === "string") return true;
+  if (typeof value.command === "string") return true;
+  if (typeof value.short_description === "string") return true;
+  if (isExecProcessStatus(value.status)) return true;
+  if (Array.isArray(value.processes)) return true;
+  return false;
+}
+
 export type MultiModalToolContent = {
   m_type: string;
   m_content: string;

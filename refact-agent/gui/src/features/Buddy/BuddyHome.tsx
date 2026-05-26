@@ -260,6 +260,7 @@ export const BuddyHome: React.FC = () => {
   const xp = progression?.xp ?? state.progress.xp;
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   const xpNext = progression?.xp_next ?? nextStage?.xpThreshold;
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   const xpFill = useMemo(() => computeXpFill(xp, xpNext ?? 0), [xp, xpNext]);
 
   const name = identity?.name ?? state.name;

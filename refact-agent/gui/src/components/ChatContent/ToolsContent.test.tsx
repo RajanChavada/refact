@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen, createDefaultChatState } from "../../utils/test-utils";
 import type {
   ChatMessages,
+  ExecToolMetadata,
   ToolCall,
   ToolMessage,
 } from "../../services/refact/types";
@@ -96,38 +97,56 @@ const TASK_DONE_OUTPUT = JSON.stringify({
   files_changed: ["src/file.ts"],
 });
 
-function makeToolCall(name: string, id: string): ToolCall {
+function makeToolCall(
+  name: string,
+  id: string,
+  args: Record<string, unknown> = {},
+): ToolCall {
   return {
     id,
     index: 0,
     type: "function",
     function: {
       name,
-      arguments: "{}",
+      arguments: JSON.stringify(args),
     },
   };
 }
 
-function makeToolMessage(id: string, content: string): ToolMessage {
+function makeToolMessage(
+  id: string,
+  content: string,
+  extra?: ExecToolMetadata,
+): ToolMessage {
   return {
     role: "tool",
     tool_call_id: id,
     content,
     tool_failed: false,
+    extra: extra ? { exec: extra } : undefined,
   };
 }
 
-function renderToolContent(name: string, content: string) {
+function renderToolContent(
+  name: string,
+  content: string,
+  options: { args?: Record<string, unknown>; extra?: ExecToolMetadata } = {},
+) {
   const id = `call-${name.replace(/[^a-z0-9]+/gi, "-")}`;
   const chat = createDefaultChatState();
   const runtime = chat.threads[chat.current_thread_id];
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (!runtime) throw new Error("missing test thread");
-  runtime.thread.messages = [makeToolMessage(id, content)] as ChatMessages;
+  runtime.thread.messages = [
+    makeToolMessage(id, content, options.extra),
+  ] as ChatMessages;
 
-  return render(<ToolContent toolCalls={[makeToolCall(name, id)]} />, {
-    preloadedState: { chat },
-  });
+  return render(
+    <ToolContent toolCalls={[makeToolCall(name, id, options.args)]} />,
+    {
+      preloadedState: { chat },
+    },
+  );
 }
 
 describe("ToolsContent routing", () => {
@@ -139,6 +158,11 @@ describe("ToolsContent routing", () => {
     ["doc_get", DOC_GET_OUTPUT, "task-documents-view"],
     ["agent_finish", STRUCTURED_FINAL_REPORT, "final-report-tool"],
     ["task_done", TASK_DONE_OUTPUT, "task-done-tool"],
+    ["process_start", "Process started", "exec-tool-process_start"],
+    ["process_list", "Processes", "exec-tool-process_list"],
+    ["process_read", "Process output", "exec-tool-process_read"],
+    ["process_kill", "Process killed", "exec-tool-process_kill"],
+    ["process_wait", "Process wait completed", "exec-tool-process_wait"],
     ["unknown_tool", "unknown result", "generic-tool"],
   ])("routes %s to %s", (name, content, testId) => {
     renderToolContent(name, content);
@@ -153,6 +177,29 @@ describe("ToolsContent routing", () => {
     expect(screen.queryByTestId("final-report-view")).not.toBeInTheDocument();
     expect(screen.getByTestId("final-report-tool")).toBeInTheDocument();
     expect(screen.getByText("Plain legacy report")).toBeInTheDocument();
+  });
+
+  it("routes service-mode integration output with exec metadata to ExecToolCard", () => {
+    renderToolContent(
+      "service_dev_server",
+      "stdout:\nready\nstderr:\n<empty>\n",
+      {
+        args: { command: "npm run dev" },
+        extra: {
+          process_id: "exec_service_dev",
+          status: "running",
+          short_description: "Dev server",
+          command: "npm run dev",
+          mode: "service",
+          cwd: "/workspace",
+        },
+      },
+    );
+
+    expect(screen.queryByTestId("generic-tool")).not.toBeInTheDocument();
+    expect(screen.getByTestId("exec-tool-exec")).toBeInTheDocument();
+    expect(screen.getByText("Dev server")).toBeInTheDocument();
+    expect(screen.getByText("exec_service_dev")).toBeInTheDocument();
   });
 
   it("final_report_tool_card_uses_hidden_marker_not_display_contents", () => {

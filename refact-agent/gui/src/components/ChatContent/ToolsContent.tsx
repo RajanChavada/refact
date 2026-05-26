@@ -11,6 +11,7 @@ import {
   ChatContextFile,
   DiffChunk,
   isMultiModalToolResult,
+  isExecToolMetadata,
   MultiModalToolResult,
   ToolCall,
   ToolResult,
@@ -58,6 +59,7 @@ import {
   WebTool,
   KnowledgeTool,
   ShellTool as NewShellTool,
+  ExecToolCard,
   SubagentTool as NewSubagentTool,
   PlanningTool,
   CodeReviewTool as NewCodeReviewTool,
@@ -227,6 +229,31 @@ function toolCallArgsToString(toolCallArgs: string) {
   } catch {
     return toolCallArgs;
   }
+}
+
+const EXEC_TOOL_NAMES = new Set([
+  "process_start",
+  "process_list",
+  "process_read",
+  "process_kill",
+  "process_wait",
+] as const);
+
+type ProcessToolName =
+  | "process_start"
+  | "process_list"
+  | "process_read"
+  | "process_kill"
+  | "process_wait";
+
+function isProcessToolName(name: string | undefined): name is ProcessToolName {
+  return (
+    typeof name === "string" && EXEC_TOOL_NAMES.has(name as ProcessToolName)
+  );
+}
+
+function hasExecMetadata(result: ToolResult | undefined): boolean {
+  return isExecToolMetadata(result?.extra?.exec);
 }
 
 // TODO: Sort of duplicated
@@ -567,6 +594,25 @@ function processToolCalls(
         toolCall={normalizedHead}
         toolType="search_symbol_definition"
         contextFiles={contextFiles}
+      />
+    );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+      activeToolCallId,
+    );
+  }
+
+  if (isProcessToolName(headName)) {
+    const elem = (
+      <ExecToolCard
+        key={`exec-tool-${headName}-${processed.length}`}
+        toolCall={normalizedHead}
+        toolName={headName}
       />
     );
     return processToolCalls(
@@ -1185,6 +1231,25 @@ function processToolCalls(
       <ChromeTool
         key={`chrome-tool-${processed.length}`}
         toolCall={normalizedHead}
+      />
+    );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+      activeToolCallId,
+    );
+  }
+
+  if (hasExecMetadata(result)) {
+    const elem = (
+      <ExecToolCard
+        key={`exec-metadata-tool-${head.id ?? processed.length}`}
+        toolCall={normalizedHead}
+        toolName="exec"
       />
     );
     return processToolCalls(
