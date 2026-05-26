@@ -1,15 +1,10 @@
 use std::collections::VecDeque;
 
-use crate::exec::types::{ExecOutputChunk, ExecOutputStream, ExecProcessId};
+use crate::exec::types::{
+    current_timestamp_ms, ExecOutputChunk, ExecOutputStream, ExecProcessId, ExecReadResult,
+};
 
 pub const DEFAULT_MAX_BYTES: usize = 512 * 1024;
-
-fn current_timestamp_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -56,10 +51,22 @@ impl ExecTranscript {
     }
 
     pub fn append(&mut self, stream: ExecOutputStream, text: String) -> u64 {
+        self.append_chunk(stream, text).seq
+    }
+
+    pub(crate) fn append_chunk(
+        &mut self,
+        stream: ExecOutputStream,
+        text: String,
+    ) -> ExecOutputChunk {
         let seq = self.next_seq;
         self.next_seq += 1;
 
-        let line_count = if text.is_empty() { 0 } else { text.lines().count().max(1) as u64 };
+        let line_count = if text.is_empty() {
+            0
+        } else {
+            text.lines().count().max(1) as u64
+        };
         self.total_bytes_appended += text.len();
         self.total_lines_appended += line_count;
 
@@ -85,19 +92,51 @@ impl ExecTranscript {
         }
 
         self.current_bytes += chunk_bytes;
-        self.chunks.push_back(ExecOutputChunk {
+        let chunk = ExecOutputChunk {
             process_id: self.process_id.clone(),
             seq,
             stream,
             text: final_text,
             timestamp_ms: current_timestamp_ms(),
-        });
-
-        seq
+        };
+        self.chunks.push_back(chunk.clone());
+        chunk
     }
 
     pub fn read_since(&self, since_seq: u64) -> Vec<&ExecOutputChunk> {
         self.chunks.iter().filter(|c| c.seq >= since_seq).collect()
+    }
+
+    pub fn read(&self, since_seq: u64, limit: Option<usize>) -> ExecReadResult {
+        let mut chunks = self
+            .read_since(since_seq)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(limit) = limit {
+            chunks.truncate(limit);
+        }
+        let next_seq = chunks
+            .last()
+            .map(|chunk| chunk.seq + 1)
+            .unwrap_or(since_seq);
+        ExecReadResult {
+            process_id: self.process_id.clone(),
+            found: true,
+            since_seq,
+            next_seq,
+            latest_seq: self.next_seq,
+            chunks,
+            total_bytes_appended: self.total_bytes_appended,
+            total_lines_appended: self.total_lines_appended,
+            dropped_chunks: self.dropped_chunks,
+            dropped_bytes: self.dropped_bytes,
+            truncated_chunks: self.truncated_chunks,
+            current_bytes: self.current_bytes,
+            max_bytes: self.max_bytes,
+            chunk_count: self.chunks.len(),
+            is_truncated: self.is_truncated(),
+        }
     }
 
     pub fn process_id(&self) -> &ExecProcessId {
@@ -250,6 +289,32 @@ mod tests {
     }
 
     #[test]
+    fn test_read_result_limit_and_cursor() {
+        let mut t = make_transcript(4096);
+        t.append(ExecOutputStream::Stdout, "a".to_string());
+        t.append(ExecOutputStream::Stdout, "b".to_string());
+        t.append(ExecOutputStream::Stdout, "c".to_string());
+
+        let result = t.read(0, Some(2));
+        assert!(result.found);
+        assert_eq!(result.chunks.len(), 2);
+        assert_eq!(result.next_seq, 2);
+        assert_eq!(result.latest_seq, 3);
+        assert_eq!(result.chunk_count, 3);
+    }
+
+    #[test]
+    fn test_read_result_empty_limit() {
+        let mut t = make_transcript(4096);
+        t.append(ExecOutputStream::Stdout, "a".to_string());
+
+        let result = t.read(0, Some(0));
+        assert!(result.chunks.is_empty());
+        assert_eq!(result.next_seq, 0);
+        assert_eq!(result.latest_seq, 1);
+    }
+
+    #[test]
     fn test_byte_limit_eviction() {
         let mut t = make_transcript(20);
         t.append(ExecOutputStream::Stdout, "12345678".to_string());
@@ -270,7 +335,11 @@ mod tests {
         t.append(ExecOutputStream::Stdout, "67890".to_string());
         t.append(ExecOutputStream::Stdout, "abcde".to_string());
 
-        assert_eq!(t.total_bytes_appended(), 15, "total should include evicted bytes");
+        assert_eq!(
+            t.total_bytes_appended(),
+            15,
+            "total should include evicted bytes"
+        );
         assert!(t.dropped_bytes() > 0);
     }
 
@@ -297,8 +366,14 @@ mod tests {
         let chunks = t.read_since(0);
         assert_eq!(chunks.len(), 1);
         let chunk_bytes = chunks[0].text.len();
-        assert!(chunk_bytes <= max, "chunk bytes ({chunk_bytes}) should be <= max ({max})");
-        assert!(std::str::from_utf8(chunks[0].text.as_bytes()).is_ok(), "text must be valid UTF-8");
+        assert!(
+            chunk_bytes <= max,
+            "chunk bytes ({chunk_bytes}) should be <= max ({max})"
+        );
+        assert!(
+            std::str::from_utf8(chunks[0].text.as_bytes()).is_ok(),
+            "text must be valid UTF-8"
+        );
     }
 
     #[test]
@@ -308,7 +383,11 @@ mod tests {
         for i in 0..20 {
             t.append(ExecOutputStream::Stdout, format!("line {i:03}"));
         }
-        assert!(t.current_bytes() <= max, "current_bytes {} should not exceed max {max}", t.current_bytes());
+        assert!(
+            t.current_bytes() <= max,
+            "current_bytes {} should not exceed max {max}",
+            t.current_bytes()
+        );
     }
 
     #[test]

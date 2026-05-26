@@ -1,7 +1,16 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const SHORT_DESC_MAX_LEN: usize = 80;
+
+pub(crate) fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecProcessId(pub String);
@@ -41,6 +50,16 @@ impl std::fmt::Display for ExecMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecStatusKind {
+    Starting,
+    Running,
+    Exited,
+    Failed,
+    Killed,
+    TimedOut,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecStatus {
     Starting,
@@ -49,6 +68,29 @@ pub enum ExecStatus {
     Failed { message: String },
     Killed,
     TimedOut,
+}
+
+impl ExecStatus {
+    pub fn kind(&self) -> ExecStatusKind {
+        match self {
+            ExecStatus::Starting => ExecStatusKind::Starting,
+            ExecStatus::Running => ExecStatusKind::Running,
+            ExecStatus::Exited { .. } => ExecStatusKind::Exited,
+            ExecStatus::Failed { .. } => ExecStatusKind::Failed,
+            ExecStatus::Killed => ExecStatusKind::Killed,
+            ExecStatus::TimedOut => ExecStatusKind::TimedOut,
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            ExecStatus::Exited { .. }
+                | ExecStatus::Failed { .. }
+                | ExecStatus::Killed
+                | ExecStatus::TimedOut
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,33 +142,169 @@ pub fn generate_short_description(command: &str, mode: &ExecMode) -> String {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecOwnerMeta {
+    pub chat_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub service_name: Option<String>,
+    pub workspace: Option<PathBuf>,
+}
+
+impl ExecOwnerMeta {
+    pub fn matches_filter(&self, filter: &ExecProcessFilter) -> bool {
+        if let Some(chat_id) = filter.chat_id.as_ref() {
+            if self.chat_id.as_ref() != Some(chat_id) {
+                return false;
+            }
+        }
+        if let Some(tool_call_id) = filter.tool_call_id.as_ref() {
+            if self.tool_call_id.as_ref() != Some(tool_call_id) {
+                return false;
+            }
+        }
+        if let Some(service_name) = filter.service_name.as_ref() {
+            if self.service_name.as_ref() != Some(service_name) {
+                return false;
+            }
+        }
+        if let Some(workspace) = filter.workspace.as_ref() {
+            if self.workspace.as_ref() != Some(workspace) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn matches_service_lookup(&self, lookup: &ExecServiceLookup) -> bool {
+        if self.service_name.as_ref() != Some(&lookup.service_name) {
+            return false;
+        }
+        if let Some(chat_id) = lookup.chat_id.as_ref() {
+            if self.chat_id.as_ref() != Some(chat_id) {
+                return false;
+            }
+        }
+        if let Some(workspace) = lookup.workspace.as_ref() {
+            if self.workspace.as_ref() != Some(workspace) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecProcessMeta {
     pub process_id: ExecProcessId,
+    pub owner: ExecOwnerMeta,
     pub mode: ExecMode,
+    pub cwd: Option<PathBuf>,
     pub command: String,
     pub short_description: String,
     pub created_at_ms: u64,
+    pub started_at_ms: Option<u64>,
+    pub ended_at_ms: Option<u64>,
 }
 
 impl ExecProcessMeta {
     pub fn new(mode: ExecMode, command: String) -> Self {
         let short_description = generate_short_description(&command, &mode);
-        let created_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
         Self {
             process_id: ExecProcessId::new(),
+            owner: ExecOwnerMeta::default(),
             mode,
+            cwd: None,
             command,
             short_description,
-            created_at_ms,
+            created_at_ms: current_timestamp_ms(),
+            started_at_ms: None,
+            ended_at_ms: None,
         }
+    }
+
+    pub fn with_process_id(mut self, process_id: ExecProcessId) -> Self {
+        self.process_id = process_id;
+        self
+    }
+
+    pub fn with_owner(mut self, owner: ExecOwnerMeta) -> Self {
+        self.owner = owner;
+        self
+    }
+
+    pub fn with_chat_id(mut self, chat_id: impl Into<String>) -> Self {
+        self.owner.chat_id = Some(chat_id.into());
+        self
+    }
+
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
+        self.owner.tool_call_id = Some(tool_call_id.into());
+        self
+    }
+
+    pub fn with_service_name(mut self, service_name: impl Into<String>) -> Self {
+        self.owner.service_name = Some(service_name.into());
+        self
+    }
+
+    pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
+        self.owner.workspace = Some(workspace);
+        self
+    }
+
+    pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
+        self.cwd = Some(cwd);
+        self
     }
 
     pub fn with_short_description(mut self, desc: String) -> Self {
         self.short_description = sanitize_short_description(&desc);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecProcessFilter {
+    pub chat_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub service_name: Option<String>,
+    pub workspace: Option<PathBuf>,
+    pub status: Option<ExecStatusKind>,
+}
+
+impl ExecProcessFilter {
+    pub fn is_empty(&self) -> bool {
+        self.chat_id.is_none()
+            && self.tool_call_id.is_none()
+            && self.service_name.is_none()
+            && self.workspace.is_none()
+            && self.status.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecServiceLookup {
+    pub service_name: String,
+    pub chat_id: Option<String>,
+    pub workspace: Option<PathBuf>,
+}
+
+impl ExecServiceLookup {
+    pub fn new(service_name: impl Into<String>) -> Self {
+        Self {
+            service_name: service_name.into(),
+            chat_id: None,
+            workspace: None,
+        }
+    }
+
+    pub fn with_chat_id(mut self, chat_id: impl Into<String>) -> Self {
+        self.chat_id = Some(chat_id.into());
+        self
+    }
+
+    pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
+        self.workspace = Some(workspace);
         self
     }
 }
@@ -151,6 +329,47 @@ impl ExecProcessSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecReadResult {
+    pub process_id: ExecProcessId,
+    pub found: bool,
+    pub since_seq: u64,
+    pub next_seq: u64,
+    pub latest_seq: u64,
+    pub chunks: Vec<ExecOutputChunk>,
+    pub total_bytes_appended: usize,
+    pub total_lines_appended: u64,
+    pub dropped_chunks: u64,
+    pub dropped_bytes: usize,
+    pub truncated_chunks: u64,
+    pub current_bytes: usize,
+    pub max_bytes: usize,
+    pub chunk_count: usize,
+    pub is_truncated: bool,
+}
+
+impl ExecReadResult {
+    pub fn not_found(process_id: ExecProcessId, since_seq: u64) -> Self {
+        Self {
+            process_id,
+            found: false,
+            since_seq,
+            next_seq: since_seq,
+            latest_seq: since_seq,
+            chunks: Vec::new(),
+            total_bytes_appended: 0,
+            total_lines_appended: 0,
+            dropped_chunks: 0,
+            dropped_bytes: 0,
+            truncated_chunks: 0,
+            current_bytes: 0,
+            max_bytes: 0,
+            chunk_count: 0,
+            is_truncated: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,7 +377,10 @@ mod tests {
     #[test]
     fn test_process_id_prefix() {
         let id = ExecProcessId::new();
-        assert!(id.as_str().starts_with("exec_"), "ID should start with 'exec_': {}", id);
+        assert!(
+            id.as_str().starts_with("exec_"),
+            "ID should start with 'exec_': {id}"
+        );
     }
 
     #[test]
@@ -239,6 +461,9 @@ mod tests {
         let meta = ExecProcessMeta::new(ExecMode::Foreground, "echo hello".to_string());
         assert_eq!(meta.short_description, "echo hello");
         assert_eq!(meta.command, "echo hello");
+        assert_eq!(meta.owner, ExecOwnerMeta::default());
+        assert!(meta.started_at_ms.is_none());
+        assert!(meta.ended_at_ms.is_none());
     }
 
     #[test]
@@ -247,6 +472,93 @@ mod tests {
             .with_short_description("Web server (nginx)".to_string());
         assert_eq!(meta.short_description, "Web server (nginx)");
         assert_eq!(meta.command, "nginx");
+    }
+
+    #[test]
+    fn test_process_meta_owner_builders() {
+        let meta = ExecProcessMeta::new(ExecMode::Service, "server".to_string())
+            .with_chat_id("chat-a")
+            .with_tool_call_id("tool-a")
+            .with_service_name("api")
+            .with_workspace(PathBuf::from("/workspace"))
+            .with_cwd(PathBuf::from("/workspace/app"));
+        assert_eq!(meta.owner.chat_id.as_deref(), Some("chat-a"));
+        assert_eq!(meta.owner.tool_call_id.as_deref(), Some("tool-a"));
+        assert_eq!(meta.owner.service_name.as_deref(), Some("api"));
+        assert_eq!(meta.owner.workspace, Some(PathBuf::from("/workspace")));
+        assert_eq!(meta.cwd, Some(PathBuf::from("/workspace/app")));
+    }
+
+    #[test]
+    fn test_status_kind_and_terminal() {
+        assert_eq!(ExecStatus::Starting.kind(), ExecStatusKind::Starting);
+        assert_eq!(ExecStatus::Running.kind(), ExecStatusKind::Running);
+        assert_eq!(
+            ExecStatus::Exited { exit_code: Some(0) }.kind(),
+            ExecStatusKind::Exited
+        );
+        assert_eq!(
+            ExecStatus::Failed {
+                message: "nope".to_string()
+            }
+            .kind(),
+            ExecStatusKind::Failed
+        );
+        assert_eq!(ExecStatus::Killed.kind(), ExecStatusKind::Killed);
+        assert_eq!(ExecStatus::TimedOut.kind(), ExecStatusKind::TimedOut);
+        assert!(!ExecStatus::Starting.is_terminal());
+        assert!(!ExecStatus::Running.is_terminal());
+        assert!(ExecStatus::Exited { exit_code: Some(0) }.is_terminal());
+        assert!(ExecStatus::Failed {
+            message: "nope".to_string()
+        }
+        .is_terminal());
+        assert!(ExecStatus::Killed.is_terminal());
+        assert!(ExecStatus::TimedOut.is_terminal());
+    }
+
+    #[test]
+    fn test_owner_matches_filter() {
+        let owner = ExecOwnerMeta {
+            chat_id: Some("chat-a".to_string()),
+            tool_call_id: Some("tool-a".to_string()),
+            service_name: Some("svc".to_string()),
+            workspace: Some(PathBuf::from("/workspace")),
+        };
+        let filter = ExecProcessFilter {
+            chat_id: Some("chat-a".to_string()),
+            tool_call_id: None,
+            service_name: Some("svc".to_string()),
+            workspace: Some(PathBuf::from("/workspace")),
+            status: None,
+        };
+        assert!(owner.matches_filter(&filter));
+
+        let wrong_filter = ExecProcessFilter {
+            chat_id: Some("chat-b".to_string()),
+            ..ExecProcessFilter::default()
+        };
+        assert!(!owner.matches_filter(&wrong_filter));
+    }
+
+    #[test]
+    fn test_service_lookup_is_scoped() {
+        let owner = ExecOwnerMeta {
+            chat_id: Some("chat-a".to_string()),
+            tool_call_id: None,
+            service_name: Some("svc".to_string()),
+            workspace: Some(PathBuf::from("/workspace-a")),
+        };
+        assert!(owner.matches_service_lookup(
+            &ExecServiceLookup::new("svc")
+                .with_chat_id("chat-a")
+                .with_workspace(PathBuf::from("/workspace-a"))
+        ));
+        assert!(!owner.matches_service_lookup(
+            &ExecServiceLookup::new("svc")
+                .with_chat_id("chat-b")
+                .with_workspace(PathBuf::from("/workspace-a"))
+        ));
     }
 
     #[test]
@@ -259,7 +571,8 @@ mod tests {
     #[test]
     fn test_snapshot_with_status() {
         let meta = ExecProcessMeta::new(ExecMode::Foreground, "ls".to_string());
-        let snap = ExecProcessSnapshot::new(meta).with_status(ExecStatus::Exited { exit_code: Some(0) });
+        let snap =
+            ExecProcessSnapshot::new(meta).with_status(ExecStatus::Exited { exit_code: Some(0) });
         assert_eq!(snap.status, ExecStatus::Exited { exit_code: Some(0) });
     }
 
@@ -267,13 +580,21 @@ mod tests {
     fn test_snapshot_serialization_round_trip() {
         let meta = ExecProcessMeta {
             process_id: ExecProcessId("exec_test123".to_string()),
+            owner: ExecOwnerMeta {
+                chat_id: Some("chat-a".to_string()),
+                tool_call_id: Some("tool-a".to_string()),
+                service_name: Some("worker".to_string()),
+                workspace: Some(PathBuf::from("/workspace")),
+            },
             mode: ExecMode::Background,
+            cwd: Some(PathBuf::from("/workspace/app")),
             command: "sleep 10".to_string(),
             short_description: "sleep 10".to_string(),
             created_at_ms: 1_000_000,
+            started_at_ms: Some(1_000_010),
+            ended_at_ms: None,
         };
-        let snap = ExecProcessSnapshot::new(meta)
-            .with_status(ExecStatus::Running);
+        let snap = ExecProcessSnapshot::new(meta).with_status(ExecStatus::Running);
 
         let json = serde_json::to_string(&snap).expect("serialization failed");
         let deserialized: ExecProcessSnapshot =
@@ -284,9 +605,22 @@ mod tests {
 
     #[test]
     fn test_exec_status_failed_serialization() {
-        let status = ExecStatus::Failed { message: "oom killed".to_string() };
+        let status = ExecStatus::Failed {
+            message: "oom killed".to_string(),
+        };
         let json = serde_json::to_string(&status).unwrap();
         let back: ExecStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(status, back);
+    }
+
+    #[test]
+    fn test_not_found_read_result() {
+        let result = ExecReadResult::not_found(ExecProcessId("exec_missing".to_string()), 42);
+        assert_eq!(result.process_id, ExecProcessId("exec_missing".to_string()));
+        assert!(!result.found);
+        assert_eq!(result.since_seq, 42);
+        assert_eq!(result.next_seq, 42);
+        assert_eq!(result.latest_seq, 42);
+        assert!(result.chunks.is_empty());
     }
 }
