@@ -17,6 +17,7 @@ use tokenizers::Tokenizer;
 use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 
 use crate::ast::ast_indexer_thread::AstIndexService;
+use crate::agents::registry::BackgroundAgentRegistry;
 use crate::buddy::actor::BuddyService;
 use crate::buddy::events::BuddyEvent;
 use crate::buddy::user_activity::UserActivityRing;
@@ -265,6 +266,7 @@ pub struct AppState {
     pub activity_sink: Arc<dyn ActivitySink>,
     pub buddy_event_sink: Arc<dyn BuddyEventSink>,
     pub tool_registry: Arc<dyn ToolRegistry>,
+    pub agents: Arc<BackgroundAgentRegistry>,
 }
 
 pub struct AppActivitySink {

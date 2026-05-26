@@ -13,6 +13,7 @@ use tokio::sync::{Mutex as AMutex, RwLock as ARwLock};
 use tracing::{error, info};
 
 use crate::ast::ast_indexer_thread::AstIndexService;
+use crate::agents::registry::BackgroundAgentRegistry;
 use crate::app_state::{
     AppActivitySink, AppBuddyEventSink, AppState, AppToolRegistry, BuddyServices, CapsState,
     ChatServices, EngineChatSessionFacade, IntegrationServices, ModelServices, PathServices,
@@ -260,6 +261,7 @@ pub struct GlobalContext {
     pub buddy: Arc<AMutex<Option<crate::buddy::actor::BuddyService>>>,
     pub buddy_events_tx: Option<tokio::sync::broadcast::Sender<crate::buddy::events::BuddyEvent>>,
     pub user_activity: Arc<AMutex<crate::buddy::user_activity::UserActivityRing>>,
+    pub agents: Arc<BackgroundAgentRegistry>,
 }
 
 pub type SharedGlobalContext = Arc<GlobalContext>; // TODO: remove this type alias, confusing
@@ -344,6 +346,7 @@ impl GlobalContext {
             activity_sink,
             buddy_event_sink,
             tool_registry,
+            agents: self.agents.clone(),
         }
     }
 }
@@ -638,6 +641,12 @@ pub async fn create_global_context(
     let user_activity =
         crate::buddy::user_activity::UserActivityRing::load(user_activity_project_root.as_path())
             .await;
+    let agents_root = user_activity_project_root
+        .join(".refact")
+        .join("background_agents");
+    let agents = BackgroundAgentRegistry::new(agents_root)
+        .await
+        .unwrap_or_else(|error| panic!("failed to initialize background agent registry: {error}"));
     let cx = GlobalContext {
         shutdown_flag: Arc::new(AtomicBool::new(false)),
         cmdline: cmdline.clone(),
@@ -692,6 +701,7 @@ pub async fn create_global_context(
         buddy: Arc::new(AMutex::new(None)),
         buddy_events_tx: Some(tokio::sync::broadcast::channel(256).0),
         user_activity: Arc::new(AMutex::new(user_activity)),
+        agents,
     };
     let gcx = Arc::new(cx);
     crate::files_in_workspace::watcher_init(gcx.clone()).await;
@@ -725,6 +735,7 @@ pub mod tests {
             &app_state.model.tokenizers,
             &second_app_state.model.tokenizers
         ));
+        assert!(Arc::ptr_eq(&app_state.agents, &second_app_state.agents));
     }
 
     pub async fn make_test_gcx() -> Arc<GlobalContext> {
@@ -742,6 +753,12 @@ pub mod tests {
         let _ = std::fs::create_dir_all(&cache_dir);
         let _ = std::fs::create_dir_all(&config_dir);
         let user_activity = crate::buddy::user_activity::UserActivityRing::load(&cache_dir).await;
+        let agents =
+            BackgroundAgentRegistry::new(cache_dir.join(".refact").join("background_agents"))
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("failed to initialize test background agent registry: {error}")
+                });
 
         let cmdline = CommandLine {
             ping_message: "pong".to_string(),
@@ -828,6 +845,7 @@ pub mod tests {
             buddy: Arc::new(AMutex::new(None)),
             buddy_events_tx: Some(tokio::sync::broadcast::channel(256).0),
             user_activity: Arc::new(AMutex::new(user_activity)),
+            agents,
         };
         Arc::new(cx)
     }
