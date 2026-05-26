@@ -31,7 +31,7 @@ impl Tool for ToolWebSearch {
             },
             experimental: false,
             allow_parallel: true,
-            description: "Search the web and return results with titles, URLs, and snippets. Uses DuckDuckGo.".to_string(),
+            description: "Search the web and return results with titles, URLs, and snippets. Uses free general and scoped sources such as DuckDuckGo, SearxNG, Wikipedia, GitHub, Stack Overflow, npm, OpenAlex, Crossref, Hacker News, and Brave Search when BRAVE_SEARCH_API_KEY is configured.".to_string(),
             input_schema: json_schema_from_params(
                 &[
                     ("query", "string", "Search query."),
@@ -89,6 +89,7 @@ impl Tool for ToolWebSearch {
                         "title": result.title,
                         "url": result.url,
                         "snippet": result.snippet,
+                        "source": result.source,
                     })
                 })
                 .collect::<Vec<_>>()),

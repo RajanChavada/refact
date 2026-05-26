@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
 use std::time::Duration;
 
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, USER_AGENT};
 use reqwest::Client;
 use select::document::Document;
 use select::predicate::{Class, Name};
@@ -19,6 +20,22 @@ const SEARXNG_BACKEND_NAME: &str = "searxng";
 const DDG_BACKEND_NAME: &str = "duckduckgo";
 const WIKIPEDIA_BACKEND_NAME: &str = "wikipedia";
 const WIKIPEDIA_API_URL: &str = "https://en.wikipedia.org/w/api.php";
+const BRAVE_BACKEND_NAME: &str = "brave";
+const BRAVE_WEB_SEARCH_API_URL: &str = "https://api.search.brave.com/res/v1/web/search";
+const GITHUB_ISSUES_BACKEND_NAME: &str = "github_issues";
+const GITHUB_REPOS_BACKEND_NAME: &str = "github_repositories";
+const GITHUB_ISSUES_SEARCH_API_URL: &str = "https://api.github.com/search/issues";
+const GITHUB_REPOS_SEARCH_API_URL: &str = "https://api.github.com/search/repositories";
+const STACK_EXCHANGE_BACKEND_NAME: &str = "stack_overflow";
+const STACK_EXCHANGE_SEARCH_API_URL: &str = "https://api.stackexchange.com/2.3/search/advanced";
+const NPM_BACKEND_NAME: &str = "npm";
+const NPM_SEARCH_API_URL: &str = "https://registry.npmjs.org/-/v1/search";
+const OPENALEX_BACKEND_NAME: &str = "openalex";
+const OPENALEX_WORKS_API_URL: &str = "https://api.openalex.org/works";
+const CROSSREF_BACKEND_NAME: &str = "crossref";
+const CROSSREF_WORKS_API_URL: &str = "https://api.crossref.org/works";
+const HACKER_NEWS_BACKEND_NAME: &str = "hacker_news";
+const HACKER_NEWS_SEARCH_API_URL: &str = "https://hn.algolia.com/api/v1/search";
 
 const DEFAULT_SEARXNG_INSTANCES: &[&str] = &[
     "https://search.inetol.net/search",
@@ -67,6 +84,135 @@ fn normalize_text(text: &str) -> String {
 
 fn normalize_query(query: &str) -> String {
     normalize_text(query)
+}
+
+fn unescape_html_light(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+fn strip_html_tags(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => output.push(ch),
+            _ => {}
+        }
+    }
+    normalize_text(&unescape_html_light(&output))
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let text = normalize_text(text);
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+
+    let mut truncated = text.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn clean_query_for_source(query: &str) -> String {
+    let query = query
+        .split_whitespace()
+        .filter(|part| !part.trim_matches('"').starts_with("site:"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    normalize_query(query.trim_matches('"'))
+}
+
+fn query_contains_any(query: &str, needles: &[&str]) -> bool {
+    let lower = query.to_ascii_lowercase();
+    needles.iter().any(|needle| lower.contains(needle))
+}
+
+fn should_search_developer_sources(query: &str) -> bool {
+    query_contains_any(
+        query,
+        &[
+            "api",
+            "bug",
+            "cli",
+            "codex",
+            "crate",
+            "error",
+            "exception",
+            "github",
+            "javascript",
+            "library",
+            "npm",
+            "package",
+            "python",
+            "repo",
+            "rust",
+            "sdk",
+            "site:github.com",
+            "site:stackoverflow.com",
+            "stack overflow",
+            "stackoverflow",
+            "timeout",
+            "typescript",
+        ],
+    )
+}
+
+fn should_search_package_sources(query: &str) -> bool {
+    query_contains_any(
+        query,
+        &[
+            "javascript",
+            "node",
+            "node.js",
+            "npm",
+            "package",
+            "typescript",
+        ],
+    )
+}
+
+fn should_search_research_sources(query: &str) -> bool {
+    query_contains_any(
+        query,
+        &[
+            "citation",
+            "crossref",
+            "doi",
+            "journal",
+            "openalex",
+            "paper",
+            "publication",
+            "research",
+            "study",
+        ],
+    )
+}
+
+fn should_search_hacker_news(query: &str) -> bool {
+    should_search_developer_sources(query)
+        || query_contains_any(query, &["hacker news", "hn.algolia", "news.ycombinator"])
+}
+
+fn github_repo_qualifier(query: &str) -> Option<String> {
+    for raw_part in query.split_whitespace() {
+        let part = raw_part.trim_matches('"');
+        let Some(path) = part.strip_prefix("site:github.com/") else {
+            continue;
+        };
+        let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+        let owner = segments.next()?;
+        let repo = segments.next()?;
+        return Some(format!("repo:{}/{}", owner, repo));
+    }
+    None
 }
 
 pub fn clamp_num_results(num_results: usize) -> usize {
@@ -556,6 +702,757 @@ async fn search_wikipedia(
     Ok(parsed)
 }
 
+async fn search_brave(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    let Ok(api_key) = env::var("BRAVE_SEARCH_API_KEY") else {
+        return Ok(vec![]);
+    };
+    if api_key.trim().is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(BRAVE_WEB_SEARCH_API_URL)
+        .map_err(|e| SearchBackendError::new(BRAVE_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("q", query);
+        qp.append_pair("count", &num_results.min(20).to_string());
+        qp.append_pair("search_lang", "en");
+        qp.append_pair("spellcheck", "1");
+    }
+
+    let response = client
+        .get(url)
+        .header("X-Subscription-Token", api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(BRAVE_BACKEND_NAME, e.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            BRAVE_BACKEND_NAME,
+            format!("Brave returned status: {}", response.status()),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(BRAVE_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(BRAVE_BACKEND_NAME, e.to_string()))?;
+    let Some(results) = value
+        .get("web")
+        .and_then(|v| v.get("results"))
+        .and_then(|v| v.as_array())
+    else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in results.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let url = obj.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+        let snippet = obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        parsed.push(SearchResult {
+            title: normalize_text(&unescape_html_light(title)),
+            url: url.to_string(),
+            snippet: strip_html_tags(snippet),
+            source: Some(BRAVE_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+fn github_request_builder(client: &Client, url: Url) -> reqwest::RequestBuilder {
+    let builder = client
+        .get(url)
+        .header(USER_AGENT, "refact-agent")
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+
+    match env::var("GITHUB_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => {
+            builder.header("Authorization", format!("Bearer {}", token.trim()))
+        }
+        _ => builder,
+    }
+}
+
+async fn search_github_issues(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_developer_sources(query) {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut gh_query = source_query;
+    if let Some(repo) = github_repo_qualifier(query) {
+        gh_query.push(' ');
+        gh_query.push_str(&repo);
+    }
+    gh_query.push_str(" is:issue");
+
+    let mut url = Url::parse(GITHUB_ISSUES_SEARCH_API_URL)
+        .map_err(|e| SearchBackendError::new(GITHUB_ISSUES_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("q", &gh_query);
+        qp.append_pair("sort", "updated");
+        qp.append_pair("order", "desc");
+        qp.append_pair("per_page", &num_results.min(10).to_string());
+    }
+
+    let response = github_request_builder(client, url)
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(GITHUB_ISSUES_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            GITHUB_ISSUES_BACKEND_NAME,
+            format!(
+                "GitHub issues search returned status: {}",
+                response.status()
+            ),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(GITHUB_ISSUES_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(GITHUB_ISSUES_BACKEND_NAME, e.to_string()))?;
+    let Some(items) = value.get("items").and_then(|v| v.as_array()) else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in items.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let url = obj
+            .get("html_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let body = obj.get("body").and_then(|v| v.as_str()).unwrap_or_default();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        parsed.push(SearchResult {
+            title: normalize_text(title),
+            url: url.to_string(),
+            snippet: truncate_chars(body, 280),
+            source: Some(GITHUB_ISSUES_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+async fn search_github_repositories(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_developer_sources(query) || github_repo_qualifier(query).is_some() {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(GITHUB_REPOS_SEARCH_API_URL)
+        .map_err(|e| SearchBackendError::new(GITHUB_REPOS_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("q", &source_query);
+        qp.append_pair("sort", "stars");
+        qp.append_pair("order", "desc");
+        qp.append_pair("per_page", &num_results.min(10).to_string());
+    }
+
+    let response = github_request_builder(client, url)
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(GITHUB_REPOS_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            GITHUB_REPOS_BACKEND_NAME,
+            format!(
+                "GitHub repository search returned status: {}",
+                response.status()
+            ),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(GITHUB_REPOS_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(GITHUB_REPOS_BACKEND_NAME, e.to_string()))?;
+    let Some(items) = value.get("items").and_then(|v| v.as_array()) else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in items.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let full_name = obj
+            .get("full_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let url = obj
+            .get("html_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let description = obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let language = obj.get("language").and_then(|v| v.as_str()).unwrap_or("");
+        let stars = obj
+            .get("stargazers_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        if full_name.is_empty() || url.is_empty() {
+            continue;
+        }
+        let metadata = if language.is_empty() {
+            format!("{} stars", stars)
+        } else {
+            format!("{} stars. Language: {}", stars, language)
+        };
+        let snippet = if description.is_empty() {
+            metadata
+        } else {
+            format!("{}. {}", description, metadata)
+        };
+        parsed.push(SearchResult {
+            title: full_name.to_string(),
+            url: url.to_string(),
+            snippet: normalize_text(&snippet),
+            source: Some(GITHUB_REPOS_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+async fn search_stack_overflow(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_developer_sources(query) {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(STACK_EXCHANGE_SEARCH_API_URL)
+        .map_err(|e| SearchBackendError::new(STACK_EXCHANGE_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("order", "desc");
+        qp.append_pair("sort", "relevance");
+        qp.append_pair("site", "stackoverflow");
+        qp.append_pair("q", &source_query);
+        qp.append_pair("pagesize", &num_results.min(10).to_string());
+    }
+
+    let response = client
+        .get(url)
+        .header(USER_AGENT, "refact-agent")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(STACK_EXCHANGE_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            STACK_EXCHANGE_BACKEND_NAME,
+            format!("Stack Exchange returned status: {}", response.status()),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(STACK_EXCHANGE_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(STACK_EXCHANGE_BACKEND_NAME, e.to_string()))?;
+    if let Some(backoff) = value.get("backoff").and_then(|v| v.as_i64()) {
+        warn!("Stack Exchange requested backoff for {} seconds", backoff);
+    }
+    let Some(items) = value.get("items").and_then(|v| v.as_array()) else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in items.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let url = obj.get("link").and_then(|v| v.as_str()).unwrap_or_default();
+        let score = obj
+            .get("score")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        let answers = obj
+            .get("answer_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        let accepted = obj
+            .get("is_answered")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        parsed.push(SearchResult {
+            title: normalize_text(&unescape_html_light(title)),
+            url: url.to_string(),
+            snippet: format!(
+                "Score: {}. Answers: {}. Accepted answer: {}.",
+                score,
+                answers,
+                if accepted { "yes" } else { "no" }
+            ),
+            source: Some(STACK_EXCHANGE_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+async fn search_npm(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_package_sources(query) {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(NPM_SEARCH_API_URL)
+        .map_err(|e| SearchBackendError::new(NPM_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("text", &source_query);
+        qp.append_pair("size", &num_results.min(10).to_string());
+    }
+
+    let response = client
+        .get(url)
+        .header(USER_AGENT, "refact-agent")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(NPM_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            NPM_BACKEND_NAME,
+            format!("npm returned status: {}", response.status()),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(NPM_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(NPM_BACKEND_NAME, e.to_string()))?;
+    let Some(objects) = value.get("objects").and_then(|v| v.as_array()) else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in objects.iter().take(num_results) {
+        let Some(package) = item.get("package").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let name = package
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let version = package
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let description = package
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let url = package
+            .get("links")
+            .and_then(|v| v.get("npm"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("https://www.npmjs.com/package/{}", name));
+        parsed.push(SearchResult {
+            title: if version.is_empty() {
+                name.to_string()
+            } else {
+                format!("{} {}", name, version)
+            },
+            url,
+            snippet: normalize_text(description),
+            source: Some(NPM_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+fn openalex_abstract_from_inverted_index(value: &Value) -> String {
+    let Some(index) = value.as_object() else {
+        return String::new();
+    };
+
+    let mut words_by_position: BTreeMap<usize, &str> = BTreeMap::new();
+    for (word, positions) in index {
+        let Some(positions) = positions.as_array() else {
+            continue;
+        };
+        for position in positions {
+            if let Some(position) = position.as_u64() {
+                words_by_position.insert(position as usize, word);
+            }
+        }
+    }
+
+    words_by_position
+        .values()
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+async fn search_openalex(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_research_sources(query) {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(OPENALEX_WORKS_API_URL)
+        .map_err(|e| SearchBackendError::new(OPENALEX_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("search", &source_query);
+        qp.append_pair("per-page", &num_results.min(10).to_string());
+    }
+
+    let response = client
+        .get(url)
+        .header(USER_AGENT, "refact-agent")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(OPENALEX_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            OPENALEX_BACKEND_NAME,
+            format!("OpenAlex returned status: {}", response.status()),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(OPENALEX_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(OPENALEX_BACKEND_NAME, e.to_string()))?;
+    let Some(results) = value.get("results").and_then(|v| v.as_array()) else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in results.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("display_name").and_then(|v| v.as_str()))
+            .unwrap_or_default();
+        let url = obj
+            .get("doi")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("id").and_then(|v| v.as_str()))
+            .unwrap_or_default();
+        let year = obj
+            .get("publication_year")
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let abstract_text = obj
+            .get("abstract_inverted_index")
+            .map(openalex_abstract_from_inverted_index)
+            .unwrap_or_default();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        let snippet = if abstract_text.is_empty() {
+            year
+        } else if year.is_empty() {
+            truncate_chars(&abstract_text, 280)
+        } else {
+            format!("{}. {}", year, truncate_chars(&abstract_text, 260))
+        };
+        parsed.push(SearchResult {
+            title: normalize_text(title),
+            url: url.to_string(),
+            snippet: normalize_text(&snippet),
+            source: Some(OPENALEX_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+async fn search_crossref(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_research_sources(query) {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(CROSSREF_WORKS_API_URL)
+        .map_err(|e| SearchBackendError::new(CROSSREF_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("query.bibliographic", &source_query);
+        qp.append_pair("rows", &num_results.min(10).to_string());
+    }
+
+    let response = client
+        .get(url)
+        .header(USER_AGENT, "refact-agent")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(CROSSREF_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            CROSSREF_BACKEND_NAME,
+            format!("Crossref returned status: {}", response.status()),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(CROSSREF_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(CROSSREF_BACKEND_NAME, e.to_string()))?;
+    let Some(items) = value
+        .get("message")
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+    else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in items.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let doi = obj.get("DOI").and_then(|v| v.as_str()).unwrap_or_default();
+        let url = obj
+            .get("URL")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("https://doi.org/{}", doi));
+        let publisher = obj
+            .get("publisher")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let publication = obj
+            .get("container-title")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if title.is_empty() || doi.is_empty() {
+            continue;
+        }
+        let snippet = [publication, publisher]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(". ");
+        parsed.push(SearchResult {
+            title: normalize_text(title),
+            url,
+            snippet,
+            source: Some(CROSSREF_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
+async fn search_hacker_news(
+    client: &Client,
+    query: &str,
+    num_results: usize,
+) -> Result<Vec<SearchResult>, SearchBackendError> {
+    if !should_search_hacker_news(query) {
+        return Ok(vec![]);
+    }
+
+    let source_query = clean_query_for_source(query);
+    if source_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut url = Url::parse(HACKER_NEWS_SEARCH_API_URL)
+        .map_err(|e| SearchBackendError::new(HACKER_NEWS_BACKEND_NAME, e.to_string()))?;
+    {
+        let mut qp = url.query_pairs_mut();
+        qp.append_pair("query", &source_query);
+        qp.append_pair("tags", "story");
+        qp.append_pair("hitsPerPage", &num_results.min(10).to_string());
+    }
+
+    let response = client
+        .get(url)
+        .header(USER_AGENT, "refact-agent")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| SearchBackendError::new(HACKER_NEWS_BACKEND_NAME, e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SearchBackendError::new(
+            HACKER_NEWS_BACKEND_NAME,
+            format!("Hacker News search returned status: {}", response.status()),
+        ));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| SearchBackendError::new(HACKER_NEWS_BACKEND_NAME, e.to_string()))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|e| SearchBackendError::new(HACKER_NEWS_BACKEND_NAME, e.to_string()))?;
+    let Some(hits) = value.get("hits").and_then(|v| v.as_array()) else {
+        return Ok(vec![]);
+    };
+
+    let mut parsed = Vec::new();
+    for item in hits.iter().take(num_results) {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("story_title").and_then(|v| v.as_str()))
+            .unwrap_or_default();
+        let object_id = obj
+            .get("objectID")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let points = obj
+            .get("points")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        let comments = obj
+            .get("num_comments")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        let linked_url = obj.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+        if title.is_empty() || object_id.is_empty() {
+            continue;
+        }
+        let url = if linked_url.is_empty() {
+            format!("https://news.ycombinator.com/item?id={}", object_id)
+        } else {
+            linked_url.to_string()
+        };
+        parsed.push(SearchResult {
+            title: normalize_text(&unescape_html_light(title)),
+            url,
+            snippet: format!("{} points. {} comments.", points, comments),
+            source: Some(HACKER_NEWS_BACKEND_NAME.to_string()),
+        });
+    }
+
+    Ok(parsed)
+}
+
 async fn fetch_ddg_html_with_method(
     client: &Client,
     query: &str,
@@ -697,15 +1594,39 @@ pub async fn execute_web_search_results(
     let num_results = clamp_num_results(num_results);
     let client = build_http_client()?;
 
-    let (searxng_result, ddg_result, wikipedia_result) = tokio::join!(
+    let (
+        brave_result,
+        searxng_result,
+        ddg_result,
+        wikipedia_result,
+        github_issues_result,
+        github_repos_result,
+        stack_overflow_result,
+        npm_result,
+        openalex_result,
+        crossref_result,
+        hacker_news_result,
+    ) = tokio::join!(
+        search_brave(&client, &query, num_results),
         search_searxng(&client, &query, num_results),
         search_duckduckgo(&client, &query, num_results),
         search_wikipedia(&client, &query, num_results),
+        search_github_issues(&client, &query, num_results),
+        search_github_repositories(&client, &query, num_results),
+        search_stack_overflow(&client, &query, num_results),
+        search_npm(&client, &query, num_results),
+        search_openalex(&client, &query, num_results),
+        search_crossref(&client, &query, num_results),
+        search_hacker_news(&client, &query, num_results),
     );
 
     let mut merged_results = Vec::new();
     let mut errors = Vec::new();
 
+    match brave_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
     match searxng_result {
         Ok(results) => merged_results.extend(results),
         Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
@@ -715,6 +1636,34 @@ pub async fn execute_web_search_results(
         Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
     }
     match wikipedia_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match github_issues_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match github_repos_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match stack_overflow_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match npm_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match openalex_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match crossref_result {
+        Ok(results) => merged_results.extend(results),
+        Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
+    }
+    match hacker_news_result {
         Ok(results) => merged_results.extend(results),
         Err(err) => errors.push(format!("{}: {}", err.backend, err.detail)),
     }
@@ -869,6 +1818,34 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Rust Book");
         assert_eq!(results[0].source.as_deref(), Some(SEARXNG_BACKEND_NAME));
+    }
+
+    #[test]
+    fn test_clean_query_for_source_removes_site_filters() {
+        let query = r#""site:github.com/openai/codex/issues" timeout slow codex"#;
+        assert_eq!(clean_query_for_source(query), "timeout slow codex");
+    }
+
+    #[test]
+    fn test_github_repo_qualifier_extracts_repo_from_site_filter() {
+        let query = r#""site:github.com/openai/codex/issues" timeout slow codex"#;
+        assert_eq!(
+            github_repo_qualifier(query).as_deref(),
+            Some("repo:openai/codex")
+        );
+    }
+
+    #[test]
+    fn test_openalex_abstract_from_inverted_index_orders_words() {
+        let value = serde_json::json!({
+            "reliable": [1],
+            "Search": [0],
+            "results": [2]
+        });
+        assert_eq!(
+            openalex_abstract_from_inverted_index(&value),
+            "Search reliable results"
+        );
     }
 
     #[test]
