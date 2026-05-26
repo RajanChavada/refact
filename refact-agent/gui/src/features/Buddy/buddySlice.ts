@@ -726,6 +726,13 @@ export const buddySlice = createSlice({
       state,
       action: PayloadAction<{ id: string; kind: BuddyChatBubbleClass }>,
     ) => {
+      if (
+        state.chatBubbleImpressions.some(
+          (impression) => impression.id === action.payload.id,
+        )
+      ) {
+        return;
+      }
       state.chatBubbleImpressions = pruneChatBubbleImpressions([
         {
           id: action.payload.id,

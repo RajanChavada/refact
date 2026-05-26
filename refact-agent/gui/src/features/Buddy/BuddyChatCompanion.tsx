@@ -116,13 +116,23 @@ const DURABLE_SPEECH_INTENTS = new Set<string>([
 ]);
 
 function normalizedPolicyToken(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
+  const token =
+    value
+      ?.trim()
+      .toLowerCase()
+      .replace(/[:\s-]+/g, "_") ?? "";
+  return token.startsWith("speech_") ? token.slice("speech_".length) : token;
 }
 
 function isAmbientToken(value: string | null | undefined): boolean {
   const token = normalizedPolicyToken(value);
   if (!token) return false;
   return AMBIENT_INTENTS.has(token) || AMBIENT_SIGNALS.has(token);
+}
+
+function isDurableSpeechToken(value: string | null | undefined): boolean {
+  const token = normalizedPolicyToken(value);
+  return token ? DURABLE_SPEECH_INTENTS.has(token) : false;
 }
 
 function notificationTriggerSource(
@@ -141,8 +151,12 @@ function notificationIdentity(
 }
 
 function createdAtMs(value: string): number {
+  return validCreatedAtMs(value) ?? 0;
+}
+
+function validCreatedAtMs(value: string): number | null {
   const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : 0;
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function eventFreshnessMs(ttlMs: number | null | undefined): number {
@@ -153,8 +167,8 @@ function eventFreshnessMs(ttlMs: number | null | undefined): number {
 }
 
 function isFreshEventOnce(createdAt: string, ttlMs?: number | null): boolean {
-  const createdAtTime = createdAtMs(createdAt);
-  if (createdAtTime <= 0) return false;
+  const createdAtTime = validCreatedAtMs(createdAt);
+  if (createdAtTime == null) return false;
   return Date.now() - createdAtTime <= eventFreshnessMs(ttlMs);
 }
 
@@ -162,10 +176,13 @@ function isDurableSpeech(activeSpeech: {
   persistent: boolean;
   ttl_seconds: number;
   speech_intent?: string;
+  dedupe_key?: string;
 }): boolean {
   if (activeSpeech.persistent) return true;
-  const intent = normalizedPolicyToken(activeSpeech.speech_intent);
-  return intent ? DURABLE_SPEECH_INTENTS.has(intent) : false;
+  return (
+    isDurableSpeechToken(activeSpeech.speech_intent) ||
+    isDurableSpeechToken(activeSpeech.dedupe_key)
+  );
 }
 
 function classifySpeech(activeSpeech: {
@@ -190,6 +207,13 @@ function classifyRuntimeEvent(event: BuddyRuntimeEvent): BuddyChatBubbleClass {
     isAmbientToken(event.dedupe_key ?? undefined)
   ) {
     return "ambient";
+  }
+  if (
+    isDurableSpeechToken(event.signal_type) ||
+    isDurableSpeechToken(event.source) ||
+    isDurableSpeechToken(event.dedupe_key ?? undefined)
+  ) {
+    return "actionable";
   }
   if (
     event.status === "failed" ||
@@ -320,6 +344,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const [, refreshSpeechExpiry] = useState(0);
   const pendingRef = useRef(false);
   const prevChatIdRef = useRef(chatId);
+  const recordedNotificationIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (prevChatIdRef.current !== chatId) {
@@ -582,17 +607,16 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   useEffect(() => {
     const delays = notificationCandidates
       .filter((candidate) => candidate.kind === "event_once")
-      .map((candidate) => {
+      .flatMap((candidate) => {
+        const createdAtTime = validCreatedAtMs(
+          candidate.notification.createdAt,
+        );
+        if (createdAtTime == null) return [];
         const ttlMs =
           candidate.notification.source === "speech"
             ? (candidate.notification.ttlSeconds ?? 0) * 1000
             : candidate.notification.ttlMs;
-        return (
-          createdAtMs(candidate.notification.createdAt) +
-          eventFreshnessMs(ttlMs) -
-          Date.now() +
-          1
-        );
+        return [createdAtTime + eventFreshnessMs(ttlMs) - Date.now() + 1];
       })
       .filter((delayMs) => delayMs > 0);
     if (delays.length === 0) return;
@@ -648,6 +672,12 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
 
   useEffect(() => {
     if (!selectedCandidate) return;
+    if (
+      recordedNotificationIdsRef.current.has(selectedCandidate.notification.id)
+    ) {
+      return;
+    }
+    recordedNotificationIdsRef.current.add(selectedCandidate.notification.id);
     dispatch(
       recordChatBubbleImpression({
         id: selectedCandidate.notification.id,

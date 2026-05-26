@@ -36,6 +36,7 @@ import {
   removeDraft,
   selectUnreadOpportunities,
   selectSeenNotificationIds,
+  selectChatBubbleImpressions,
   snoozeChatBubbles,
   clearExpiredChatBubbleSnooze,
   recordChatBubbleImpression,
@@ -1099,6 +1100,34 @@ describe("Buddy chat notification freshness", () => {
     }
   });
 
+  test("fresh event-once runtime event created at the Unix epoch can appear", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(0));
+    try {
+      const store = setUpStore();
+      const epochRuntime = makeChatRuntimeEvent({
+        id: "runtime-epoch-fresh",
+        title: "Epoch gremlin status",
+        status: "completed",
+        priority: "normal",
+        controls: [],
+        created_at: new Date(0).toISOString(),
+      });
+      store.dispatch(
+        setBuddySnapshot(makeSnapshot({ runtime_queue: [epochRuntime] })),
+      );
+
+      const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+      await expectCompanionNotification(
+        container,
+        "runtime:runtime-epoch-fresh",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("ambient candidate is preferred when recent ambient ratio is below fifty percent", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
@@ -1140,6 +1169,183 @@ describe("Buddy chat notification freshness", () => {
         container,
         "runtime:runtime-actionable-ratio",
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each<[string, string]>([
+    ["speech:humor", "ambient-prefixed-humor-speech"],
+    ["speech:insight", "ambient-prefixed-insight-speech"],
+    ["speech:memory_pulse_commentary", "ambient-prefixed-memory-pulse-speech"],
+  ])(
+    "speech-prefixed ambient intent %s wins when ambient ratio is low",
+    async (speechIntent, speechId) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+      try {
+        const store = setUpStore();
+        const actionableRuntime = makeChatRuntimeEvent({
+          id: `runtime-actionable-${speechId}`,
+          title: "Actionable runtime",
+          created_at: "2024-01-01T00:00:00Z",
+        });
+        const ambientSpeech = makeChatSpeech({
+          id: speechId,
+          text: "Speech-prefixed ambient gremlin whisper",
+          speech_intent: speechIntent,
+          dedupe_key: speechIntent,
+          created_at: "2024-01-01T00:00:00Z",
+        });
+        store.dispatch(
+          setBuddySnapshot(
+            makeSnapshot({
+              active_speech: ambientSpeech,
+              runtime_queue: [actionableRuntime],
+            }),
+          ),
+        );
+        store.dispatch(
+          recordChatBubbleImpression({
+            id: "prior-actionable",
+            kind: "actionable",
+          }),
+        );
+
+        const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+        await expectCompanionNotification(container, `speech:${speechId}`);
+        expectNoCompanionNotificationNow(
+          container,
+          `runtime:runtime-actionable-${speechId}`,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test.each<[string, string, "runtime" | "speech", string | null]>([
+    ["speech:tour", "runtime-durable-speech-tour", "runtime", null],
+    ["speech-tour", "runtime-durable-speech-tour-hyphen", "runtime", null],
+    ["speech:milestone", "runtime-durable-speech-milestone", "runtime", null],
+    [
+      "speech:quest_accept",
+      "runtime-durable-speech-quest-accept",
+      "runtime",
+      null,
+    ],
+    [
+      "speech:quest_complete",
+      "runtime-durable-speech-quest-complete",
+      "runtime",
+      null,
+    ],
+    ["speech:tour", "speech-durable-speech-tour", "speech", null],
+    ["speech:milestone", "speech-durable-speech-milestone", "speech", null],
+    [
+      "speech:quest_accept",
+      "speech-durable-speech-quest-accept",
+      "speech",
+      null,
+    ],
+    [
+      "speech:quest_complete",
+      "speech-durable-speech-quest-complete",
+      "speech",
+      null,
+    ],
+    [
+      "speech:quest_accept",
+      "speech-durable-dedupe-quest-accept",
+      "speech",
+      "speech:quest_accept",
+    ],
+  ])(
+    "durable %s %s intent is actionable after freshness would expire",
+    async (intent, eventId, source, dedupeKey) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2024-01-01T00:02:00Z"));
+      try {
+        const store = setUpStore();
+        if (source === "runtime") {
+          const durableRuntime = makeChatRuntimeEvent({
+            id: eventId,
+            signal_type: intent,
+            title: "Durable speech status",
+            status: "completed",
+            priority: "normal",
+            controls: [],
+            created_at: "2024-01-01T00:00:00Z",
+          });
+          store.dispatch(
+            setBuddySnapshot(makeSnapshot({ runtime_queue: [durableRuntime] })),
+          );
+        } else {
+          const durableSpeech = makeChatSpeech({
+            id: eventId,
+            text: "Durable speech status",
+            speech_intent: dedupeKey ? undefined : intent,
+            dedupe_key: dedupeKey ?? undefined,
+            persistent: false,
+            ttl_seconds: 300,
+            created_at: "2024-01-01T00:00:00Z",
+          });
+          store.dispatch(
+            setBuddySnapshot(makeSnapshot({ active_speech: durableSpeech })),
+          );
+        }
+
+        const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+        await expectCompanionNotification(container, `${source}:${eventId}`);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test("chat bubble impression recording is stable for a selected bubble id", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      const runtime = makeChatRuntimeEvent({
+        id: "runtime-impression-once",
+        title: "Impression once",
+        created_at: "2024-01-01T00:00:00Z",
+      });
+      store.dispatch(
+        setBuddySnapshot(makeSnapshot({ runtime_queue: [runtime] })),
+      );
+
+      const rendered = renderBuddyChatCompanion(store, "chat-a");
+      await expectCompanionNotification(
+        rendered.container,
+        "runtime:runtime-impression-once",
+      );
+      let firstShownAt: number | undefined;
+      await waitFor(() => {
+        firstShownAt = selectChatBubbleImpressions(store.getState()).find(
+          (impression) => impression.id === "runtime:runtime-impression-once",
+        )?.shown_at;
+        expect(firstShownAt).toBe(new Date("2024-01-01T00:00:00Z").getTime());
+      });
+
+      vi.setSystemTime(new Date("2024-01-01T00:00:10Z"));
+      rendered.rerender(
+        React.createElement(BuddyChatCompanion, { chatId: "chat-a" }),
+      );
+
+      await waitFor(() => {
+        const impressions = selectChatBubbleImpressions(
+          store.getState(),
+        ).filter(
+          (impression) => impression.id === "runtime:runtime-impression-once",
+        );
+        expect(impressions).toHaveLength(1);
+        expect(impressions[0].shown_at).toBe(firstShownAt);
+      });
     } finally {
       vi.useRealTimers();
     }
