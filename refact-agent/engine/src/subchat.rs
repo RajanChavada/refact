@@ -1670,12 +1670,16 @@ async fn subchat_stream(
 
         let call_ts_start = chrono::Utc::now().to_rfc3339();
         let call_start = std::time::Instant::now();
-        let mut attempt_result = run_llm_stream(
+        let mut attempt_result: Result<Vec<_>, _> = run_llm_stream(
             AppState::from_gcx(gcx.clone()).await,
             params,
             &mut collector,
         )
-        .await;
+        .await
+        .map(|o| match o {
+            crate::chat::stream_core::LlmStreamOutcome::Choices(c) => c,
+            crate::chat::stream_core::LlmStreamOutcome::PausedForCacheGuard => vec![],
+        });
         let duration_ms = call_start.elapsed().as_millis() as u64;
         let call_ts_end = chrono::Utc::now().to_rfc3339();
 

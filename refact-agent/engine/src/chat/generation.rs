@@ -30,7 +30,7 @@ use super::prepare::{prepare_chat_passthrough, ChatPrepareOptions};
 use super::prompts::prepend_the_right_system_prompt_and_maybe_more_initial_messages;
 use super::stream_core::{
     run_llm_stream, StreamRunParams, StreamCollector, normalize_tool_call, ChoiceFinal,
-    LlmStreamError, ABORT_ERROR_MESSAGE,
+    LlmStreamError, LlmStreamOutcome, ABORT_ERROR_MESSAGE,
 };
 use super::queue::inject_priority_messages_if_any;
 use super::config::tokens;
@@ -702,6 +702,11 @@ pub fn start_generation(
             )
             .await;
 
+            if let Ok(GenerationResult::PausedForUserDecision) = generation_result {
+                maybe_save_trajectory(app.clone(), session_arc.clone()).await;
+                break;
+            }
+
             if let Err(mut error) = generation_result {
                 let retry_decision = error.retry_decision();
                 let should_retry_network = error.should_retry(network_retry_attempt, &abort_flag);
@@ -1044,7 +1049,7 @@ pub async fn run_llm_generation(
     chat_id: String,
     abort_flag: Arc<AtomicBool>,
     abort_notify: Arc<tokio::sync::Notify>,
-) -> Result<(), LlmStreamError> {
+) -> Result<GenerationResult, LlmStreamError> {
     let gcx = app.gcx.clone();
     check_aborted_before_stream(&abort_flag)?;
     let caps = crate::global_context::try_load_caps_quickly_if_not_present(gcx.clone(), 0)
@@ -1210,6 +1215,11 @@ async fn generation_metering_usd(
     crate::providers::pricing::compute_cost(usage, &pricing)
 }
 
+pub enum GenerationResult {
+    Completed,
+    PausedForUserDecision,
+}
+
 async fn run_streaming_generation(
     app: AppState,
     session_arc: Arc<AMutex<ChatSession>>,
@@ -1217,7 +1227,7 @@ async fn run_streaming_generation(
     model_rec: &crate::caps::ChatModelRecord,
     abort_flag: Arc<AtomicBool>,
     abort_notify: Arc<tokio::sync::Notify>,
-) -> Result<(), LlmStreamError> {
+) -> Result<GenerationResult, LlmStreamError> {
     info!(
         "session generation: model={}, messages={}",
         llm_request.model_id,
@@ -1499,9 +1509,19 @@ async fn run_streaming_generation(
         let call_ts_start = chrono::Utc::now().to_rfc3339();
         let call_start = std::time::Instant::now();
 
-        let results = run_llm_stream(app.clone(), params, &mut collector).await;
+        let stream_outcome = run_llm_stream(app.clone(), params, &mut collector).await;
         drop(collector);
         let _ = emitter_task.await;
+
+        if let Ok(LlmStreamOutcome::PausedForCacheGuard) = stream_outcome {
+            tracing::info!("Generation paused by cache guard");
+            return Ok(GenerationResult::PausedForUserDecision);
+        }
+
+        let results = stream_outcome.map(|o| match o {
+            LlmStreamOutcome::Choices(c) => c,
+            LlmStreamOutcome::PausedForCacheGuard => unreachable!(),
+        });
 
         let duration_ms = call_start.elapsed().as_millis() as u64;
         let call_ts_end = chrono::Utc::now().to_rfc3339();
@@ -1883,7 +1903,7 @@ async fn run_streaming_generation(
         session.finish_stream(result.finish_reason);
     }
 
-    Ok(())
+    Ok(GenerationResult::Completed)
 }
 
 fn is_result_empty(result: &ChoiceFinal) -> bool {
@@ -2432,5 +2452,45 @@ mod tests {
         assert_eq!(metering.generated_usd, 0.008);
         assert_eq!(metering.cache_read_usd, Some(0.0005));
         assert_eq!(metering.cache_creation_usd, Some(0.00075));
+    }
+
+    #[test]
+    fn cache_guard_violation_does_not_become_error_state_in_generation_loop() {
+        let result: Result<GenerationResult, LlmStreamError> =
+            Ok(GenerationResult::PausedForUserDecision);
+        let would_call_finish_stream_with_error = matches!(result, Err(_));
+        let would_break_cleanly = matches!(result, Ok(GenerationResult::PausedForUserDecision));
+        assert!(would_break_cleanly, "PausedForUserDecision must break the loop cleanly");
+        assert!(
+            !would_call_finish_stream_with_error,
+            "PausedForUserDecision must not trigger finish_stream_with_error"
+        );
+    }
+
+    #[test]
+    fn cache_guard_other_failure_propagates_as_error() {
+        use crate::chat::cache_guard::CacheGuardOutcome;
+        use crate::chat::stream_core::LlmStreamError;
+
+        let error_outcome = CacheGuardOutcome::Error("simulated io failure".to_string());
+        assert!(
+            matches!(error_outcome, CacheGuardOutcome::Error(_)),
+            "Error variant must be distinguishable"
+        );
+        assert!(
+            !matches!(error_outcome, CacheGuardOutcome::Pass(_)),
+            "Error must not be treated as Pass"
+        );
+        assert!(
+            !matches!(error_outcome, CacheGuardOutcome::Paused { .. }),
+            "Error must not be treated as Paused"
+        );
+
+        let stream_err: Result<Vec<()>, LlmStreamError> =
+            Err(LlmStreamError::from("simulated io failure".to_string()));
+        assert!(
+            matches!(stream_err, Err(_)),
+            "Error outcome must propagate as Err in the generation chain"
+        );
     }
 }

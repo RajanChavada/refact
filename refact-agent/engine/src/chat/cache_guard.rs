@@ -28,6 +28,12 @@ const IGNORED_KEYS: &[&str] = &[
     "provider_specific_fields",
 ];
 
+pub enum CacheGuardOutcome {
+    Pass(Option<serde_json::Value>),
+    Paused { reason: String },
+    Error(String),
+}
+
 pub fn is_cache_guard_pause_id(tool_call_id: &str) -> bool {
     tool_call_id.starts_with("cacheguard_")
 }
@@ -142,9 +148,9 @@ pub async fn check_or_pause_cache_guard(
     session_arc: Arc<AMutex<crate::chat::types::ChatSession>>,
     model_id: &str,
     request_body: &Value,
-) -> Result<Option<Value>, String> {
+) -> Result<CacheGuardOutcome, String> {
     if !is_guard_enabled_for_model(app.clone(), model_id).await {
-        return Ok(None);
+        return Ok(CacheGuardOutcome::Pass(None));
     }
 
     // OpenAI Responses API stateful mode: when previous_response_id is present,
@@ -155,7 +161,7 @@ pub async fn check_or_pause_cache_guard(
         .get("previous_response_id")
         .is_some_and(|v| !v.is_null())
     {
-        return Ok(None);
+        return Ok(CacheGuardOutcome::Pass(None));
     }
 
     let sanitized = sanitize_body_for_cache_guard(request_body);
@@ -177,13 +183,13 @@ pub async fn check_or_pause_cache_guard(
     };
 
     let Some(previous) = maybe_violation_prev else {
-        return Ok(Some(sanitized));
+        return Ok(CacheGuardOutcome::Pass(Some(sanitized)));
     };
 
     let diff = unified_json_diff(&previous, &sanitized);
     let estimated_extra_usd = estimate_extra_cache_miss_usd(app.clone(), model_id, &previous).await;
 
-    {
+    let reason = {
         let mut session = session_arc.lock().await;
         session.discard_draft_for_pause();
         session
@@ -192,13 +198,11 @@ pub async fn check_or_pause_cache_guard(
         session.abort_notify.notify_waiters();
 
         let mut summary = format!(
-            "Prompt cache append-only prefix check failed for model `{}`.\n\n",
-            model_id
+            "Prompt cache append-only prefix check failed for model `{model_id}`.\n\n"
         );
         if let Some(extra) = estimated_extra_usd {
             summary.push_str(&format!(
-                "Estimated extra cost if cache miss occurs: `${:.6}` USD.\n\n",
-                extra
+                "Estimated extra cost if cache miss occurs: `${extra:.6}` USD.\n\n"
             ));
         }
         summary.push_str("Unified diff (sanitized provider request body):\n\n");
@@ -209,15 +213,16 @@ pub async fn check_or_pause_cache_guard(
         let reasons = vec![crate::chat::types::PauseReason {
             reason_type: "confirmation".to_string(),
             tool_name: CACHE_GUARD_TOOL_NAME.to_string(),
-            command: summary,
+            command: summary.clone(),
             rule: CACHE_GUARD_RULE.to_string(),
             tool_call_id: CACHE_GUARD_TOOL_CALL_ID.to_string(),
             integr_config_path: None,
         }];
         session.set_paused_with_reasons_and_auto_approved(reasons, Vec::new(), None);
-    }
+        summary
+    };
 
-    Err("Cache guard: request blocked due to prompt prefix violation".to_string())
+    Ok(CacheGuardOutcome::Paused { reason })
 }
 
 pub async fn commit_cache_guard_snapshot(
@@ -382,6 +387,71 @@ mod tests {
         }
 
         assert!(is_guard_enabled_for_model(app, "openai/gpt-4o").await);
+    }
+
+    #[tokio::test]
+    async fn cache_guard_pass_returns_pass_outcome() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx).await;
+        let session = crate::chat::types::ChatSession::new("test-pass".to_string());
+        let session_arc = Arc::new(tokio::sync::Mutex::new(session));
+        let body = json!({"messages": [{"role": "user", "content": "hi"}]});
+        let outcome = check_or_pause_cache_guard(app, session_arc, "some/model", &body)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CacheGuardOutcome::Pass(_)));
+    }
+
+    #[tokio::test]
+    async fn cache_guard_violation_returns_paused_outcome_and_pauses_session() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx.clone()).await;
+        let mut model_caps = std::collections::HashMap::new();
+        model_caps.insert(
+            "test/model-with-cache".to_string(),
+            crate::caps::model_caps::ModelCapabilities {
+                n_ctx: 128_000,
+                max_output_tokens: 16_384,
+                pricing: Some(crate::providers::traits::ModelPricing {
+                    prompt: 2.5,
+                    generated: 10.0,
+                    cache_read: Some(1.25),
+                    cache_creation: None,
+                    context_over_200k: None,
+                }),
+                ..Default::default()
+            },
+        );
+        {
+            let mut caps = app.model.caps.write().await;
+            caps.caps = Some(std::sync::Arc::new(crate::caps::CodeAssistantCaps {
+                model_caps: std::sync::Arc::new(model_caps),
+                ..Default::default()
+            }));
+            caps.last_attempted_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+        }
+
+        let session = crate::chat::types::ChatSession::new("test-paused".to_string());
+        let prev_body = json!({"messages": [{"role": "user", "content": "hello"}], "model": "test"});
+        let session_arc = Arc::new(tokio::sync::Mutex::new(session));
+
+        {
+            let mut s = session_arc.lock().await;
+            s.cache_guard_snapshot = Some(sanitize_body_for_cache_guard(&prev_body));
+        }
+
+        let next_body = json!({"messages": [{"role": "assistant", "content": "hi"}], "model": "test"});
+        let outcome =
+            check_or_pause_cache_guard(app, session_arc.clone(), "test/model-with-cache", &next_body)
+                .await
+                .unwrap();
+
+        assert!(matches!(outcome, CacheGuardOutcome::Paused { .. }));
+        let session = session_arc.lock().await;
+        assert!(!session.runtime.pause_reasons.is_empty());
     }
 
     #[test]

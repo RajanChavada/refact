@@ -1253,11 +1253,16 @@ async fn run_llm_ndjson_request<C: StreamCollector>(
     Ok(finalize_accumulators(accumulators, collector))
 }
 
+pub enum LlmStreamOutcome {
+    Choices(Vec<ChoiceFinal>),
+    PausedForCacheGuard,
+}
+
 pub async fn run_llm_stream<C: StreamCollector>(
     app: AppState,
     params: StreamRunParams,
     collector: &mut C,
-) -> Result<Vec<ChoiceFinal>, LlmStreamError> {
+) -> Result<LlmStreamOutcome, LlmStreamError> {
     let mut partial_output_emitted = false;
 
     if params.llm_request.params.n.unwrap_or(1) != 1 {
@@ -1304,7 +1309,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
             sessions.get(chat_id).cloned()
         };
         if let Some(session_arc) = session_arc_opt {
-            sanitized_for_commit = tokio::select! {
+            let outcome = tokio::select! {
                 res = crate::chat::cache_guard::check_or_pause_cache_guard(
                     app.clone(),
                     session_arc,
@@ -1315,6 +1320,18 @@ pub async fn run_llm_stream<C: StreamCollector>(
                     return Err(LlmStreamError::new(ABORT_ERROR_MESSAGE, partial_output_emitted));
                 }
             };
+            match outcome {
+                crate::chat::cache_guard::CacheGuardOutcome::Pass(s) => {
+                    sanitized_for_commit = s;
+                }
+                crate::chat::cache_guard::CacheGuardOutcome::Paused { reason } => {
+                    tracing::info!("Generation paused by cache guard: {}", reason);
+                    return Ok(LlmStreamOutcome::PausedForCacheGuard);
+                }
+                crate::chat::cache_guard::CacheGuardOutcome::Error(e) => {
+                    return Err(LlmStreamError::new(e, partial_output_emitted));
+                }
+            }
         }
     }
 
@@ -1353,7 +1370,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
                 )
                 .await;
                 replay_collector.replay(collector);
-                return Ok(results);
+                return Ok(LlmStreamOutcome::Choices(results));
             }
             Err(error) => {
                 if abort_requested(params.abort_flag.as_ref()) || is_abort_error(&error) {
@@ -1476,7 +1493,8 @@ pub async fn run_llm_stream<C: StreamCollector>(
             &mut tracking_collector,
         )
         .await
-        .map_err(|e| LlmStreamError::new(e, *tracking_collector.partial_output_emitted));
+        .map_err(|e| LlmStreamError::new(e, *tracking_collector.partial_output_emitted))
+        .map(LlmStreamOutcome::Choices);
     }
 
     let mut stream = response.bytes_stream().eventsource();
@@ -1565,7 +1583,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
 
     let results = finalize_accumulators(accumulators, &mut tracking_collector);
 
-    Ok(results)
+    Ok(LlmStreamOutcome::Choices(results))
 }
 
 /// Merges incoming thinking blocks into the accumulator, deduplicating by:
