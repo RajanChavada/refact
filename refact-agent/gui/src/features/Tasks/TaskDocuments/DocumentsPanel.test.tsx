@@ -457,6 +457,77 @@ describe("DocumentsPanel", () => {
     expect(await screen.findByText("2 documents")).toBeInTheDocument();
   });
 
+  it("pin_success_does_not_leave_stale_optimistic_override", async () => {
+    mockDocuments({
+      task_id: "task-1",
+      documents: [
+        {
+          slug: "api-design",
+          name: "API Design",
+          kind: "design",
+          pinned: false,
+          version: 1,
+          updated_at: "2026-05-24T10:00:00Z",
+          created_at: "2026-05-24T10:00:00Z",
+          author_role: "planner",
+          relevant_cards: [],
+        },
+      ],
+    });
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/task/:taskId/documents/:slug/pin",
+        () =>
+          HttpResponse.json({
+            slug: "api-design",
+            name: "API Design",
+            kind: "design",
+            pinned: true,
+            version: 1,
+            content: "",
+            created_at: "2026-05-24T10:00:00Z",
+            updated_at: "2026-05-24T10:00:00Z",
+            author_role: "planner",
+            relevant_cards: [],
+          }),
+      ),
+      http.get(
+        "http://127.0.0.1:8001/v1/task/:taskId/documents",
+        () =>
+          HttpResponse.json({
+            task_id: "task-1",
+            documents: [
+              {
+                slug: "api-design",
+                name: "API Design",
+                kind: "design",
+                pinned: false,
+                version: 1,
+                updated_at: "2026-05-24T10:00:00Z",
+                created_at: "2026-05-24T10:00:00Z",
+                author_role: "planner",
+                relevant_cards: [],
+              },
+            ],
+          }),
+      ),
+    );
+
+    const { user } = render(<DocumentsPanel taskId="task-1" />, {
+      preloadedState: CONFIG_STATE,
+    });
+
+    await screen.findByText("API Design");
+    const row = screen.getByTestId("document-row-api-design");
+    await user.click(within(row).getByRole("button", { name: "Pin" }));
+
+    await waitFor(() => {
+      expect(
+        within(row).getByRole("button", { name: "Pin" }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("optimistic pin state reverts on error", async () => {
     mockDocuments({
       task_id: "task-1",

@@ -240,6 +240,36 @@ export const taskMemoriesApi = createApi({
         { type: "TaskMemories", id: taskId },
         { type: "TaskMemories", id: `${taskId}:facets` },
       ],
+      async onQueryStarted(
+        { taskId, filename, pinned },
+        { dispatch, queryFulfilled, getState },
+      ) {
+        const invalidated = taskMemoriesApi.util.selectInvalidatedBy(
+          getState() as RootState,
+          [{ type: "TaskMemories", id: taskId }],
+        );
+        const patches = invalidated
+          .filter((entry) => entry.endpointName === "listTaskMemories")
+          .map((entry) =>
+            dispatch(
+              taskMemoriesApi.util.updateQueryData(
+                "listTaskMemories",
+                entry.originalArgs as TaskMemoriesQuery,
+                (draft) => {
+                  const memory = draft.memories.find(
+                    (m) => m.filename === filename,
+                  );
+                  if (memory) memory.pinned = pinned;
+                },
+              ),
+            ),
+          );
+        try {
+          await queryFulfilled;
+        } catch {
+          patches.forEach((p) => p.undo());
+        }
+      },
     }),
 
     archiveTaskMemory: builder.mutation<
@@ -263,6 +293,36 @@ export const taskMemoriesApi = createApi({
         { type: "TaskMemories", id: taskId },
         { type: "TaskMemories", id: `${taskId}:facets` },
       ],
+      async onQueryStarted(
+        { taskId, filename },
+        { dispatch, queryFulfilled, getState },
+      ) {
+        const invalidated = taskMemoriesApi.util.selectInvalidatedBy(
+          getState() as RootState,
+          [{ type: "TaskMemories", id: taskId }],
+        );
+        const patches = invalidated
+          .filter((entry) => entry.endpointName === "listTaskMemories")
+          .map((entry) =>
+            dispatch(
+              taskMemoriesApi.util.updateQueryData(
+                "listTaskMemories",
+                entry.originalArgs as TaskMemoriesQuery,
+                (draft) => {
+                  const idx = draft.memories.findIndex(
+                    (m) => m.filename === filename,
+                  );
+                  if (idx !== -1) draft.memories.splice(idx, 1);
+                },
+              ),
+            ),
+          );
+        try {
+          await queryFulfilled;
+        } catch {
+          patches.forEach((p) => p.undo());
+        }
+      },
     }),
 
     triageTaskMemories: builder.mutation<

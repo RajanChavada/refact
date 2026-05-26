@@ -94,20 +94,12 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
   const [expandedMemoryFilename, setExpandedMemoryFilename] = useState<
     string | null
   >(null);
-  const [optimisticPinned, setOptimisticPinned] = useState<
-    ReadonlyMap<string, boolean>
-  >(() => new Map());
-  const [archived, setArchived] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
   const [pendingMemoryKeys, setPendingMemoryKeys] = useState<
     ReadonlySet<string>
   >(() => new Set());
   const debouncedSearch = useDebouncedValue(search, 200);
 
   useEffect(() => {
-    setOptimisticPinned(new Map());
-    setArchived(new Set());
     setPendingMemoryKeys(new Set());
     setExpandedMemoryFilename(null);
     setTagCloudOpen(false);
@@ -130,17 +122,6 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
   const [archiveMemory] = useArchiveTaskMemoryMutation();
   const [triageDone, triageState] = useTriageTaskMemoriesMutation();
 
-  const memoriesWithOptimisticState = useMemo(() => {
-    return (data?.memories ?? [])
-      .filter((memory) => !archived.has(optimisticKey(taskId, memory.filename)))
-      .map((memory) => ({
-        ...memory,
-        pinned:
-          optimisticPinned.get(optimisticKey(taskId, memory.filename)) ??
-          memory.pinned,
-      }));
-  }, [archived, data?.memories, optimisticPinned, taskId]);
-
   const namespaces = useMemo(
     () => facets?.namespaces ?? [],
     [facets?.namespaces],
@@ -161,14 +142,14 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
   const hasSelectedTags = selectedTagList.length > 0;
 
   const visibleMemories = useMemo(() => {
-    return memoriesWithOptimisticState.filter((memory) => {
+    return (data?.memories ?? []).filter((memory) => {
       if (!clientMatches(memory, search)) return false;
       for (const tag of selectedTags) {
         if (!memory.tags.includes(tag)) return false;
       }
       return true;
     });
-  }, [memoriesWithOptimisticState, search, selectedTags]);
+  }, [data?.memories, search, selectedTags]);
 
   useEffect(() => {
     if (
@@ -208,11 +189,10 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
     async (filename: string, pinned: boolean) => {
       const key = optimisticKey(taskId, filename);
       setPendingMemoryKeys((previous) => new Set(previous).add(key));
-      setOptimisticPinned((previous) => new Map(previous).set(key, pinned));
       try {
         await pinMemory({ taskId, filename, pinned }).unwrap();
       } catch {
-        setOptimisticPinned((previous) => new Map(previous).set(key, !pinned));
+        // Rollback is handled by onQueryStarted in taskMemoriesApi
       } finally {
         setPendingMemoryKeys((previous) => {
           const next = new Set(previous);
@@ -228,18 +208,13 @@ export const MemoryInboxPanel: React.FC<MemoryInboxPanelProps> = ({
     async (filename: string) => {
       const key = optimisticKey(taskId, filename);
       setPendingMemoryKeys((previous) => new Set(previous).add(key));
-      setArchived((previous) => new Set(previous).add(key));
       setExpandedMemoryFilename((current) =>
         current === filename ? null : current,
       );
       try {
         await archiveMemory({ taskId, filename }).unwrap();
       } catch {
-        setArchived((previous) => {
-          const next = new Set(previous);
-          next.delete(key);
-          return next;
-        });
+        // Rollback is handled by onQueryStarted in taskMemoriesApi
       } finally {
         setPendingMemoryKeys((previous) => {
           const next = new Set(previous);
