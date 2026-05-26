@@ -1,11 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import { cleanup, render, screen, waitFor } from "../../utils/test-utils";
-import {
-  PlannerItem,
-  TaskWorkspace,
-  resolveCardWorktree,
-} from "./TaskWorkspace";
+import { PlannerItem, TaskWorkspace } from "./TaskWorkspace";
+import { resolveCardWorktree } from "./TaskWorkspaceWorktree";
 import type { PlannerInfo } from "./tasksSlice";
 import { taskSseEventReceived } from "./tasksSlice";
 import type { ChatThreadRuntime } from "../Chat/Thread/types";
@@ -385,9 +382,11 @@ async function openCardDetail(card: BoardCard) {
 }
 
 function openedIds(props: MockWorktreePanelProps[]): string[] {
-  return props
-    .filter((prop) => prop.open && prop.worktreeId)
-    .map((prop) => prop.worktreeId as string);
+  const ids: string[] = [];
+  for (const prop of props) {
+    if (prop.open && prop.worktreeId) ids.push(prop.worktreeId);
+  }
+  return ids;
 }
 
 beforeEach(() => {
@@ -641,12 +640,12 @@ describe("TaskWorkspace worktree actions", () => {
   });
 
   it("worktree_id_passed_to_apis_is_never_a_filesystem_path", async () => {
-    const scenarios: Array<{
+    const scenarios: {
       card: BoardCard;
       records: WorktreeRecordView[];
       threadWorktree?: WorktreeMeta | null;
       expectedId?: string;
-    }> = [
+    }[] = [
       {
         card: makeCard({
           title: "By name",

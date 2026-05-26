@@ -206,11 +206,11 @@ export const taskDocumentsApi = createApi({
           }/v1/task/${encodeURIComponent(taskId)}/documents`,
         });
         if (result.error) return { error: result.error };
-        const raw = result.data as { task_id?: unknown; documents?: unknown[] };
+        const raw = result.data;
         if (
           typeof raw !== "object" ||
           raw === null ||
-          !Array.isArray(raw.documents)
+          !Array.isArray((raw as { documents?: unknown }).documents)
         ) {
           return {
             error: {

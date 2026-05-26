@@ -53,10 +53,16 @@ const MEMORY_KIND_COLORS: Record<KnownMemoryKind, BadgeColor> = {
   freeform: "gray",
 };
 
+function hasOwn<T extends object>(object: T, key: PropertyKey): key is keyof T {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
 export function documentKindColor(kind: string): BadgeColor {
-  return DOCUMENT_KIND_COLORS[kind as KnownDocumentKind] ?? "gray";
+  if (hasOwn(DOCUMENT_KIND_COLORS, kind)) return DOCUMENT_KIND_COLORS[kind];
+  return "gray";
 }
 
 export function memoryKindColor(kind: string): BadgeColor {
-  return MEMORY_KIND_COLORS[kind as KnownMemoryKind] ?? "gray";
+  if (hasOwn(MEMORY_KIND_COLORS, kind)) return MEMORY_KIND_COLORS[kind];
+  return "gray";
 }
