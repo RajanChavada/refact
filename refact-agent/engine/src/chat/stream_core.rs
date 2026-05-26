@@ -1568,6 +1568,27 @@ async fn run_openai_codex_websocket_exchange<C: StreamCollector>(
     Ok(finalize_accumulators(accumulators, collector))
 }
 
+async fn close_openai_codex_websocket_connection(
+    session: &mut OpenAICodexWebSocketSession,
+    reason: &str,
+) {
+    let Some(mut websocket) = session.connection.take() else {
+        return;
+    };
+
+    match tokio::time::timeout(Duration::from_millis(500), websocket.close(None)).await {
+        Ok(Ok(())) => {
+            tracing::debug!(reason, "OpenAI Codex WebSocket connection closed");
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(reason, %error, "OpenAI Codex WebSocket close failed");
+        }
+        Err(_) => {
+            tracing::debug!(reason, "OpenAI Codex WebSocket close timed out");
+        }
+    }
+}
+
 async fn run_llm_websocket_request<C: StreamCollector>(
     websocket_endpoint: &str,
     http_parts: &HttpParts,
@@ -1643,7 +1664,11 @@ async fn run_llm_websocket_request<C: StreamCollector>(
 }
 
 type OpenAICodexWebSocketThreadResult = Result<
-    (Vec<ChoiceFinal>, ReplayCollector, OpenAICodexWebSocketSession),
+    (
+        Vec<ChoiceFinal>,
+        ReplayCollector,
+        OpenAICodexWebSocketSession,
+    ),
     (String, OpenAICodexWebSocketSession),
 >;
 
@@ -1668,16 +1693,26 @@ async fn run_llm_websocket_request_on_large_stack(
                 Ok(runtime) => {
                     let adapter = get_adapter(wire_format);
                     let mut replay_collector = ReplayCollector::default();
-                    let outcome = runtime.block_on(run_llm_websocket_request(
-                        &websocket_endpoint,
-                        &http_parts,
-                        adapter,
-                        &auth_token,
-                        abort_flag,
-                        abort_notify,
-                        &mut session,
-                        &mut replay_collector,
-                    ));
+                    let outcome = runtime.block_on(async {
+                        let outcome = run_llm_websocket_request(
+                            &websocket_endpoint,
+                            &http_parts,
+                            adapter,
+                            &auth_token,
+                            abort_flag,
+                            abort_notify,
+                            &mut session,
+                            &mut replay_collector,
+                        )
+                        .await;
+                        let close_reason = if outcome.is_ok() {
+                            "websocket_thread_success"
+                        } else {
+                            "websocket_thread_error"
+                        };
+                        close_openai_codex_websocket_connection(&mut session, close_reason).await;
+                        outcome
+                    });
                     match outcome {
                         Ok(results) => Ok((results, replay_collector, session)),
                         Err(error) => Err((error, session)),
@@ -1963,10 +1998,7 @@ pub async fn run_llm_stream<C: StreamCollector>(
                             return Err(LlmStreamError::new(error, partial_output_emitted));
                         }
                         returned_session.disabled = true;
-                        clear_openai_codex_websocket_incremental_state(
-                            &mut returned_session,
-                            true,
-                        );
+                        clear_openai_codex_websocket_incremental_state(&mut returned_session, true);
                         store_openai_codex_websocket_session(
                             &app,
                             params.chat_id.as_ref(),
