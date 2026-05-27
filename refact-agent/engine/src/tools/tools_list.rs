@@ -19,6 +19,8 @@ use super::tool_config_subagent::ToolConfigSubagent;
 /// The tool list is FIXED for the entire session (cache-safe).
 const MCP_LAZY_THRESHOLD: usize = 15;
 
+const GLOBAL_READ_ONLY_TOOLS: &[&str] = &["get_plan"];
+
 /// Result of applying MCP lazy-loading logic on a tool list.
 pub struct ToolsForMode {
     /// Tool list to send to the LLM as schemas. Fixed for the session lifetime.
@@ -409,6 +411,9 @@ async fn get_builtin_tools(gcx: Arc<GlobalContext>) -> Vec<ToolGroup> {
     ];
 
     let chat_management_tools: Vec<Box<dyn Tool + Send>> = vec![
+        Box::new(crate::tools::tool_get_plan::ToolGetPlan::new(
+            config_path.clone(),
+        )),
         Box::new(crate::tools::tool_set_plan::ToolSetPlan {
             config_path: config_path.clone(),
         }),
