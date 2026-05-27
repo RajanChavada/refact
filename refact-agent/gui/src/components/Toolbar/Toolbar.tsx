@@ -142,8 +142,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
   const { data: modesData } = useGetChatModesQuery(undefined);
   const { data: tasksList = [] } = useListTasksQuery(undefined);
 
-  const { openSettings, openHotKeys, openChatInBrowser } =
-    useEventsBusForIDE();
+  const { openSettings, openHotKeys, openChatInBrowser } = useEventsBusForIDE();
   const [createTask] = useCreateTaskMutation();
 
   const [renameState, setRenameState] = useState<{

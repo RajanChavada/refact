@@ -3810,10 +3810,7 @@ describe("buddy chat reactions settings and bubbles", () => {
       );
 
       const { container } = renderBuddyChatCompanion(store, "chat-a");
-      await expectCompanionNotification(
-        container,
-        "runtime:bug-candidate-1",
-      );
+      await expectCompanionNotification(container, "runtime:bug-candidate-1");
 
       const dismissButton = await screen.findByRole("button", {
         name: "Dismiss",
