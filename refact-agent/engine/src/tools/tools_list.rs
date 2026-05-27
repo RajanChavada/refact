@@ -472,6 +472,24 @@ async fn get_builtin_tools(gcx: Arc<GlobalContext>) -> Vec<ToolGroup> {
         Box::new(crate::tools::tool_task_memory::ToolTaskMemoryTriageDone::new()),
     ];
 
+    let background_agent_tools: Vec<Box<dyn Tool + Send>> = vec![
+        Box::new(crate::tools::tool_background_agents::ToolAgentList {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_background_agents::ToolAgentStatus {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_background_agents::ToolAgentWait {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_background_agents::ToolAgentResult {
+            config_path: config_path.clone(),
+        }),
+        Box::new(crate::tools::tool_background_agents::ToolAgentCancel {
+            config_path: config_path.clone(),
+        }),
+    ];
+
     let worktree_tools: Vec<Box<dyn Tool + Send>> = vec![Box::new(
         crate::tools::tool_worktree_merge::ToolWorktreeMerge::new(),
     )];
@@ -530,6 +548,12 @@ async fn get_builtin_tools(gcx: Arc<GlobalContext>) -> Vec<ToolGroup> {
             description: "Task workspace and kanban board tools".to_string(),
             category: ToolGroupCategory::Builtin,
             tools: task_tools,
+        },
+        ToolGroup {
+            name: "Background Agents".to_string(),
+            description: "Inspect and control background agents spawned by chats".to_string(),
+            category: ToolGroupCategory::Builtin,
+            tools: background_agent_tools,
         },
         ToolGroup {
             name: "Worktrees".to_string(),

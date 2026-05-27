@@ -18,6 +18,7 @@ mod tool_agent_planner_qna;
 mod tool_agent_pulse;
 mod tool_agent_steer;
 mod tool_ast_definition;
+pub mod tool_background_agents;
 mod tool_card_comment;
 mod tool_cat;
 mod tool_chrome;
