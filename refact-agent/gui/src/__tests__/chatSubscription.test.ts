@@ -237,6 +237,56 @@ describe("chatSubscription", () => {
       );
     });
 
+    it.each([
+      ["missing", { type: "snapshot", seq: "1", chat_id: "test" }],
+      [
+        "null",
+        {
+          type: "snapshot",
+          seq: "1",
+          chat_id: "test",
+          background_agents: null,
+        },
+      ],
+    ])(
+      "should default %s snapshot background agents to an empty list",
+      async (_case, payload) => {
+        const onEvent = vi.fn();
+        const encoder = new TextEncoder();
+        const events = `data: ${JSON.stringify(payload)}\n\n`;
+
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          body: {
+            getReader: () => {
+              let called = false;
+              return {
+                read: async () => {
+                  if (called) return { done: true, value: undefined };
+                  called = true;
+                  return { done: false, value: encoder.encode(events) };
+                },
+              };
+            },
+          },
+        });
+
+        subscribeToChatEvents("test", 8001, {
+          onEvent,
+          onError: vi.fn(),
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(onEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "snapshot",
+            background_agents: [],
+          }),
+        );
+      },
+    );
+
     it("should call onDisconnected on normal stream close", async () => {
       const onDisconnected = vi.fn();
 

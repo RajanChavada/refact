@@ -545,7 +545,10 @@ function normalizeBackgroundAgentFields(obj: EventEnvelope): void {
     return;
   }
   if (obj.type === "snapshot") {
-    obj.background_agents = obj.background_agents.map((agent) =>
+    const backgroundAgents = Array.isArray(obj.background_agents)
+      ? obj.background_agents
+      : [];
+    obj.background_agents = backgroundAgents.map((agent) =>
       normalizeBackgroundAgentSummary(agent),
     );
   }
