@@ -190,10 +190,10 @@ impl Tool for ToolProcessStart {
                 &mut error_log,
             )
             .await;
-        // Prefer an explicit workdir as the workspace scope so two callers in the
-        // same chat/gcx but different workdirs do not collide on service IDs.
         let workspace = match parsed.workdir.clone() {
-            Some(workdir) => Some(normalize_workspace_path(&workdir)),
+            Some(workdir) => workspace_containing_path(gcx.clone(), &workdir)
+                .await
+                .or_else(|| Some(normalize_workspace_path(&workdir))),
             None => process_workspace(gcx.clone(), execution_scope.as_ref()).await,
         };
         if parsed.mode == ExecMode::Service && parsed.service_name.is_none() {
@@ -1438,6 +1438,33 @@ mod tests {
         (gcx, Arc::new(AMutex::new(ccx)))
     }
 
+    async fn test_ccx_for_workspace(
+        gcx: Arc<GlobalContext>,
+        workspace: PathBuf,
+    ) -> Arc<AMutex<AtCommandsContext>> {
+        let ccx = AtCommandsContext::new_with_abort(
+            AppState::from_gcx(gcx).await,
+            4096,
+            20,
+            false,
+            Vec::new(),
+            "chat".to_string(),
+            None,
+            "model".to_string(),
+            None,
+            None,
+            None,
+        )
+        .await;
+        ccx.global_context
+            .documents_state
+            .active_file_path
+            .lock()
+            .await
+            .replace(workspace);
+        Arc::new(AMutex::new(ccx))
+    }
+
     async fn run_tool<T: Tool>(
         tool: &mut T,
         ccx: Arc<AMutex<AtCommandsContext>>,
@@ -1834,40 +1861,8 @@ mod tests {
             *gcx.documents_state.workspace_folders.lock().unwrap() =
                 vec![workspace_a.clone(), workspace_b.clone()];
         }
-        let first_app = AppState::from_gcx(gcx.clone()).await;
-        let second_app = AppState::from_gcx(gcx.clone()).await;
-        let first_ccx = Arc::new(AMutex::new(
-            AtCommandsContext::new_with_abort(
-                first_app,
-                4096,
-                20,
-                false,
-                Vec::new(),
-                "chat".to_string(),
-                None,
-                "model".to_string(),
-                None,
-                None,
-                None,
-            )
-            .await,
-        ));
-        let second_ccx = Arc::new(AMutex::new(
-            AtCommandsContext::new_with_abort(
-                second_app,
-                4096,
-                20,
-                false,
-                Vec::new(),
-                "chat".to_string(),
-                None,
-                "model".to_string(),
-                None,
-                None,
-                None,
-            )
-            .await,
-        ));
+        let first_ccx = test_ccx_for_workspace(gcx.clone(), workspace_a.clone()).await;
+        let second_ccx = test_ccx_for_workspace(gcx.clone(), workspace_b.clone()).await;
         let mut start = ToolProcessStart {
             config_path: String::new(),
         };
@@ -1919,22 +1914,7 @@ mod tests {
         {
             *gcx.documents_state.workspace_folders.lock().unwrap() = vec![workspace.clone()];
         }
-        let ccx = Arc::new(AMutex::new(
-            AtCommandsContext::new_with_abort(
-                AppState::from_gcx(gcx.clone()).await,
-                4096,
-                20,
-                false,
-                Vec::new(),
-                "chat".to_string(),
-                None,
-                "model".to_string(),
-                None,
-                None,
-                None,
-            )
-            .await,
-        ));
+        let ccx = test_ccx_for_workspace(gcx.clone(), workspace.clone()).await;
         let mut start = ToolProcessStart {
             config_path: String::new(),
         };

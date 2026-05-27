@@ -777,9 +777,7 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         let (text, _) = message_text(messages.into_iter().next().unwrap());
-        assert!(text.contains(
-            "Open the child trajectory: [view](refact://chat/subchat-test)"
-        ));
+        assert!(text.contains("Open the child trajectory: [view](refact://chat/subchat-test)"));
         let logged = calls.lock().unwrap().clone();
         assert_eq!(logged.len(), 1);
         assert!(matches!(logged[0].kind, LoggedSpawnKind::Wait));
@@ -805,9 +803,7 @@ mod tests {
 
         assert_eq!(result.1.len(), 1);
         let (text, _) = message_text(result.1.into_iter().next().unwrap());
-        assert!(text.contains(
-            "Open the child trajectory: [view](refact://chat/subchat-test)"
-        ));
+        assert!(text.contains("Open the child trajectory: [view](refact://chat/subchat-test)"));
         let logged = calls.lock().unwrap().clone();
         assert_eq!(logged.len(), 1);
         assert!(matches!(logged[0].kind, LoggedSpawnKind::Background));
