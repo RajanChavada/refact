@@ -196,6 +196,7 @@ function makeSnapshot(): BuddySnapshot {
       personality_prompt: null,
       proactive_enabled: true,
       message_observation_enabled: false,
+      chat_reactions_enabled: false,
       housekeeping_enabled: true,
       humor_enabled: true,
       humor_level: "light",

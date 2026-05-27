@@ -909,6 +909,7 @@ export interface BuddySettings {
   personality_prompt: string | null;
   proactive_enabled: boolean;
   message_observation_enabled: boolean;
+  chat_reactions_enabled: boolean;
   housekeeping_enabled: boolean;
   humor_enabled: boolean;
   humor_level: HumorLevel;

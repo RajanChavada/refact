@@ -265,7 +265,8 @@ function defaultBuddySettings(): BuddySettings {
     auto_issue_creation: false,
     personality_prompt: null,
     proactive_enabled: true,
-    message_observation_enabled: false,
+    message_observation_enabled: true,
+    chat_reactions_enabled: true,
     housekeeping_enabled: true,
     humor_enabled: true,
     humor_level: "light",
@@ -274,7 +275,7 @@ function defaultBuddySettings(): BuddySettings {
     observers: {
       task_health: true,
       trajectory_clutter: true,
-      chat_pattern: false,
+      chat_pattern: true,
       customization_drift: true,
       memory_garden: true,
       mcp_auth: true,

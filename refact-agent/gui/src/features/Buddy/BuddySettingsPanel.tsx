@@ -138,6 +138,20 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
           />
         </div>
         <div className={styles.row}>
+          <div>
+            <Text size="2">Chat reactions</Text>
+            <Text size="1" color="gray">
+              Buddy may briefly inspect recent messages to make jokes, share
+              insights, or flag bug candidates. Text is redacted and not stored.
+            </Text>
+          </div>
+          <Switch
+            checked={settings.chat_reactions_enabled}
+            onCheckedChange={(v) => patch("chat_reactions_enabled", v)}
+            aria-label="chat reactions enabled"
+          />
+        </div>
+        <div className={styles.row}>
           <Text size="2">Housekeeping</Text>
           <Switch
             checked={settings.housekeeping_enabled}

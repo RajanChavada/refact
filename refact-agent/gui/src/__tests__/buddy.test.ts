@@ -58,6 +58,7 @@ import { buddyApi, type BuddyErrorReport } from "../services/refact/buddy";
 import type {
   BuddySnapshot,
   BuddyState,
+  BuddySettings,
   BuddyActivityEntry,
   BuddySuggestion,
   BuddyConversationEntry,
@@ -215,6 +216,7 @@ function makeSnapshot(overrides?: Partial<BuddySnapshot>): BuddySnapshot {
       personality_prompt: null,
       proactive_enabled: true,
       message_observation_enabled: false,
+      chat_reactions_enabled: false,
       housekeeping_enabled: true,
       humor_enabled: true,
       humor_level: "light",
@@ -1603,6 +1605,18 @@ describe("buddySlice reducers", () => {
       );
     }
     expect(state.recentDiagnostics).toHaveLength(100);
+  });
+
+  test("default settings include chat_reactions_enabled=true, message_observation_enabled=true, and observers.chat_pattern=true", () => {
+    const snap: BuddySnapshot = {
+      state: makeState(),
+      settings: {} as BuddySettings,
+      enabled: true,
+    };
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    expect(state.snapshot?.settings.chat_reactions_enabled).toBe(true);
+    expect(state.snapshot?.settings.message_observation_enabled).toBe(true);
+    expect(state.snapshot?.settings.observers.chat_pattern).toBe(true);
   });
 });
 
@@ -3652,6 +3666,175 @@ describe("pagesSlice handles new page entries", () => {
     if (last.name === "buddy") {
       expect(last.draftId).toBe("draft-x");
     }
+  });
+});
+
+describe("buddy chat reactions settings and bubbles", () => {
+  beforeEach(() => {
+    setupBuddyCompanionHandlers();
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      window.setTimeout(() => callback(0), 0);
+      return 1;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {
+      return undefined;
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      noopContext,
+    );
+  });
+
+  test("chat_reactions_enabled is included in BuddySettings type", () => {
+    const settings: BuddySettings = {
+      enabled: true,
+      auto_diagnostics: true,
+      auto_issue_creation: false,
+      personality_prompt: null,
+      proactive_enabled: true,
+      message_observation_enabled: true,
+      chat_reactions_enabled: true,
+      housekeeping_enabled: true,
+      humor_enabled: true,
+      humor_level: "light",
+      autonomy_level: "suggest",
+      quiet_mode: false,
+      observers: {
+        task_health: true,
+        trajectory_clutter: true,
+        chat_pattern: true,
+        customization_drift: true,
+        memory_garden: true,
+        mcp_auth: true,
+        git_pressure: true,
+        diagnostic_cluster: true,
+        provider_health: true,
+      },
+    };
+    expect(settings.chat_reactions_enabled).toBe(true);
+    expect(settings.message_observation_enabled).toBe(true);
+    expect(settings.observers.chat_pattern).toBe(true);
+  });
+
+  test("chat-scoped speech_humor ambient reaction appears for current chat only", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      const humorSpeech = makeChatSpeech({
+        id: "humor-chat-a",
+        text: "Ha, classic bug!",
+        speech_intent: "humor",
+        chat_id: "chat-a",
+        created_at: "2024-01-01T00:00:00Z",
+        ttl_seconds: 30,
+      });
+      store.dispatch(
+        setBuddySnapshot(makeSnapshot({ active_speech: humorSpeech })),
+      );
+
+      const { container: containerA } = renderBuddyChatCompanion(
+        store,
+        "chat-a",
+      );
+      const { container: containerB } = renderBuddyChatCompanion(
+        store,
+        "chat-b",
+      );
+
+      await expectCompanionNotification(containerA, "speech:humor-chat-a");
+      await expectNoCompanionNotification(containerB, "speech:humor-chat-a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("expired speech_insight ambient reaction does not resurface after clear", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      const insightSpeech = makeChatSpeech({
+        id: "insight-expired",
+        text: "Interesting pattern here.",
+        speech_intent: "insight",
+        chat_id: "chat-a",
+        ttl_seconds: 5,
+        created_at: "2024-01-01T00:00:00Z",
+      });
+      store.dispatch(
+        setBuddySnapshot(makeSnapshot({ active_speech: insightSpeech })),
+      );
+
+      const { container } = renderBuddyChatCompanion(store, "chat-a");
+      await expectCompanionNotification(container, "speech:insight-expired");
+
+      store.dispatch(clearActiveSpeech());
+
+      await expectNoCompanionNotification(container, "speech:insight-expired");
+
+      store.dispatch(setActiveSpeech(insightSpeech));
+      await expectNoCompanionNotification(container, "speech:insight-expired");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("chat_bug_candidate runtime event is dismissible", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      const bugEvent: BuddyRuntimeEvent = {
+        id: "bug-candidate-1",
+        signal_type: "chat_bug_candidate",
+        title: "Possible bug: unchecked return value",
+        description: "The result of readFile may be null.",
+        source: "buddy",
+        status: "info",
+        priority: "normal",
+        bubble_policy: "event_once",
+        created_at: "2024-01-01T00:00:00Z",
+        chat_id: "chat-a",
+        controls: [
+          {
+            id: "dismiss-bug",
+            label: "Dismiss",
+            action: "dismiss_runtime_event",
+            action_param: "bug-candidate-1",
+            style: "ghost",
+          },
+        ],
+      };
+      store.dispatch(
+        setBuddySnapshot(makeSnapshot({ runtime_queue: [bugEvent] })),
+      );
+
+      const { container } = renderBuddyChatCompanion(store, "chat-a");
+      await expectCompanionNotification(
+        container,
+        "runtime:bug-candidate-1",
+      );
+
+      const dismissButton = await screen.findByRole("button", {
+        name: "Dismiss",
+        hidden: true,
+      });
+      fireEvent.click(dismissButton);
+
+      await expectNoCompanionNotification(container, "runtime:bug-candidate-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("settings panel renders chat reactions toggle", () => {
+    const source = fs.readFileSync(
+      path.join(buddyDir, "BuddySettingsPanel.tsx"),
+      "utf8",
+    );
+    expect(source).toContain("chat_reactions_enabled");
+    expect(source).toContain("chat reactions enabled");
+    expect(source).toContain("redacted");
   });
 });
 
