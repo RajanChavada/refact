@@ -185,6 +185,19 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     [renderChatId, lspPort, apiKey],
   );
 
+  const handleProcessCompletedClick = useCallback((processId: string) => {
+    const cards = document.querySelectorAll("[data-exec-process-id]");
+    const card = Array.from(cards).find(
+      (item) => item.getAttribute("data-exec-process-id") === processId,
+    );
+    if (!card) {
+      // eslint-disable-next-line no-console
+      console.warn(`ExecToolCard not found for process ${processId}`);
+      return;
+    }
+    card.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
+
   const onRetryWrapper = useCallback(
     (index: number, question: UserMessage["content"]) => {
       onRetry(index, question);
@@ -245,6 +258,11 @@ export const ChatContent: React.FC<ChatContentProps> = ({
     return nextItems;
   }, [messages, isStreaming]);
 
+  const eventFilterEvents = useMemo(
+    () => messages.filter(isEventMessage),
+    [messages],
+  );
+
   const initialScrollIndex = useMemo(() => {
     return displayItems.length > 0 ? displayItems.length - 1 : undefined;
   }, [displayItems]);
@@ -281,6 +299,12 @@ export const ChatContent: React.FC<ChatContentProps> = ({
         case "assistant":
           return (
             <>
+              <EventLog
+                events={item.events}
+                threadId={renderChatId}
+                filterEvents={eventFilterEvents}
+                onProcessCompletedClick={handleProcessCompletedClick}
+              />
               <AssistantInput
                 message={item.message.content}
                 reasoningContent={item.message.reasoning_content}
@@ -297,7 +321,6 @@ export const ChatContent: React.FC<ChatContentProps> = ({
                 usage={item.message.usage}
                 isStreaming={item.isStreaming}
               />
-              <EventLog events={item.events} threadId={renderChatId} />
             </>
           );
 
@@ -373,6 +396,16 @@ export const ChatContent: React.FC<ChatContentProps> = ({
             <SummarizationMessageCard key={item.key} message={item.message} />
           );
 
+        case "event_log":
+          return (
+            <EventLog
+              events={item.events}
+              threadId={renderChatId}
+              filterEvents={eventFilterEvents}
+              onProcessCompletedClick={handleProcessCompletedClick}
+            />
+          );
+
         default:
           return null;
       }
@@ -383,6 +416,8 @@ export const ChatContent: React.FC<ChatContentProps> = ({
       onRetryWrapper,
       collapsibleState,
       renderChatId,
+      handleProcessCompletedClick,
+      eventFilterEvents,
     ],
   );
 
@@ -613,6 +648,13 @@ type DisplayItemSummarization = {
   message: SummarizationMessage;
 };
 
+type DisplayItemEventLog = {
+  type: "event_log";
+  key: string;
+  messageIndex: number;
+  events: EventMessage[];
+};
+
 type DisplayItem =
   | DisplayItemAssistant
   | DisplayItemUser
@@ -623,7 +665,8 @@ type DisplayItem =
   | DisplayItemError
   | DisplayItemSkillActivated
   | DisplayItemSkillReport
-  | DisplayItemSummarization;
+  | DisplayItemSummarization
+  | DisplayItemEventLog;
 
 function updateAssistantStreamingFlags(
   items: DisplayItem[],
@@ -730,6 +773,18 @@ function collectPrecedingEvents(
 ): EventMessage[] {
   const events: EventMessage[] = [];
   for (let i = assistantIndex - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "assistant") break;
+    if (isEventMessage(message)) {
+      events.unshift(message);
+    }
+  }
+  return events;
+}
+
+function collectTrailingEvents(messages: ChatMessages): EventMessage[] {
+  const events: EventMessage[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role === "assistant") break;
     if (isEventMessage(message)) {
@@ -1044,6 +1099,16 @@ function buildDisplayItemsFromIndex(
       i = j - 1;
       continue;
     }
+  }
+
+  const trailingEvents = collectTrailingEvents(messages);
+  if (trailingEvents.length > 0) {
+    items.push({
+      type: "event_log",
+      key: "trailing-events",
+      messageIndex: messages.length,
+      events: trailingEvents,
+    });
   }
 
   return items;
@@ -1403,6 +1468,16 @@ function buildDisplayItems(
       i = j - 1;
       continue;
     }
+  }
+
+  const trailingEvents = collectTrailingEvents(messages);
+  if (trailingEvents.length > 0) {
+    items.push({
+      type: "event_log",
+      key: "trailing-events",
+      messageIndex: messages.length,
+      events: trailingEvents,
+    });
   }
 
   return items;

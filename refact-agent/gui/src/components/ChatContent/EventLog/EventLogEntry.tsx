@@ -7,6 +7,7 @@ import styles from "./EventLog.module.css";
 type EventLogEntryProps = {
   event: EventMessage;
   entryId: string;
+  onEventClick?: (event: EventMessage) => boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,11 +73,16 @@ function summaryText(content: string): string {
 export const EventLogEntry: React.FC<EventLogEntryProps> = ({
   event,
   entryId,
+  onEventClick,
 }) => {
   const [expanded, setExpanded] = useState(false);
   const jsonId = `${entryId}-json`;
   const timestamp = useMemo(() => eventTimestamp(event), [event]);
   const formattedPayload = useMemo(() => payloadJson(event.payload), [event]);
+  const handleClick = () => {
+    if (onEventClick?.(event)) return;
+    setExpanded((current) => !current);
+  };
 
   return (
     <Box className={styles.entry} data-testid="event-log-entry">
@@ -85,7 +91,7 @@ export const EventLogEntry: React.FC<EventLogEntryProps> = ({
         className={styles.entryButton}
         aria-expanded={expanded}
         aria-controls={jsonId}
-        onClick={() => setExpanded((current) => !current)}
+        onClick={handleClick}
       >
         <Flex align="center" gap="2" className={styles.entryRow}>
           <Text as="span" className={styles.icon} aria-hidden="true">

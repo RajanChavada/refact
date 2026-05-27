@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Card, Flex, Text } from "@radix-ui/themes";
+import { useAppDispatch } from "../../../hooks";
+import { openScheduler } from "../../../features/Pages/pagesSlice";
 import type {
   EventMessage,
   EventSubkind,
@@ -11,6 +13,8 @@ import styles from "./EventLog.module.css";
 export type EventLogProps = {
   events: EventMessage[];
   threadId: string;
+  filterEvents?: EventMessage[];
+  onProcessCompletedClick?: (processId: string) => void;
 };
 
 const EVENT_SUBKINDS: EventSubkind[] = [
@@ -94,7 +98,23 @@ function entryKey(event: EventMessage, index: number): string {
   return event.message_id ?? `${event.subkind}-${event.source}-${index}`;
 }
 
-export const EventLog: React.FC<EventLogProps> = ({ events, threadId }) => {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function payloadString(event: EventMessage, field: string): string | null {
+  if (!isRecord(event.payload)) return null;
+  const value = event.payload[field];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export const EventLog: React.FC<EventLogProps> = ({
+  events,
+  threadId,
+  filterEvents = events,
+  onProcessCompletedClick,
+}) => {
+  const dispatch = useAppDispatch();
   const [collapsed, setCollapsed] = useState(() => readCollapsed(threadId));
   const [selectedSubkinds, setSelectedSubkinds] = useState(() =>
     readSelectedSubkinds(threadId),
@@ -107,9 +127,9 @@ export const EventLog: React.FC<EventLogProps> = ({ events, threadId }) => {
 
   const presentSubkinds = useMemo(() => {
     return EVENT_SUBKINDS.filter((subkind) =>
-      events.some((event) => event.subkind === subkind),
+      filterEvents.some((event) => event.subkind === subkind),
     );
-  }, [events]);
+  }, [filterEvents]);
 
   const selectedSet = useMemo(
     () => new Set<EventSubkind>(selectedSubkinds),
@@ -121,7 +141,7 @@ export const EventLog: React.FC<EventLogProps> = ({ events, threadId }) => {
     [events, selectedSet],
   );
 
-  if (events.length === 0) return null;
+  if (events.length === 0 || filteredEvents.length === 0) return null;
 
   const handleSummaryClick = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
@@ -146,6 +166,25 @@ export const EventLog: React.FC<EventLogProps> = ({ events, threadId }) => {
       writeSelectedSubkinds(threadId, next);
       return next;
     });
+  };
+
+  const handleEventClick = (event: EventMessage): boolean => {
+    if (event.subkind === "process_completed") {
+      const processId = payloadString(event, "process_id");
+      if (processId && onProcessCompletedClick) {
+        onProcessCompletedClick(processId);
+        return true;
+      }
+      return false;
+    }
+
+    if (event.subkind === "cron_fire") {
+      const taskId = payloadString(event, "task_id");
+      dispatch(openScheduler(taskId ? { taskId } : undefined));
+      return true;
+    }
+
+    return false;
   };
 
   return (
@@ -180,16 +219,17 @@ export const EventLog: React.FC<EventLogProps> = ({ events, threadId }) => {
             ))}
           </Flex>
           <Flex direction="column" gap="1">
-            {filteredEvents.length > 0 ? (
-              filteredEvents.map((event, index) => {
-                const key = entryKey(event, index);
-                return <EventLogEntry key={key} event={event} entryId={key} />;
-              })
-            ) : (
-              <Text size="1" className={styles.emptyState}>
-                No events match the selected filters.
-              </Text>
-            )}
+            {filteredEvents.map((event, index) => {
+              const key = entryKey(event, index);
+              return (
+                <EventLogEntry
+                  key={key}
+                  event={event}
+                  entryId={key}
+                  onEventClick={handleEventClick}
+                />
+              );
+            })}
           </Flex>
         </Box>
       </details>

@@ -300,7 +300,11 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
   );
 
   return (
-    <div className={styles.card} data-testid="exec-tool-card">
+    <div
+      className={styles.card}
+      data-testid="exec-tool-card"
+      data-exec-process-id={process.processId}
+    >
       <span data-testid={`exec-tool-${toolName}`} hidden />
       <ToolCallTooltip toolCall={toolCall}>{header}</ToolCallTooltip>
 

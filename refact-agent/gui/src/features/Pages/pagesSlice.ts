@@ -46,6 +46,11 @@ export interface TaskAgentPage {
   chatId: string;
 }
 
+export interface SchedulerPage {
+  name: "scheduler";
+  taskId?: string;
+}
+
 export interface KnowledgeGraphPage {
   name: "knowledge graph";
 }
@@ -119,6 +124,7 @@ export type Page =
   | TasksListPage
   | TaskWorkspacePage
   | TaskAgentPage
+  | SchedulerPage
   | KnowledgeGraphPage
   | CustomizationPage
   | DefaultModelsPage
@@ -180,6 +186,15 @@ export const pagesSlice = createSlice({
       state.pop();
       state.push(action.payload);
     },
+    openScheduler: (
+      state,
+      action: PayloadAction<{ taskId?: string } | undefined>,
+    ) => {
+      const taskId = action.payload?.taskId;
+      state.push(
+        taskId ? { name: "scheduler", taskId } : { name: "scheduler" },
+      );
+    },
   },
   selectors: {
     isPageInHistory: (state, name: string) => {
@@ -194,6 +209,7 @@ export const pagesSlice = createSlice({
   },
 });
 
-export const { pop, push, popBackTo, change } = pagesSlice.actions;
+export const { pop, push, popBackTo, change, openScheduler } =
+  pagesSlice.actions;
 export const { selectPages, isPageInHistory, selectCurrentPage } =
   pagesSlice.selectors;

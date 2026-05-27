@@ -101,7 +101,10 @@ describe("ExecToolCard", () => {
       },
     });
 
-    expect(screen.getByTestId("exec-tool-card")).toBeInTheDocument();
+    expect(screen.getByTestId("exec-tool-card")).toHaveAttribute(
+      "data-exec-process-id",
+      "exec_shell_1",
+    );
     expect(screen.getByText("Run tests")).toBeInTheDocument();
     expect(screen.getByText("exec_shell_1")).toBeInTheDocument();
     expect(screen.getByTestId("exec-status-exited")).toHaveTextContent(
