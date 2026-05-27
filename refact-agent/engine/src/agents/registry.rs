@@ -192,12 +192,33 @@ impl BackgroundAgentRegistry {
         agent_id: &str,
         error: String,
     ) -> Result<BackgroundAgent, String> {
-        self.update_non_terminal_record(agent_id, |record, now| {
-            record.status = BgAgentStatus::Failed;
-            record.error = Some(error);
-            record.finished_at = Some(now);
-        })
-        .await
+        let updated = {
+            let mut records = self.records.write().await;
+            let current = records
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| "agent not found".to_string())?;
+            if current.status.is_terminal() {
+                return Ok(current);
+            }
+            let payload = terminal_result_payload("failed", &error, &current);
+            let result_payload_path =
+                storage::save_result_payload(&self.storage_root, agent_id, &payload).await?;
+            let mut updated = current;
+            let now = Utc::now();
+            updated.status = BgAgentStatus::Failed;
+            updated.error = Some(error);
+            updated.result_payload_path = Some(result_payload_path);
+            updated.finished_at = Some(now);
+            touch_record(&mut updated, now);
+            storage::save_record(&self.storage_root, &updated).await?;
+            records.insert(agent_id.to_string(), updated.clone());
+            updated
+        };
+        if let Some(notify) = self.notify_for(agent_id).await {
+            notify.notify_waiters();
+        }
+        Ok(updated)
     }
 
     pub async fn mark_cancelled(
@@ -205,12 +226,36 @@ impl BackgroundAgentRegistry {
         agent_id: &str,
         reason: Option<String>,
     ) -> Result<BackgroundAgent, String> {
-        self.update_non_terminal_record(agent_id, |record, now| {
-            record.status = BgAgentStatus::Cancelled;
-            record.error = reason;
-            record.finished_at = Some(now);
-        })
-        .await
+        let updated = {
+            let mut records = self.records.write().await;
+            let current = records
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| "agent not found".to_string())?;
+            if current.status.is_terminal() {
+                return Ok(current);
+            }
+            let payload_error = reason
+                .clone()
+                .unwrap_or_else(|| "Agent was cancelled.".to_string());
+            let payload = terminal_result_payload("cancelled", &payload_error, &current);
+            let result_payload_path =
+                storage::save_result_payload(&self.storage_root, agent_id, &payload).await?;
+            let mut updated = current;
+            let now = Utc::now();
+            updated.status = BgAgentStatus::Cancelled;
+            updated.error = reason;
+            updated.result_payload_path = Some(result_payload_path);
+            updated.finished_at = Some(now);
+            touch_record(&mut updated, now);
+            storage::save_record(&self.storage_root, &updated).await?;
+            records.insert(agent_id.to_string(), updated.clone());
+            updated
+        };
+        if let Some(notify) = self.notify_for(agent_id).await {
+            notify.notify_waiters();
+        }
+        Ok(updated)
     }
 
     pub async fn mark_interrupted(
@@ -383,6 +428,16 @@ impl BackgroundAgentRegistry {
         storage::save_record(&self.storage_root, record).await
     }
 
+    #[cfg(test)]
+    pub async fn clear_result_summary_for_test(&self, agent_id: &str) -> Result<(), String> {
+        let mut records = self.records.write().await;
+        let record = records
+            .get_mut(agent_id)
+            .ok_or_else(|| "agent not found".to_string())?;
+        record.result_summary = None;
+        storage::save_record(&self.storage_root, record).await
+    }
+
     pub async fn get(
         &self,
         parent_chat_id: &str,
@@ -521,37 +576,6 @@ impl BackgroundAgentRegistry {
         Ok(updated)
     }
 
-    async fn update_non_terminal_record<F>(
-        &self,
-        agent_id: &str,
-        update: F,
-    ) -> Result<BackgroundAgent, String>
-    where
-        F: FnOnce(&mut BackgroundAgent, DateTime<Utc>),
-    {
-        let updated = {
-            let mut records = self.records.write().await;
-            let current = records
-                .get(agent_id)
-                .cloned()
-                .ok_or_else(|| "agent not found".to_string())?;
-            if current.status.is_terminal() {
-                return Ok(current);
-            }
-            let mut updated = current;
-            let now = Utc::now();
-            update(&mut updated, now);
-            touch_record(&mut updated, now);
-            storage::save_record(&self.storage_root, &updated).await?;
-            records.insert(agent_id.to_string(), updated.clone());
-            updated
-        };
-        if let Some(notify) = self.notify_for(agent_id).await {
-            notify.notify_waiters();
-        }
-        Ok(updated)
-    }
-
     async fn notify_for(&self, agent_id: &str) -> Option<Arc<Notify>> {
         self.runtime
             .read()
@@ -592,6 +616,20 @@ pub(crate) fn normalize_path_for_overlap(path: &str) -> String {
 fn touch_record(record: &mut BackgroundAgent, now: DateTime<Utc>) {
     record.change_seq = record.change_seq.saturating_add(1);
     record.last_update_at = now;
+}
+
+fn terminal_result_payload(
+    status: &str,
+    error: &str,
+    record: &BackgroundAgent,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": status,
+        "error": error,
+        "edited_files": record.edited_files.clone(),
+        "diff_summary": record.diff_summary.clone(),
+        "conflict_summary": record.conflict_summary.clone(),
+    })
 }
 
 fn scoped_record(

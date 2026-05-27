@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,12 +11,14 @@ use crate::agents::registry::{normalize_path_for_overlap, BackgroundAgentRegistr
 use crate::agents::storage::{load_all, save_record};
 use crate::agents::types::{
     AgentCompletion, AgentListFilter, BackgroundAgent, BgAgentKind, BgAgentStatus,
-    CreateAgentRequest,
+    CreateAgentRequest, NO_TEXT_RESULT_SUMMARY,
 };
 use crate::app_state::AppState;
-use crate::call_validation::ChatMessage;
+use crate::at_commands::at_commands::AtCommandsContext;
+use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
 use crate::chat::types::{ChatCommand, ChatSession};
 use crate::subchat::{SubchatConfig, SubchatResult};
+use crate::tools::tools_description::Tool;
 use serial_test::serial;
 
 fn create_request(parent_chat_id: &str, kind: BgAgentKind) -> CreateAgentRequest {
@@ -84,6 +86,34 @@ async fn app_with_parent_session(
         .await
         .insert(parent_chat_id.to_string(), session.clone());
     (gcx, app, session)
+}
+
+async fn tool_context(app: AppState, chat_id: &str) -> Arc<tokio::sync::Mutex<AtCommandsContext>> {
+    Arc::new(tokio::sync::Mutex::new(
+        AtCommandsContext::new_from_app(
+            app,
+            4096,
+            20,
+            false,
+            vec![],
+            chat_id.to_string(),
+            None,
+            "model".to_string(),
+            None,
+            None,
+        )
+        .await,
+    ))
+}
+
+fn output_text(result: (bool, Vec<ContextEnum>)) -> String {
+    match result.1.into_iter().next().expect("tool output") {
+        ContextEnum::ChatMessage(message) => match message.content {
+            ChatContent::SimpleText(text) => text,
+            _ => panic!("expected text output"),
+        },
+        _ => panic!("expected chat message"),
+    }
 }
 
 #[tokio::test]
@@ -188,6 +218,107 @@ async fn mark_completed_writes_result_payload_sets_finished_and_persists() {
 }
 
 #[tokio::test]
+async fn mark_failed_writes_result_payload() {
+    let (_temp, registry) = registry().await;
+    let record = create_agent(&registry, "parent", BgAgentKind::Delegate).await;
+
+    let failed = registry
+        .mark_failed(&record.agent_id, "boom".to_string())
+        .await
+        .expect("failed");
+
+    let payload_path = failed
+        .result_payload_path
+        .as_ref()
+        .expect("result payload path");
+    let payload: serde_json::Value = serde_json::from_str(
+        &tokio::fs::read_to_string(payload_path)
+            .await
+            .expect("payload"),
+    )
+    .expect("json");
+    assert_eq!(payload["status"], json!("failed"));
+    assert_eq!(payload["error"], json!("boom"));
+    assert_eq!(payload["edited_files"], json!([]));
+    assert_eq!(payload["diff_summary"], serde_json::Value::Null);
+    assert_eq!(payload["conflict_summary"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn mark_cancelled_writes_result_payload() {
+    let (_temp, registry) = registry().await;
+    let default_reason = create_agent(&registry, "parent", BgAgentKind::Delegate).await;
+    let custom_reason = create_agent(&registry, "parent", BgAgentKind::Delegate).await;
+
+    let cancelled = registry
+        .mark_cancelled(&default_reason.agent_id, None)
+        .await
+        .expect("cancelled");
+    let custom_cancelled = registry
+        .mark_cancelled(&custom_reason.agent_id, Some("stop".to_string()))
+        .await
+        .expect("custom cancelled");
+
+    let payload_path = cancelled
+        .result_payload_path
+        .as_ref()
+        .expect("result payload path");
+    let payload: serde_json::Value = serde_json::from_str(
+        &tokio::fs::read_to_string(payload_path)
+            .await
+            .expect("payload"),
+    )
+    .expect("json");
+    assert_eq!(payload["status"], json!("cancelled"));
+    assert_eq!(payload["error"], json!("Agent was cancelled."));
+    assert!(cancelled.error.is_none());
+
+    let custom_payload_path = custom_cancelled
+        .result_payload_path
+        .as_ref()
+        .expect("custom result payload path");
+    let custom_payload: serde_json::Value = serde_json::from_str(
+        &tokio::fs::read_to_string(custom_payload_path)
+            .await
+            .expect("custom payload"),
+    )
+    .expect("json");
+    assert_eq!(custom_payload["status"], json!("cancelled"));
+    assert_eq!(custom_payload["error"], json!("stop"));
+}
+
+#[tokio::test]
+async fn agent_result_falls_back_to_payload_when_summary_missing() {
+    let (_gcx, app, _session_arc) = app_with_parent_session("parent-result-fallback").await;
+    let record = create_agent(&app.agents, "parent-result-fallback", BgAgentKind::Delegate).await;
+    let completed = app
+        .agents
+        .mark_completed(&record.agent_id, completion("child-result-fallback"))
+        .await
+        .expect("completed");
+    app.agents
+        .clear_result_summary_for_test(&completed.agent_id)
+        .await
+        .expect("clear summary");
+    let ccx = tool_context(app, "parent-result-fallback").await;
+    let mut args = HashMap::new();
+    args.insert("agent_id".to_string(), json!(completed.agent_id));
+
+    let output = output_text(
+        crate::tools::tool_background_agents::ToolAgentResult {
+            config_path: String::new(),
+        }
+        .tool_execute(ccx, &"call".to_string(), &args)
+        .await
+        .expect("tool result"),
+    );
+
+    assert!(output.contains("fixed frog"));
+    assert!(output.contains("- Edited files: src/frog.rs"));
+    assert!(!output.contains("No result summary was recorded."));
+}
+
+#[tokio::test]
 async fn mark_failed_cancelled_and_waiting_for_approval_transition_and_persist() {
     let (temp, registry) = registry().await;
     let waiting_record = create_agent(&registry, "parent", BgAgentKind::Delegate).await;
@@ -244,7 +375,7 @@ async fn cancelled_agent_ignores_late_mark_completed() {
     assert_eq!(cancelled.change_seq, running.change_seq + 1);
     assert_eq!(late_completed, cancelled);
     assert_eq!(final_record, cancelled);
-    assert!(late_completed.result_payload_path.is_none());
+    assert!(late_completed.result_payload_path.is_some());
     let records = load_all(temp.path()).await.expect("load");
     assert_eq!(records.get(&record.agent_id), Some(&cancelled));
 }
@@ -891,6 +1022,35 @@ async fn spawn_and_wait_timeout_returns_error() {
         .await
         .expect_err("missing config should error before waiting");
     assert!(err.contains("not found") || err.contains("missing"));
+}
+
+#[serial]
+#[tokio::test]
+async fn spawn_with_empty_assistant_response_uses_no_text_summary() {
+    let _runner =
+        crate::agents::spawn::install_test_runner(Arc::new(move |_gcx, mut messages, config| {
+            Box::pin(async move {
+                messages.push(ChatMessage::new("assistant".to_string(), "   ".to_string()));
+                Ok(SubchatResult {
+                    messages,
+                    metering: serde_json::Map::new(),
+                    chat_id: config.chat_id,
+                })
+            })
+        }));
+    let (_gcx, app, _session_arc) = app_with_parent_session("parent-empty-summary").await;
+    let mut req = delegate_spawn_request("parent-empty-summary", "src/frog.rs");
+    req.notify_parent = crate::agents::spawn::NotifyParent::Silent;
+
+    let completed = crate::agents::spawn::spawn_and_wait(app, req, Some(Duration::from_secs(2)))
+        .await
+        .expect("spawn completed");
+
+    assert_eq!(completed.status, BgAgentStatus::Completed);
+    assert_eq!(
+        completed.result_summary.as_deref(),
+        Some(NO_TEXT_RESULT_SUMMARY)
+    );
 }
 
 fn delegate_spawn_request(

@@ -10,7 +10,9 @@ use serde_json::Value;
 use tokio::sync::{Mutex as AMutex, mpsc::UnboundedSender, oneshot};
 use uuid::Uuid;
 
-use crate::agents::types::{AgentCompletion, BackgroundAgent, BgAgentKind, CreateAgentRequest};
+use crate::agents::types::{
+    AgentCompletion, BackgroundAgent, BgAgentKind, CreateAgentRequest, NO_TEXT_RESULT_SUMMARY,
+};
 use crate::app_state::AppState;
 use crate::at_commands::at_commands::MAX_SUBCHAT_DEPTH;
 use crate::call_validation::{ChatContent, ChatMessage};
@@ -299,9 +301,8 @@ async fn run_spawned_agent(
                 .rev()
                 .find(|message| message.role == "assistant")
                 .map(|message| message.content.content_text_only())
-                .unwrap_or_else(|| {
-                    "Background agent completed but produced no response.".to_string()
-                });
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| NO_TEXT_RESULT_SUMMARY.to_string());
             let (edited_files, diff_summary, conflict_summary) =
                 if req.kind == BgAgentKind::Delegate {
                     collect_delegate_changes(req.parent_worktree.as_ref()).await

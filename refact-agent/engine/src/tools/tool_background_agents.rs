@@ -514,11 +514,46 @@ async fn format_agent_result(
     } else {
         RESULT_DEFAULT_LIMIT
     };
+    let needs_payload = include_details
+        || record
+            .result_summary
+            .as_deref()
+            .map_or(true, |summary| summary.trim().is_empty());
+    let mut payload_error = None;
+    let payload = if needs_payload {
+        match load_result_payload(record).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                payload_error = Some(error);
+                None
+            }
+        }
+    } else {
+        None
+    };
     let summary = record
         .result_summary
         .as_deref()
-        .or(record.error.as_deref())
-        .unwrap_or("No result summary was recorded.");
+        .filter(|summary| !summary.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            payload
+                .as_ref()
+                .and_then(|(_, value)| value.as_ref().and_then(format_payload_fallback))
+        })
+        .or_else(|| {
+            payload
+                .as_ref()
+                .map(|(payload_text, _)| payload_text.clone())
+        })
+        .or_else(|| {
+            record
+                .error
+                .as_deref()
+                .filter(|error| !error.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("Agent finished with status {}.", record.status.as_str()));
     let mut result = format!("# Agent Result: {}\n", record.title);
     result.push_str(&format!(
         "- Status: {}\n",
@@ -532,7 +567,7 @@ async fn format_agent_result(
         ));
     }
     result.push_str("\n");
-    result.push_str(&truncate_chars(summary, limit));
+    result.push_str(&truncate_chars(&summary, limit));
     result.push('\n');
     format_list_line(&mut result, "Edited files", &record.edited_files);
     format_optional_line(&mut result, "Diff summary", record.diff_summary.as_deref());
@@ -542,22 +577,88 @@ async fn format_agent_result(
         record.conflict_summary.as_deref(),
     );
     format_optional_line(&mut result, "Error", record.error.as_deref());
+    format_optional_line(&mut result, "Result payload", payload_error.as_deref());
 
     if include_details {
-        if let Some(path) = &record.result_payload_path {
-            let payload = tokio::fs::read_to_string(path).await.map_err(|error| {
-                format!(
-                    "Failed to read background agent result payload {}: {error}",
-                    path.display()
-                )
-            })?;
+        if let Some((payload_text, _)) = payload {
             result.push_str("\n## Details\n");
-            result.push_str(&truncate_chars(&payload, RESULT_DETAILS_LIMIT));
+            result.push_str(&truncate_chars(&payload_text, RESULT_DETAILS_LIMIT));
+            result.push('\n');
+        } else if let Some(payload_error) = payload_error {
+            result.push_str("\n## Details\n");
+            result.push_str(&payload_error);
             result.push('\n');
         }
     }
 
     Ok(result)
+}
+
+async fn load_result_payload(
+    record: &BackgroundAgent,
+) -> Result<Option<(String, Option<Value>)>, String> {
+    let Some(path) = &record.result_payload_path else {
+        return Ok(None);
+    };
+    let payload_text = tokio::fs::read_to_string(path).await.map_err(|error| {
+        format!(
+            "Failed to read background agent result payload {}: {error}",
+            path.display()
+        )
+    })?;
+    let payload = serde_json::from_str(&payload_text).ok();
+    Ok(Some((payload_text, payload)))
+}
+
+fn format_payload_fallback(payload: &Value) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = payload_string(payload, "result_summary") {
+        lines.push(summary);
+    }
+    if let Some(status) = payload_string(payload, "status") {
+        lines.push(format!("Status: {status}"));
+    }
+    if let Some(error) = payload_string(payload, "error") {
+        lines.push(format!("Error: {error}"));
+    }
+    if let Some(files) = payload_string_list(payload, "edited_files") {
+        lines.push(format!("Edited files: {}", files.join(", ")));
+    }
+    if let Some(diff_summary) = payload_string(payload, "diff_summary") {
+        lines.push(format!("Diff summary: {diff_summary}"));
+    }
+    if let Some(conflict_summary) = payload_string(payload, "conflict_summary") {
+        lines.push(format!("Conflict summary: {conflict_summary}"));
+    }
+    if let Some(child_chat_id) = payload_string(payload, "child_chat_id") {
+        lines.push(format!("Child trajectory: refact://chat/{child_chat_id}"));
+    }
+    if lines.is_empty() {
+        serde_json::to_string_pretty(payload).ok()
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn payload_string_list(payload: &Value, key: &str) -> Option<Vec<String>> {
+    let values = payload.get(key)?.as_array()?;
+    let values = values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then_some(values)
 }
 
 #[async_trait]

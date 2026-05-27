@@ -4,6 +4,9 @@ use chrono::{DateTime, Utc};
 pub use refact_chat_api::BackgroundAgentSummary;
 use serde::{Deserialize, Serialize};
 
+pub const NO_TEXT_RESULT_SUMMARY: &str =
+    "<no text response — see child trajectory for full details>";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum BgAgentKind {
