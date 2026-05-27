@@ -679,6 +679,14 @@ mod tests {
         }
     }
 
+    fn delayed_success_command() -> String {
+        if cfg!(target_os = "windows") {
+            "Start-Sleep -Milliseconds 20; [Console]::Out.Write('hello')".to_string()
+        } else {
+            "sleep 0.02; printf hello".to_string()
+        }
+    }
+
     fn failure_command() -> String {
         if cfg!(target_os = "windows") {
             "[Console]::Out.Write('bad'); exit 7".to_string()
@@ -768,6 +776,49 @@ mod tests {
             .iter()
             .any(|snapshot| snapshot.meta.process_id.as_str() == process_id));
         assert!(message.tool_failed.is_none());
+    }
+
+    #[tokio::test]
+    async fn cmdline_extra_exec_has_duration_ms() {
+        let message = run_tool(
+            ToolCmdline {
+                name: "cmdline_duration".to_string(),
+                cfg: CmdlineToolConfig {
+                    command: delayed_success_command(),
+                    description: "Measure duration".to_string(),
+                    parameters: Vec::new(),
+                    ..CmdlineToolConfig::default()
+                },
+                ..ToolCmdline::default()
+            },
+            args(vec![]),
+        )
+        .await;
+        let duration_ms = exec(&message)["duration_ms"].as_u64().unwrap();
+
+        assert!(duration_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn cmdline_extra_exec_no_legacy_duration_field() {
+        let message = run_tool(
+            ToolCmdline {
+                name: "cmdline_duration".to_string(),
+                cfg: CmdlineToolConfig {
+                    command: delayed_success_command(),
+                    description: "Measure duration".to_string(),
+                    parameters: Vec::new(),
+                    ..CmdlineToolConfig::default()
+                },
+                ..ToolCmdline::default()
+            },
+            args(vec![]),
+        )
+        .await;
+
+        assert!(exec(&message)
+            .get(&["duration", "secs"].join("_"))
+            .is_none());
     }
 
     #[tokio::test]

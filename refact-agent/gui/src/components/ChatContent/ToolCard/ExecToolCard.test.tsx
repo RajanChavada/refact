@@ -92,7 +92,7 @@ describe("ExecToolCard", () => {
         cwd: "/workspace",
         mode: "foreground",
         exit_code: 0,
-        duration_secs: 0.2,
+        duration_ms: 200,
         transcript: {
           current_bytes: 5,
           next_seq: 1,
@@ -112,6 +112,7 @@ describe("ExecToolCard", () => {
     );
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.getByText("/workspace")).toBeInTheDocument();
+    expect(screen.getByText("0.2s")).toBeInTheDocument();
     expect(screen.getByText("0")).toBeInTheDocument();
   });
 

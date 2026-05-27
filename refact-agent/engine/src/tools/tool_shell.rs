@@ -191,7 +191,7 @@ impl Tool for ToolShell {
 
         let started = tokio::time::Instant::now();
         let result = exec_registry.spawn(request).await?;
-        let duration_secs = started.elapsed().as_secs_f64();
+        let duration = started.elapsed();
         let read = exec_registry
             .read(&result.snapshot.meta.process_id, 0, None)
             .await;
@@ -226,7 +226,7 @@ impl Tool for ToolShell {
                 ));
             }
         }
-        append_status_line(&mut out, &result.snapshot.status, duration_secs, timeout);
+        append_status_line(&mut out, &result.snapshot.status, duration, timeout);
 
         let msg = vec![ContextEnum::ChatMessage(ChatMessage {
             role: "tool".to_string(),
@@ -235,7 +235,7 @@ impl Tool for ToolShell {
             tool_call_id: tool_call_id.clone(),
             tool_failed: tool_failed_for_status(&result.snapshot.status),
             output_filter: Some(OutputFilter::no_limits()),
-            extra: exec_extra(&result.snapshot, &read, duration_secs, timeout, tty),
+            extra: exec_extra(&result.snapshot, &read, duration, timeout, tty),
             ..Default::default()
         })];
 
@@ -354,18 +354,18 @@ fn exec_exit_code(status: &ExecStatus) -> Option<i32> {
 fn append_status_line(
     out: &mut String,
     status: &ExecStatus,
-    duration_secs: f64,
+    duration: Duration,
     timeout_secs: u64,
 ) {
     match status {
         ExecStatus::Exited { exit_code } => out.push_str(&format!(
             "The command was running {:.3}s, finished with exit code {}\n",
-            duration_secs,
+            duration.as_secs_f64(),
             exit_code.unwrap_or_default()
         )),
         ExecStatus::Killed => out.push_str(&format!(
             "⚠️ The command was interrupted by user after {:.3}s (process killed). Output above may be incomplete.\n",
-            duration_secs
+            duration.as_secs_f64()
         )),
         ExecStatus::TimedOut => out.push_str(&format!(
             "⚠️ The command timed out after {} seconds (process killed). Output above may be incomplete.\n",
@@ -373,11 +373,12 @@ fn append_status_line(
         )),
         ExecStatus::Failed { message } => out.push_str(&format!(
             "⚠️ The command failed after {:.3}s: {}\n",
-            duration_secs, message
+            duration.as_secs_f64(),
+            message
         )),
         ExecStatus::Starting | ExecStatus::Running => out.push_str(&format!(
             "⚠️ The command did not reach a terminal state after {:.3}s (status: {}).\n",
-            duration_secs,
+            duration.as_secs_f64(),
             exec_status_label(status)
         )),
     }
@@ -393,7 +394,7 @@ fn tool_failed_for_status(status: &ExecStatus) -> Option<bool> {
 fn exec_extra(
     snapshot: &ExecProcessSnapshot,
     read: &ExecReadResult,
-    duration_secs: f64,
+    duration: Duration,
     timeout_secs: u64,
     tty: bool,
 ) -> serde_json::Map<String, Value> {
@@ -416,7 +417,7 @@ fn exec_extra(
             "cwd": cwd,
             "mode": snapshot.meta.mode.to_string(),
             "tty": tty,
-            "duration_secs": duration_secs,
+            "duration_ms": duration.as_millis() as u64,
             "timeout_secs": timeout_secs,
             "created_at_ms": snapshot.meta.created_at_ms,
             "started_at_ms": snapshot.meta.started_at_ms,
@@ -668,6 +669,14 @@ mod tests {
         }
     }
 
+    fn delayed_success_command() -> String {
+        if cfg!(target_os = "windows") {
+            "Start-Sleep -Milliseconds 20; [Console]::Out.Write('hello')".to_string()
+        } else {
+            "sleep 0.02; printf hello".to_string()
+        }
+    }
+
     fn stderr_command() -> String {
         if cfg!(target_os = "windows") {
             "[Console]::Error.Write('warn')".to_string()
@@ -762,6 +771,31 @@ mod tests {
         assert_eq!(exec["tty"], false);
         assert!(exec["process_id"].as_str().unwrap().starts_with("exec_"));
         assert!(message.tool_failed.is_none());
+    }
+
+    #[tokio::test]
+    async fn shell_extra_exec_has_duration_ms() {
+        let message = run_shell(args(vec![
+            ("command", json!(delayed_success_command())),
+            ("description", json!("Run delayed hello")),
+        ]))
+        .await;
+        let duration_ms = exec(&message)["duration_ms"].as_u64().unwrap();
+
+        assert!(duration_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn shell_extra_exec_no_legacy_duration_field() {
+        let message = run_shell(args(vec![
+            ("command", json!(delayed_success_command())),
+            ("description", json!("Run delayed hello")),
+        ]))
+        .await;
+
+        assert!(exec(&message)
+            .get(&["duration", "secs"].join("_"))
+            .is_none());
     }
 
     #[tokio::test]

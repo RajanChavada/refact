@@ -172,7 +172,7 @@ export type ExecProcessMetadata = {
   started_at_ms?: number;
   ended_at?: number | null;
   ended_at_ms?: number | null;
-  duration_secs?: number;
+  duration_ms?: number;
   timeout_secs?: number;
   exit_code?: number | null;
   stream?: string;

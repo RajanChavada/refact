@@ -16,7 +16,7 @@ use crate::exec::{
     ExecOutputStream, ExecOwnerMeta, ExecProcessFilter, ExecProcessId, ExecProcessSnapshot,
     ExecReadResult, ExecReadinessProbe, ExecServiceLookup, ExecSpawnRequest, ExecStatus,
 };
-use crate::exec::types::normalize_workspace_path;
+use crate::exec::types::{current_timestamp_ms, normalize_workspace_path};
 use crate::files_correction::{
     canonical_path, canonicalize_normalized_path, check_if_its_inside_a_workspace_or_config,
     correct_to_nearest_dir_path, get_active_project_path, get_project_dirs,
@@ -1263,6 +1263,17 @@ fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
         .workspace
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
+    let started_at_ms = snapshot
+        .meta
+        .started_at_ms
+        .unwrap_or(snapshot.meta.created_at_ms);
+    let duration = Duration::from_millis(
+        snapshot
+            .meta
+            .ended_at_ms
+            .unwrap_or_else(current_timestamp_ms)
+            .saturating_sub(started_at_ms),
+    );
     json!({
         "process_id": snapshot.meta.process_id.as_str(),
         "status": status_label(&snapshot.status),
@@ -1281,6 +1292,7 @@ fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
         "started_at_ms": snapshot.meta.started_at_ms,
         "ended_at": snapshot.meta.ended_at_ms,
         "ended_at_ms": snapshot.meta.ended_at_ms,
+        "duration_ms": duration.as_millis() as u64,
         "exit_code": exit_code(&snapshot.status),
     })
 }
@@ -1540,6 +1552,14 @@ mod tests {
             format!("[Console]::Out.Write('{output}')")
         } else {
             format!("printf {output:?}")
+        }
+    }
+
+    fn delayed_quick_command(output: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("Start-Sleep -Milliseconds 20; [Console]::Out.Write('{output}')")
+        } else {
+            format!("sleep 0.02; printf {output:?}")
         }
     }
 
@@ -2504,6 +2524,77 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(exec(&message)["short_description"], "Run engine tests");
+    }
+
+    #[tokio::test]
+    async fn process_extra_exec_has_duration_ms() {
+        let (_gcx, ccx) = test_ccx().await;
+        let mut start = ToolProcessStart {
+            config_path: String::new(),
+        };
+        let started = run_tool(
+            &mut start,
+            ccx.clone(),
+            make_args_map(vec![
+                ("command", json!(delayed_quick_command("hi"))),
+                ("description", json!("Run delayed process")),
+            ]),
+        )
+        .await
+        .unwrap();
+        let process_id = process_id(&started);
+        let mut wait = ToolProcessWait {
+            config_path: String::new(),
+        };
+        let completed = run_tool(
+            &mut wait,
+            ccx,
+            make_args_map(vec![
+                ("process_id", json!(process_id.as_str())),
+                ("timeout_ms", json!(1000)),
+            ]),
+        )
+        .await
+        .unwrap();
+        let duration_ms = exec(&completed)["duration_ms"].as_u64().unwrap();
+
+        assert!(duration_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn process_extra_exec_no_legacy_duration_field() {
+        let (_gcx, ccx) = test_ccx().await;
+        let mut start = ToolProcessStart {
+            config_path: String::new(),
+        };
+        let started = run_tool(
+            &mut start,
+            ccx.clone(),
+            make_args_map(vec![
+                ("command", json!(delayed_quick_command("hi"))),
+                ("description", json!("Run delayed process")),
+            ]),
+        )
+        .await
+        .unwrap();
+        let process_id = process_id(&started);
+        let mut wait = ToolProcessWait {
+            config_path: String::new(),
+        };
+        let completed = run_tool(
+            &mut wait,
+            ccx,
+            make_args_map(vec![
+                ("process_id", json!(process_id.as_str())),
+                ("timeout_ms", json!(1000)),
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert!(exec(&completed)
+            .get(&["duration", "secs"].join("_"))
+            .is_none());
     }
 
     #[tokio::test]

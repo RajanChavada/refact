@@ -63,7 +63,7 @@ type DisplayProcess = {
   exitCode?: number | null;
   startedAtMs?: number;
   endedAtMs?: number | null;
-  durationSecs?: number;
+  durationMs?: number;
 };
 
 function parseArgs(args: string): ProcessArgs {
@@ -143,20 +143,25 @@ function displayProcessFromMetadata(
     exitCode: metadata?.exit_code,
     startedAtMs,
     endedAtMs,
-    durationSecs: metadata?.duration_secs,
+    durationMs: metadata?.duration_ms,
   };
 }
 
 function durationLabel(process: DisplayProcess, nowMs: number): string | null {
-  if (typeof process.durationSecs === "number") {
-    return `${process.durationSecs.toFixed(1)}s`;
+  if (
+    (process.status === "running" || process.status === "starting") &&
+    typeof process.startedAtMs === "number"
+  ) {
+    const elapsed = Math.max(0, nowMs - process.startedAtMs) / 1000;
+    return `${elapsed.toFixed(0)}s running`;
+  }
+  if (typeof process.durationMs === "number") {
+    return `${(process.durationMs / 1000).toFixed(1)}s`;
   }
   if (typeof process.startedAtMs !== "number") return null;
   const end = typeof process.endedAtMs === "number" ? process.endedAtMs : nowMs;
   const elapsed = Math.max(0, end - process.startedAtMs) / 1000;
-  return process.status === "running" || process.status === "starting"
-    ? `${elapsed.toFixed(0)}s running`
-    : `${elapsed.toFixed(1)}s`;
+  return `${elapsed.toFixed(1)}s`;
 }
 
 function detailRows(
