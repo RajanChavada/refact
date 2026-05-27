@@ -456,7 +456,10 @@ impl BackgroundAgentRegistry {
         parent_chat_id: &str,
         target_files: &[String],
     ) -> Option<String> {
-        let requested: HashSet<&str> = target_files.iter().map(String::as_str).collect();
+        let requested: HashSet<String> = target_files
+            .iter()
+            .map(|path| normalize_path_for_overlap(path))
+            .collect();
         if requested.is_empty() {
             return None;
         }
@@ -472,7 +475,7 @@ impl BackgroundAgentRegistry {
             let shared: Vec<String> = record
                 .target_files
                 .iter()
-                .filter(|path| requested.contains(path.as_str()))
+                .filter(|path| requested.contains(&normalize_path_for_overlap(path)))
                 .cloned()
                 .collect();
             if !shared.is_empty() {
@@ -555,6 +558,34 @@ impl BackgroundAgentRegistry {
             .await
             .get(agent_id)
             .map(|runtime| runtime.notify.clone())
+    }
+}
+
+pub(crate) fn normalize_path_for_overlap(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let mut collapsed = String::with_capacity(normalized.len());
+    let mut previous_slash = false;
+    for ch in normalized.chars() {
+        if ch == '/' {
+            if !previous_slash {
+                collapsed.push(ch);
+            }
+            previous_slash = true;
+        } else {
+            collapsed.push(ch);
+            previous_slash = false;
+        }
+    }
+    while let Some(stripped) = collapsed.strip_prefix("./") {
+        collapsed = stripped.to_string();
+    }
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        collapsed.to_lowercase()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        collapsed
     }
 }
 

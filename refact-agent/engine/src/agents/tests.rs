@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,7 +7,7 @@ use chrono::{TimeDelta, Utc};
 use serde_json::json;
 use tempfile::tempdir;
 
-use crate::agents::registry::BackgroundAgentRegistry;
+use crate::agents::registry::{normalize_path_for_overlap, BackgroundAgentRegistry};
 use crate::agents::storage::{load_all, save_record};
 use crate::agents::types::{
     AgentCompletion, AgentListFilter, BackgroundAgent, BgAgentKind, BgAgentStatus,
@@ -614,6 +615,42 @@ async fn overlap_warning_reports_running_delegate_file_overlap_only() {
         .overlap_warning("other-parent", &["src/frog.rs".to_string()])
         .await
         .is_none());
+}
+
+#[test]
+fn overlaps_normalize_equivalent_paths() {
+    let requested: HashSet<String> = ["src/a.rs".to_string()].into_iter().collect();
+
+    assert!(requested.contains(&normalize_path_for_overlap("./src/a.rs")));
+    assert!(requested.contains(&normalize_path_for_overlap("src\\a.rs")));
+    assert!(requested.contains(&normalize_path_for_overlap("src//a.rs")));
+}
+
+#[tokio::test]
+async fn overlap_warning_normalizes_equivalent_paths() {
+    let (_temp, registry) = registry().await;
+    let delegate = create_agent(&registry, "parent", BgAgentKind::Delegate).await;
+    registry
+        .mark_running(&delegate.agent_id, "child-running".to_string())
+        .await
+        .expect("running");
+
+    let dot_slash_warning = registry
+        .overlap_warning("parent", &["./src/frog.rs".to_string()])
+        .await
+        .expect("dot slash warning");
+    let backslash_warning = registry
+        .overlap_warning("parent", &["src\\frog.rs".to_string()])
+        .await
+        .expect("backslash warning");
+    let repeated_slash_warning = registry
+        .overlap_warning("parent", &["src//frog.rs".to_string()])
+        .await
+        .expect("repeated slash warning");
+
+    assert!(dot_slash_warning.contains(&delegate.agent_id));
+    assert!(backslash_warning.contains(&delegate.agent_id));
+    assert!(repeated_slash_warning.contains(&delegate.agent_id));
 }
 
 #[tokio::test]
