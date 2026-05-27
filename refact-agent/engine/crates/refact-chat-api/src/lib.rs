@@ -257,6 +257,29 @@ pub struct PauseReason {
     pub integr_config_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAgentSummary {
+    pub agent_id: String,
+    pub parent_chat_id: String,
+    pub child_chat_id: Option<String>,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub progress: Option<String>,
+    pub step_count: u32,
+    pub last_activity: Option<String>,
+    pub target_files: Vec<String>,
+    pub edited_files: Vec<String>,
+    pub diff_summary: Option<String>,
+    pub conflict_summary: Option<String>,
+    pub result_summary: Option<String>,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub change_seq: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatEvent {
@@ -264,6 +287,12 @@ pub enum ChatEvent {
         thread: ThreadParams,
         runtime: RuntimeState,
         messages: Vec<ChatMessage>,
+        background_agents: Vec<BackgroundAgentSummary>,
+    },
+    BackgroundAgentUpdated {
+        chat_id: String,
+        seq: u64,
+        agent: BackgroundAgentSummary,
     },
     ThreadUpdated {
         #[serde(flatten)]
@@ -682,6 +711,29 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn background_agent_summary() -> BackgroundAgentSummary {
+        BackgroundAgentSummary {
+            agent_id: "bgagent-1".to_string(),
+            parent_chat_id: "parent-chat".to_string(),
+            child_chat_id: Some("child-chat".to_string()),
+            kind: "delegate".to_string(),
+            status: "waiting_for_approval".to_string(),
+            title: "Patch frog pond".to_string(),
+            progress: Some("Inspecting reeds".to_string()),
+            step_count: 3,
+            last_activity: Some("reading files".to_string()),
+            target_files: vec!["src/frog.rs".to_string()],
+            edited_files: vec!["src/frog.rs".to_string()],
+            diff_summary: Some("one frog changed".to_string()),
+            conflict_summary: None,
+            result_summary: Some("frog patched".to_string()),
+            error: None,
+            started_at: Some("2026-05-27T00:00:00Z".to_string()),
+            finished_at: None,
+            change_seq: 7,
+        }
+    }
+
     #[test]
     fn test_session_state_default() {
         assert_eq!(SessionState::default(), SessionState::Idle);
@@ -891,11 +943,67 @@ mod tests {
             thread: ThreadParams::default(),
             runtime: RuntimeState::default(),
             messages: vec![],
+            background_agents: vec![],
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "snapshot");
         let parsed: ChatEvent = serde_json::from_value(json).unwrap();
         matches!(parsed, ChatEvent::Snapshot { .. });
+    }
+
+    #[test]
+    fn test_background_agent_updated_roundtrip() {
+        let event = ChatEvent::BackgroundAgentUpdated {
+            chat_id: "parent-chat".to_string(),
+            seq: 11,
+            agent: background_agent_summary(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"], "background_agent_updated");
+        assert_eq!(value["chat_id"], "parent-chat");
+        assert_eq!(value["seq"], 11);
+        assert_eq!(value["agent"]["agentId"], "bgagent-1");
+
+        let parsed: ChatEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ChatEvent::BackgroundAgentUpdated {
+                chat_id,
+                seq,
+                agent,
+            } => {
+                assert_eq!(chat_id, "parent-chat");
+                assert_eq!(seq, 11);
+                assert_eq!(agent, background_agent_summary());
+            }
+            _ => panic!("Expected BackgroundAgentUpdated"),
+        }
+    }
+
+    #[test]
+    fn test_snapshot_roundtrip_with_background_agents() {
+        let event = ChatEvent::Snapshot {
+            thread: ThreadParams::default(),
+            runtime: RuntimeState::default(),
+            messages: vec![],
+            background_agents: vec![background_agent_summary()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: ChatEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            ChatEvent::Snapshot {
+                background_agents, ..
+            } => assert_eq!(background_agents, vec![background_agent_summary()]),
+            _ => panic!("Expected Snapshot"),
+        }
+    }
+
+    #[test]
+    fn test_background_agent_summary_strings_are_snake_case_values() {
+        let summary = background_agent_summary();
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["kind"], "delegate");
+        assert_eq!(json["status"], "waiting_for_approval");
     }
 
     #[test]

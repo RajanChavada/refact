@@ -9,10 +9,10 @@ use crate::git::checkpoints::Checkpoint;
 use super::config::{limits, timeouts};
 
 pub use refact_chat_api::{
-    ActiveCommandContext, BrowserMeta, BrowserTabInfo, BuddyThreadMeta, ChatCommand, ChatEvent,
-    CommandRequest, DeltaOp, DiffBox, EventEnvelope, PauseReason, PendingSkillDeactivation,
-    QueuedItem, RuntimeState, SessionState, TaskMeta, ThreadParams, TimelineEntry,
-    ToolDecisionItem, WindowBounds, WorktreeMeta,
+    ActiveCommandContext, BackgroundAgentSummary, BrowserMeta, BrowserTabInfo, BuddyThreadMeta,
+    ChatCommand, ChatEvent, CommandRequest, DeltaOp, DiffBox, EventEnvelope, PauseReason,
+    PendingSkillDeactivation, QueuedItem, RuntimeState, SessionState, TaskMeta, ThreadParams,
+    TimelineEntry, ToolDecisionItem, WindowBounds, WorktreeMeta,
 };
 
 pub fn max_queue_size() -> usize {
@@ -32,6 +32,54 @@ pub fn stream_total_timeout() -> std::time::Duration {
 }
 pub fn stream_heartbeat() -> std::time::Duration {
     timeouts().stream_heartbeat
+}
+
+#[derive(Debug)]
+pub struct BurstGuard {
+    inner: tokio::sync::Mutex<BurstGuardInner>,
+}
+
+#[derive(Debug, Default)]
+struct BurstGuardInner {
+    recent: VecDeque<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurstGuardDecision {
+    Allow,
+    Defer,
+}
+
+impl BurstGuard {
+    pub fn new() -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(BurstGuardInner::default()),
+        }
+    }
+
+    pub async fn record_and_check(&self) -> BurstGuardDecision {
+        let now = chrono::Utc::now();
+        let mut guard = self.inner.lock().await;
+        while let Some(front) = guard.recent.front() {
+            if now.signed_duration_since(*front).num_seconds() > 10 {
+                guard.recent.pop_front();
+            } else {
+                break;
+            }
+        }
+        if guard.recent.len() >= 5 {
+            BurstGuardDecision::Defer
+        } else {
+            guard.recent.push_back(now);
+            BurstGuardDecision::Allow
+        }
+    }
+}
+
+impl Default for BurstGuard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct ChatSession {
@@ -76,6 +124,7 @@ pub struct ChatSession {
     pub suppress_auto_enrichment_for_next_turn: bool,
     pub wake_up_at: Option<chrono::DateTime<chrono::Utc>>,
     pub waiting_for_card_ids: Vec<String>,
+    pub background_completion_burst: BurstGuard,
 }
 
 #[derive(Debug, Clone)]

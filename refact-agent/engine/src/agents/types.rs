@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+pub use refact_chat_api::BackgroundAgentSummary;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -82,29 +83,6 @@ pub struct BackgroundAgent {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub last_update_at: DateTime<Utc>,
-    pub change_seq: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BackgroundAgentSummary {
-    pub agent_id: String,
-    pub parent_chat_id: String,
-    pub child_chat_id: Option<String>,
-    pub kind: String,
-    pub status: String,
-    pub title: String,
-    pub progress: Option<String>,
-    pub step_count: u32,
-    pub last_activity: Option<String>,
-    pub target_files: Vec<String>,
-    pub edited_files: Vec<String>,
-    pub diff_summary: Option<String>,
-    pub conflict_summary: Option<String>,
-    pub result_summary: Option<String>,
-    pub error: Option<String>,
-    pub started_at: Option<String>,
-    pub finished_at: Option<String>,
     pub change_seq: u64,
 }
 

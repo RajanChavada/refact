@@ -2836,7 +2836,7 @@ pub async fn handle_v1_trajectories_subscribe(
 mod tests {
     use super::*;
     use crate::chat::diagnostics::make_ui_only_error_message;
-    use crate::chat::types::ActiveCommandContext;
+    use crate::chat::types::{ActiveCommandContext, BurstGuard};
     use serial_test::serial;
     use std::path::Path;
     use std::process::Command;
@@ -3743,6 +3743,7 @@ mod tests {
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at: None,
             waiting_for_card_ids: Vec::new(),
+            background_completion_burst: BurstGuard::new(),
         };
 
         let snapshot = trajectory_snapshot_from_session(&session);
@@ -3815,6 +3816,7 @@ mod tests {
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at: None,
             waiting_for_card_ids: Vec::new(),
+            background_completion_burst: BurstGuard::new(),
         };
 
         let snapshot = trajectory_snapshot_from_session(&session);

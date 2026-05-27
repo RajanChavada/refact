@@ -109,6 +109,7 @@ impl ChatSession {
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at: None,
             waiting_for_card_ids: Vec::new(),
+            background_completion_burst: BurstGuard::new(),
         }
     }
 
@@ -167,6 +168,7 @@ impl ChatSession {
             suppress_auto_enrichment_for_next_turn: false,
             wake_up_at,
             waiting_for_card_ids,
+            background_completion_burst: BurstGuard::new(),
         }
     }
 
@@ -273,6 +275,7 @@ impl ChatSession {
             thread: self.thread.clone(),
             runtime,
             messages,
+            background_agents: vec![],
         }
     }
 
