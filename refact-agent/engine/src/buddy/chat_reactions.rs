@@ -195,6 +195,12 @@ pub fn classify_chat_reaction(text: &str, settings: &BuddySettings) -> Option<Ch
     })
 }
 
+/// Produces a dedupe fingerprint for a chat reaction event.
+///
+/// The `text` argument must already be redacted via
+/// [`refact_core::string_utils::redact_sensitive`] before being passed here.
+/// The resulting value is a non-cryptographic FNV-1a digest used only as an
+/// in-memory and queue dedupe key — raw user text is never stored.
 fn message_hash(text: &str) -> String {
     format!("{:016x}", stable_hash(text))
 }

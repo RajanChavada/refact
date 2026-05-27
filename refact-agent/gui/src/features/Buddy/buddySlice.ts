@@ -258,12 +258,13 @@ function defaultBuddyState(): BuddyState {
   };
 }
 
-function defaultBuddySettings(): BuddySettings {
+export function defaultBuddySettings(): BuddySettings {
   return {
     enabled: true,
     auto_diagnostics: true,
     auto_issue_creation: false,
     personality_prompt: null,
+    autonomous_chats_enabled: true,
     proactive_enabled: true,
     message_observation_enabled: true,
     chat_reactions_enabled: true,
@@ -272,6 +273,7 @@ function defaultBuddySettings(): BuddySettings {
     humor_level: "light",
     autonomy_level: "suggest",
     quiet_mode: false,
+    daily_digest_hour: 18,
     observers: {
       task_health: true,
       trajectory_clutter: true,
@@ -375,11 +377,16 @@ function normalizeBuddySnapshot(snapshot: BuddySnapshot): BuddySnapshot {
   const normalizedState = normalizeBuddyState(snapshot.state);
   const opportunities = snapshot.opportunities ?? normalizedState.opportunities;
   normalizedState.opportunities = opportunities;
+  const defaults = defaultBuddySettings();
   return {
     ...snapshot,
     settings: {
-      ...defaultBuddySettings(),
+      ...defaults,
       ...snapshot.settings,
+      observers: {
+        ...defaults.observers,
+        ...snapshot.settings.observers,
+      },
     },
     state: normalizedState,
     recent_diagnostics: snapshot.recent_diagnostics ?? [],

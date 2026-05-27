@@ -907,6 +907,7 @@ export interface BuddySettings {
   auto_diagnostics: boolean;
   auto_issue_creation: boolean;
   personality_prompt: string | null;
+  autonomous_chats_enabled: boolean;
   proactive_enabled: boolean;
   message_observation_enabled: boolean;
   chat_reactions_enabled: boolean;
@@ -915,6 +916,7 @@ export interface BuddySettings {
   humor_level: HumorLevel;
   autonomy_level: AutonomyLevel;
   quiet_mode: boolean;
+  daily_digest_hour: number | null;
   observers: ObserverToggles;
 }
 

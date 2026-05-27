@@ -85,6 +85,7 @@ function makeSnapshot(overrides?: Partial<BuddySnapshot>): BuddySnapshot {
       auto_diagnostics: true,
       auto_issue_creation: false,
       personality_prompt: null,
+      autonomous_chats_enabled: true,
       proactive_enabled: true,
       message_observation_enabled: false,
       chat_reactions_enabled: false,
@@ -93,6 +94,7 @@ function makeSnapshot(overrides?: Partial<BuddySnapshot>): BuddySnapshot {
       humor_level: "light",
       autonomy_level: "suggest",
       quiet_mode: false,
+      daily_digest_hour: 18,
       observers: {
         task_health: true,
         trajectory_clutter: true,

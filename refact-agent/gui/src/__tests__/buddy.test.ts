@@ -41,6 +41,7 @@ import {
   clearExpiredChatBubbleSnooze,
   recordChatBubbleImpression,
   defaultBuddyPulse,
+  defaultBuddySettings,
 } from "../features/Buddy/buddySlice";
 import { registerBuddySpeechTtlListener } from "../features/Buddy/buddySpeechTtl";
 import { BuddyActivityPanel } from "../features/Buddy/BuddyActivityPanel";
@@ -59,6 +60,7 @@ import type {
   BuddySnapshot,
   BuddyState,
   BuddySettings,
+  ObserverToggles,
   BuddyActivityEntry,
   BuddySuggestion,
   BuddyConversationEntry,
@@ -214,6 +216,7 @@ function makeSnapshot(overrides?: Partial<BuddySnapshot>): BuddySnapshot {
       auto_diagnostics: true,
       auto_issue_creation: false,
       personality_prompt: null,
+      autonomous_chats_enabled: true,
       proactive_enabled: true,
       message_observation_enabled: false,
       chat_reactions_enabled: false,
@@ -222,6 +225,7 @@ function makeSnapshot(overrides?: Partial<BuddySnapshot>): BuddySnapshot {
       humor_level: "light",
       autonomy_level: "suggest",
       quiet_mode: false,
+      daily_digest_hour: 18,
       observers: {
         task_health: true,
         trajectory_clutter: true,
@@ -1617,6 +1621,35 @@ describe("buddySlice reducers", () => {
     expect(state.snapshot?.settings.chat_reactions_enabled).toBe(true);
     expect(state.snapshot?.settings.message_observation_enabled).toBe(true);
     expect(state.snapshot?.settings.observers.chat_pattern).toBe(true);
+  });
+
+  test("default_buddy_settings_include_autonomous_chats_and_daily_digest_hour", () => {
+    const settings = defaultBuddySettings();
+    expect(settings.autonomous_chats_enabled).toBe(true);
+    expect(settings.daily_digest_hour).toBe(18);
+  });
+
+  test("normalize_settings_deep_merges_observers", () => {
+    const snap: BuddySnapshot = {
+      state: makeState(),
+      settings: {
+        ...defaultBuddySettings(),
+        observers: { task_health: false } as unknown as ObserverToggles,
+      },
+      enabled: true,
+    };
+    const state = reducer(undefined, setBuddySnapshot(snap));
+    const observers: ObserverToggles | undefined =
+      state.snapshot?.settings.observers;
+    expect(observers?.task_health).toBe(false);
+    expect(observers?.trajectory_clutter).toBe(true);
+    expect(observers?.chat_pattern).toBe(true);
+    expect(observers?.customization_drift).toBe(true);
+    expect(observers?.memory_garden).toBe(true);
+    expect(observers?.mcp_auth).toBe(true);
+    expect(observers?.git_pressure).toBe(true);
+    expect(observers?.diagnostic_cluster).toBe(true);
+    expect(observers?.provider_health).toBe(true);
   });
 });
 
@@ -3690,6 +3723,7 @@ describe("buddy chat reactions settings and bubbles", () => {
       auto_diagnostics: true,
       auto_issue_creation: false,
       personality_prompt: null,
+      autonomous_chats_enabled: true,
       proactive_enabled: true,
       message_observation_enabled: true,
       chat_reactions_enabled: true,
@@ -3698,6 +3732,7 @@ describe("buddy chat reactions settings and bubbles", () => {
       humor_level: "light",
       autonomy_level: "suggest",
       quiet_mode: false,
+      daily_digest_hour: 18,
       observers: {
         task_health: true,
         trajectory_clutter: true,
