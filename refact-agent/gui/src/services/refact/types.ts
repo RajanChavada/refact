@@ -54,6 +54,14 @@ export type BackgroundAgentStatus =
   | "cancelled"
   | "interrupted";
 
+export interface BackgroundAgentToolFields {
+  background_agent_id?: string;
+  background_agent_kind?: BackgroundAgentKind;
+  child_chat_id?: string;
+  background_agent_status?: string;
+  target_files?: string[];
+}
+
 export interface BackgroundAgentSummary {
   agent_id: string;
   parent_chat_id: string;
@@ -101,7 +109,7 @@ export function isToolContent(json: unknown): json is ToolContent {
   if (Array.isArray(json)) return json.every(isMultiModalToolContent);
   return false;
 }
-export interface BaseToolResult {
+export interface BaseToolResult extends BackgroundAgentToolFields {
   tool_call_id: string;
   finish_reason?: string;
   content: ToolContent;
@@ -346,7 +354,7 @@ export interface SystemMessage extends BaseMessage {
   content: string;
 }
 
-export interface ToolMessage extends BaseMessage {
+export interface ToolMessage extends BaseMessage, BackgroundAgentToolFields {
   role: "tool";
   content: string | MultiModalToolContent[];
   tool_call_id: string;

@@ -283,7 +283,9 @@ type BackgroundAgentExtra = Partial<
     | "change_seq"
   >
 > & {
-  background_agent_id: string;
+  background_agent_id?: string;
+  background_agent_kind?: BackgroundAgentSummary["kind"];
+  background_agent_status?: BackgroundAgentSummary["status"];
   parent_chat_id?: string;
 };
 
@@ -293,10 +295,16 @@ function isBackgroundAgentTool(
   return toolName === "subagent" || toolName === "delegate";
 }
 
-function getBackgroundAgentId(extra: Record<string, unknown> | undefined) {
-  return typeof extra?.background_agent_id === "string"
-    ? extra.background_agent_id
-    : null;
+function getBackgroundAgentId(result: ToolResult | undefined) {
+  return readStringField(result, "background_agent_id");
+}
+
+function readTopLevelBackgroundAgentValue(
+  result: ToolResult | undefined,
+  key: keyof BackgroundAgentExtra,
+): unknown {
+  const top = result as unknown as Record<string, unknown> | undefined;
+  return top?.[key];
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -306,55 +314,95 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function readStringField(
-  record: Record<string, unknown>,
+  result: ToolResult | undefined,
   key: keyof BackgroundAgentExtra,
 ): string | null {
-  const value = record[key];
-  return typeof value === "string" ? value : null;
+  const direct = readTopLevelBackgroundAgentValue(result, key);
+  if (typeof direct === "string") return direct;
+  const fromExtra = result?.extra?.[key];
+  return typeof fromExtra === "string" ? fromExtra : null;
 }
 
 function readNumberField(
-  record: Record<string, unknown>,
+  result: ToolResult | undefined,
   key: keyof BackgroundAgentExtra,
 ): number | null {
-  const value = record[key];
-  return typeof value === "number" ? value : null;
+  const direct = readTopLevelBackgroundAgentValue(result, key);
+  if (typeof direct === "number") return direct;
+  const fromExtra = result?.extra?.[key];
+  return typeof fromExtra === "number" ? fromExtra : null;
 }
 
 function readStringArrayField(
-  record: Record<string, unknown>,
+  result: ToolResult | undefined,
   key: keyof BackgroundAgentExtra,
 ): string[] {
-  const value = record[key];
-  return isStringArray(value) ? value : [];
+  const direct = readTopLevelBackgroundAgentValue(result, key);
+  if (isStringArray(direct)) return direct;
+  const fromExtra = result?.extra?.[key];
+  return isStringArray(fromExtra) ? fromExtra : [];
+}
+
+function readBackgroundAgentKind(
+  result: ToolResult | undefined,
+  toolName: "subagent" | "delegate",
+): BackgroundAgentSummary["kind"] {
+  const value =
+    readStringField(result, "background_agent_kind") ??
+    readStringField(result, "kind");
+  if (value === "subagent" || value === "delegate") return value;
+  return toolName === "delegate" ? "delegate" : "subagent";
+}
+
+function isBackgroundAgentStatus(
+  value: string | null,
+): value is BackgroundAgentSummary["status"] {
+  return (
+    value === "queued" ||
+    value === "running" ||
+    value === "waiting_for_approval" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "cancelled" ||
+    value === "interrupted"
+  );
+}
+
+function readBackgroundAgentStatus(
+  result: ToolResult | undefined,
+): BackgroundAgentSummary["status"] {
+  const value =
+    readStringField(result, "background_agent_status") ??
+    readStringField(result, "status");
+  return isBackgroundAgentStatus(value) ? value : "queued";
 }
 
 function backgroundAgentPlaceholder(
-  extra: Record<string, unknown>,
+  result: ToolResult,
   toolName: "subagent" | "delegate",
 ): BackgroundAgentSummary | null {
-  const agentId = getBackgroundAgentId(extra);
+  const agentId = getBackgroundAgentId(result);
   if (!agentId) return null;
-  const kind = toolName === "delegate" ? "delegate" : "subagent";
+  const kind = readBackgroundAgentKind(result, toolName);
   return {
     agent_id: agentId,
-    parent_chat_id: readStringField(extra, "parent_chat_id") ?? "",
-    child_chat_id: readStringField(extra, "child_chat_id"),
+    parent_chat_id: readStringField(result, "parent_chat_id") ?? "",
+    child_chat_id: readStringField(result, "child_chat_id"),
     kind,
-    status: "queued",
-    title: readStringField(extra, "title") ?? formatToolDisplayName(toolName),
-    progress: readStringField(extra, "progress"),
-    step_count: readNumberField(extra, "step_count") ?? 0,
-    last_activity: readStringField(extra, "last_activity"),
-    target_files: readStringArrayField(extra, "target_files"),
-    edited_files: readStringArrayField(extra, "edited_files"),
-    diff_summary: readStringField(extra, "diff_summary"),
-    conflict_summary: readStringField(extra, "conflict_summary"),
-    result_summary: readStringField(extra, "result_summary"),
-    error: readStringField(extra, "error"),
-    started_at: readStringField(extra, "started_at"),
-    finished_at: readStringField(extra, "finished_at"),
-    change_seq: readNumberField(extra, "change_seq") ?? 0,
+    status: readBackgroundAgentStatus(result),
+    title: readStringField(result, "title") ?? formatToolDisplayName(toolName),
+    progress: readStringField(result, "progress"),
+    step_count: readNumberField(result, "step_count") ?? 0,
+    last_activity: readStringField(result, "last_activity"),
+    target_files: readStringArrayField(result, "target_files"),
+    edited_files: readStringArrayField(result, "edited_files"),
+    diff_summary: readStringField(result, "diff_summary"),
+    conflict_summary: readStringField(result, "conflict_summary"),
+    result_summary: readStringField(result, "result_summary"),
+    error: readStringField(result, "error"),
+    started_at: readStringField(result, "started_at"),
+    finished_at: readStringField(result, "finished_at"),
+    change_seq: readNumberField(result, "change_seq") ?? 0,
   } satisfies BackgroundAgentSummary;
 }
 
@@ -369,11 +417,10 @@ function decorateBackgroundAgentTool(
   ) => void,
 ): React.ReactNode {
   if (!isBackgroundAgentTool(toolName)) return elem;
-  const extra = result?.extra;
-  const agentId = getBackgroundAgentId(extra);
-  if (!extra || !agentId) return elem;
+  const agentId = getBackgroundAgentId(result);
+  if (!result || !agentId) return elem;
   const agent =
-    backgroundAgents[agentId] ?? backgroundAgentPlaceholder(extra, toolName);
+    backgroundAgents[agentId] ?? backgroundAgentPlaceholder(result, toolName);
   if (!agent) return elem;
   return (
     <React.Fragment key={`background-agent-${agent.agent_id}`}>

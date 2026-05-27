@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import { BackgroundAgentCard } from "../components/BackgroundAgentCard";
+import { ToolContent } from "../components/ChatContent/ToolsContent";
 import {
   applyChatEvent,
   createChatWithId,
@@ -9,15 +10,34 @@ import { chatReducer } from "../features/Chat/Thread/reducer";
 import {
   selectBackgroundAgent,
   selectBackgroundAgentsByThread,
+  selectToolResultById,
 } from "../features/Chat/Thread/selectors";
 import type { Chat, ChatThreadRuntime } from "../features/Chat/Thread/types";
 import type { ChatEventEnvelope } from "../services/refact/chatSubscription";
-import type { BackgroundAgentSummary } from "../services/refact/types";
+import type {
+  BackgroundAgentSummary,
+  ChatMessages,
+  ToolCall,
+  ToolMessage,
+} from "../services/refact/types";
 import { render } from "../utils/test-utils";
 
 type SelectorRootState = Parameters<typeof selectBackgroundAgentsByThread>[0];
 
 const chatId = "parent-chat";
+
+const subagentToolCall: ToolCall = {
+  id: "call-bg",
+  index: 0,
+  type: "function",
+  function: {
+    name: "subagent",
+    arguments: JSON.stringify({
+      task: "Inspect the frogs",
+      expected_result: "frog facts",
+    }),
+  },
+};
 
 function makeAgent(
   overrides: Partial<BackgroundAgentSummary> = {},
@@ -128,6 +148,32 @@ function makeSnapshot(
     messages: [],
     background_agents: backgroundAgents,
   };
+}
+
+function makeToolResult(overrides: Partial<ToolMessage> = {}): ToolMessage {
+  return {
+    role: "tool",
+    content: "started background agent",
+    tool_call_id: subagentToolCall.id ?? "call-bg",
+    tool_failed: false,
+    ...overrides,
+  };
+}
+
+function renderToolContent(
+  messages: ChatMessages,
+  backgroundAgents: Record<string, BackgroundAgentSummary> = {},
+  toolCall = subagentToolCall,
+) {
+  const state = makeState();
+  const runtime = state.threads[chatId];
+  if (!runtime) throw new Error("missing runtime");
+  runtime.thread.messages = messages;
+  runtime.background_agents = backgroundAgents;
+
+  return render(<ToolContent toolCalls={[toolCall]} />, {
+    preloadedState: { chat: state },
+  });
 }
 
 describe("background agents", () => {
@@ -244,6 +290,102 @@ describe("background agents", () => {
 
     expect(screen.getByText("⚠ conflicts")).toBeInTheDocument();
     expect(screen.getByText("src/frog.ts conflicted")).toBeInTheDocument();
+  });
+
+  test("ToolContent renders BackgroundAgentCard from flattened tool fields", () => {
+    renderToolContent([
+      makeToolResult({
+        background_agent_id: "bgagent-flat",
+        background_agent_kind: "subagent",
+        child_chat_id: "child-flat",
+        background_agent_status: "running",
+        target_files: ["src/flat.ts"],
+      }),
+    ]);
+
+    expect(screen.getByTestId("background-agent-card")).toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.getByText("bgagent-flat")).toBeInTheDocument();
+    expect(screen.getByText("src/flat.ts")).toBeInTheDocument();
+  });
+
+  test("ToolContent keeps rendering BackgroundAgentCard from nested extra fallback", () => {
+    renderToolContent([
+      makeToolResult({
+        extra: {
+          background_agent_id: "bgagent-extra",
+          background_agent_kind: "subagent",
+          child_chat_id: "child-extra",
+          background_agent_status: "running",
+          target_files: ["src/extra.ts"],
+        },
+      }),
+    ]);
+
+    expect(screen.getByTestId("background-agent-card")).toBeInTheDocument();
+    expect(screen.getByText("bgagent-extra")).toBeInTheDocument();
+    expect(screen.getByText("src/extra.ts")).toBeInTheDocument();
+  });
+
+  test("BackgroundAgentUpdated state overrides the flattened placeholder card", () => {
+    renderToolContent(
+      [
+        makeToolResult({
+          background_agent_id: "bgagent-updated",
+          background_agent_kind: "subagent",
+          child_chat_id: "child-updated",
+          background_agent_status: "running",
+        }),
+      ],
+      {
+        "bgagent-updated": makeAgent({
+          agent_id: "bgagent-updated",
+          title: "Updated frog report",
+          status: "completed",
+          progress: "Done reading frogs",
+          child_chat_id: "child-updated",
+        }),
+      },
+    );
+
+    expect(screen.getByTestId("background-agent-card")).toBeInTheDocument();
+    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Subagent: Updated frog report"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Done reading frogs")).toBeInTheDocument();
+  });
+
+  test("flattened message_added event keeps background agent fields on selected tool result", () => {
+    const event = JSON.parse(
+      JSON.stringify({
+        chat_id: chatId,
+        seq: "1",
+        type: "message_added",
+        index: 0,
+        message: {
+          role: "tool",
+          content: "started from SSE",
+          tool_call_id: "call-sse",
+          tool_failed: false,
+          background_agent_id: "bgagent-sse",
+          background_agent_kind: "subagent",
+          child_chat_id: "child-sse",
+          background_agent_status: "running",
+          target_files: ["src/sse.ts"],
+        },
+      }),
+    ) as ChatEventEnvelope;
+
+    const state = chatReducer(makeState(), applyChatEvent(event));
+    const result = selectToolResultById(
+      { chat: state } as Parameters<typeof selectToolResultById>[0],
+      "call-sse",
+    );
+
+    expect(result?.background_agent_id).toBe("bgagent-sse");
+    expect(result?.child_chat_id).toBe("child-sse");
+    expect(result?.target_files).toEqual(["src/sse.ts"]);
   });
 
   test("clicking Open child trajectory calls onOpenTrajectory with child chat id", async () => {
