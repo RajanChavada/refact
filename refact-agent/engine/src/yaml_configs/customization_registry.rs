@@ -1386,10 +1386,10 @@ mod tests {
                 resolve_mode_for_model(&registry, "agent", Some("openai/gpt-5.5-latest"))
                     .expect("agent mode should resolve");
 
-            assert!(generic.prompt.contains("OpenAI models"));
+            assert!(generic.prompt.contains("precision and safety"));
             assert!(specific.prompt.contains("GPT-5.5"));
             assert!(specific.prompt.contains("outcome-first"));
-            assert!(!specific.prompt.contains("OpenAI models"));
+            assert!(!specific.prompt.contains("precision and safety"));
         });
     }
 
