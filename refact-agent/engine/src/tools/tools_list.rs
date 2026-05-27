@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::caps::resolve_chat_model;
 use crate::global_context::{try_load_caps_quickly_if_not_present, GlobalContext};
 use crate::integrations::running_integrations::load_integrations;
-use crate::yaml_configs::customization_registry::get_project_registry;
-use crate::caps::resolve_chat_model;
+use crate::yaml_configs::customization_registry::{
+    get_project_registry, should_expose_subagent_as_config_tool,
+};
 
 use super::tools_description::{Tool, ToolGroup, ToolGroupCategory, ToolSourceType};
 use super::tool_config_subagent::ToolConfigSubagent;
@@ -634,7 +636,7 @@ async fn get_config_subagent_tools(gcx: Arc<GlobalContext>) -> ToolGroup {
         let mut subagents: Vec<(String, _)> = registry.subagents.into_iter().collect();
         subagents.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (_, subagent_config) in subagents {
-            if subagent_config.expose_as_tool && !subagent_config.has_code {
+            if should_expose_subagent_as_config_tool(&subagent_config) {
                 subagent_tools.push(Box::new(ToolConfigSubagent::new(subagent_config)));
             }
         }
@@ -645,6 +647,99 @@ async fn get_config_subagent_tools(gcx: Arc<GlobalContext>) -> ToolGroup {
         description: "Subagent tools from project config".to_string(),
         category: ToolGroupCategory::ConfigSubagent,
         tools: subagent_tools,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use crate::tools::tools_description::ToolSourceType;
+    use crate::yaml_configs::customization_registry::RegistryCache;
+    use crate::yaml_configs::customization_types::{
+        ProjectRegistry, SubagentConfig, SubagentMessages, SubagentPrompts, SubchatConfig,
+    };
+
+    use super::*;
+
+    fn exposed_subagent(id: &str) -> SubagentConfig {
+        SubagentConfig {
+            schema_version: 1,
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            specific: false,
+            expose_as_tool: true,
+            has_code: false,
+            tool: None,
+            subchat: SubchatConfig::default(),
+            messages: SubagentMessages::default(),
+            prompts: SubagentPrompts::default(),
+            gather_files: Default::default(),
+            tools: Vec::new(),
+            base: None,
+            match_models: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    fn insert_registry(gcx: &Arc<GlobalContext>, registry: ProjectRegistry) {
+        gcx.project_registry_cache.write().unwrap().cache.insert(
+            gcx.config_dir.clone(),
+            RegistryCache {
+                project_root: gcx.config_dir.clone(),
+                registry,
+                last_scan: std::time::SystemTime::now(),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn config_subagent_tools_skip_builtin_ids() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let registry = ProjectRegistry {
+            subagents: HashMap::from_iter([
+                ("subagent".to_string(), exposed_subagent("subagent")),
+                (
+                    "project_researcher".to_string(),
+                    exposed_subagent("project_researcher"),
+                ),
+            ]),
+            ..Default::default()
+        };
+        insert_registry(&gcx, registry);
+
+        let group = get_config_subagent_tools(gcx).await;
+        let names = group
+            .tools
+            .iter()
+            .map(|tool| tool.tool_description().name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["project_researcher"]);
+    }
+
+    #[tokio::test]
+    async fn available_tools_include_only_builtin_background_subagent_for_default_config() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        crate::yaml_configs::project_configs_bootstrap::global_configs_try_create_all(
+            &gcx.config_dir,
+        )
+        .await
+        .unwrap();
+
+        let tools = get_available_tools(gcx).await;
+        let subagents = tools
+            .iter()
+            .filter_map(|tool| {
+                let desc = tool.tool_description();
+                (desc.name == "subagent")
+                    .then_some(matches!(desc.source.source_type, ToolSourceType::Builtin))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(subagents, vec![true]);
     }
 }
 

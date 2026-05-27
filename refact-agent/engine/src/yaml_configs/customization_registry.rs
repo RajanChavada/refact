@@ -68,6 +68,24 @@ pub async fn load_registry_from_dir(dir: &Path) -> ProjectRegistry {
     registry
 }
 
+const BUILTIN_SUBAGENT_TOOL_IDS: &[&str] = &[
+    "subagent",
+    "delegate",
+    "agent_list",
+    "agent_status",
+    "agent_wait",
+    "agent_result",
+    "agent_cancel",
+];
+
+pub fn is_builtin_subagent_tool_id(id: &str) -> bool {
+    BUILTIN_SUBAGENT_TOOL_IDS.contains(&id)
+}
+
+pub fn should_expose_subagent_as_config_tool(config: &SubagentConfig) -> bool {
+    config.expose_as_tool && !config.has_code && !is_builtin_subagent_tool_id(&config.id)
+}
+
 pub async fn load_merged_registry(global_dir: &Path, local_dir: Option<&Path>) -> ProjectRegistry {
     let global_registry = load_registry_from_dir(global_dir).await;
 
@@ -806,6 +824,14 @@ mod tests {
             base: Some("coder".to_string()),
             match_models: Some(patterns.iter().map(|pattern| pattern.to_string()).collect()),
             extra: HashMap::new(),
+        }
+    }
+
+    fn exposed_config_subagent(id: &str) -> SubagentConfig {
+        SubagentConfig {
+            id: id.to_string(),
+            expose_as_tool: true,
+            ..base_subagent()
         }
     }
 
@@ -1874,7 +1900,7 @@ mod tests {
     }
 
     #[test]
-    fn test_default_subagent_is_read_only() {
+    fn test_default_subagent_is_read_only_and_not_yaml_tool_exposed() {
         let registry = load_default_registry_for_tests();
         assert!(registry.errors.is_empty(), "{:?}", registry.errors);
 
@@ -1882,6 +1908,7 @@ mod tests {
             .subagents
             .get("subagent")
             .expect("subagent should load");
+        assert!(!subagent.expose_as_tool);
         assert!(subagent.description.contains("read-only"));
         assert!(subagent
             .messages
@@ -1905,6 +1932,26 @@ mod tests {
                 "tasks_set".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn test_builtin_subagent_tool_ids_are_not_exposed_as_config_tools() {
+        for id in [
+            "subagent",
+            "delegate",
+            "agent_list",
+            "agent_status",
+            "agent_wait",
+            "agent_result",
+            "agent_cancel",
+        ] {
+            let config = exposed_config_subagent(id);
+            assert!(is_builtin_subagent_tool_id(id));
+            assert!(!should_expose_subagent_as_config_tool(&config));
+        }
+
+        let config = exposed_config_subagent("project_researcher");
+        assert!(should_expose_subagent_as_config_tool(&config));
     }
 
     #[test]
