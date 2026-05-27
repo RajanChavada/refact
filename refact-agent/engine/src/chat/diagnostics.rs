@@ -99,13 +99,17 @@ pub fn make_ui_only_retry_status_message(
 
 pub fn format_tier0_compaction_report(report: &Tier0CompactReport, attempt: usize) -> String {
     format!(
-        "{}\n\n{}\n\n{}\n{}\n{}\n{}",
+        "{}\n\n{}\n\n{}\n{}\n{}\n{}\n{}",
         "## Reactive compaction report",
         "Context limit was reached, so Refact compacted the conversation before retrying.",
         format!("- Attempt: {}", attempt),
         format!(
             "- Context file entries deduplicated: {}",
             report.context_files_deduped,
+        ),
+        format!(
+            "- Context file entries elided: {}",
+            report.context_files_elided,
         ),
         format!(
             "- Tool outputs truncated: {}",
@@ -173,6 +177,7 @@ mod tests {
     fn compaction_report_contains_tier0_details() {
         let report = Tier0CompactReport {
             context_files_deduped: 2,
+            context_files_elided: 1,
             tool_outputs_truncated: 3,
             tokens_saved_estimate: 456,
         };
@@ -192,6 +197,7 @@ mod tests {
         let content = message.content.content_text_only();
         assert!(content.contains("Attempt: 2"));
         assert!(content.contains("Context file entries deduplicated: 2"));
+        assert!(content.contains("Context file entries elided: 1"));
         assert!(content.contains("Tool outputs truncated: 3"));
         assert!(content.contains("Estimated tokens saved: 456"));
     }

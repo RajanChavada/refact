@@ -795,11 +795,6 @@ pub fn start_generation(
                         {
                             let mut session = session_arc.lock().await;
                             session.clear_stream_for_retry();
-                            let affected_range = if session.messages.is_empty() {
-                                None
-                            } else {
-                                Some((0usize, session.messages.len().saturating_sub(1)))
-                            };
                             session.add_message(make_ui_only_error_message(&original_error));
                             let report = tier0_deterministic_compact_with(
                                 &mut session.messages,
@@ -809,7 +804,7 @@ pub fn start_generation(
                             session.add_message(make_ui_only_compaction_report_message(
                                 &report,
                                 context_limit_compact_count,
-                                affected_range,
+                                None,
                             ));
                             session.thread.previous_response_id = None;
                             session.cache_guard_force_next = true;
@@ -2268,14 +2263,9 @@ mod tests {
         messages.push(make_ui_only_error_message(
             "context_length_exceeded: too many tokens",
         ));
-        let affected = if messages.is_empty() {
-            None
-        } else {
-            Some((0usize, messages.len().saturating_sub(1)))
-        };
         let report =
             tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Standard);
-        messages.push(make_ui_only_compaction_report_message(&report, 1, affected));
+        messages.push(make_ui_only_compaction_report_message(&report, 1, None));
 
         assert_eq!(messages[messages.len() - 2].role, "error");
         assert_eq!(messages[messages.len() - 1].role, "summarization");

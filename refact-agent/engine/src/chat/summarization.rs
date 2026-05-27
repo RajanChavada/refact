@@ -5,11 +5,11 @@ use uuid::Uuid;
 use crate::call_validation::{ChatContent, ChatMessage};
 use crate::global_context::GlobalContext;
 use crate::chat::diagnostics::{filter_ui_only_messages, is_ui_only_message};
+use refact_chat_history::compression_exemption::{exemption_for, CompressionExemption};
 use crate::chat::history_limit::{compute_context_budget, ContextPressure};
 use crate::chat::linearize::apply_summarization_linearize;
 use crate::chat::trajectory_ops::approx_token_count;
 use crate::subchat::{SubchatConfig, ToolsPolicy, run_subchat};
-use refact_chat_history::compression_exemption::{exemption_for, CompressionExemption};
 
 pub const MAX_TIER1_COMPACT_ATTEMPTS: usize = 2;
 pub const MAX_TIER1_ANCHORS_BEFORE_MERGE: usize = 4;
@@ -117,10 +117,84 @@ fn find_tool_safe_boundary(messages: &[ChatMessage], target_idx: usize) -> usize
     idx
 }
 
-fn range_contains_preserved(messages: &[ChatMessage], start: usize, end: usize) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SummaryRange {
+    start: usize,
+    end: usize,
+}
+
+fn authoritative_summary_ranges(messages: &[ChatMessage]) -> Vec<SummaryRange> {
+    let mut ranges: Vec<SummaryRange> = messages
+        .iter()
+        .filter(|msg| is_real_summarization_anchor(msg))
+        .filter_map(|msg| {
+            let (start, end) = msg.summarized_range?;
+            (start <= end).then_some(SummaryRange { start, end })
+        })
+        .collect();
+    ranges.sort_by_key(|range| (range.start, range.end));
+    ranges
+}
+
+fn ranges_overlap(a: SummaryRange, b: SummaryRange) -> bool {
+    a.start <= b.end && b.start <= a.end
+}
+
+fn idx_is_covered_by_existing_summary(idx: usize, existing_ranges: &[SummaryRange]) -> bool {
+    existing_ranges
+        .iter()
+        .any(|range| range.start <= idx && idx <= range.end)
+}
+
+fn range_contains_preserved_or_summary(
+    messages: &[ChatMessage],
+    start: usize,
+    end: usize,
+    existing_ranges: &[SummaryRange],
+    block_summary_messages: bool,
+) -> bool {
+    (start..end).any(|idx| {
+        messages[idx].preserve == Some(true)
+            || exemption_for(&messages[idx]) == CompressionExemption::Never
+            || (block_summary_messages && is_real_summarization_anchor(&messages[idx]))
+            || idx_is_covered_by_existing_summary(idx, existing_ranges)
+    })
+}
+
+fn first_preserved_or_summarized_offset(
+    messages: &[ChatMessage],
+    start: usize,
+    end: usize,
+    existing_ranges: &[SummaryRange],
+    block_summary_messages: bool,
+) -> Option<usize> {
     messages[start..end]
         .iter()
-        .any(|msg| msg.preserve == Some(true) || exemption_for(msg) == CompressionExemption::Never)
+        .enumerate()
+        .find(|(offset, msg)| {
+            msg.preserve == Some(true)
+                || exemption_for(msg) == CompressionExemption::Never
+                || (block_summary_messages && is_real_summarization_anchor(msg))
+                || idx_is_covered_by_existing_summary(start + *offset, existing_ranges)
+        })
+        .map(|(offset, _)| offset)
+}
+
+fn adjust_range_after_removing_indices(
+    range: SummaryRange,
+    removed_indices: &[usize],
+) -> SummaryRange {
+    let removed_before_start = removed_indices
+        .iter()
+        .filter(|idx| **idx < range.start)
+        .count();
+    let removed_through_end = removed_indices
+        .iter()
+        .filter(|idx| **idx <= range.end)
+        .count();
+    let start = range.start.saturating_sub(removed_before_start);
+    let end = range.end.saturating_sub(removed_through_end).max(start);
+    SummaryRange { start, end }
 }
 
 fn is_real_summarization_anchor(message: &ChatMessage) -> bool {
@@ -160,11 +234,10 @@ fn effective_context_budget_after_existing_summaries(
 
 fn translate_summarized_range_to_original(summ_msg: &mut ChatMessage, original_indices: &[usize]) {
     if let Some((start, end)) = summ_msg.summarized_range {
-        if let (Some(original_start), Some(original_end)) =
-            (original_indices.get(start), original_indices.get(end))
-        {
-            summ_msg.summarized_range = Some((*original_start, *original_end));
-        }
+        summ_msg.summarized_range = match (original_indices.get(start), original_indices.get(end)) {
+            (Some(original_start), Some(original_end)) => Some((*original_start, *original_end)),
+            _ => None,
+        };
     }
 }
 
@@ -182,17 +255,13 @@ fn find_summarization_boundary_visible(
     messages: &[ChatMessage],
     force_full_recompact: bool,
 ) -> (usize, usize) {
-    let mut start = if force_full_recompact {
-        0
+    let existing_ranges = if force_full_recompact {
+        Vec::new()
     } else {
-        messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| is_real_summarization_anchor(m))
-            .last()
-            .map(|(i, _)| i + 1)
-            .unwrap_or(0)
+        authoritative_summary_ranges(messages)
     };
+    let block_summary_messages = !force_full_recompact;
+    let mut start = 0usize;
 
     let preserve_tail = 4usize;
     let safe_end = messages.len().saturating_sub(preserve_tail);
@@ -203,6 +272,8 @@ fn find_summarization_boundary_visible(
         }
         if messages[start].preserve == Some(true)
             || exemption_for(&messages[start]) == CompressionExemption::Never
+            || (block_summary_messages && is_real_summarization_anchor(&messages[start]))
+            || idx_is_covered_by_existing_summary(start, &existing_ranges)
         {
             start += 1;
             continue;
@@ -215,14 +286,37 @@ fn find_summarization_boundary_visible(
         let target_end = start + range / 2;
         let mut adjusted_end = find_tool_safe_boundary(messages, target_end);
 
-        if adjusted_end > start && range_contains_preserved(messages, start, adjusted_end) {
-            if let Some(offset) = messages[start..adjusted_end].iter().position(|msg| {
-                msg.preserve == Some(true) || exemption_for(msg) == CompressionExemption::Never
-            }) {
+        if adjusted_end > start
+            && range_contains_preserved_or_summary(
+                messages,
+                start,
+                adjusted_end,
+                &existing_ranges,
+                block_summary_messages,
+            )
+        {
+            if let Some(offset) = first_preserved_or_summarized_offset(
+                messages,
+                start,
+                adjusted_end,
+                &existing_ranges,
+                block_summary_messages,
+            ) {
                 if offset > 1 {
                     adjusted_end = find_tool_safe_boundary(messages, start + offset);
+                    if adjusted_end > start
+                        && range_contains_preserved_or_summary(
+                            messages,
+                            start,
+                            adjusted_end,
+                            &existing_ranges,
+                            block_summary_messages,
+                        )
+                    {
+                        return (start, start);
+                    }
                 } else {
-                    start = start + offset + 1;
+                    start += offset + 1;
                     continue;
                 }
             }
@@ -242,11 +336,12 @@ fn find_summarization_boundary_visible(
 /// [`visible_tier1_messages_with_original_indices`] and then translate the
 /// returned range back to original session indices). The returned message's
 /// `summarized_range` is relative to the caller-provided `messages` slice.
-pub async fn tier1_summarize(
+async fn tier1_summarize_range(
     gcx: Arc<GlobalContext>,
     messages: &[ChatMessage],
     n_ctx: usize,
     force_full_recompact: bool,
+    range_override: Option<(usize, usize)>,
 ) -> Result<ChatMessage, Tier1Failure> {
     debug_assert!(
         messages.iter().all(|m| !is_ui_only_message(m)),
@@ -263,8 +358,9 @@ pub async fn tier1_summarize(
         return Err(Tier1Failure::PressureTooLow);
     }
 
-    let (start, end) = find_summarization_boundary_visible(messages, force_full_recompact);
-    if end <= start {
+    let (start, end) = range_override
+        .unwrap_or_else(|| find_summarization_boundary_visible(messages, force_full_recompact));
+    if end <= start || end >= messages.len() {
         return Err(Tier1Failure::NoMessagesToSummarize);
     }
 
@@ -415,6 +511,15 @@ pub async fn tier1_summarize(
     })
 }
 
+pub async fn tier1_summarize(
+    gcx: Arc<GlobalContext>,
+    messages: &[ChatMessage],
+    n_ctx: usize,
+    force_full_recompact: bool,
+) -> Result<ChatMessage, Tier1Failure> {
+    tier1_summarize_range(gcx, messages, n_ctx, force_full_recompact, None).await
+}
+
 pub async fn maybe_apply_tier1(
     gcx: Arc<GlobalContext>,
     session_arc: &Arc<tokio::sync::Mutex<crate::chat::types::ChatSession>>,
@@ -512,11 +617,15 @@ pub async fn maybe_apply_tier1(
         force_full_recompact,
     );
 
-    match tier1_summarize(
+    let summary_range =
+        find_summarization_boundary_visible(&visible_messages, force_full_recompact);
+
+    match tier1_summarize_range(
         gcx,
         &visible_messages,
         effective_n_ctx,
         force_full_recompact,
+        Some(summary_range),
     )
     .await
     {
@@ -526,7 +635,11 @@ pub async fn maybe_apply_tier1(
             let mut session = session_arc.lock().await;
             if force_full_recompact {
                 if let Some((orig_start, orig_end)) = summ_msg.summarized_range {
-                    let obsolete_anchor_ids: Vec<(String, bool)> = session
+                    let merged_range = SummaryRange {
+                        start: orig_start,
+                        end: orig_end,
+                    };
+                    let obsolete_anchor_ids: Vec<(usize, String)> = session
                         .messages
                         .iter()
                         .enumerate()
@@ -534,28 +647,27 @@ pub async fn maybe_apply_tier1(
                             if !is_real_summarization_anchor(msg) {
                                 return None;
                             }
-                            match msg.summarized_range {
-                                Some((s, e)) if s >= orig_start && e <= orig_end => {
-                                    Some((msg.message_id.clone(), idx <= orig_end))
-                                }
-                                _ => None,
-                            }
+                            let (start, end) = msg.summarized_range?;
+                            let old_range = SummaryRange { start, end };
+                            ranges_overlap(old_range, merged_range)
+                                .then_some((idx, msg.message_id.clone()))
                         })
                         .collect();
-                    let removed_in_range = obsolete_anchor_ids
+                    let removed_indices: Vec<usize> = obsolete_anchor_ids
                         .iter()
-                        .filter(|(_, before_new_end)| *before_new_end)
-                        .count();
+                        .filter_map(|(idx, _)| (*idx <= orig_end).then_some(*idx))
+                        .collect();
                     let removed_total = obsolete_anchor_ids.len();
-                    for (message_id, _) in obsolete_anchor_ids {
+                    for (_, message_id) in obsolete_anchor_ids {
                         session.remove_message(&message_id);
                     }
+                    let adjusted =
+                        adjust_range_after_removing_indices(merged_range, &removed_indices);
+                    summ_msg.summarized_range = Some((adjusted.start, adjusted.end));
                     info!(
-                        "Tier1 full recompact removed {} obsolete summarization anchors",
+                        "Tier1 full recompact removed {} overlapping summarization anchors",
                         removed_total
                     );
-                    let new_end = orig_end.saturating_sub(removed_in_range);
-                    summ_msg.summarized_range = Some((orig_start, new_end));
                 }
             }
             session.thread.previous_response_id = None;
@@ -661,8 +773,31 @@ mod tests {
             }
         }
         let (start, end) = find_summarization_boundary(&messages);
-        assert_eq!(start, 7, "should start after the summarization message");
+        assert_eq!(start, 4, "should start after the summarized range");
         assert!(end >= start, "end should be >= start");
+    }
+
+    #[test]
+    fn test_find_boundary_skips_existing_ranges_in_chunks() {
+        let mut messages: Vec<ChatMessage> = (0..18)
+            .map(|i| {
+                if i % 2 == 0 {
+                    make_user_msg(&format!("user {}", i))
+                } else {
+                    make_assistant_msg(&format!("assistant {}", i))
+                }
+            })
+            .collect();
+        messages.push(make_summarization_msg((0, 3)));
+        messages.push(make_summarization_msg((5, 9)));
+
+        let (start, end) = find_summarization_boundary(&messages);
+
+        assert_eq!(start, 10);
+        assert!(
+            end > start,
+            "expected a new unsummarized chunk after existing ranges, got {start}..={end}"
+        );
     }
 
     #[test]
@@ -758,52 +893,30 @@ mod tests {
     }
 
     #[test]
-    fn test_merged_range_adjusts_for_removed_anchors() {
-        // Helper to simulate the range-adjustment logic after removal.
-        // Walks the message list, removes anchors whose range fits inside
-        // the new summary's range, and returns the adjusted new_end.
-        fn adjust(messages: &mut Vec<ChatMessage>, new_start: usize, new_end: usize) -> usize {
-            let obsolete_anchor_indices: Vec<usize> = messages
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, msg)| {
-                    if !is_real_summarization_anchor(msg) {
-                        return None;
-                    }
-                    match msg.summarized_range {
-                        Some((s, e)) if s >= new_start && e <= new_end => Some(idx),
-                        _ => None,
-                    }
-                })
-                .collect();
-            let removed_in_range = obsolete_anchor_indices
-                .iter()
-                .filter(|idx| **idx <= new_end)
-                .count();
-            for idx in obsolete_anchor_indices.into_iter().rev() {
-                messages.remove(idx);
-            }
-            new_end.saturating_sub(removed_in_range)
-        }
+    fn test_ranges_overlap_detects_partial_and_full_overlap() {
+        let merged = SummaryRange { start: 0, end: 6 };
 
-        let mut messages = vec![
-            make_user_msg("user_0"),
-            make_assistant_msg("asst_1"),
-            make_user_msg("user_2"),
-            make_assistant_msg("asst_3"),
-            make_summarization_msg((0, 1)), // old anchor at idx 4
-            make_user_msg("user_5"),
-            make_assistant_msg("asst_6"),
-            make_user_msg("user_7"),
-            make_assistant_msg("asst_8"),
-            make_user_msg("user_9"),
-        ];
-        let new_end = adjust(&mut messages, 0, 6);
-        // 1 anchor removed inside (0..=6) → new_end shifts from 6 to 5
-        assert_eq!(new_end, 5);
-        assert_eq!(messages.len(), 9, "one anchor should have been removed");
-        // The message now at the new_end should NOT be the user_7 we wanted to keep
-        assert_eq!(messages[new_end].content.content_text_only(), "asst_6");
+        assert!(ranges_overlap(merged, SummaryRange { start: 0, end: 1 }));
+        assert!(ranges_overlap(merged, SummaryRange { start: 4, end: 8 }));
+        assert!(!ranges_overlap(merged, SummaryRange { start: 7, end: 9 }));
+    }
+
+    #[test]
+    fn test_adjust_range_after_removing_indices_uses_position_mapping() {
+        let adjusted =
+            adjust_range_after_removing_indices(SummaryRange { start: 2, end: 8 }, &[0, 3]);
+
+        assert_eq!(adjusted, SummaryRange { start: 1, end: 6 });
+    }
+
+    #[test]
+    fn translate_summarized_range_drops_out_of_bounds_ranges() {
+        let original_indices = vec![1, 2, 3];
+        let mut summ_msg = make_summarization_msg((1, 9));
+
+        translate_summarized_range_to_original(&mut summ_msg, &original_indices);
+
+        assert_eq!(summ_msg.summarized_range, None);
     }
 
     #[test]
@@ -819,9 +932,16 @@ mod tests {
             .collect();
         messages.insert(5, make_summarization_msg((0, 3)));
         let (start_normal, _) = find_summarization_boundary_visible(&messages, false);
-        assert!(start_normal > 0, "normal mode starts after the anchor");
-        let (start_full, _) = find_summarization_boundary_visible(&messages, true);
+        assert!(
+            start_normal > 3,
+            "normal mode starts after the summarized range"
+        );
+        let (start_full, end_full) = find_summarization_boundary_visible(&messages, true);
         assert_eq!(start_full, 0, "force_full_recompact starts from 0");
+        assert!(
+            end_full > start_full,
+            "force_full_recompact should include summary anchor content when merging"
+        );
     }
 
     #[test]

@@ -277,4 +277,25 @@ mod tests {
         assert_eq!(result[0].content.content_text_only(), "sum");
         assert_eq!(result[1].content.content_text_only(), "sacred plan");
     }
+
+    #[test]
+    fn test_linearize_overlapping_summaries_keeps_both_anchor_summaries() {
+        let messages = vec![
+            user("msg0"),
+            assistant("msg1"),
+            user("msg2"),
+            assistant("msg3"),
+            summarization("summary-a", (0, 2)),
+            summarization("summary-b", (1, 3)),
+            user("tail"),
+        ];
+
+        let result = apply_summarization_linearize(messages);
+        let text: Vec<String> = result
+            .iter()
+            .map(|msg| msg.content.content_text_only())
+            .collect();
+
+        assert_eq!(text, vec!["summary-a", "summary-b", "tail"]);
+    }
 }

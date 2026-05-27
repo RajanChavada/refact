@@ -1,15 +1,16 @@
-use serde::{Serialize, Deserialize};
-use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use serde_json::{json, Value};
+use serde::{Serialize, Deserialize};
+use refact_core::chat_types::{ChatMessage, ChatContent, ContextFile, SamplingParameters};
+use refact_core::custom_error::first_n_chars;
 use uuid::Uuid;
 
 use crate::compression_exemption::{event_source, event_subkind, exemption_for, CompressionExemption};
-use refact_core::chat_types::{ChatMessage, ChatContent, ContextFile, SamplingParameters};
-use refact_core::custom_error::first_n_chars;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tier0CompactReport {
     pub context_files_deduped: usize,
+    pub context_files_elided: usize,
     pub tool_outputs_truncated: usize,
     pub tokens_saved_estimate: usize,
 }
@@ -215,6 +216,7 @@ pub fn tier0_deterministic_compact_with(
     aggression: CompactAggression,
 ) -> Tier0CompactReport {
     let mut context_files_deduped = 0usize;
+    let mut context_files_elided = 0usize;
     let mut tool_outputs_truncated = 0usize;
     let mut tokens_saved_estimate = 0usize;
 
@@ -327,7 +329,7 @@ pub fn tier0_deterministic_compact_with(
                     / 4
                     + 1;
                 tokens_saved_estimate += original_tokens.saturating_sub(trimmed_tokens);
-                context_files_deduped += 1;
+                context_files_elided += 1;
                 cf.file_content = format!(
                     "{}\n...\n[\u{2702}\u{fe0f} {} lines elided under aggressive compaction]\n...\n{}",
                     head.join("\n"),
@@ -344,6 +346,7 @@ pub fn tier0_deterministic_compact_with(
 
     Tier0CompactReport {
         context_files_deduped,
+        context_files_elided,
         tool_outputs_truncated,
         tokens_saved_estimate,
     }
@@ -967,6 +970,78 @@ mod tests {
         let report = tier0_deterministic_compact(&mut messages, 0);
         assert_eq!(report.tool_outputs_truncated, 0);
         assert_eq!(messages[1].content.content_text_only(), short_output);
+    }
+
+    #[test]
+    fn test_tier0_aggressive_truncates_above_eighty_chars() {
+        let medium_output = "x".repeat(120);
+        let mut messages = vec![
+            make_user_msg_basic("question"),
+            make_tool_msg("tc1", &medium_output, None),
+        ];
+
+        let mut standard_messages = messages.clone();
+        let standard_report = tier0_deterministic_compact_with(
+            &mut standard_messages,
+            0,
+            CompactAggression::Standard,
+        );
+        let aggressive_report =
+            tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Aggressive);
+
+        assert_eq!(standard_report.tool_outputs_truncated, 0);
+        assert_eq!(aggressive_report.tool_outputs_truncated, 1);
+        assert!(messages[1]
+            .content
+            .content_text_only()
+            .contains("truncated"));
+    }
+
+    #[test]
+    fn test_tier0_aggressive_preserves_only_last_two_tool_outputs() {
+        let long_output = "x".repeat(500);
+        let mut messages = vec![
+            make_tool_msg("tc1", &long_output, None),
+            make_tool_msg("tc2", &long_output, None),
+            make_tool_msg("tc3", &long_output, None),
+            make_tool_msg("tc4", &long_output, None),
+        ];
+
+        let report =
+            tier0_deterministic_compact_with(&mut messages, 4, CompactAggression::Aggressive);
+
+        assert_eq!(report.tool_outputs_truncated, 2);
+        assert!(messages[0]
+            .content
+            .content_text_only()
+            .contains("truncated"));
+        assert!(messages[1]
+            .content
+            .content_text_only()
+            .contains("truncated"));
+        assert_eq!(messages[2].content.content_text_only(), long_output);
+        assert_eq!(messages[3].content.content_text_only(), long_output);
+    }
+
+    #[test]
+    fn test_tier0_aggressive_elides_long_context_files() {
+        let long_context = (0..100)
+            .map(|idx| format!("line {idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut messages = vec![make_context_file_msg("src/main.rs", &long_context)];
+
+        let report =
+            tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Aggressive);
+
+        assert_eq!(report.context_files_deduped, 0);
+        assert_eq!(report.context_files_elided, 1);
+        let files = extract_context_files_from_content(&messages[0].content);
+        assert!(files[0]
+            .file_content
+            .contains("lines elided under aggressive compaction"));
+        assert!(files[0].file_content.contains("line 0"));
+        assert!(files[0].file_content.contains("line 99"));
     }
 
     #[test]

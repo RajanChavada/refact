@@ -13,8 +13,8 @@ use crate::tools::tools_description::{
     json_schema_from_params, Tool, ToolDesc, ToolSource, ToolSourceType,
 };
 use refact_chat_history::history_limit::{
-    compress_duplicate_context_files, remove_invalid_tool_calls_and_tool_calls_results,
-    compute_context_budget,
+    CompactAggression, compress_duplicate_context_files, compute_context_budget,
+    remove_invalid_tool_calls_and_tool_calls_results, tier0_deterministic_compact_with,
 };
 use refact_chat_history::trajectory_ops::TOOLS_TO_PRESERVE;
 use refact_runtime_api::{ChatSessionUpdate, SessionState};
@@ -25,6 +25,10 @@ const MAX_CONTEXT_ENTRIES: usize = 200;
 const MAX_TOOL_OUTPUT_ENTRIES: usize = 200;
 
 fn find_preserve_cutoff(messages: &[crate::call_validation::ChatMessage], turns: usize) -> usize {
+    if turns == 0 {
+        return messages.len();
+    }
+
     let mut turn_count = 0usize;
     let mut idx = messages.len();
     while idx > 0 {
@@ -41,6 +45,60 @@ fn find_preserve_cutoff(messages: &[crate::call_validation::ChatMessage], turns:
 
 fn should_preserve_tool(name: &str) -> bool {
     TOOLS_TO_PRESERVE.iter().any(|t| *t == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_message(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: "user".to_string(),
+            content: ChatContent::SimpleText(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn assistant_message(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: ChatContent::SimpleText(text.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn preserve_cutoff_zero_turns_makes_all_messages_modifiable() {
+        let messages = vec![user_message("one"), assistant_message("two")];
+
+        assert_eq!(find_preserve_cutoff(&messages, 0), messages.len());
+    }
+
+    #[test]
+    fn preserve_cutoff_no_user_messages_makes_all_messages_preserved() {
+        let messages = vec![assistant_message("one"), assistant_message("two")];
+
+        assert_eq!(find_preserve_cutoff(&messages, 2), 0);
+    }
+
+    #[test]
+    fn preserve_cutoff_fewer_user_turns_than_requested_preserves_all() {
+        let messages = vec![user_message("one"), assistant_message("two")];
+
+        assert_eq!(find_preserve_cutoff(&messages, 2), 0);
+    }
+
+    #[test]
+    fn preserve_cutoff_preserves_requested_tail_turns() {
+        let messages = vec![
+            user_message("one"),
+            assistant_message("two"),
+            user_message("three"),
+            assistant_message("four"),
+        ];
+
+        assert_eq!(find_preserve_cutoff(&messages, 1), 2);
+    }
 }
 
 fn approx_tokens_for_len(len: usize) -> usize {
@@ -702,9 +760,10 @@ impl Tool for ToolCompressChatApply {
             let needs_more = target_tokens.map_or(true, |t| cur_tokens > t);
             if needs_more {
                 let preserve_n = head_messages.len().saturating_sub(preserve_cutoff);
-                let report = refact_chat_history::history_limit::tier0_deterministic_compact(
+                let report = tier0_deterministic_compact_with(
                     &mut head_messages,
                     preserve_n,
+                    CompactAggression::Aggressive,
                 );
                 tool_truncated += report.tool_outputs_truncated;
                 dedup_count += report.context_files_deduped;
