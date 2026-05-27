@@ -7,6 +7,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::app_state::AppState;
+use crate::buddy::chat_reactions::{maybe_enqueue_chat_reaction, AcceptedUserMessage};
 use crate::call_validation::{ChatContent, ChatMessage, ContextFile};
 use refact_buddy_core::user_action::UserAction;
 use crate::files_correction::get_project_dirs;
@@ -161,19 +162,28 @@ pub async fn inject_priority_messages_if_any(
                 Vec::new()
             };
 
-            let mut session = session_arc.lock().await;
-            if !context_files.is_empty() {
-                apply_manual_context_files(&mut session, &context_files);
-            }
-            let parsed_content = parse_content_with_attachments(&content, &attachments);
-            let user_message = ChatMessage {
-                message_id: Uuid::new_v4().to_string(),
-                role: "user".to_string(),
-                content: parsed_content,
-                checkpoints,
-                ..Default::default()
+            let accepted_user_message = {
+                let mut session = session_arc.lock().await;
+                if !context_files.is_empty() {
+                    apply_manual_context_files(&mut session, &context_files);
+                }
+                let parsed_content = parse_content_with_attachments(&content, &attachments);
+                let accepted = AcceptedUserMessage {
+                    chat_id: session.chat_id.clone(),
+                    thread: session.thread.clone(),
+                    content: parsed_content.clone(),
+                };
+                let user_message = ChatMessage {
+                    message_id: Uuid::new_v4().to_string(),
+                    role: "user".to_string(),
+                    content: parsed_content,
+                    checkpoints,
+                    ..Default::default()
+                };
+                session.add_message(user_message);
+                accepted
             };
-            session.add_message(user_message);
+            let _ = maybe_enqueue_chat_reaction(app.clone(), accepted_user_message).await;
         }
     }
 
@@ -1014,6 +1024,7 @@ pub async fn process_command_queue(
                     continue;
                 }
 
+                let mut accepted_user_messages = Vec::new();
                 {
                     let mut session = session_arc.lock().await;
 
@@ -1038,6 +1049,11 @@ pub async fn process_command_queue(
                     }
 
                     let parsed_content = parse_content_with_attachments(&content, &attachments);
+                    accepted_user_messages.push(AcceptedUserMessage {
+                        chat_id: session.chat_id.clone(),
+                        thread: session.thread.clone(),
+                        content: parsed_content.clone(),
+                    });
                     let user_message = ChatMessage {
                         message_id: Uuid::new_v4().to_string(),
                         role: "user".to_string(),
@@ -1087,6 +1103,11 @@ pub async fn process_command_queue(
                             }
                             let add_parsed =
                                 parse_content_with_attachments(&add_content, &add_attachments);
+                            accepted_user_messages.push(AcceptedUserMessage {
+                                chat_id: session.chat_id.clone(),
+                                thread: session.thread.clone(),
+                                content: add_parsed.clone(),
+                            });
                             let add_message = ChatMessage {
                                 message_id: Uuid::new_v4().to_string(),
                                 role: "user".to_string(),
@@ -1096,6 +1117,10 @@ pub async fn process_command_queue(
                             session.add_message(add_message);
                         }
                     }
+                }
+
+                for accepted_user_message in accepted_user_messages {
+                    let _ = maybe_enqueue_chat_reaction(app.clone(), accepted_user_message).await;
                 }
 
                 maybe_save_trajectory(app.clone(), session_arc.clone()).await;

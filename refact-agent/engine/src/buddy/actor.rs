@@ -244,6 +244,7 @@ pub struct BuddyService {
     pub draft_store: DraftStore,
     pub last_observer_tick: HashMap<&'static str, DateTime<Utc>>,
     pub observers: Vec<Arc<dyn BuddyObserver>>,
+    pub chat_reaction_limiter: crate::buddy::chat_reactions::ChatReactionLimiter,
 }
 
 pub async fn render_buddy_speech(
@@ -395,6 +396,7 @@ impl BuddyService {
             draft_store: DraftStore::new(),
             last_observer_tick: HashMap::new(),
             observers: build_observer_registry(),
+            chat_reaction_limiter: crate::buddy::chat_reactions::ChatReactionLimiter::new(),
         }
     }
 

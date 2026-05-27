@@ -2855,6 +2855,43 @@ fn settings_default_observer_toggles() {
 }
 
 #[test]
+fn should_observe_thread_skips_buddy_task_setup_and_subchats() {
+    let thread = crate::chat::types::ThreadParams::default();
+    assert!(super::chat_reactions::should_observe_thread(&thread));
+
+    let mut thread = crate::chat::types::ThreadParams::default();
+    thread.buddy_meta = Some(refact_buddy_core::types::BuddyThreadMeta {
+        is_buddy_chat: true,
+        buddy_chat_kind: "investigation".to_string(),
+        workflow_id: None,
+    });
+    assert!(!super::chat_reactions::should_observe_thread(&thread));
+
+    let mut thread = crate::chat::types::ThreadParams::default();
+    thread.task_meta = Some(crate::chat::types::TaskMeta::default());
+    assert!(!super::chat_reactions::should_observe_thread(&thread));
+
+    for mode in ["buddy", "setup", "task_agent", "task_planner"] {
+        let mut thread = crate::chat::types::ThreadParams::default();
+        thread.mode = mode.to_string();
+        assert!(!super::chat_reactions::should_observe_thread(&thread));
+    }
+
+    let mut thread = crate::chat::types::ThreadParams::default();
+    thread.mode = "setup_mcp".to_string();
+    assert!(!super::chat_reactions::should_observe_thread(&thread));
+
+    let mut thread = crate::chat::types::ThreadParams::default();
+    thread.parent_id = Some("parent".to_string());
+    assert!(!super::chat_reactions::should_observe_thread(&thread));
+
+    let mut thread = crate::chat::types::ThreadParams::default();
+    thread.parent_id = Some("parent".to_string());
+    thread.link_type = Some("branch".to_string());
+    assert!(super::chat_reactions::should_observe_thread(&thread));
+}
+
+#[test]
 fn humor_level_and_autonomy_serde() {
     let hl = HumorLevel::Light;
     let json = serde_json::to_string(&hl).unwrap();

@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::app_state::AppState;
+use crate::call_validation::ChatContent;
+use crate::chat::types::ThreadParams;
+
 use super::settings::{BuddySettings, HumorLevel};
 use super::types::{BuddyBubblePolicy, BuddyRuntimeEvent};
 
@@ -28,6 +32,34 @@ const INSIGHT_KEYWORDS: &[&str] = &[
     "rewrite",
     "review",
 ];
+
+pub struct AcceptedUserMessage {
+    pub chat_id: String,
+    pub thread: ThreadParams,
+    pub content: ChatContent,
+}
+
+pub fn should_observe_thread(thread: &ThreadParams) -> bool {
+    if let Some(meta) = thread.buddy_meta.as_ref() {
+        if meta.is_buddy_chat {
+            return false;
+        }
+    }
+    if thread.task_meta.is_some() {
+        return false;
+    }
+    let mode = thread.mode.as_str();
+    if matches!(mode, "buddy" | "setup" | "task_agent" | "task_planner") {
+        return false;
+    }
+    if mode.starts_with("setup_") {
+        return false;
+    }
+    if thread.parent_id.is_some() && thread.link_type.as_deref() != Some("branch") {
+        return false;
+    }
+    true
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatReactionKind {
@@ -126,6 +158,40 @@ pub fn build_reaction_event(
         controls: vec![],
         chat_id: Some(chat_id.to_string()),
         dismissed: false,
+    }
+}
+
+pub async fn maybe_enqueue_chat_reaction(app: AppState, accepted: AcceptedUserMessage) {
+    if !should_observe_thread(&accepted.thread) {
+        return;
+    }
+
+    let raw_text = accepted.content.content_text_only();
+    let Some(analysis) = prepare_analysis_text(&raw_text) else {
+        return;
+    };
+
+    let event = {
+        let mut svc_guard = app.buddy.buddy.lock().await;
+        let Some(svc) = svc_guard.as_mut() else {
+            return;
+        };
+        if !settings_allow_chat_reactions(&svc.settings) {
+            return;
+        }
+        let Some(reaction) = classify_chat_reaction(&analysis, &svc.settings) else {
+            return;
+        };
+        let now = chrono::Utc::now();
+        if !svc.chat_reaction_limiter.allow(&accepted.chat_id, now) {
+            return;
+        }
+        build_reaction_event(&accepted.chat_id, &analysis, &reaction)
+    };
+
+    let mut svc_guard = app.buddy.buddy.lock().await;
+    if let Some(svc) = svc_guard.as_mut() {
+        svc.enqueue_runtime_event(event);
     }
 }
 
