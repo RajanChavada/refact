@@ -77,3 +77,155 @@ pub fn append_text_to_tool_json(msg: &mut serde_json::Value, text: &str) {
         format!("{}\n\n{}", existing, text)
     });
 }
+
+pub fn is_event_role(role: &str) -> bool {
+    role == "event"
+}
+
+pub fn is_plan_role(role: &str) -> bool {
+    role == "plan"
+}
+
+pub fn render_event_message(msg: &ChatMessage) -> String {
+    let meta = msg.extra.get("event");
+    let subkind = meta
+        .and_then(|m| m.get("subkind"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let source = meta
+        .and_then(|m| m.get("source"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let payload = meta
+        .and_then(|m| m.get("payload"))
+        .unwrap_or(&serde_json::Value::Null);
+    let payload_json = serde_json::to_string(payload).unwrap_or_else(|_| "null".to_string());
+    let content = msg.content.content_text_only();
+    format!(
+        "<event subkind=\"{}\" source=\"{}\">\n<payload>{}</payload>\n<message>{}</message>\n</event>",
+        escape_xml_attr(subkind),
+        escape_xml_attr(source),
+        escape_xml_text(&payload_json),
+        escape_xml_text(&content)
+    )
+}
+
+pub fn render_plan_system_blocks(messages: &[ChatMessage]) -> Vec<String> {
+    let mut plans = Vec::new();
+    for (position, msg) in messages.iter().enumerate() {
+        if !is_plan_role(&msg.role) {
+            continue;
+        }
+        let meta = msg.extra.get("plan");
+        let mode = meta
+            .and_then(|m| m.get("mode"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let version = meta
+            .and_then(|m| m.get("version"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        plans.push(PlanBlock {
+            mode,
+            version,
+            content: msg.content.content_text_only(),
+            position,
+        });
+    }
+
+    let Some((latest_index, latest)) = plans
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, plan)| (plan.version, plan.position))
+    else {
+        return Vec::new();
+    };
+
+    let mut distinct_versions = Vec::new();
+    for plan in &plans {
+        if !distinct_versions.contains(&plan.version) {
+            distinct_versions.push(plan.version);
+        }
+    }
+
+    let mut blocks = Vec::new();
+    if distinct_versions.len() >= 2 {
+        let mut older: Vec<_> = plans
+            .iter()
+            .enumerate()
+            .filter(|(idx, plan)| *idx != latest_index && plan.version != latest.version)
+            .map(|(_, plan)| plan)
+            .collect();
+        older.sort_by_key(|plan| (plan.version, plan.position));
+        if !older.is_empty() {
+            let bullets = older
+                .into_iter()
+                .map(|plan| {
+                    format!(
+                        "- v{}: {}",
+                        plan.version,
+                        escape_xml_text(&plan_history_snippet(&plan.content))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(format!("<plan-history>\n{}\n</plan-history>", bullets));
+        }
+    }
+
+    blocks.push(format!(
+        "<plan mode=\"{}\" version=\"{}\">\n{}\n</plan>",
+        escape_xml_attr(&latest.mode),
+        latest.version,
+        render_plan_content(&latest.content)
+    ));
+    blocks
+}
+
+pub fn append_plan_blocks(system_text: Option<String>, plan_blocks: Vec<String>) -> Option<String> {
+    if plan_blocks.is_empty() {
+        return system_text;
+    }
+    let plan_text = plan_blocks.join("\n\n");
+    match system_text {
+        Some(text) if !text.trim().is_empty() => Some(format!("{}\n\n{}", text, plan_text)),
+        _ => Some(plan_text),
+    }
+}
+
+fn render_plan_content(content: &str) -> String {
+    if content.contains('<') || content.contains('>') {
+        format!("<![CDATA[{}]]>", content.replace("]]>", "]]]]><![CDATA[>"))
+    } else {
+        escape_xml_text(content)
+    }
+}
+
+fn plan_history_snippet(content: &str) -> String {
+    content
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .replace(['\r', '\n'], " ")
+}
+
+fn escape_xml_text(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_xml_attr(input: &str) -> String {
+    escape_xml_text(input)
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+struct PlanBlock {
+    mode: String,
+    version: u64,
+    content: String,
+    position: usize,
+}

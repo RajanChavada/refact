@@ -390,32 +390,51 @@ impl LlmWireAdapter for OpenAiChatAdapter {
 }
 
 fn convert_messages_to_openai(messages: &[refact_core::chat_types::ChatMessage]) -> Vec<Value> {
-    use super::render_extra::{append_text_to_tool_json, is_context_role, render_context_message};
+    use super::render_extra::{
+        append_plan_blocks, append_text_to_tool_json, is_context_role, is_event_role, is_plan_role,
+        render_context_message, render_event_message, render_plan_system_blocks,
+    };
 
+    let plan_blocks = render_plan_system_blocks(messages);
     let mut result: Vec<Value> = Vec::new();
     let mut pending_user_content: Vec<Value> = Vec::new();
 
     for msg in messages {
-        if is_context_role(&msg.role) {
-            let Some(text) = render_context_message(msg) else {
+        if is_plan_role(&msg.role) {
+            continue;
+        }
+
+        if is_context_role(&msg.role) || is_event_role(&msg.role) {
+            let text = if is_event_role(&msg.role) {
+                Some(render_event_message(msg))
+            } else {
+                render_context_message(msg)
+            };
+            let Some(text) = text else {
                 continue;
             };
-            // Fold into the matching tool result by tool_call_id when possible
-            // so the model receives file content as part of the correct tool output.
-            // Fall back to the last tool message if tool_call_id is absent.
-            let target = if !msg.tool_call_id.is_empty() {
-                result.iter_mut().rev().find(|m| {
-                    m["role"].as_str() == Some("tool")
-                        && m["tool_call_id"].as_str() == Some(msg.tool_call_id.as_str())
-                })
-            } else {
-                result
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m["role"].as_str() == Some("tool"))
-            };
-            if let Some(tool_msg) = target {
-                append_text_to_tool_json(tool_msg, &text);
+            if is_context_role(&msg.role) && !pending_user_content.is_empty() {
+                pending_user_content.push(json!({"type": "text", "text": text}));
+            } else if is_context_role(&msg.role) {
+                // Fold into the matching tool result by tool_call_id when possible
+                // so the model receives file content as part of the correct tool output.
+                // Fall back to the last tool message if tool_call_id is absent.
+                let target = if !msg.tool_call_id.is_empty() {
+                    result.iter_mut().rev().find(|m| {
+                        m["role"].as_str() == Some("tool")
+                            && m["tool_call_id"].as_str() == Some(msg.tool_call_id.as_str())
+                    })
+                } else {
+                    result
+                        .iter_mut()
+                        .rev()
+                        .find(|m| m["role"].as_str() == Some("tool"))
+                };
+                if let Some(tool_msg) = target {
+                    append_text_to_tool_json(tool_msg, &text);
+                } else {
+                    pending_user_content.push(json!({"type": "text", "text": text}));
+                }
             } else {
                 pending_user_content.push(json!({"type": "text", "text": text}));
             }
@@ -432,7 +451,7 @@ fn convert_messages_to_openai(messages: &[refact_core::chat_types::ChatMessage])
             continue;
         }
 
-        if role != "user" && !pending_user_content.is_empty() {
+        if role != "user" && role != "tool" && !pending_user_content.is_empty() {
             result.push(json!({
                 "role": "user",
                 "content": std::mem::take(&mut pending_user_content),
@@ -443,6 +462,8 @@ fn convert_messages_to_openai(messages: &[refact_core::chat_types::ChatMessage])
 
         match &msg.content {
             refact_core::chat_types::ChatContent::SimpleText(text) => {
+                let text = text.clone();
+
                 if role == "user" && !pending_user_content.is_empty() {
                     let mut content = std::mem::take(&mut pending_user_content);
                     if !text.is_empty() {
@@ -554,6 +575,20 @@ fn convert_messages_to_openai(messages: &[refact_core::chat_types::ChatMessage])
             "role": "user",
             "content": pending_user_content,
         }));
+    }
+
+    if !plan_blocks.is_empty() {
+        if let Some(system_msg) = result
+            .iter_mut()
+            .find(|msg| msg["role"].as_str() == Some("system"))
+        {
+            let existing = system_msg["content"].as_str().map(str::to_string);
+            if let Some(text) = append_plan_blocks(existing, plan_blocks) {
+                system_msg["content"] = json!(text);
+            }
+        } else if let Some(text) = append_plan_blocks(None, plan_blocks) {
+            result.insert(0, json!({"role": "system", "content": text}));
+        }
     }
 
     result
@@ -753,7 +788,7 @@ fn parse_openai_usage(usage: &Value) -> Option<ChatUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use refact_core::chat_types::ChatMessage;
+    use refact_core::chat_types::{ChatContent, ChatMessage};
 
     fn default_settings() -> AdapterSettings {
         AdapterSettings {
@@ -771,6 +806,116 @@ mod tests {
             supports_web_search: false,
             supports_cache_control: true,
         }
+    }
+
+    fn event_message(subkind: &str, source: &str, payload: Value, content: &str) -> ChatMessage {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "event".to_string(),
+            json!({"subkind": subkind, "source": source, "payload": payload}),
+        );
+        ChatMessage {
+            role: "event".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    fn plan_message(mode: &str, version: u32, content: &str) -> ChatMessage {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "plan".to_string(),
+            json!({"mode": mode, "version": version}),
+        );
+        ChatMessage {
+            role: "plan".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn convert_event_to_user_wrapped_xml() {
+        let messages = vec![event_message(
+            "mode_switch",
+            "mode",
+            json!({"next":"agent"}),
+            "Switched to agent",
+        )];
+
+        let converted = convert_messages_to_openai(&messages);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        let content = converted[0]["content"].as_array().unwrap();
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("<event subkind=\"mode_switch\""));
+        assert!(text.contains("<message>Switched to agent</message>"));
+    }
+
+    #[test]
+    fn convert_plan_to_system() {
+        let messages = vec![plan_message("agent", 1, "Do the thing")];
+
+        let converted = convert_messages_to_openai(&messages);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "system");
+        let content = converted[0]["content"].as_str().unwrap();
+        assert!(content.contains("<plan mode=\"agent\" version=\"1\">"));
+        assert!(content.contains("Do the thing"));
+    }
+
+    #[test]
+    fn convert_multiple_plan_versions() {
+        let messages = vec![
+            plan_message("agent", 1, "first plan"),
+            plan_message("agent", 3, "latest plan"),
+            plan_message("agent", 2, "second plan"),
+        ];
+
+        let converted = convert_messages_to_openai(&messages);
+        let content = converted[0]["content"].as_str().unwrap();
+
+        assert_eq!(content.matches("<plan mode=").count(), 1);
+        assert_eq!(content.matches("<plan-history>").count(), 1);
+        assert!(content.contains("version=\"3\""));
+        assert!(content.contains("- v1: first plan"));
+        assert!(content.contains("- v2: second plan"));
+    }
+
+    #[test]
+    fn convert_no_literal_role_strings() {
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "Hi".to_string()),
+            event_message("mode_switch", "mode", json!({"next":"agent"}), "Switched"),
+            plan_message("agent", 1, "Do it"),
+            ChatMessage::new("assistant".to_string(), "Ok".to_string()),
+        ];
+
+        let converted = convert_messages_to_openai(&messages);
+        let body = json!({"messages": converted}).to_string();
+
+        assert!(!body.contains("\"role\":\"event\""));
+        assert!(!body.contains("\"role\":\"plan\""));
+    }
+
+    #[test]
+    fn convert_event_escapes_xml_special_chars() {
+        let messages = vec![event_message(
+            "mode_switch",
+            "mode",
+            json!({"value":"<tag>&stuff"}),
+            "a < b & c > d",
+        )];
+
+        let converted = convert_messages_to_openai(&messages);
+        let text = converted[0]["content"][0]["text"].as_str().unwrap();
+
+        assert!(text.contains("&lt;tag&gt;&amp;stuff"));
+        assert!(text.contains("<message>a &lt; b &amp; c &gt; d</message>"));
     }
 
     #[test]
@@ -795,7 +940,6 @@ mod tests {
 
     #[test]
     fn github_copilot_openai_chat_adds_vision_header_only_for_images() {
-        use refact_core::chat_types::ChatContent;
         use refact_core::chat_types::MultimodalElement;
 
         let adapter = OpenAiChatAdapter;
@@ -1420,7 +1564,6 @@ mod tests {
 
     #[test]
     fn test_text_only_multimodal_normalized_to_string() {
-        use refact_core::chat_types::ChatContent;
         use refact_core::chat_types::MultimodalElement;
 
         let messages = vec![
@@ -1463,7 +1606,6 @@ mod tests {
 
     #[test]
     fn test_multimodal_with_image_stays_array() {
-        use refact_core::chat_types::ChatContent;
         use refact_core::chat_types::MultimodalElement;
 
         let messages = vec![ChatMessage {

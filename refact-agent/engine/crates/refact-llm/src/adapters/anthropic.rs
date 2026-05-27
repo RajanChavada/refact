@@ -457,58 +457,63 @@ fn convert_to_anthropic(
     messages: &[refact_core::chat_types::ChatMessage],
     context_sanitizer: Option<&dyn Fn(&str) -> String>,
 ) -> (Option<Value>, Vec<Value>) {
-    use super::render_extra::{is_context_role, render_context_message};
+    use super::render_extra::{
+        append_plan_blocks, is_context_role, is_event_role, is_plan_role, render_context_message,
+        render_event_message, render_plan_system_blocks,
+    };
 
     let mut system_text = None;
+    let plan_blocks = render_plan_system_blocks(messages);
     let mut result: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
-    // Context buffered when there are no pending tool results; merged into the
-    // next user message to avoid introducing extra consecutive user turns.
-    let mut pending_context_text: Vec<String> = Vec::new();
+    let mut pending_context_text: Vec<PendingText> = Vec::new();
 
     for msg in messages {
         match msg.role.as_str() {
             "system" => {
                 system_text = Some(msg.content.content_text_only());
             }
-            role if is_context_role(role) => {
-                let Some(raw_text) = render_context_message(msg) else {
+            role if is_context_role(role) || is_event_role(role) => {
+                let raw_text = if is_event_role(role) {
+                    Some(render_event_message(msg))
+                } else {
+                    render_context_message(msg)
+                };
+                let Some(raw_text) = raw_text else {
                     continue;
                 };
                 let text = match context_sanitizer {
                     Some(f) => f(&raw_text),
                     None => raw_text,
                 };
-                if !pending_tool_results.is_empty() {
+                if is_context_role(role) && !pending_tool_results.is_empty() {
                     // Inside a tool-results group: add as a plain text content block
                     // so it is delivered in the same user turn as the tool outputs.
                     pending_tool_results.push(json!({"type": "text", "text": text}));
                 } else {
-                    // No open tool-results group: buffer for the next user message.
-                    pending_context_text.push(text);
+                    pending_context_text.push(PendingText {
+                        text,
+                        is_event: is_event_role(role),
+                    });
                 }
             }
             "user" | "assistant" => {
                 let mut content = Vec::new();
                 // Merge pending tool_results (and any trailing context blocks) into
                 // the user message to avoid consecutive user turns.
-                if msg.role == "user"
-                    && (!pending_tool_results.is_empty() || !pending_context_text.is_empty())
-                {
-                    content.extend(pending_tool_results.drain(..));
-                    for text in pending_context_text.drain(..) {
-                        content.push(json!({"type": "text", "text": text}));
+                if msg.role == "user" && !pending_context_text.is_empty() {
+                    flush_tool_results(&mut result, &mut pending_tool_results);
+                    for pending in pending_context_text.drain(..) {
+                        content.push(json!({"type": "text", "text": pending.text}));
                     }
+                } else if msg.role == "user" && !pending_tool_results.is_empty() {
+                    content.extend(pending_tool_results.drain(..));
                 } else {
                     // Flush any open tool-results group before an assistant turn.
                     if !pending_context_text.is_empty() && pending_tool_results.is_empty() {
                         // Emit buffered context as a standalone user turn so it is
                         // not lost when an assistant message follows without a user.
-                        let ctx: Vec<Value> = pending_context_text
-                            .drain(..)
-                            .map(|t| json!({"type": "text", "text": t}))
-                            .collect();
-                        result.push(json!({"role": "user", "content": ctx}));
+                        flush_pending_context_text(&mut result, &mut pending_context_text);
                     }
                     flush_tool_results(&mut result, &mut pending_tool_results);
                 }
@@ -775,17 +780,27 @@ fn convert_to_anthropic(
                     }));
                 }
             }
+            role if is_plan_role(role) => {}
             _ => {}
         }
     }
 
     // Flush any remaining context and tool results.
     if !pending_context_text.is_empty() {
-        for text in pending_context_text.drain(..) {
-            pending_tool_results.push(json!({"type": "text", "text": text}));
+        if pending_context_text.iter().any(|pending| pending.is_event) {
+            flush_tool_results(&mut result, &mut pending_tool_results);
+            flush_pending_context_text(&mut result, &mut pending_context_text);
+        } else {
+            for pending in pending_context_text.drain(..) {
+                pending_tool_results.push(json!({"type": "text", "text": pending.text}));
+            }
         }
     }
     flush_tool_results(&mut result, &mut pending_tool_results);
+
+    if !plan_blocks.is_empty() {
+        system_text = append_plan_blocks(system_text, plan_blocks);
+    }
 
     // Claude prompt caching breakpoints are handled on messages (not system).
     let system = system_text.map(|text| json!(text));
@@ -801,6 +816,22 @@ fn flush_tool_results(result: &mut Vec<Value>, pending: &mut Vec<Value>) {
         "role": "user",
         "content": pending.drain(..).collect::<Vec<_>>()
     }));
+}
+
+fn flush_pending_context_text(result: &mut Vec<Value>, pending: &mut Vec<PendingText>) {
+    if pending.is_empty() {
+        return;
+    }
+    let content: Vec<Value> = pending
+        .drain(..)
+        .map(|pending| json!({"type": "text", "text": pending.text}))
+        .collect();
+    result.push(json!({"role": "user", "content": content}));
+}
+
+struct PendingText {
+    text: String,
+    is_event: bool,
 }
 
 /// Anthropic rejects `{"type":"text","text":""}` content blocks with 400 Bad Request.
@@ -888,7 +919,7 @@ fn parse_anthropic_usage(usage: &Value) -> Option<ChatUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use refact_core::chat_types::ChatMessage;
+    use refact_core::chat_types::{ChatContent, ChatMessage};
     use crate::params::CacheControl;
 
     fn settings() -> AdapterSettings {
@@ -909,6 +940,177 @@ mod tests {
         }
     }
 
+    fn event_message(subkind: &str, source: &str, payload: Value, content: &str) -> ChatMessage {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "event".to_string(),
+            json!({"subkind": subkind, "source": source, "payload": payload}),
+        );
+        ChatMessage {
+            role: "event".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    fn plan_message(mode: &str, version: u32, content: &str) -> ChatMessage {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "plan".to_string(),
+            json!({"mode": mode, "version": version}),
+        );
+        ChatMessage {
+            role: "plan".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn convert_event_to_user_wrapped_xml() {
+        let messages = vec![event_message(
+            "mode_switch",
+            "mode",
+            json!({"next":"agent"}),
+            "Switched to agent",
+        )];
+
+        let (system, converted) = convert_to_anthropic(&messages, None);
+
+        assert!(system.is_none());
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        let text = converted[0]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("<event subkind=\"mode_switch\""));
+        assert!(text.contains("<message>Switched to agent</message>"));
+    }
+
+    #[test]
+    fn convert_plan_to_system() {
+        let messages = vec![plan_message("agent", 1, "Do the thing")];
+
+        let (system, converted) = convert_to_anthropic(&messages, None);
+
+        assert!(converted.is_empty());
+        let system = system.unwrap();
+        let content = system.as_str().unwrap();
+        assert!(content.contains("<plan mode=\"agent\" version=\"1\">"));
+        assert!(content.contains("Do the thing"));
+    }
+
+    #[test]
+    fn convert_multiple_plan_versions() {
+        let messages = vec![
+            plan_message("agent", 1, "first plan"),
+            plan_message("agent", 3, "latest plan"),
+            plan_message("agent", 2, "second plan"),
+        ];
+
+        let (system, _) = convert_to_anthropic(&messages, None);
+        let content = system.unwrap().as_str().unwrap().to_string();
+
+        assert_eq!(content.matches("<plan mode=").count(), 1);
+        assert_eq!(content.matches("<plan-history>").count(), 1);
+        assert!(content.contains("version=\"3\""));
+        assert!(content.contains("- v1: first plan"));
+        assert!(content.contains("- v2: second plan"));
+    }
+
+    #[test]
+    fn convert_no_literal_role_strings() {
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "Hi".to_string()),
+            event_message("mode_switch", "mode", json!({"next":"agent"}), "Switched"),
+            plan_message("agent", 1, "Do it"),
+            ChatMessage::new("assistant".to_string(), "Ok".to_string()),
+        ];
+
+        let (system, converted) = convert_to_anthropic(&messages, None);
+        let body = json!({"system": system, "messages": converted}).to_string();
+
+        assert!(!body.contains("\"role\":\"event\""));
+        assert!(!body.contains("\"role\":\"plan\""));
+    }
+
+    #[test]
+    fn convert_event_does_not_split_thinking_blocks() {
+        use refact_core::chat_types::{ChatToolCall, ChatToolFunction};
+
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "Search for X".to_string()),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: ChatContent::SimpleText("Answer draft".to_string()),
+                thinking_blocks: Some(vec![json!({
+                    "type": "thinking",
+                    "thinking": "I should search for X",
+                    "signature": "sig_search"
+                })]),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: "call_1".to_string(),
+                    tool_type: "function".to_string(),
+                    extra_content: None,
+                    function: ChatToolFunction {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                    index: None,
+                }]),
+                ..Default::default()
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: ChatContent::SimpleText("Found results".to_string()),
+                tool_call_id: "call_1".to_string(),
+                ..Default::default()
+            },
+            event_message(
+                "tool_decision",
+                "tools",
+                json!({"allowed":true}),
+                "Tool approved",
+            ),
+        ];
+
+        let (_, converted) = convert_to_anthropic(&messages, None);
+        let assistant_index = converted
+            .iter()
+            .position(|msg| msg["role"] == "assistant")
+            .unwrap();
+        let assistant_content = converted[assistant_index]["content"].as_array().unwrap();
+
+        assert_eq!(converted[assistant_index]["role"], "assistant");
+        assert_eq!(assistant_content[0]["type"], "thinking");
+        assert_eq!(assistant_content[1]["type"], "text");
+        assert_eq!(assistant_content[2]["type"], "tool_use");
+        let tool_result_index = converted
+            .iter()
+            .position(|msg| {
+                msg["content"].as_array().is_some_and(|content| {
+                    content.iter().any(|block| block["type"] == "tool_result")
+                })
+            })
+            .unwrap();
+        let tool_result_content = converted[tool_result_index]["content"].as_array().unwrap();
+        assert_eq!(tool_result_content[0]["type"], "tool_result");
+        let event_index = converted
+            .iter()
+            .position(|msg| {
+                msg["content"].as_array().is_some_and(|content| {
+                    content.iter().any(|block| {
+                        block["type"] == "text"
+                            && block["text"]
+                                .as_str()
+                                .is_some_and(|text| text.contains("<event"))
+                    })
+                })
+            })
+            .unwrap();
+        assert_eq!(converted[event_index]["role"], "user");
+    }
+
     #[test]
     fn test_build_http_headers() {
         let adapter = AnthropicAdapter;
@@ -920,7 +1122,6 @@ mod tests {
 
     #[test]
     fn github_copilot_anthropic_messages_uses_bearer_auth_and_copilot_headers() {
-        use refact_core::chat_types::ChatContent;
         use refact_core::chat_types::MultimodalElement;
 
         let adapter = AnthropicAdapter;

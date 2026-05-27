@@ -199,8 +199,12 @@ fn reasoning_requested(reasoning: &ReasoningIntent) -> bool {
 }
 
 fn convert_messages_to_ollama(messages: &[ChatMessage]) -> Vec<Value> {
-    use super::render_extra::{append_text_to_tool_json, is_context_role, render_context_message};
+    use super::render_extra::{
+        append_plan_blocks, append_text_to_tool_json, is_context_role, is_event_role, is_plan_role,
+        render_context_message, render_event_message, render_plan_system_blocks,
+    };
 
+    let plan_blocks = render_plan_system_blocks(messages);
     let mut result: Vec<Value> = Vec::new();
     let mut pending_user_text = Vec::new();
     let mut pending_user_images = Vec::new();
@@ -210,23 +214,36 @@ fn convert_messages_to_ollama(messages: &[ChatMessage]) -> Vec<Value> {
     // history tool_calls include matching IDs when available. Tool-result images are deferred
     // to the next user message because Ollama expects images on user messages.
     for msg in messages {
-        if is_context_role(&msg.role) {
-            let Some(text) = render_context_message(msg) else {
+        if is_plan_role(&msg.role) {
+            continue;
+        }
+
+        if is_context_role(&msg.role) || is_event_role(&msg.role) {
+            let text = if is_event_role(&msg.role) {
+                Some(render_event_message(msg))
+            } else {
+                render_context_message(msg)
+            };
+            let Some(text) = text else {
                 continue;
             };
-            let target = if !msg.tool_call_id.is_empty() {
-                result.iter_mut().rev().find(|m| {
-                    m["role"].as_str() == Some("tool")
-                        && m["tool_call_id"].as_str() == Some(msg.tool_call_id.as_str())
-                })
-            } else {
-                result
-                    .iter_mut()
-                    .rev()
-                    .find(|m| m["role"].as_str() == Some("tool"))
-            };
-            if let Some(tool_msg) = target {
-                append_text_to_tool_json(tool_msg, &text);
+            if is_context_role(&msg.role) {
+                let target = if !msg.tool_call_id.is_empty() {
+                    result.iter_mut().rev().find(|m| {
+                        m["role"].as_str() == Some("tool")
+                            && m["tool_call_id"].as_str() == Some(msg.tool_call_id.as_str())
+                    })
+                } else {
+                    result
+                        .iter_mut()
+                        .rev()
+                        .find(|m| m["role"].as_str() == Some("tool"))
+                };
+                if let Some(tool_msg) = target {
+                    append_text_to_tool_json(tool_msg, &text);
+                } else {
+                    pending_user_text.push(text);
+                }
             } else {
                 pending_user_text.push(text);
             }
@@ -314,6 +331,19 @@ fn convert_messages_to_ollama(messages: &[ChatMessage]) -> Vec<Value> {
         &mut pending_user_text,
         &mut pending_user_images,
     );
+    if !plan_blocks.is_empty() {
+        if let Some(system_msg) = result
+            .iter_mut()
+            .find(|msg| msg["role"].as_str() == Some("system"))
+        {
+            let existing = system_msg["content"].as_str().map(str::to_string);
+            if let Some(text) = append_plan_blocks(existing, plan_blocks) {
+                system_msg["content"] = json!(text);
+            }
+        } else if let Some(text) = append_plan_blocks(None, plan_blocks) {
+            result.insert(0, json!({"role": "system", "content": text}));
+        }
+    }
     result
 }
 

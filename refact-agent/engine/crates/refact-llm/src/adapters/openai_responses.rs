@@ -720,9 +720,13 @@ impl LlmWireAdapter for OpenAiResponsesAdapter {
 fn convert_to_responses_format(
     messages: &[refact_core::chat_types::ChatMessage],
 ) -> (Value, Option<String>) {
-    use super::render_extra::{is_context_role, render_context_message};
+    use super::render_extra::{
+        append_plan_blocks, is_context_role, is_event_role, is_plan_role, render_context_message,
+        render_event_message, render_plan_system_blocks,
+    };
 
     let mut instructions = None;
+    let plan_blocks = render_plan_system_blocks(messages);
     let mut input_messages: Vec<Value> = Vec::new();
     let mut system_count = 0;
     // Unified buffer of Responses API content blocks to inject into the next user turn.
@@ -742,30 +746,39 @@ fn convert_to_responses_format(
                 }
                 instructions = Some(msg.content.content_text_only());
             }
-            role if is_context_role(role) => {
-                let Some(text) = render_context_message(msg) else {
+            role if is_context_role(role) || is_event_role(role) => {
+                let text = if is_event_role(role) {
+                    Some(render_event_message(msg))
+                } else {
+                    render_context_message(msg)
+                };
+                let Some(text) = text else {
                     continue;
                 };
-                // Fold into the matching function_call_output by call_id when possible
-                // so the model receives file content as part of the correct tool output.
-                // Fall back to the last function_call_output if tool_call_id is absent.
-                let target = if !msg.tool_call_id.is_empty() {
-                    input_messages.iter_mut().rev().find(|m| {
-                        m["type"].as_str() == Some("function_call_output")
-                            && m["call_id"].as_str() == Some(msg.tool_call_id.as_str())
-                    })
-                } else {
-                    input_messages
-                        .last_mut()
-                        .filter(|m| m["type"].as_str() == Some("function_call_output"))
-                };
-                if let Some(item) = target {
-                    let existing = item["output"].as_str().unwrap_or("").to_string();
-                    item["output"] = json!(if existing.is_empty() {
-                        text
+                if is_context_role(role) {
+                    // Fold into the matching function_call_output by call_id when possible
+                    // so the model receives file content as part of the correct tool output.
+                    // Fall back to the last function_call_output if tool_call_id is absent.
+                    let target = if !msg.tool_call_id.is_empty() {
+                        input_messages.iter_mut().rev().find(|m| {
+                            m["type"].as_str() == Some("function_call_output")
+                                && m["call_id"].as_str() == Some(msg.tool_call_id.as_str())
+                        })
                     } else {
-                        format!("{}\n\n{}", existing, text)
-                    });
+                        input_messages
+                            .last_mut()
+                            .filter(|m| m["type"].as_str() == Some("function_call_output"))
+                    };
+                    if let Some(item) = target {
+                        let existing = item["output"].as_str().unwrap_or("").to_string();
+                        item["output"] = json!(if existing.is_empty() {
+                            text
+                        } else {
+                            format!("{}\n\n{}", existing, text)
+                        });
+                    } else {
+                        pending_user_content.push(json!({"type": "input_text", "text": text}));
+                    }
                 } else {
                     pending_user_content.push(json!({"type": "input_text", "text": text}));
                 }
@@ -841,6 +854,7 @@ fn convert_to_responses_format(
                     }
                 }
             }
+            role if is_plan_role(role) => {}
             _ => {}
         }
     }
@@ -851,6 +865,10 @@ fn convert_to_responses_format(
             "role": "user",
             "content": pending_user_content,
         }));
+    }
+
+    if !plan_blocks.is_empty() {
+        instructions = append_plan_blocks(instructions, plan_blocks);
     }
 
     let input = if input_messages.is_empty() {
@@ -1114,7 +1132,7 @@ fn extract_usage(json: &Value) -> Option<ChatUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use refact_core::chat_types::ChatMessage;
+    use refact_core::chat_types::{ChatContent, ChatMessage};
 
     fn default_settings() -> AdapterSettings {
         AdapterSettings {
@@ -1139,6 +1157,100 @@ mod tests {
             endpoint: "https://chatgpt.com/backend-api/codex/responses".to_string(),
             ..default_settings()
         }
+    }
+
+    fn event_message(subkind: &str, source: &str, payload: Value, content: &str) -> ChatMessage {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "event".to_string(),
+            json!({"subkind": subkind, "source": source, "payload": payload}),
+        );
+        ChatMessage {
+            role: "event".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    fn plan_message(mode: &str, version: u32, content: &str) -> ChatMessage {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "plan".to_string(),
+            json!({"mode": mode, "version": version}),
+        );
+        ChatMessage {
+            role: "plan".to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            extra,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn convert_event_to_user_wrapped_xml() {
+        let messages = vec![event_message(
+            "mode_switch",
+            "mode",
+            json!({"next":"agent"}),
+            "Switched to agent",
+        )];
+
+        let (input, instructions) = convert_to_responses_format(&messages);
+        let input = input.as_array().unwrap();
+
+        assert!(instructions.is_none());
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["role"], "user");
+        let text = input[0]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("<event subkind=\"mode_switch\""));
+        assert!(text.contains("<message>Switched to agent</message>"));
+    }
+
+    #[test]
+    fn convert_plan_to_system() {
+        let messages = vec![plan_message("agent", 1, "Do the thing")];
+
+        let (input, instructions) = convert_to_responses_format(&messages);
+
+        assert!(input.is_null());
+        let instructions = instructions.unwrap();
+        assert!(instructions.contains("<plan mode=\"agent\" version=\"1\">"));
+        assert!(instructions.contains("Do the thing"));
+    }
+
+    #[test]
+    fn convert_multiple_plan_versions() {
+        let messages = vec![
+            plan_message("agent", 1, "first plan"),
+            plan_message("agent", 3, "latest plan"),
+            plan_message("agent", 2, "second plan"),
+        ];
+
+        let (_, instructions) = convert_to_responses_format(&messages);
+        let instructions = instructions.unwrap();
+
+        assert_eq!(instructions.matches("<plan mode=").count(), 1);
+        assert_eq!(instructions.matches("<plan-history>").count(), 1);
+        assert!(instructions.contains("version=\"3\""));
+        assert!(instructions.contains("- v1: first plan"));
+        assert!(instructions.contains("- v2: second plan"));
+    }
+
+    #[test]
+    fn convert_no_literal_role_strings() {
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "Hi".to_string()),
+            event_message("mode_switch", "mode", json!({"next":"agent"}), "Switched"),
+            plan_message("agent", 1, "Do it"),
+            ChatMessage::new("assistant".to_string(), "Ok".to_string()),
+        ];
+
+        let (input, instructions) = convert_to_responses_format(&messages);
+        let body = json!({"input": input, "instructions": instructions}).to_string();
+
+        assert!(!body.contains("\"role\":\"event\""));
+        assert!(!body.contains("\"role\":\"plan\""));
     }
 
     #[test]
@@ -1375,7 +1487,6 @@ mod tests {
 
     #[test]
     fn github_copilot_openai_responses_adds_vision_header_only_for_images() {
-        use refact_core::chat_types::ChatContent;
         use refact_core::chat_types::MultimodalElement;
 
         let adapter = OpenAiResponsesAdapter;
