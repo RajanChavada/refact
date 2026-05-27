@@ -135,6 +135,10 @@ SQLite + vec0 extension. File splitters: trajectory JSON (4 msgs/chunk), Markdow
 
 GitHub, GitLab, Bitbucket, Chrome (headless), PostgreSQL, MySQL, Docker, PDB, shell, cmdline_* (one-off), service_* (long-running), MCP (stdio + SSE). Config: `.refact/integrations/*.yaml`. Trait: `integr_tools()`, `integr_schema()`, `integr_settings_apply()`.
 
+### Standardized exec env
+
+All foreground, background, and service exec spawns apply `EXEC_ENV_DEFAULTS` before request env overrides, setting non-color/pager defaults plus `REFACT_EXEC=1` unless the request explicitly overrides those keys.
+
 ## Testing
 
 - **Python integration tests** (~38 files in `tests/`): live HTTP+SSE against running server. 7 `test_chat_session_*.py` files.

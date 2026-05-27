@@ -106,6 +106,12 @@ fn apply_exec_env_defaults_to_pty(command: &mut CommandBuilder) {
     }
 }
 
+fn apply_exec_env_defaults(command: &mut tokio::process::Command) {
+    for (key, value) in EXEC_ENV_DEFAULTS {
+        command.env(key, value);
+    }
+}
+
 fn shell_command(request: &ExecSpawnRequest) -> Result<tokio::process::Command, String> {
     ensure_command_is_not_empty(request)?;
     let (shell, shell_arg) = shell_parts();
@@ -118,6 +124,7 @@ fn shell_command(request: &ExecSpawnRequest) -> Result<tokio::process::Command, 
     if let Some(cwd) = request.cwd.as_ref() {
         command.current_dir(cwd);
     }
+    apply_exec_env_defaults(&mut command);
     for (key, value) in &request.env {
         command.env(key, value);
     }
@@ -729,6 +736,39 @@ mod tests {
         );
     }
 
+    async fn spawn_and_read_stdout(request: ExecSpawnRequest) -> String {
+        let registry = ExecRegistry::new();
+        let result = registry.spawn(request).await.unwrap();
+        let snapshot = if result.snapshot.status.is_terminal() {
+            result.snapshot
+        } else {
+            registry
+                .wait(&result.snapshot.meta.process_id)
+                .await
+                .unwrap()
+        };
+        assert_eq!(snapshot.status, ExecStatus::Exited { exit_code: Some(0) });
+        let read = registry.read(&snapshot.meta.process_id, 0, None).await;
+        read.chunks
+            .iter()
+            .filter(|chunk| chunk.stream == ExecOutputStream::Stdout)
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>()
+    }
+
+    fn env_test_request(mode: ExecMode, command: &str) -> ExecSpawnRequest {
+        let is_service = matches!(mode, ExecMode::Service);
+        let request = ExecSpawnRequest::new(mode, shell_script(command));
+        if is_service {
+            request.with_owner(crate::exec::types::ExecOwnerMeta {
+                service_name: Some("env-default-test".to_string()),
+                ..crate::exec::types::ExecOwnerMeta::default()
+            })
+        } else {
+            request
+        }
+    }
+
     #[cfg(unix)]
     fn process_exists(process_id: u32) -> bool {
         unsafe { libc::kill(process_id as i32, 0) == 0 }
@@ -797,6 +837,59 @@ mod tests {
         assert_eq!(read.chunks.len(), 1);
         assert_eq!(read.chunks[0].stream, ExecOutputStream::Stdout);
         assert_eq!(read.chunks[0].text, "hello");
+    }
+
+    #[tokio::test]
+    async fn exec_env_defaults_apply() {
+        let command = if cfg!(windows) {
+            "[Console]::Out.Write(\"$env:NO_COLOR $env:TERM $env:PAGER $env:REFACT_EXEC\")"
+        } else {
+            "printf '%s %s %s %s' \"$NO_COLOR\" \"$TERM\" \"$PAGER\" \"$REFACT_EXEC\""
+        };
+
+        for mode in [
+            ExecMode::Foreground,
+            ExecMode::Background,
+            ExecMode::Service,
+        ] {
+            let stdout = spawn_and_read_stdout(env_test_request(mode, command)).await;
+            assert_eq!(stdout, "1 dumb cat 1");
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_env_request_overrides_defaults() {
+        let command = if cfg!(windows) {
+            "[Console]::Out.Write($env:TERM)"
+        } else {
+            "printf '%s' \"$TERM\""
+        };
+
+        let stdout = spawn_and_read_stdout(
+            ExecSpawnRequest::foreground(shell_script(command)).with_env("TERM", "xterm-256color"),
+        )
+        .await;
+
+        assert_eq!(stdout, "xterm-256color");
+    }
+
+    #[tokio::test]
+    async fn exec_env_marker_always_present() {
+        let command = if cfg!(windows) {
+            "[Console]::Out.Write($env:REFACT_EXEC)"
+        } else {
+            "printf '%s' \"$REFACT_EXEC\""
+        };
+
+        let default_stdout =
+            spawn_and_read_stdout(ExecSpawnRequest::foreground(shell_script(command))).await;
+        let override_stdout = spawn_and_read_stdout(
+            ExecSpawnRequest::foreground(shell_script(command)).with_env("REFACT_EXEC", ""),
+        )
+        .await;
+
+        assert_eq!(default_stdout, "1");
+        assert_eq!(override_stdout, "");
     }
 
     #[tokio::test]
