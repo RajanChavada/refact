@@ -8360,12 +8360,18 @@ fn runtime_event_coalesce_broadcasts_stored_id() {
     let broadcast_b = rx.try_recv().unwrap();
     match broadcast_b {
         super::events::BuddyEvent::RuntimeEvent { event } => {
-            assert_eq!(event.id, "id-A", "coalesced broadcast must carry the stored id");
+            assert_eq!(
+                event.id, "id-A",
+                "coalesced broadcast must carry the stored id"
+            );
         }
         other => panic!("expected RuntimeEvent, got {:?}", other),
     }
 
-    assert!(svc.dismiss_runtime_event_by_id("id-A"), "dismiss by id-A must succeed after coalesce");
+    assert!(
+        svc.dismiss_runtime_event_by_id("id-A"),
+        "dismiss by id-A must succeed after coalesce"
+    );
 }
 
 #[tokio::test]
@@ -8383,7 +8389,9 @@ async fn bug_reaction_not_blocked_by_humor_cooldown() {
         AcceptedUserMessage {
             chat_id: "chat-bug-humor".to_string(),
             thread: ThreadParams::default(),
-            content: ChatContent::SimpleText("make this nicer please give it a better look".to_string()),
+            content: ChatContent::SimpleText(
+                "make this nicer please give it a better look".to_string(),
+            ),
         },
     )
     .await;
@@ -8393,7 +8401,9 @@ async fn bug_reaction_not_blocked_by_humor_cooldown() {
         AcceptedUserMessage {
             chat_id: "chat-bug-humor".to_string(),
             thread: ThreadParams::default(),
-            content: ChatContent::SimpleText("the app crashed on save every time I try".to_string()),
+            content: ChatContent::SimpleText(
+                "the app crashed on save every time I try".to_string(),
+            ),
         },
     )
     .await;

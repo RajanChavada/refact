@@ -666,9 +666,9 @@ impl BuddyService {
                 .cloned()
         };
         if let Some(ev) = to_persist {
-            let _ = self.events_tx.send(BuddyEvent::RuntimeEvent {
-                event: ev.clone(),
-            });
+            let _ = self
+                .events_tx
+                .send(BuddyEvent::RuntimeEvent { event: ev.clone() });
             self.persist_event(ev);
         }
         if dedupe_key.is_some()

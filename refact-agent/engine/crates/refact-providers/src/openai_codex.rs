@@ -1200,22 +1200,22 @@ impl ProviderTrait for OpenAICodexProvider {
 fields:
   use_websocket:
     f_type: boolean
-    f_desc: "Use WebSocket streaming for ChatGPT backend OAuth requests. HTTP SSE remains the fallback."
+    f_desc: "Use WebSocket streaming for ChatGPT backend OAuth requests. When enabled, transient WebSocket failures are retried instead of falling back to HTTP SSE."
     f_label: "Use WebSocket streaming"
     f_default: true
   http_response_header_retry_enabled:
     f_type: boolean
-    f_desc: "Retry ChatGPT backend HTTP requests when no response headers arrive before the timeout."
-    f_label: "Retry stalled HTTP requests"
+    f_desc: "Retry ChatGPT backend transport requests when no HTTP response headers or WebSocket connection arrive before the timeout."
+    f_label: "Retry stalled transport requests"
     f_default: true
   http_response_header_retry_timeout_seconds:
     f_type: integer
-    f_desc: "Seconds to wait for HTTP response headers before retrying."
-    f_label: "Header timeout, seconds"
+    f_desc: "Seconds to wait for HTTP response headers or WebSocket connection before retrying."
+    f_label: "Transport timeout, seconds"
     f_default: 10
   http_response_header_retry_max_attempts:
     f_type: integer
-    f_desc: "Maximum HTTP attempts before surfacing the timeout error."
+    f_desc: "Maximum transport attempts before surfacing the timeout error."
     f_label: "Max retry attempts"
     f_default: 10
 oauth:

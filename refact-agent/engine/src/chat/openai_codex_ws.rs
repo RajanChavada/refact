@@ -6,7 +6,6 @@ pub(crate) type CodexWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Default)]
 pub(crate) struct OpenAICodexWebSocketSession {
-    pub disabled: bool,
     pub connection: Option<CodexWebSocket>,
     pub connection_key: Option<String>,
     pub turn_state: Option<String>,

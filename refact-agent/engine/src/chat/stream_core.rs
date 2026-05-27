@@ -232,7 +232,7 @@ fn llm_http_response_header_timeout_message(timeout: Duration) -> String {
     )
 }
 
-async fn wait_before_llm_http_retry(
+async fn wait_before_llm_transport_retry(
     attempt: usize,
     abort_flag: Option<Arc<AtomicBool>>,
     abort_notify: Option<Arc<tokio::sync::Notify>>,
@@ -299,7 +299,7 @@ async fn send_llm_http_request_with_header_timeout(
             error = %last_error,
             "LLM HTTP SSE request did not receive response headers; retrying"
         );
-        wait_before_llm_http_retry(attempt, abort_flag.clone(), abort_notify.clone()).await?;
+        wait_before_llm_transport_retry(attempt, abort_flag.clone(), abort_notify.clone()).await?;
     }
 
     Err(last_error)
@@ -352,6 +352,33 @@ fn llm_http_header_retry_config(model_rec: &BaseModelRecord) -> Option<(Duration
         .filter(|value| *value > 0)
         .unwrap_or(crate::providers::llm_http_retry::LLM_HTTP_HEADER_RETRY_MAX_ATTEMPTS_DEFAULT);
     Some((timeout, max_attempts))
+}
+
+fn openai_codex_websocket_auth_rejection_status(error: &str) -> Option<reqwest::StatusCode> {
+    let lower = error.to_lowercase();
+    if lower.contains("status=401")
+        || lower.contains("status 401")
+        || lower.contains("401 unauthorized")
+    {
+        return Some(reqwest::StatusCode::UNAUTHORIZED);
+    }
+    if lower.contains("status=403")
+        || lower.contains("status 403")
+        || lower.contains("403 forbidden")
+    {
+        return Some(reqwest::StatusCode::FORBIDDEN);
+    }
+    None
+}
+
+fn set_bearer_authorization_header(
+    headers: &mut reqwest::header::HeaderMap,
+    access_token: &str,
+) -> Result<(), String> {
+    let auth_value = reqwest::header::HeaderValue::from_str(&format!("Bearer {access_token}"))
+        .map_err(|e| format!("OpenAI Codex refreshed token cannot be used: {e}"))?;
+    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
+    Ok(())
 }
 
 async fn force_refresh_openai_codex_for_retry(
@@ -1354,6 +1381,7 @@ async fn ensure_openai_codex_websocket_connected(
     http_parts: &HttpParts,
     abort_flag: Option<Arc<AtomicBool>>,
     abort_notify: Option<Arc<tokio::sync::Notify>>,
+    connect_timeout: Duration,
     session: &mut OpenAICodexWebSocketSession,
 ) -> Result<(), String> {
     let connection_key = openai_codex_websocket_connection_key(websocket_endpoint, http_parts);
@@ -1390,7 +1418,7 @@ async fn ensure_openai_codex_websocket_connected(
     }
 
     let connect = tokio::time::timeout(
-        stream_idle_timeout(),
+        connect_timeout,
         connect_async_tls_with_config(request, None, false, None),
     );
     let (websocket, response) = tokio::select! {
@@ -1423,6 +1451,7 @@ async fn run_openai_codex_websocket_exchange<C: StreamCollector>(
     auth_token: &str,
     abort_flag: Option<Arc<AtomicBool>>,
     abort_notify: Option<Arc<tokio::sync::Notify>>,
+    connect_timeout: Duration,
     session: &mut OpenAICodexWebSocketSession,
     prewarm: bool,
     collector: &mut C,
@@ -1432,6 +1461,7 @@ async fn run_openai_codex_websocket_exchange<C: StreamCollector>(
         http_parts,
         abort_flag.clone(),
         abort_notify.clone(),
+        connect_timeout,
         session,
     )
     .await?;
@@ -1594,6 +1624,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
     auth_token: &str,
     abort_flag: Option<Arc<AtomicBool>>,
     abort_notify: Option<Arc<tokio::sync::Notify>>,
+    connect_timeout: Duration,
     session: &mut OpenAICodexWebSocketSession,
     collector: &mut C,
 ) -> Result<Vec<ChoiceFinal>, String> {
@@ -1617,6 +1648,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
             auth_token,
             abort_flag.clone(),
             abort_notify.clone(),
+            connect_timeout,
             session,
             true,
             &mut prewarm_collector,
@@ -1631,6 +1663,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
         auth_token,
         abort_flag.clone(),
         abort_notify.clone(),
+        connect_timeout,
         session,
         false,
         collector,
@@ -1651,6 +1684,7 @@ async fn run_llm_websocket_request<C: StreamCollector>(
                 auth_token,
                 abort_flag,
                 abort_notify,
+                connect_timeout,
                 session,
                 false,
                 collector,
@@ -1659,6 +1693,103 @@ async fn run_llm_websocket_request<C: StreamCollector>(
         }
         other => other,
     }
+}
+
+async fn refresh_openai_codex_after_websocket_auth_rejection(
+    app: AppState,
+    http_client: &reqwest::Client,
+    model_rec: &BaseModelRecord,
+    status: reqwest::StatusCode,
+    abort_flag: Option<Arc<AtomicBool>>,
+    abort_notify: Option<Arc<tokio::sync::Notify>>,
+) -> Result<Option<String>, String> {
+    let provider_instance_id = openai_codex_instance_id(model_rec).unwrap_or("openai_codex");
+    tokio::select! {
+        res = force_refresh_openai_codex_for_retry(
+            app,
+            http_client,
+            provider_instance_id,
+            status,
+            &model_rec.api_key,
+        ) => res,
+        _ = wait_for_abort_signal(abort_flag, abort_notify) => Err(ABORT_ERROR_MESSAGE.to_string()),
+    }
+}
+
+async fn run_llm_websocket_request_with_retry(
+    wire_format: WireFormat,
+    websocket_endpoint: String,
+    mut http_parts: HttpParts,
+    auth_token: String,
+    abort_flag: Option<Arc<AtomicBool>>,
+    abort_notify: Option<Arc<tokio::sync::Notify>>,
+    connect_timeout: Duration,
+    max_attempts: usize,
+    session: OpenAICodexWebSocketSession,
+) -> OpenAICodexWebSocketThreadResult {
+    let max_attempts = std::cmp::max(1, max_attempts);
+    let mut session = session;
+    let mut last_error = String::new();
+
+    for attempt in 0..max_attempts {
+        let result = run_llm_websocket_request_on_large_stack(
+            wire_format,
+            websocket_endpoint.clone(),
+            HttpParts {
+                url: http_parts.url.clone(),
+                headers: http_parts.headers.clone(),
+                body: http_parts.body.clone(),
+            },
+            auth_token.clone(),
+            abort_flag.clone(),
+            abort_notify.clone(),
+            connect_timeout,
+            session,
+        )
+        .await;
+
+        match result {
+            Ok((results, replay_collector, returned_session)) => {
+                if attempt > 0 {
+                    tracing::info!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        "OpenAI Codex WebSocket request recovered after retry"
+                    );
+                }
+                return Ok((results, replay_collector, returned_session));
+            }
+            Err((error, returned_session)) => {
+                if abort_requested(abort_flag.as_ref()) || is_abort_error(&error) {
+                    return Err((error, returned_session));
+                }
+                last_error = error;
+                session = returned_session;
+                clear_openai_codex_websocket_incremental_state(&mut session, true);
+                if !classify_llm_error_for_retry(&last_error).is_retryable_transient() {
+                    return Err((last_error, session));
+                }
+            }
+        }
+
+        if attempt + 1 == max_attempts {
+            break;
+        }
+
+        tracing::warn!(
+            attempt = attempt + 1,
+            max_attempts,
+            error = %last_error,
+            "OpenAI Codex WebSocket request failed; retrying"
+        );
+        if let Err(error) =
+            wait_before_llm_transport_retry(attempt, abort_flag.clone(), abort_notify.clone()).await
+        {
+            return Err((error, session));
+        }
+    }
+
+    Err((last_error, session))
 }
 
 type OpenAICodexWebSocketThreadResult = Result<
@@ -1677,6 +1808,7 @@ async fn run_llm_websocket_request_on_large_stack(
     auth_token: String,
     abort_flag: Option<Arc<AtomicBool>>,
     abort_notify: Option<Arc<tokio::sync::Notify>>,
+    connect_timeout: Duration,
     mut session: OpenAICodexWebSocketSession,
 ) -> OpenAICodexWebSocketThreadResult {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1699,6 +1831,7 @@ async fn run_llm_websocket_request_on_large_stack(
                             &auth_token,
                             abort_flag,
                             abort_notify,
+                            connect_timeout,
                             &mut session,
                             &mut replay_collector,
                         )
@@ -1948,23 +2081,34 @@ pub async fn run_llm_stream<C: StreamCollector>(
         "LLM streaming request"
     );
 
+    let header_retry_config = llm_http_header_retry_config(&params.model_rec);
     let mut codex_http_fallback_reason: Option<String> = None;
     if params.allow_websocket {
         if let Some(websocket_endpoint) = openai_codex_websocket_endpoint(&params.model_rec) {
             let websocket_session =
                 take_openai_codex_websocket_session(&app, params.chat_id.as_ref()).await;
-            if !websocket_session.disabled {
-                match run_llm_websocket_request_on_large_stack(
+            let (connect_timeout, max_attempts) =
+                header_retry_config.unwrap_or_else(|| (stream_idle_timeout(), 1));
+            let mut websocket_session = websocket_session;
+            let mut websocket_http_parts = HttpParts {
+                url: http_parts.url.clone(),
+                headers: http_parts.headers.clone(),
+                body: http_parts.body.clone(),
+            };
+            loop {
+                match run_llm_websocket_request_with_retry(
                     wire_format,
                     websocket_endpoint.to_string(),
                     HttpParts {
-                        url: http_parts.url.clone(),
-                        headers: http_parts.headers.clone(),
-                        body: http_parts.body.clone(),
+                        url: websocket_http_parts.url.clone(),
+                        headers: websocket_http_parts.headers.clone(),
+                        body: websocket_http_parts.body.clone(),
                     },
                     params.model_rec.auth_token.clone(),
                     params.abort_flag.clone(),
                     params.abort_notify.clone(),
+                    connect_timeout,
+                    max_attempts,
                     websocket_session,
                 )
                 .await
@@ -1985,39 +2129,70 @@ pub async fn run_llm_stream<C: StreamCollector>(
                         replay_collector.replay(collector);
                         return Ok(LlmStreamOutcome::Choices(results));
                     }
-                    Err((error, mut returned_session)) => {
-                        if abort_requested(params.abort_flag.as_ref()) || is_abort_error(&error) {
-                            store_openai_codex_websocket_session(
-                                &app,
-                                params.chat_id.as_ref(),
-                                returned_session,
+                    Err((error, returned_session)) => {
+                        if let Some(status) = openai_codex_websocket_auth_rejection_status(&error) {
+                            match refresh_openai_codex_after_websocket_auth_rejection(
+                                app.clone(),
+                                &client,
+                                &params.model_rec,
+                                status,
+                                params.abort_flag.clone(),
+                                params.abort_notify.clone(),
                             )
-                            .await;
-                            return Err(LlmStreamError::new(error, partial_output_emitted));
+                            .await
+                            {
+                                Ok(Some(access_token)) => {
+                                    let mut retry_session = returned_session;
+                                    clear_openai_codex_websocket_incremental_state(
+                                        &mut retry_session,
+                                        true,
+                                    );
+                                    if let Err(error) = set_bearer_authorization_header(
+                                        &mut websocket_http_parts.headers,
+                                        &access_token,
+                                    ) {
+                                        store_openai_codex_websocket_session(
+                                            &app,
+                                            params.chat_id.as_ref(),
+                                            retry_session,
+                                        )
+                                        .await;
+                                        return Err(LlmStreamError::new(
+                                            error,
+                                            partial_output_emitted,
+                                        ));
+                                    }
+                                    websocket_session = retry_session;
+                                    tracing::info!(
+                                        status = status.as_u16(),
+                                        "OpenAI Codex WebSocket auth rejected; refreshed token and retrying WebSocket"
+                                    );
+                                    continue;
+                                }
+                                Ok(None) => {}
+                                Err(refresh_error) => {
+                                    store_openai_codex_websocket_session(
+                                        &app,
+                                        params.chat_id.as_ref(),
+                                        returned_session,
+                                    )
+                                    .await;
+                                    return Err(LlmStreamError::new(
+                                        refresh_error,
+                                        partial_output_emitted,
+                                    ));
+                                }
+                            }
                         }
-                        returned_session.disabled = true;
-                        clear_openai_codex_websocket_incremental_state(&mut returned_session, true);
                         store_openai_codex_websocket_session(
                             &app,
                             params.chat_id.as_ref(),
                             returned_session,
                         )
                         .await;
-                        codex_http_fallback_reason = Some(format!("websocket_failed: {}", error));
-                        tracing::warn!(
-                        "OpenAI Codex WebSocket streaming failed; disabling WebSocket for this chat session and falling back to HTTP SSE: {}",
-                        error
-                    );
+                        return Err(LlmStreamError::new(error, partial_output_emitted));
                     }
                 }
-            } else {
-                codex_http_fallback_reason = Some("websocket_disabled_for_session".to_string());
-                store_openai_codex_websocket_session(
-                    &app,
-                    params.chat_id.as_ref(),
-                    websocket_session,
-                )
-                .await;
             }
         } else if is_openai_codex_chatgpt_backend(&params.model_rec) {
             codex_http_fallback_reason = Some("websocket_endpoint_missing".to_string());
@@ -2038,7 +2213,6 @@ pub async fn run_llm_stream<C: StreamCollector>(
         );
     }
 
-    let header_retry_config = llm_http_header_retry_config(&params.model_rec);
     let mut response = if let Some((response_header_timeout, max_attempts)) = header_retry_config {
         send_llm_http_request_with_header_timeout(
             &client,
@@ -2090,17 +2264,8 @@ pub async fn run_llm_stream<C: StreamCollector>(
                     headers: http_parts.headers.clone(),
                     body: http_parts.body.clone(),
                 };
-                let auth_value =
-                    reqwest::header::HeaderValue::from_str(&format!("Bearer {}", new_access_token))
-                        .map_err(|e| {
-                            LlmStreamError::new(
-                                format!("OpenAI Codex refreshed token cannot be used: {}", e),
-                                partial_output_emitted,
-                            )
-                        })?;
-                retry_parts
-                    .headers
-                    .insert(reqwest::header::AUTHORIZATION, auth_value);
+                set_bearer_authorization_header(&mut retry_parts.headers, &new_access_token)
+                    .map_err(|e| LlmStreamError::new(e, partial_output_emitted))?;
                 response =
                     if let Some((response_header_timeout, max_attempts)) = header_retry_config {
                         send_llm_http_request_with_header_timeout(

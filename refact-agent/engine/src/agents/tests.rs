@@ -640,7 +640,6 @@ async fn push_completion_to_parent_marks_pending_when_session_not_loaded_and_flu
     assert_ne!(updated.completion_message_id.as_deref(), Some("pending"));
 }
 
-
 #[tokio::test]
 async fn spawn_and_wait_timeout_returns_error() {
     let (_gcx, app, _session_arc) = app_with_parent_session("parent-timeout").await;
@@ -687,9 +686,6 @@ fn spawn_request(parent_chat_id: &str) -> crate::agents::spawn::SpawnRequest {
         notify_parent: crate::agents::spawn::NotifyParent::Silent,
     }
 }
-
-
-
 
 #[tokio::test]
 async fn storage_save_record_preserves_existing_records() {

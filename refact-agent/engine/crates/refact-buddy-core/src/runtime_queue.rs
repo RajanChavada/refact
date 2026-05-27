@@ -190,7 +190,10 @@ mod tests {
         queue.enqueue(ev2);
 
         assert_eq!(queue.items.len(), 1);
-        assert_eq!(queue.items[0].bubble_policy, Some(BuddyBubblePolicy::Ambient));
+        assert_eq!(
+            queue.items[0].bubble_policy,
+            Some(BuddyBubblePolicy::Ambient)
+        );
         assert_eq!(queue.items[0].created_at, "2024-06-01T00:00:00Z");
     }
 

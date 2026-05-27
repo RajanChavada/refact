@@ -273,7 +273,10 @@ pub async fn maybe_enqueue_chat_reaction(app: AppState, accepted: AcceptedUserMe
             return;
         };
         let now = chrono::Utc::now();
-        if !svc.chat_reaction_limiter.allow_kind(&accepted.chat_id, reaction.kind.clone(), now) {
+        if !svc
+            .chat_reaction_limiter
+            .allow_kind(&accepted.chat_id, reaction.kind.clone(), now)
+        {
             return;
         }
         build_reaction_event(&accepted.chat_id, &analysis, &reaction)
@@ -301,7 +304,12 @@ impl ChatReactionLimiter {
     }
 
     /// Per-kind cooldown prevents low-signal humor reactions from suppressing high-signal bug candidates.
-    pub fn allow_kind(&mut self, chat_id: &str, kind: ChatReactionKind, now: DateTime<Utc>) -> bool {
+    pub fn allow_kind(
+        &mut self,
+        chat_id: &str,
+        kind: ChatReactionKind,
+        now: DateTime<Utc>,
+    ) -> bool {
         self.per_chat_kind_last_at
             .retain(|_, last_at| (now - *last_at).num_seconds() < PER_CHAT_COOLDOWN_SECS);
         if (now - self.global_window_start).num_seconds() >= 3600 {
