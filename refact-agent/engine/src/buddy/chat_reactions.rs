@@ -152,10 +152,11 @@ pub struct ChatReaction {
     pub text: String,
 }
 
+/// Chat reactions are independent of `message_observation_enabled`, which only gates the
+/// periodic ChatPatternObserver.
 pub fn settings_allow_chat_reactions(settings: &BuddySettings) -> bool {
     settings.enabled
         && settings.proactive_enabled
-        && settings.message_observation_enabled
         && settings.chat_reactions_enabled
         && !settings.quiet_mode
 }
@@ -356,12 +357,19 @@ mod tests {
         assert!(!settings_allow_chat_reactions(&s));
 
         let mut s = BuddySettings::default();
-        s.message_observation_enabled = false;
-        assert!(!settings_allow_chat_reactions(&s));
-
-        let mut s = BuddySettings::default();
         s.chat_reactions_enabled = false;
         assert!(!settings_allow_chat_reactions(&s));
+    }
+
+    #[test]
+    fn chat_reactions_independent_from_message_observation() {
+        let mut s = BuddySettings::default();
+        s.message_observation_enabled = false;
+        s.chat_reactions_enabled = true;
+        assert!(
+            settings_allow_chat_reactions(&s),
+            "chat reactions must work even when message_observation_enabled is false"
+        );
     }
 
     #[test]
