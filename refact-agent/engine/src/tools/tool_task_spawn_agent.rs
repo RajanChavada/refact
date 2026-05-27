@@ -25,6 +25,9 @@ const FILES_TO_OPEN_TOTAL_LIMIT: usize = 1024 * 1024;
 const MAX_ID_LEN: usize = 64;
 
 fn validate_id(id: &str, name: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err(format!("{name} must not be empty"));
+    }
     if id.len() > MAX_ID_LEN {
         return Err(format!("ID '{id}' is too long (max {MAX_ID_LEN} chars)"));
     }
@@ -120,7 +123,7 @@ impl PreparedWorktree {
             WorktreeService::new(cache_dir, self.meta.source_workspace_root.clone())
         {
             if service
-                .delete_worktree(&self.meta.id, self.branch_was_created)
+                .delete_worktree(&self.meta.id, self.branch_was_created, true)
                 .await
                 .is_ok()
             {
@@ -129,6 +132,19 @@ impl PreparedWorktree {
         }
         if self.meta.root.exists() {
             let _ = std::fs::remove_dir_all(&self.meta.root);
+        }
+        if self.branch_was_created {
+            if let Some(branch) = self.meta.branch.as_deref() {
+                if let Err(e) =
+                    crate::worktrees::git::delete_branch(&self.meta.source_workspace_root, branch)
+                {
+                    tracing::warn!(
+                        "Failed to delete leaked agent branch '{}' during cleanup_unlinked: {}",
+                        branch,
+                        e
+                    );
+                }
+            }
         }
     }
 
@@ -1111,6 +1127,12 @@ mod tests {
             err.contains("too long"),
             "expected 'too long' in error: {err}"
         );
+    }
+
+    #[test]
+    fn validate_id_rejects_empty_string() {
+        let err = validate_id("", "task_id").unwrap_err();
+        assert!(err.contains("must not be empty"), "{err}");
     }
 
     #[tokio::test]

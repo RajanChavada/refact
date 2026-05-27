@@ -537,7 +537,10 @@ async fn cleanup_agent_worktree(target: CleanupTarget) -> CleanupResult {
             worktree_name,
             delete_branch,
         } => {
-            if let Ok(deleted) = service.delete_worktree(&worktree_name, delete_branch).await {
+            if let Ok(deleted) = service
+                .delete_worktree(&worktree_name, delete_branch, true)
+                .await
+            {
                 result.worktree_removed = deleted.deleted;
                 result.branch_deleted = deleted.branch_deleted;
             }
@@ -742,10 +745,29 @@ impl Tool for ToolCancelAgent {
         )
         .await?;
 
+        let mut cleanup_skipped_reason: Option<String> = None;
         let cleanup_result = if retain_worktree {
             CleanupResult::default()
         } else {
-            cleanup_agent_worktree(cleanup_target).await
+            match crate::tools::task_tool_helpers::wait_for_agent_abort(
+                planner.gcx.clone(),
+                &agent_chat_id,
+                crate::tools::task_tool_helpers::AGENT_ABORT_TIMEOUT,
+            )
+            .await
+            {
+                Ok(()) => cleanup_agent_worktree(cleanup_target).await,
+                Err(e) => {
+                    tracing::warn!(
+                        "cancel_agent for card {}: {}; worktree cleanup skipped \
+                         to avoid racing the live agent session, worktree retained",
+                        card_id,
+                        e
+                    );
+                    cleanup_skipped_reason = Some(e);
+                    CleanupResult::default()
+                }
+            }
         };
 
         if !retain_worktree && (cleanup_result.worktree_removed || cleanup_result.branch_deleted) {
@@ -773,8 +795,21 @@ impl Tool for ToolCancelAgent {
 
         let cleanup_text = if retain_worktree {
             "Worktree retained for restart_agent.".to_string()
+        } else if let Some(reason) = cleanup_skipped_reason.as_deref() {
+            format!(
+                "Worktree cleanup skipped (agent did not finish aborting in time: {}); \
+                 worktree retained for restart_agent.",
+                reason
+            )
         } else if cleanup_result.worktree_removed {
-            "Worktree cleanup completed.".to_string()
+            let branch_note = if cleanup_result.branch_deleted {
+                " Branch deleted."
+            } else if snapshot.agent_branch.is_some() {
+                " Branch deletion was not confirmed."
+            } else {
+                ""
+            };
+            format!("Worktree cleanup completed.{}", branch_note)
         } else if snapshot.agent_worktree.is_some() {
             "Worktree cleanup requested but no worktree removal was confirmed.".to_string()
         } else {

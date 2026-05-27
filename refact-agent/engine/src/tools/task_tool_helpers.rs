@@ -169,6 +169,57 @@ pub(crate) async fn preflight_agent_model(
     ))
 }
 
+pub(crate) async fn wait_for_agent_abort(
+    gcx: Arc<GlobalContext>,
+    chat_id: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let session_arc = {
+        let sessions = gcx.chat_sessions.read().await;
+        sessions.get(chat_id).cloned()
+    };
+    let Some(session_arc) = session_arc else {
+        return Ok(());
+    };
+    let processor_running = {
+        let mut session = session_arc.lock().await;
+        session.abort_stream();
+        session.close_event_channel();
+        session.queue_notify.notify_waiters();
+        session.queue_processor_running.clone()
+    };
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let state = {
+            let session = session_arc.lock().await;
+            session.runtime.state
+        };
+        let state_stopped = !matches!(
+            state,
+            refact_runtime_api::SessionState::Generating
+                | refact_runtime_api::SessionState::ExecutingTools
+                | refact_runtime_api::SessionState::Paused
+                | refact_runtime_api::SessionState::WaitingIde
+                | refact_runtime_api::SessionState::WaitingUserInput
+        );
+        if state_stopped && !processor_running.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Timed out waiting for agent {} to stop after abort",
+                chat_id
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+pub(crate) const AGENT_ABORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4578,7 +4578,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let agent_worktree = dir.path().join("agent-worktree");
+        let project_hash =
+            crate::worktrees::service::project_hash_for_path(&source.canonicalize().unwrap());
+        let worktree_cache_dir = cache.join("worktrees").join(&project_hash);
+        std::fs::create_dir_all(&worktree_cache_dir).unwrap();
+        let agent_worktree = worktree_cache_dir.join("agent-worktree");
         let agent_worktree_arg = agent_worktree.to_string_lossy().to_string();
         run_git(
             &source,

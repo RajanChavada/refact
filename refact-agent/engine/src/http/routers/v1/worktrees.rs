@@ -41,6 +41,8 @@ pub struct DeleteWorktreeQuery {
     pub source_workspace_root: Option<String>,
     #[serde(default)]
     pub delete_branch: Option<bool>,
+    #[serde(default)]
+    pub force_referenced: Option<bool>,
 }
 
 fn api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, Json<Value>) {
@@ -298,7 +300,11 @@ pub async fn handle_v1_worktrees_delete(
     let gcx = app.gcx.clone();
     let service = service_for_request(gcx, query.source_workspace_root).await?;
     service
-        .delete_worktree(&id, query.delete_branch.unwrap_or(false))
+        .delete_worktree(
+            &id,
+            query.delete_branch.unwrap_or(false),
+            query.force_referenced.unwrap_or(false),
+        )
         .await
         .map(Json)
         .map_err(map_service_error)

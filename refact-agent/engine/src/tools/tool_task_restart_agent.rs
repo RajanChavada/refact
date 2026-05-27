@@ -13,6 +13,7 @@ use crate::call_validation::{ChatMessage, ChatContent, ContextEnum, ContextFile}
 use crate::global_context::GlobalContext;
 use crate::tasks::storage;
 use crate::tasks::types::{BoardCard, StatusUpdate};
+use crate::tools::task_tool_helpers::{wait_for_agent_abort, AGENT_ABORT_TIMEOUT};
 use crate::tools::tool_task_spawn_agent::{
     build_agent_prompt, build_agent_thread_params, mark_card_agent_started, prepare_agent_worktree,
     resolve_agent_model, restore_original_card_if_current_agent,
@@ -22,7 +23,6 @@ use crate::worktrees::service::WorktreeService;
 use crate::worktrees::types::WorktreeMeta;
 use refact_chat_api::ChatCommand;
 use refact_runtime_api::CreateSessionRequest;
-use std::sync::atomic::Ordering;
 
 async fn cleanup_old_worktree(
     gcx: Arc<GlobalContext>,
@@ -35,7 +35,7 @@ async fn cleanup_old_worktree(
         let project_dirs = crate::files_correction::get_project_dirs(gcx.clone()).await;
         if let Some(source_root) = project_dirs.first() {
             if let Ok(service) = WorktreeService::new(cache_dir, source_root.clone()) {
-                if service.delete_worktree(wt_name, true).await.is_ok() {
+                if service.delete_worktree(wt_name, true, true).await.is_ok() {
                     return;
                 }
             }
@@ -72,50 +72,6 @@ async fn restore_card_after_restart_failure(
     })
     .await;
     let _ = storage::update_task_stats(stats_gcx, task_id).await;
-}
-
-async fn wait_for_agent_abort(gcx: Arc<GlobalContext>, old_chat_id: &str) -> Result<(), String> {
-    let session_arc = {
-        let sessions = gcx.chat_sessions.read().await;
-        sessions.get(old_chat_id).cloned()
-    };
-    let Some(session_arc) = session_arc else {
-        return Ok(());
-    };
-    let processor_running = {
-        let mut session = session_arc.lock().await;
-        session.abort_stream();
-        session.close_event_channel();
-        session.queue_notify.notify_waiters();
-        session.queue_processor_running.clone()
-    };
-
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let state = {
-            let session = session_arc.lock().await;
-            session.runtime.state
-        };
-        let state_stopped = !matches!(
-            state,
-            refact_runtime_api::SessionState::Generating
-                | refact_runtime_api::SessionState::ExecutingTools
-                | refact_runtime_api::SessionState::Paused
-                | refact_runtime_api::SessionState::WaitingIde
-                | refact_runtime_api::SessionState::WaitingUserInput
-        );
-        if state_stopped && !processor_running.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "Timed out waiting for old agent {} to stop after abort",
-                old_chat_id
-            ));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
 }
 
 fn mark_card_restarted_fresh(
@@ -367,12 +323,6 @@ impl Tool for ToolTaskRestartAgent {
             }
         }
 
-        if force {
-            if let Some(old_chat_id) = card.agent_chat_id.as_deref() {
-                wait_for_agent_abort(gcx.clone(), old_chat_id).await?;
-            }
-        }
-
         let card_title = card.title.clone();
         let card_instructions = card.instructions.clone();
         let dependency_context = board
@@ -449,6 +399,18 @@ impl ToolTaskRestartAgent {
         card: &BoardCard,
     ) -> Result<String, String> {
         let original_card = card.clone();
+
+        if let Some(old_chat_id) = original_card.agent_chat_id.as_deref() {
+            if let Err(e) =
+                wait_for_agent_abort(gcx.clone(), old_chat_id, AGENT_ABORT_TIMEOUT).await
+            {
+                return Err(format!(
+                    "Cannot restart card {}: previous agent session '{}' did not stop in time: {}. \
+                     Wait for it to settle and retry, or use cancel_agent first.",
+                    card_id, old_chat_id, e
+                ));
+            }
+        }
 
         let agent_id = Uuid::new_v4().to_string();
         let agent_chat_id = format!("agent-{}-{}", card_id, &agent_id[..8]);
@@ -558,6 +520,19 @@ impl ToolTaskRestartAgent {
         card: &BoardCard,
     ) -> Result<String, String> {
         let original_card = card.clone();
+
+        if let Some(old_chat_id) = original_card.agent_chat_id.as_deref() {
+            if let Err(e) =
+                wait_for_agent_abort(gcx.clone(), old_chat_id, AGENT_ABORT_TIMEOUT).await
+            {
+                return Err(format!(
+                    "Cannot resume card {}: previous agent session '{}' did not stop in time: {}. \
+                     Wait for it to settle and retry, or use cancel_agent first.",
+                    card_id, old_chat_id, e
+                ));
+            }
+        }
+
         let worktree_meta = get_worktree_meta_for_resume(gcx.clone(), card).await?;
 
         let agent_id = Uuid::new_v4().to_string();

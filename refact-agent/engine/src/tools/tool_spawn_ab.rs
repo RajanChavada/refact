@@ -337,7 +337,11 @@ async fn cleanup_ab_variant(
 
     if let Some(worktree_name) = variant.worktree_name.as_deref() {
         if let Ok(service) = WorktreeService::new(gcx.cache_dir.clone(), workspace_root.clone()) {
-            if service.delete_worktree(worktree_name, true).await.is_ok() {
+            if service
+                .delete_worktree(worktree_name, true, true)
+                .await
+                .is_ok()
+            {
                 return Ok(());
             }
         }

@@ -912,7 +912,7 @@ pub(crate) async fn remove_agent_worktree_and_branch(
 
     if let Some(worktree_id) = agent_worktree_name {
         if let Ok(service) = WorktreeService::new(cache_dir.clone(), workspace_root.clone()) {
-            match service.delete_worktree(worktree_id, true).await {
+            match service.delete_worktree(worktree_id, true, true).await {
                 Ok(deleted) => {
                     worktree_removed = deleted.deleted && !Path::new(agent_worktree).exists();
                     branch_deleted = deleted.branch_deleted;
@@ -1382,7 +1382,7 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                     app.clone(),
                     task_id,
                     &card.id,
-                    None,
+                    card.assignee.as_deref(),
                     planner_chat_id.as_deref(),
                     &failure_reason,
                     failure_kind,
@@ -1467,7 +1467,7 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                         app.clone(),
                         task_id,
                         &card.id,
-                        None,
+                        card.assignee.as_deref(),
                         planner_chat_id.as_deref(),
                         &format!(
                             "{} for {}, nudge retries exhausted",
@@ -1498,7 +1498,7 @@ async fn check_for_stuck_agents(app: AppState) -> Result<(), String> {
                     app.clone(),
                     task_id,
                     &card.id,
-                    None,
+                    card.assignee.as_deref(),
                     planner_chat_id.as_deref(),
                     &format!(
                         "Agent stuck (idle with no activity for {})",

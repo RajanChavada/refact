@@ -151,13 +151,25 @@ impl WorktreeService {
             .await
             .map_err(|e| format!("Failed to create worktree parent: {}", e))?;
 
-        let created = git::create_worktree(
-            &self.source_workspace_root,
-            &worktree_path,
-            &id,
-            &branch,
-            request.base_branch.as_deref(),
-        )?;
+        let create_source = self.source_workspace_root.clone();
+        let create_worktree_path = worktree_path.clone();
+        let create_id = id.clone();
+        let create_branch = branch.clone();
+        let create_base_branch = request.base_branch.clone();
+        let created = match tokio::task::spawn_blocking(move || {
+            git::create_worktree(
+                &create_source,
+                &create_worktree_path,
+                &create_id,
+                &create_branch,
+                create_base_branch.as_deref(),
+            )
+        })
+        .await
+        {
+            Ok(result) => result?,
+            Err(e) => return Err(format!("Worktree creation task failed: {}", e)),
+        };
         let now = Utc::now().to_rfc3339();
         let reference = request_to_reference(&kind, &request);
         let references = reference.into_iter().collect::<Vec<_>>();
@@ -302,6 +314,21 @@ impl WorktreeService {
         if normalized_path_key(&record_source)? != normalized_path_key(&meta_source)? {
             return Err(format!("Worktree '{}' source root mismatch", meta.id));
         }
+        let status = git::status_for_path(&record.meta.root);
+        if !status.path_exists {
+            return Err(format!(
+                "Worktree '{}' root '{}' is registered but no longer exists on disk",
+                meta.id,
+                record.meta.root.display()
+            ));
+        }
+        if !status.is_git_worktree {
+            return Err(format!(
+                "Worktree '{}' root '{}' exists but is not a git worktree",
+                meta.id,
+                record.meta.root.display()
+            ));
+        }
         Ok(record.meta.clone())
     }
 
@@ -326,6 +353,24 @@ impl WorktreeService {
         let meta_root = normalized_path_key(&meta.root)?;
         if let Ok(validated) = self.validate_worktree_meta_strict(meta).await {
             return Ok(validated);
+        }
+        if normalized_path_key(&meta_source)? == meta_root {
+            return Err(format!(
+                "Legacy worktree '{}' root equals the source workspace root '{}'; \
+                 refusing to bind a task-agent session to the source workspace.",
+                meta.id,
+                meta_root.display()
+            ));
+        }
+        let cache_root = normalized_path_key(&self.registry_dir())?;
+        if !meta_root.starts_with(&cache_root) {
+            return Err(format!(
+                "Legacy worktree '{}' root '{}' is outside the Refact worktree cache '{}'; \
+                 refusing to bind a task-agent session to it.",
+                meta.id,
+                meta_root.display(),
+                cache_root.display()
+            ));
         }
         let discovered = git::list_git_worktrees(&self.source_workspace_root)
             .into_iter()
@@ -594,6 +639,7 @@ impl WorktreeService {
         &self,
         id: &str,
         delete_branch: bool,
+        force_referenced: bool,
     ) -> Result<DeleteWorktreeResponse, String> {
         validate_worktree_id(id)?;
         let _guard = registry_write_lock().lock().await;
@@ -604,13 +650,49 @@ impl WorktreeService {
             .position(|record| record.meta.id == id)
             .ok_or_else(|| format!("Worktree '{}' not found", id))?;
         let record = registry.records[index].clone();
+        if !force_referenced && !record.references.is_empty() {
+            return Err(format!(
+                "Worktree '{}' still has {} active reference(s) (kinds: {}); \
+                 pass force_referenced=true to delete anyway.",
+                record.meta.id,
+                record.references.len(),
+                record
+                    .references
+                    .iter()
+                    .map(|reference| reference.kind.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         let stale_path = !record.meta.root.exists();
-        let mut warnings = git::remove_worktree(
-            &record.meta.source_workspace_root,
-            &record.meta.id,
-            &record.meta.root,
-        );
-        if record.meta.root.exists() {
+        let removal_source = record.meta.source_workspace_root.clone();
+        let removal_id = record.meta.id.clone();
+        let removal_root = record.meta.root.clone();
+        let removal_branch = record.meta.branch.clone();
+        let (mut warnings, branch_result, still_present) =
+            match tokio::task::spawn_blocking(move || {
+                let warnings = git::remove_worktree(&removal_source, &removal_id, &removal_root);
+                let branch_result = if delete_branch {
+                    removal_branch
+                        .as_deref()
+                        .map(|branch| git::delete_branch(&removal_source, branch))
+                } else {
+                    None
+                };
+                let still_present = removal_root.exists();
+                (warnings, branch_result, still_present)
+            })
+            .await
+            {
+                Ok(triple) => triple,
+                Err(e) => {
+                    return Err(format!(
+                        "Worktree '{}' removal task failed: {}",
+                        record.meta.id, e
+                    ));
+                }
+            };
+        if still_present {
             return Err(format!(
                 "Failed to remove worktree directory '{}': {}",
                 record.meta.root.display(),
@@ -619,12 +701,10 @@ impl WorktreeService {
         }
 
         let mut branch_deleted = false;
-        if delete_branch {
-            if let Some(branch) = record.meta.branch.as_deref() {
-                match git::delete_branch(&record.meta.source_workspace_root, branch) {
-                    Ok(deleted) => branch_deleted = deleted,
-                    Err(e) => warnings.push(e),
-                }
+        if let Some(result) = branch_result {
+            match result {
+                Ok(deleted) => branch_deleted = deleted,
+                Err(e) => warnings.push(e),
             }
         }
         registry.records.remove(index);
@@ -1824,7 +1904,7 @@ mod worktree_registry_tests {
             .unwrap();
         assert_eq!(got.meta.id, created.worktree.meta.id);
         let deleted = service
-            .delete_worktree(&created.worktree.meta.id, true)
+            .delete_worktree(&created.worktree.meta.id, true, true)
             .await
             .unwrap();
         assert!(deleted.deleted);
@@ -1834,7 +1914,10 @@ mod worktree_registry_tests {
         let mut registry = service.load_registry().await.unwrap();
         registry.records.push(sample_record(&service, "stale_1"));
         service.save_registry(&registry).await.unwrap();
-        let deleted = service.delete_worktree("stale_1", false).await.unwrap();
+        let deleted = service
+            .delete_worktree("stale_1", false, true)
+            .await
+            .unwrap();
         assert!(deleted.deleted);
         assert!(deleted.stale_path);
         assert_eq!(service.list_worktrees().await.unwrap().worktrees.len(), 0);
@@ -2458,7 +2541,7 @@ mod worktree_registry_tests {
         let root = created.worktree.meta.root.clone();
 
         let deleted = service
-            .delete_worktree(&created.worktree.meta.id, true)
+            .delete_worktree(&created.worktree.meta.id, true, true)
             .await
             .unwrap();
 
@@ -3004,5 +3087,145 @@ mod worktree_registry_tests {
         let error = service.save_registry(&registry).await.unwrap_err();
 
         assert!(error.contains("must not be a symlink"));
+    }
+
+    #[tokio::test]
+    async fn delete_worktree_refuses_referenced_unless_forced() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let service = WorktreeService::new(cache, source.canonicalize().unwrap()).unwrap();
+        let created = service
+            .create_worktree(CreateWorktreeRequest {
+                kind: Some("task_agent".to_string()),
+                chat_id: Some("agent-chat-1".to_string()),
+                task_id: Some("task-1".to_string()),
+                card_id: Some("T-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                branch: Some("refact/task/task-1/card/T-1/agent-1".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let id = created.worktree.meta.id.clone();
+        let root = created.worktree.meta.root.clone();
+
+        let err = service.delete_worktree(&id, true, false).await.unwrap_err();
+        assert!(
+            err.contains("active reference") && err.contains("force_referenced=true"),
+            "{err}"
+        );
+        assert!(root.exists(), "worktree must not be deleted on refusal");
+        assert!(service.get_worktree(&id).await.is_ok());
+
+        let deleted = service.delete_worktree(&id, true, true).await.unwrap();
+        assert!(deleted.deleted);
+        assert!(!root.exists());
+    }
+
+    #[tokio::test]
+    async fn validate_worktree_meta_strict_rejects_missing_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let service = WorktreeService::new(cache, source.canonicalize().unwrap()).unwrap();
+        let created = service
+            .create_worktree(CreateWorktreeRequest {
+                kind: Some("task_agent".to_string()),
+                chat_id: Some("agent-chat-2".to_string()),
+                task_id: Some("task-1".to_string()),
+                card_id: Some("T-2".to_string()),
+                agent_id: Some("agent-2".to_string()),
+                branch: Some("refact/task/task-1/card/T-2/agent-2".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let meta = created.worktree.meta.clone();
+        std::fs::remove_dir_all(&meta.root).unwrap();
+
+        let err = service
+            .validate_worktree_meta_strict(&meta)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("no longer exists on disk"),
+            "expected missing-root error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_legacy_task_agent_worktree_meta_rejects_source_workspace_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        let source = source.canonicalize().unwrap();
+        let service = WorktreeService::new(cache, source.clone()).unwrap();
+        let meta = WorktreeMeta {
+            id: "00000000-0000-0000-0000-000000000001".to_string(),
+            kind: "task_agent".to_string(),
+            root: source.clone(),
+            source_workspace_root: source.clone(),
+            repo_root: source.clone(),
+            branch: Some("refact/task/task-1/card/T-1/legacy".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: None,
+            task_id: Some("task-1".to_string()),
+            card_id: Some("T-1".to_string()),
+            agent_id: Some("legacy".to_string()),
+            enforce: true,
+        };
+
+        let err = service
+            .validate_legacy_task_agent_worktree_meta(&meta)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("equals the source workspace root"),
+            "expected source-workspace rejection, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_legacy_task_agent_worktree_meta_rejects_root_outside_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("repo");
+        let cache = temp.path().join("cache");
+        let outside = temp.path().join("outside-worktree");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        init_repo(&source);
+        let source = source.canonicalize().unwrap();
+        let outside = outside.canonicalize().unwrap();
+        let service = WorktreeService::new(cache, source.clone()).unwrap();
+        let meta = WorktreeMeta {
+            id: "00000000-0000-0000-0000-000000000002".to_string(),
+            kind: "task_agent".to_string(),
+            root: outside,
+            source_workspace_root: source.clone(),
+            repo_root: source,
+            branch: Some("refact/task/task-1/card/T-1/legacy".to_string()),
+            base_branch: Some("main".to_string()),
+            base_commit: None,
+            task_id: Some("task-1".to_string()),
+            card_id: Some("T-1".to_string()),
+            agent_id: Some("legacy".to_string()),
+            enforce: true,
+        };
+
+        let err = service
+            .validate_legacy_task_agent_worktree_meta(&meta)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("outside the Refact worktree cache"),
+            "expected outside-cache rejection, got: {err}"
+        );
     }
 }
