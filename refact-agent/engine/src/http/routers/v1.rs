@@ -132,6 +132,7 @@ pub mod knowledge_enrichment;
 mod knowledge_graph;
 pub mod knowledge_ops;
 pub mod links;
+pub mod exec;
 pub mod lsp_like_handlers;
 mod mcp_config_sharing;
 mod mcp_marketplace;
@@ -570,6 +571,7 @@ pub fn make_v1_router(app_state: AppState) -> Router<AppState> {
             "/project-information/preview",
             post(handle_v1_project_information_preview),
         )
+        .route("/exec/:process_id/stdin", post(exec::handle_v1_exec_stdin))
         .route(
             "/scheduler/cron",
             get(handle_v1_scheduler_cron_get).post(handle_v1_scheduler_cron_post),

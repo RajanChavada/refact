@@ -24,6 +24,7 @@ import { useStoredOpen } from "../useStoredOpen";
 import { ProcessStatusBadge } from "./ProcessStatusBadge";
 import { ProcessOutputView } from "./ProcessOutputView";
 import { ProcessControls } from "./ProcessControls";
+import { ProcessStdinInput } from "./ProcessStdinInput";
 import styles from "./ExecToolCard.module.css";
 
 type ExecToolName =
@@ -234,6 +235,10 @@ function isBusyStatus(status: ExecProcessStatus): boolean {
   );
 }
 
+function isTerminalStatus(status: ExecProcessStatus): boolean {
+  return !isBusyStatus(status);
+}
+
 async function openLogInWeb(path: string): Promise<void> {
   const response = await fetch(path);
   const blob = await response.blob();
@@ -340,6 +345,9 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
     true,
   );
   const details = detailRows(process);
+  const showStdinInput = Boolean(
+    process.processId && metadata?.tty === true && !isTerminalStatus(status),
+  );
   const handleOpenLog = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation();
@@ -508,6 +516,16 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
                 transcript={metadata?.transcript}
               />
 
+
+              {metadata?.tty && metadata.process_id && metadata.status !== "exited" && metadata.status !== "killed" && metadata.status !== "timed_out" && metadata.status !== "failed" && (
+                <Box className={styles.stdinInputRow}>
+                  <Text size="1" className={styles.stdinBanner}>
+                    Interactive PTY process — direct stdin available
+                  </Text>
+                  <ProcessStdinInput processId={metadata.process_id} />
+                </Box>
+              )}
+
               {!metadata && (
                 <Flex align="center" gap="1" mt="2">
                   <LapTimerIcon />
@@ -516,6 +534,10 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
                     available.
                   </Text>
                 </Flex>
+              )}
+
+              {showStdinInput && process.processId && (
+                <ProcessStdinInput processId={process.processId} />
               )}
             </Box>
           </div>

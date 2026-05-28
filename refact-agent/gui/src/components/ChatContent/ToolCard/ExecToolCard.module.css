@@ -208,6 +208,22 @@
   background: var(--gray-a2);
 }
 
+.stdinInputRow {
+  margin-top: var(--space-3);
+  border: 1px solid var(--blue-a4);
+  border-radius: var(--radius-3);
+  background: var(--blue-a2);
+  padding: var(--space-2);
+}
+
+.stdinBanner {
+  color: var(--blue-11);
+}
+
+.stdinTextField {
+  flex: 1 1 auto;
+}
+
 @keyframes exec-status-pulse {
   0%,
   100% {
