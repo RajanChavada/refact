@@ -37,14 +37,44 @@ async fn wait_for_shutdown(gcx: SharedGlobalContext) {
 }
 
 async fn handle_process_completion(gcx: SharedGlobalContext, event: ProcessCompletionEvent) {
-    let session_arc = {
-        let sessions = gcx.chat_sessions.read().await;
-        sessions.get(&event.chat_id).cloned()
-    };
+    let session_arc = process_completion_session(gcx.clone(), &event.chat_id).await;
     let Some(session_arc) = session_arc else {
         return;
     };
     inject_as_priority(gcx, session_arc, event).await;
+}
+
+async fn process_completion_session(
+    gcx: SharedGlobalContext,
+    chat_id: &str,
+) -> Option<Arc<AMutex<ChatSession>>> {
+    if let Some(session_arc) = {
+        let sessions = gcx.chat_sessions.read().await;
+        sessions.get(chat_id).cloned()
+    } {
+        return Some(session_arc);
+    }
+
+    let app = crate::app_state::AppState::from_gcx(gcx.clone()).await;
+    if !super::session::try_restore_session_if_trajectory_exists(app, &gcx.chat_sessions, chat_id)
+        .await
+    {
+        tracing::warn!(
+            "process completion notification skipped: chat session {chat_id} is not loaded and has no trajectory"
+        );
+        return None;
+    }
+
+    let session_arc = {
+        let sessions = gcx.chat_sessions.read().await;
+        sessions.get(chat_id).cloned()
+    };
+    if session_arc.is_none() {
+        tracing::warn!(
+            "process completion notification skipped: restored chat session {chat_id} is unavailable"
+        );
+    }
+    session_arc
 }
 
 async fn inject_as_priority(
@@ -138,6 +168,7 @@ fn status_label(status: &ExecStatus) -> &'static str {
 mod tests {
     use super::*;
     use crate::exec::{ExecMode, ExecOwnerMeta, ExecProcessId, ExecRegistry, ExecSpawnRequest};
+    use crate::chat::trajectories::{save_trajectory_snapshot, TrajectorySnapshot};
 
     async fn test_session(gcx: &SharedGlobalContext, chat_id: &str) -> Arc<AMutex<ChatSession>> {
         let session = Arc::new(AMutex::new(ChatSession::new(chat_id.to_string())));
@@ -239,6 +270,46 @@ mod tests {
         result.snapshot.meta.process_id
     }
 
+    fn notification_test_snapshot(chat_id: &str) -> TrajectorySnapshot {
+        TrajectorySnapshot {
+            chat_id: chat_id.to_string(),
+            title: "Notification test".to_string(),
+            model: "model".to_string(),
+            mode: "agent".to_string(),
+            tool_use: "agent".to_string(),
+            messages: vec![ChatMessage::new("user".to_string(), "hello".to_string())],
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            boost_reasoning: false,
+            checkpoints_enabled: true,
+            context_tokens_cap: None,
+            include_project_info: true,
+            is_title_generated: true,
+            auto_approve_editing_tools: false,
+            auto_approve_dangerous_commands: false,
+            autonomous_no_confirm: false,
+            version: 1,
+            task_meta: None,
+            worktree: None,
+            parent_id: None,
+            link_type: None,
+            root_chat_id: None,
+            reasoning_effort: None,
+            thinking_budget: None,
+            temperature: None,
+            frequency_penalty: None,
+            max_tokens: None,
+            parallel_tool_calls: None,
+            previous_response_id: None,
+            active_skill: None,
+            auto_enrichment_enabled: None,
+            buddy_meta: None,
+            auto_compact_enabled: None,
+            reactive_compact_attempts: None,
+            wake_up_at: None,
+            waiting_for_card_ids: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn background_process_exit_injects_event() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
@@ -289,6 +360,44 @@ mod tests {
         assert_eq!(payload["exit_code"], json!(0));
         assert_eq!(payload["short_description"], json!("test process"));
         assert_eq!(payload["mode"], json!("service"));
+        subscriber.abort();
+    }
+
+    #[tokio::test]
+    async fn process_completion_restores_unloaded_session_before_injection() {
+        let dir = tempfile::tempdir().unwrap();
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        *gcx.documents_state.workspace_folders.lock().unwrap() = vec![dir.path().to_path_buf()];
+        let subscriber = spawn_notification_subscriber(gcx.clone());
+        let chat_id = "process-completion-restores-unloaded-session";
+        save_trajectory_snapshot(gcx.clone(), notification_test_snapshot(chat_id))
+            .await
+            .unwrap();
+
+        let process_id = spawn_notification_test_process(
+            &gcx.exec_registry,
+            ExecMode::Background,
+            chat_id,
+            sleep_command("0.1"),
+        )
+        .await;
+        let _ = gcx.exec_registry.wait(&process_id).await.unwrap();
+
+        let session = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(session) = gcx.chat_sessions.read().await.get(chat_id).cloned() {
+                    return session;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("unloaded session was not restored for process completion");
+        let message = wait_for_process_completed(&session).await;
+        let payload = process_payload(&message);
+        assert_eq!(payload["process_id"], json!(process_id));
+        assert_eq!(payload["status"], json!("exited"));
+        assert_eq!(payload["exit_code"], json!(0));
         subscriber.abort();
     }
 
