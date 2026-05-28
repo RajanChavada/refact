@@ -172,6 +172,9 @@ describe("ExecToolCard", () => {
       screen.getByTestId("exec-status-running_in_background"),
     ).toHaveTextContent("background");
     expect(screen.getByText("exec_bg_1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /show output/i }));
+
+    expect(screen.getByText("server ready")).toBeInTheDocument();
   });
 
   test("persisted_output_path renders Open log button", () => {
@@ -349,6 +352,8 @@ describe("ExecToolCard", () => {
       },
     });
 
+    fireEvent.click(screen.getByRole("button", { name: /show output/i }));
+
     expect(screen.getByText("stdout")).toBeInTheDocument();
     expect(screen.getByText("stderr")).toBeInTheDocument();
     expect(screen.getByText("hello out")).toBeInTheDocument();
@@ -397,6 +402,8 @@ describe("ExecToolCard", () => {
       },
     });
 
+    fireEvent.click(screen.getByRole("button", { name: /show output/i }));
+
     expect(screen.getByTestId("exec-output-view")).toBeInTheDocument();
     expect(screen.getByText(/output capped in UI/u)).toBeInTheDocument();
     expect(screen.getByTestId("exec-truncation-notice")).toBeInTheDocument();
@@ -427,10 +434,137 @@ describe("ExecToolCard", () => {
     renderExecTool({ content: "legacy plain output" });
 
     expect(screen.getByText("Run npm test")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /show output/i }));
+
     expect(screen.getByText("legacy plain output")).toBeInTheDocument();
     expect(
       screen.getByText(/structured process metadata was not available/u),
     ).toBeInTheDocument();
+  });
+
+  test("output is collapsed by default for successful exec cards", () => {
+    renderExecTool({
+      content: "stdout:\nall tests passed\nstderr:\n<empty>\n",
+      extra: {
+        process_id: "exec_success_collapsed",
+        status: "exited",
+        short_description: "Run tests",
+        command: "npm test",
+        exit_code: 0,
+      },
+    });
+
+    expect(screen.getByRole("button", { name: /show output/i })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.queryByTestId("exec-output-view")).not.toBeInTheDocument();
+    expect(screen.queryByText("all tests passed")).not.toBeInTheDocument();
+  });
+
+  test("clicking output toggle reveals ProcessOutputView", () => {
+    renderExecTool({
+      content: "stdout:\nrevealed output\nstderr:\n<empty>\n",
+      extra: {
+        process_id: "exec_toggle_output",
+        status: "exited",
+        short_description: "Run toggle test",
+        command: "npm test",
+        exit_code: 0,
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /show output/i }));
+
+    expect(screen.getByRole("button", { name: /hide output/i })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("exec-output-view")).toBeInTheDocument();
+    expect(screen.getByText("revealed output")).toBeInTheDocument();
+  });
+
+  test("running process with no chunks shows waiting preview", () => {
+    renderExecTool({
+      toolName: "process_start",
+      args: { command: "npm run dev", mode: "background" },
+      content: "Process started",
+      extra: {
+        process_id: "exec_waiting_preview",
+        status: "running",
+        short_description: "Start dev server",
+        command: "npm run dev",
+        mode: "background",
+        transcript: {
+          next_seq: 0,
+          latest_seq: 0,
+          chunks: [],
+        },
+      },
+    });
+
+    expect(screen.getByTestId("exec-live-preview")).toHaveTextContent(
+      "Waiting for output…",
+    );
+  });
+
+  test("running process shows latest output chunk preview", () => {
+    renderExecTool({
+      toolName: "process_start",
+      args: { command: "npm run dev", mode: "background" },
+      content: "Process started",
+      extra: {
+        process_id: "exec_live_preview",
+        status: "running",
+        short_description: "Start dev server",
+        command: "npm run dev",
+        mode: "background",
+        transcript: {
+          next_seq: 2,
+          latest_seq: 1,
+          chunks: [
+            {
+              process_id: "exec_live_preview",
+              seq: 0,
+              stream: "stdout",
+              text: "booting\n",
+              timestamp_ms: 1,
+            },
+            {
+              process_id: "exec_live_preview",
+              seq: 1,
+              stream: "stderr",
+              text: "server ready\n",
+              timestamp_ms: 2,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(screen.getByTestId("exec-live-preview")).toHaveTextContent(
+      "stderr: server ready",
+    );
+  });
+
+  test("failed process defaults expanded so error output is visible", () => {
+    renderExecTool({
+      content: "stdout:\n<empty>\nstderr:\nboom\n",
+      failed: true,
+      extra: {
+        process_id: "exec_failed_open",
+        status: "failed",
+        short_description: "Run failing command",
+        command: "npm test",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: /hide output/i })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("exec-output-view")).toBeInTheDocument();
+    expect(screen.getByText("boom")).toBeInTheDocument();
   });
 });
 

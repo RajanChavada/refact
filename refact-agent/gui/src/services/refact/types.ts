@@ -138,12 +138,21 @@ export type ExecProcessStatus =
   | "killed"
   | "timed_out";
 
+export type ExecOutputChunkMetadata = {
+  process_id?: string;
+  seq?: number;
+  stream?: string;
+  text?: string;
+  timestamp_ms?: number;
+};
+
 export type ExecTranscriptMetadata = {
   process_id?: string;
   found?: boolean;
   since_seq?: number;
   next_seq?: number;
   latest_seq?: number;
+  chunks?: ExecOutputChunkMetadata[];
   total_bytes_appended?: number;
   total_lines_appended?: number;
   persisted_output_path?: string;

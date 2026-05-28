@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Box, Button, Flex, Spinner, Text } from "@radix-ui/themes";
 import { CodeIcon, LapTimerIcon, RowsIcon } from "@radix-ui/react-icons";
 import classNames from "classnames";
@@ -7,6 +7,7 @@ import { useAppSelector } from "../../../hooks";
 import { selectToolResultById } from "../../../features/Chat/Thread/selectors";
 import { selectHost } from "../../../features/Config/configSlice";
 import type {
+  ExecOutputChunkMetadata,
   ExecProcessMetadata,
   ExecProcessStatus,
   ExecToolMetadata,
@@ -239,6 +240,80 @@ function isTerminalStatus(status: ExecProcessStatus): boolean {
   return !isBusyStatus(status);
 }
 
+function shouldDefaultExpand(
+  status: ExecProcessStatus,
+  exitCode: number | null | undefined,
+  toolFailed: boolean | undefined,
+): boolean {
+  if (toolFailed) return true;
+  if (status === "failed" || status === "killed" || status === "timed_out") {
+    return true;
+  }
+  return typeof exitCode === "number" && exitCode !== 0;
+}
+
+function chunkPreviewText(chunk: ExecOutputChunkMetadata): string | null {
+  if (typeof chunk.text !== "string") return null;
+  const text = chunk.text.replace(/\s+/gu, " ").trim();
+  if (!text) return null;
+  const stream = typeof chunk.stream === "string" ? chunk.stream : null;
+  return stream && stream !== "combined" ? `${stream}: ${text}` : text;
+}
+
+function stripOutputFence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("```")) return text.trim();
+  return trimmed
+    .replace(/^```[a-zA-Z0-9_-]*\n?/, "")
+    .replace(/```$/, "")
+    .trim();
+}
+
+function extractOutputSection(content: string, title: string): string | null {
+  const pattern = new RegExp(
+    `(?:^|\\n)${title}:\\n([\\s\\S]*?)(?=\\n(?:stdout|stderr|combined|transcript):|$)`,
+    "i",
+  );
+  const match = pattern.exec(content);
+  if (!match) return null;
+  const value = stripOutputFence(match[1]);
+  return value === "<empty>" ? "" : value;
+}
+
+function sectionPreviewText(stream: string, text: string | null): string | null {
+  if (!text) return null;
+  const line = text
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .at(-1);
+  if (!line) return null;
+  return stream === "combined" ? line : `${stream}: ${line}`;
+}
+
+function contentPreviewText(content: string | null): string | null {
+  if (!content) return null;
+  return (
+    sectionPreviewText("combined", extractOutputSection(content, "combined")) ??
+    sectionPreviewText("stderr", extractOutputSection(content, "stderr")) ??
+    sectionPreviewText("stdout", extractOutputSection(content, "stdout"))
+  );
+}
+
+function latestChunkPreview(
+  metadata: ExecToolMetadata | null,
+  content: string | null,
+): string | null {
+  const chunks = metadata?.transcript?.chunks;
+  if (Array.isArray(chunks)) {
+    for (const chunk of chunks.slice().reverse()) {
+      const text = chunkPreviewText(chunk);
+      if (text) return text;
+    }
+  }
+  return contentPreviewText(content);
+}
+
 async function openLogInWeb(path: string): Promise<void> {
   const response = await fetch(path);
   const blob = await response.blob();
@@ -322,8 +397,14 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
     status,
     fallbackSummary,
   );
+  const defaultOutputOpen = shouldDefaultExpand(
+    status,
+    process.exitCode,
+    maybeResult?.tool_failed,
+  );
   const copyableOutput = useMemo(() => copyableOutputText(content), [content]);
   const isBusy = isBusyStatus(status);
+  const livePreview = latestChunkPreview(metadata, content);
   const nowMs = useRunningNowMs(isBusy);
   const duration = durationLabel(process, nowMs);
   const logPath = persistedOutputPath(metadata);
@@ -339,11 +420,28 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
     0,
     (metadata?.processes?.length ?? 0) - listedProcesses.length,
   );
-  const { shouldRender, isAnimatingOpen } = useDelayedUnmount(
-    isOpen,
-    200,
-    true,
+  const outputStoreKey = process.processId
+    ? `exec-output:${process.processId}`
+    : toolCall.id
+      ? `exec-output:${toolCall.id}`
+      : undefined;
+  const [isOutputOpen, toggleOutputOpen, setOutputOpen] = useStoredOpen(
+    outputStoreKey,
+    defaultOutputOpen,
   );
+  const defaultExpandedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!defaultOutputOpen) return;
+    const key = outputStoreKey ?? "exec-output";
+    if (defaultExpandedKeyRef.current === key) return;
+    defaultExpandedKeyRef.current = key;
+    setOutputOpen(true);
+  }, [defaultOutputOpen, outputStoreKey, setOutputOpen]);
+  const { shouldRender, isAnimatingOpen } = useDelayedUnmount(isOpen, 200, true);
+  const {
+    shouldRender: shouldRenderOutput,
+    isAnimatingOpen: isOutputAnimatingOpen,
+  } = useDelayedUnmount(isOutputOpen, 200, true);
   const details = detailRows(process);
   const showStdinInput = Boolean(
     process.processId && metadata?.tty === true && !isTerminalStatus(status),
@@ -418,6 +516,18 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
     >
       <span data-testid={`exec-tool-${toolName}`} hidden />
       <ToolCallTooltip toolCall={toolCall}>{header}</ToolCallTooltip>
+
+      {isBusy && (
+        <Text
+          size="1"
+          color={livePreview ? undefined : "gray"}
+          className={styles.livePreview}
+          data-testid="exec-live-preview"
+          title={livePreview ?? undefined}
+        >
+          {livePreview ?? "Waiting for output…"}
+        </Text>
+      )}
 
       {shouldRender && (
         <div
@@ -511,10 +621,33 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
                 </Box>
               )}
 
-              <ProcessOutputView
-                content={content}
-                transcript={metadata?.transcript}
-              />
+              <Button
+                type="button"
+                size="1"
+                variant="soft"
+                color="gray"
+                className={styles.outputToggle}
+                onClick={toggleOutputOpen}
+                aria-expanded={isOutputOpen}
+              >
+                {isOutputOpen ? "Hide output" : "Show output"}
+              </Button>
+
+              {shouldRenderOutput && (
+                <div
+                  className={classNames(
+                    styles.contentWrapper,
+                    isOutputAnimatingOpen && styles.contentWrapperOpen,
+                  )}
+                >
+                  <div className={styles.contentInner}>
+                    <ProcessOutputView
+                      content={content}
+                      transcript={metadata?.transcript}
+                    />
+                  </div>
+                </div>
+              )}
 
               {!metadata && (
                 <Flex align="center" gap="1" mt="2">

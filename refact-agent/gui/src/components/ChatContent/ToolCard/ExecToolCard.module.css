@@ -36,6 +36,17 @@
   min-width: 0;
 }
 
+.livePreview {
+  display: block;
+  min-width: 0;
+  margin-left: 28px;
+  padding-bottom: var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--code-font-family);
+}
+
 .processChip {
   max-width: 180px;
   font-family: var(--code-font-family);
@@ -140,6 +151,11 @@
 }
 
 .logButton {
+  cursor: pointer;
+}
+
+.outputToggle {
+  margin-bottom: var(--space-2);
   cursor: pointer;
 }
 
