@@ -293,6 +293,9 @@ impl ExecRegistry {
             Some(existing) if existing.child.is_some() => {
                 return existing.snapshot.clone();
             }
+            Some(existing) if existing.runtime.is_some() => {
+                return existing.snapshot.clone();
+            }
             Some(_) | None => {}
         }
         records.insert(process_id, record);
@@ -313,6 +316,9 @@ impl ExecRegistry {
                 return Err(format!("process already exists: {process_id}"));
             }
             Some(existing) if existing.child.is_some() => {
+                return Err(format!("process already exists: {process_id}"));
+            }
+            Some(existing) if existing.runtime.is_some() => {
                 return Err(format!("process already exists: {process_id}"));
             }
             Some(_) | None => {}
@@ -340,6 +346,9 @@ impl ExecRegistry {
             Some(existing) if existing.child.is_some() => {
                 return Err(format!("process already exists: {process_id}"));
             }
+            Some(existing) if existing.runtime.is_some() => {
+                return Err(format!("process already exists: {process_id}"));
+            }
             Some(_) | None => {}
         }
         records.insert(process_id, record);
@@ -350,21 +359,26 @@ impl ExecRegistry {
         &self,
         meta: ExecProcessMeta,
         transcript_limit_bytes: usize,
-        child: tokio::process::Child,
+        mut child: tokio::process::Child,
     ) -> ExecProcessSnapshot {
         let process_id = meta.process_id.clone();
+        let mut records = self.records.lock().await;
+        if let Some(existing) = records.get(&process_id) {
+            if !existing.snapshot.status.is_terminal()
+                || existing.child.is_some()
+                || existing.runtime.is_some()
+            {
+                let snapshot = existing.snapshot.clone();
+                drop(records);
+                let _ = child.start_kill();
+                tokio::spawn(async move {
+                    let _ = child.wait().await;
+                });
+                return snapshot;
+            }
+        }
         let record = ExecProcessRecord::with_child(meta, transcript_limit_bytes, child);
         let snapshot = record.snapshot.clone();
-        let mut records = self.records.lock().await;
-        match records.get(&process_id) {
-            Some(existing) if !existing.snapshot.status.is_terminal() => {
-                return existing.snapshot.clone();
-            }
-            Some(existing) if existing.child.is_some() => {
-                return existing.snapshot.clone();
-            }
-            Some(_) | None => {}
-        }
         records.insert(process_id, record);
         snapshot
     }
@@ -2554,5 +2568,154 @@ mod tests {
         assert_eq!(stored.status, ExecStatus::Running);
         assert_eq!(stored.meta.command, "sleep 1");
         assert_eq!(stored.meta.owner.chat_id.as_deref(), Some("chat-a"));
+    }
+
+    #[tokio::test]
+    async fn register_does_not_overwrite_terminal_record_with_retained_runtime() {
+        let registry = ExecRegistry::new();
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let runtime = ExecProcessRuntime {
+            control_tx,
+            terminal: Arc::new(Notify::new()),
+            stdin_writer: None,
+        };
+        let snapshot = registry
+            .register_new_with_runtime(
+                meta(
+                    "exec_runtime_retain_reg_guard",
+                    ExecMode::Background,
+                    "sleep 30",
+                ),
+                DEFAULT_MAX_BYTES,
+                runtime,
+                false,
+            )
+            .await
+            .unwrap();
+        let process_id = snapshot.meta.process_id.clone();
+        registry.mark_started(&process_id).await.unwrap();
+        registry
+            .mark_failed(&process_id, "simulated failure".to_string())
+            .await
+            .unwrap();
+
+        let retained = registry.get(&process_id).await.unwrap();
+        assert!(matches!(retained.status, ExecStatus::Failed { .. }));
+
+        let replacement = registry
+            .register(
+                meta(
+                    "exec_runtime_retain_reg_guard",
+                    ExecMode::Background,
+                    "echo replacement",
+                ),
+                DEFAULT_MAX_BYTES,
+            )
+            .await;
+
+        let stored = registry.get(&process_id).await.unwrap();
+        assert_eq!(replacement.meta.command, "sleep 30");
+        assert_eq!(stored.meta.command, "sleep 30");
+    }
+
+    #[tokio::test]
+    async fn register_new_with_runtime_rejects_retained_runtime_record() {
+        let registry = ExecRegistry::new();
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let runtime = ExecProcessRuntime {
+            control_tx,
+            terminal: Arc::new(Notify::new()),
+            stdin_writer: None,
+        };
+        let snapshot = registry
+            .register_new_with_runtime(
+                meta(
+                    "exec_runtime_retain_rwr_guard",
+                    ExecMode::Background,
+                    "sleep 30",
+                ),
+                DEFAULT_MAX_BYTES,
+                runtime,
+                false,
+            )
+            .await
+            .unwrap();
+        let process_id = snapshot.meta.process_id.clone();
+        registry.mark_started(&process_id).await.unwrap();
+        registry
+            .mark_failed(&process_id, "simulated failure".to_string())
+            .await
+            .unwrap();
+
+        let retained = registry.get(&process_id).await.unwrap();
+        assert!(matches!(retained.status, ExecStatus::Failed { .. }));
+
+        let (control_tx2, _control_rx2) = mpsc::channel(1);
+        let runtime2 = ExecProcessRuntime {
+            control_tx: control_tx2,
+            terminal: Arc::new(Notify::new()),
+            stdin_writer: None,
+        };
+        let result = registry
+            .register_new_with_runtime(
+                meta(
+                    "exec_runtime_retain_rwr_guard",
+                    ExecMode::Background,
+                    "echo replacement",
+                ),
+                DEFAULT_MAX_BYTES,
+                runtime2,
+                false,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let stored = registry.get(&process_id).await.unwrap();
+        assert_eq!(stored.meta.command, "sleep 30");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn register_with_child_duplicate_kills_rejected_child() {
+        let registry = ExecRegistry::new();
+        let first = registry
+            .register(
+                meta("exec_child_dup_kill", ExecMode::Background, "sleep 1")
+                    .with_chat_id("chat-a"),
+                DEFAULT_MAX_BYTES,
+            )
+            .await;
+        let process_id = first.meta.process_id.clone();
+        registry.mark_started(&process_id).await.unwrap();
+
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("sleep 30");
+        unsafe {
+            command.pre_exec(|| {
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+        let child = command.spawn().expect("spawn child");
+        let child_pid = child.id().expect("child pid");
+
+        assert!(process_exists(child_pid));
+
+        let second = registry
+            .register_with_child(
+                meta("exec_child_dup_kill", ExecMode::Background, "echo replacement")
+                    .with_chat_id("chat-b"),
+                DEFAULT_MAX_BYTES,
+                child,
+            )
+            .await;
+
+        let stored = registry.get(&process_id).await.unwrap();
+        assert_eq!(second, stored);
+        assert_eq!(stored.status, ExecStatus::Running);
+        assert_eq!(stored.meta.command, "sleep 1");
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!process_exists(child_pid));
     }
 }
