@@ -654,8 +654,6 @@ pub fn start_generation(
         let gcx = app.gcx.clone();
         let mut network_retry_attempt = 0usize;
         let mut retry_status_message_id: Option<String> = None;
-        let mut tier1_compact_count = 0usize;
-        let mut tier1_disabled_for_session = false;
         loop {
             let (mut thread, chat_id) = {
                 let session = session_arc.lock().await;
@@ -736,14 +734,7 @@ pub fn start_generation(
                 }
             }
 
-            crate::chat::summarization::maybe_apply_tier1(
-                gcx.clone(),
-                &session_arc,
-                &thread,
-                &mut tier1_compact_count,
-                &mut tier1_disabled_for_session,
-            )
-            .await;
+            crate::chat::summarization::maybe_apply_tier1(gcx.clone(), &session_arc, &thread).await;
 
             thread = {
                 let session = session_arc.lock().await;
@@ -874,7 +865,7 @@ pub fn start_generation(
                 if retry_decision.is_context_limit() && !abort_flag.load(Ordering::SeqCst) {
                     let auto_compact_enabled = {
                         let session = session_arc.lock().await;
-                        session.thread.auto_compact_enabled.unwrap_or(true)
+                        session.thread.auto_compact_enabled.unwrap_or(false)
                     };
                     if !auto_compact_enabled {
                         warn!(
@@ -1000,7 +991,6 @@ pub fn start_generation(
 
             network_retry_attempt = 0;
             retry_status_message_id = None;
-            tier1_compact_count = 0;
 
             if abort_flag.load(Ordering::SeqCst) {
                 break;

@@ -14,11 +14,11 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::call_validation::{ChatMessage, ChatContent};
+use crate::chat::history_limit::CompactAggression;
 use crate::app_state::AppState;
 use crate::custom_error::ScratchError;
 use crate::global_context::GlobalContext;
 use crate::files_correction::get_project_dirs;
-use crate::chat::history_limit::CompactAggression;
 use crate::subchat::run_subchat_once;
 use crate::yaml_configs::customization_registry::get_subagent_config;
 use crate::worktrees::service::WorktreeService;
@@ -669,7 +669,19 @@ pub async fn load_trajectory_for_chat(
 
     for msg in &mut messages {
         if msg.message_id.is_empty() {
-            msg.message_id = Uuid::new_v4().to_string();
+            let role = msg.role.clone();
+            let content = msg.content.content_text_only();
+            let source = msg
+                .extra
+                .get("event")
+                .and_then(|event| event.get("source"))
+                .and_then(|source| source.as_str())
+                .unwrap_or_default();
+            msg.message_id = format!(
+                "legacy:{}:{:x}",
+                role,
+                md5::compute(format!("{role}\n{source}\n{content}").as_bytes())
+            );
         }
 
         if let Some(tool_calls) = &msg.tool_calls {
@@ -1279,6 +1291,7 @@ pub async fn check_external_reload_pending(
             info!("Applying pending external reload for {}", chat_id);
             session.messages = loaded.messages;
             session.thread = loaded.thread;
+            session.reset_compaction_runtime_state();
             session.created_at = loaded.created_at;
             session.wake_up_at = loaded.wake_up_at;
             session.waiting_for_card_ids = loaded.waiting_for_card_ids;
@@ -1460,6 +1473,7 @@ async fn process_trajectory_change(gcx: Arc<GlobalContext>, chat_id: &str, is_re
         info!("Reloading trajectory for {} from external change", chat_id);
         session.messages = loaded.messages;
         session.thread = loaded.thread;
+        session.reset_compaction_runtime_state();
         session.created_at = loaded.created_at;
         session.wake_up_at = loaded.wake_up_at;
         session.waiting_for_card_ids = loaded.waiting_for_card_ids;
@@ -3852,6 +3866,8 @@ mod tests {
             closed_flag: Arc::new(AtomicBool::new(false)),
             external_reload_pending: false,
             last_prompt_messages: Vec::new(),
+            tier1_compact_attempts: 0,
+            tier1_compaction_disabled: false,
             cache_guard_snapshot: None,
             cache_guard_force_next: false,
             task_agent_error: None,
@@ -3927,6 +3943,8 @@ mod tests {
             closed_flag: Arc::new(AtomicBool::new(false)),
             external_reload_pending: false,
             last_prompt_messages: Vec::new(),
+            tier1_compact_attempts: 0,
+            tier1_compaction_disabled: false,
             cache_guard_snapshot: None,
             cache_guard_force_next: false,
             task_agent_error: None,

@@ -169,6 +169,28 @@ fn process_completed_keeps_recent_n() {
 }
 
 #[test]
+fn process_completed_summary_id_is_stable() {
+    let mut messages = Vec::new();
+    for i in 0..10 {
+        let mut message = event(
+            "process_completed",
+            "exec:build",
+            &format!("process completed {i}"),
+        );
+        message.message_id = format!("process-{i}");
+        messages.push(message);
+    }
+
+    tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Standard);
+    let once = serde_json::to_string(&messages).unwrap();
+    tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Standard);
+    let twice = serde_json::to_string(&messages).unwrap();
+
+    assert_eq!(twice, once);
+    assert!(once.contains("event-history:process-0:process_completed:7:"));
+}
+
+#[test]
 fn anchor_preserved_under_aggressive() {
     let notice = event("system_notice", "system", "do not drop this notice");
     let notice_json = serde_json::to_string(&notice).unwrap();

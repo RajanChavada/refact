@@ -206,10 +206,8 @@ impl ChatSessionFacade for EngineChatSessionFacade {
             .map(crate::agents::types::BackgroundAgentSummary::from)
             .collect();
         let mut session = session_arc.lock().await;
-        session.messages = update.messages;
+        session.replace_messages(update.messages);
         session.thread.previous_response_id = update.previous_response_id;
-        session.cache_guard_force_next = true;
-        session.increment_version();
         session.upsert_background_agents(background_agents);
         let snapshot = session.snapshot();
         session.emit(snapshot);

@@ -3,8 +3,6 @@ use serde_json::{json, Value};
 use serde::{Serialize, Deserialize};
 use refact_core::chat_types::{ChatMessage, ChatContent, ContextFile, SamplingParameters};
 use refact_core::custom_error::first_n_chars;
-use uuid::Uuid;
-
 use crate::compression_exemption::{event_source, event_subkind, exemption_for, CompressionExemption};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +56,7 @@ struct EventHistorySummary {
     source: String,
     subkind: String,
     count: usize,
+    first_message_id: String,
 }
 
 fn estimated_message_tokens(msg: &ChatMessage) -> usize {
@@ -89,9 +88,21 @@ fn event_history_attr_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+fn event_history_summary_id(summary: &EventHistorySummary) -> String {
+    // Non-security hash: keeps synthetic summary IDs compact and stable.
+    let source_hash = format!("{:x}", md5::compute(summary.source.as_bytes()));
+    format!(
+        "event-history:{}:{}:{}:{}",
+        summary.first_message_id,
+        summary.subkind,
+        summary.count,
+        &source_hash[..8]
+    )
+}
+
 fn event_history_summary_message(summary: EventHistorySummary) -> ChatMessage {
-    let source = summary.source;
-    let subkind = summary.subkind;
+    let source = summary.source.clone();
+    let subkind = summary.subkind.clone();
     let count = summary.count;
     let escaped_source = event_history_attr_escape(&source);
     let mut extra = serde_json::Map::new();
@@ -103,11 +114,12 @@ fn event_history_summary_message(summary: EventHistorySummary) -> ChatMessage {
             "payload": {
                 "summarized_subkind": subkind.clone(),
                 "count": count,
+                "first_message_id": summary.first_message_id,
             },
         }),
     );
     ChatMessage {
-        message_id: Uuid::new_v4().to_string(),
+        message_id: event_history_summary_id(&summary),
         role: "event".to_string(),
         content: ChatContent::SimpleText(format!(
             "<event-history source=\"{}\">{} earlier {} events</event-history>",
@@ -151,7 +163,10 @@ fn compact_event_messages(
                 summaries
                     .entry(key)
                     .and_modify(|summary| {
-                        summary.insert_at = summary.insert_at.min(idx);
+                        if idx < summary.insert_at {
+                            summary.insert_at = idx;
+                            summary.first_message_id = msg.message_id.clone();
+                        }
                         summary.count += 1;
                     })
                     .or_insert(EventHistorySummary {
@@ -159,6 +174,7 @@ fn compact_event_messages(
                         source,
                         subkind,
                         count: 1,
+                        first_message_id: msg.message_id.clone(),
                     });
             }
             CompressionExemption::PreserveWindow => {
@@ -272,7 +288,10 @@ pub fn tier0_deterministic_compact_with(
             }
         }
         if modified {
-            msg.content = ChatContent::ContextFiles(files);
+            let new_content = ChatContent::ContextFiles(files);
+            if msg.content != new_content {
+                msg.content = new_content;
+            }
         }
     }
 
@@ -360,7 +379,10 @@ pub fn tier0_deterministic_compact_with(
                 modified = true;
             }
             if modified {
-                msg.content = ChatContent::ContextFiles(files);
+                let new_content = ChatContent::ContextFiles(files);
+                if msg.content != new_content {
+                    msg.content = new_content;
+                }
             }
         }
     }
@@ -941,6 +963,24 @@ mod tests {
     }
 
     #[test]
+    fn test_tier0_compaction_is_idempotent() {
+        let mut messages = vec![
+            make_context_file_msg("src/main.rs", "first version content"),
+            make_user_msg_basic("user message"),
+            make_context_file_msg("src/main.rs", "second version content"),
+            make_user_msg_basic("another user message"),
+            make_tool_msg("tc1", &"x".repeat(500), None),
+        ];
+
+        tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Aggressive);
+        let once = serde_json::to_string(&messages).unwrap();
+        tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Aggressive);
+        let twice = serde_json::to_string(&messages).unwrap();
+
+        assert_eq!(twice, once);
+    }
+
+    #[test]
     fn test_tier0_dedup_different_files_not_deduped() {
         let mut messages = vec![
             make_context_file_msg("src/a.rs", "content a"),
@@ -1123,19 +1163,22 @@ mod tests {
 
     #[test]
     fn test_maximum_compaction_elides_more_context_than_aggressive() {
-        let long_context = (0..80)
-            .map(|idx| format!("line {idx}"))
+        let long_content = (0..100)
+            .map(|i| format!("line {}", i))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut messages = vec![make_context_file_msg("src/main.rs", &long_context)];
+        let mut aggressive = vec![make_context_file_msg("huge.log", &long_content)];
+        let mut maximum = aggressive.clone();
 
-        let report = tier0_deterministic_compact_with(&mut messages, 0, CompactAggression::Maximum);
+        tier0_deterministic_compact_with(&mut aggressive, 0, CompactAggression::Aggressive);
+        tier0_deterministic_compact_with(&mut maximum, 0, CompactAggression::Maximum);
 
-        assert_eq!(report.context_files_elided, 1);
-        let files = extract_context_files_from_content(&messages[0].content);
-        assert!(files[0]
+        let aggressive_files = extract_context_files_from_content(&aggressive[0].content);
+        let maximum_files = extract_context_files_from_content(&maximum[0].content);
+        assert!(maximum_files[0].file_content.len() < aggressive_files[0].file_content.len());
+        assert!(maximum_files[0]
             .file_content
-            .contains("60 lines elided under maximum compaction"));
+            .contains("lines elided under maximum compaction"));
     }
 
     #[test]

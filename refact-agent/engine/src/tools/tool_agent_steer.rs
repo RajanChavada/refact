@@ -130,8 +130,12 @@ fn tool_output(card_id: &str, message: &str, state: SessionState, compacted: boo
     )
 }
 
-fn should_autocompact_before_steer(state: SessionState) -> bool {
-    matches!(state, SessionState::Completed | SessionState::Error)
+fn should_autocompact_before_steer(
+    state: SessionState,
+    thread: &refact_chat_api::ThreadParams,
+) -> bool {
+    thread.auto_compact_enabled.unwrap_or(false)
+        && matches!(state, SessionState::Completed | SessionState::Error)
 }
 
 fn autocompact_messages_for_resume(messages: &mut Vec<ChatMessage>) -> bool {
@@ -254,7 +258,7 @@ impl Tool for ToolAgentSteer {
         let snapshot = chat_facade.session_snapshot(&agent_chat_id).await?;
         validate_agent_snapshot(&snapshot, &task_id, &card_id, card.assignee.as_deref())?;
         let session_state = snapshot.session_state;
-        let compacted = if should_autocompact_before_steer(session_state) {
+        let compacted = if should_autocompact_before_steer(session_state, &snapshot.thread) {
             let mut messages = snapshot.messages.clone();
             let compacted = autocompact_messages_for_resume(&mut messages);
             if compacted {
@@ -376,7 +380,10 @@ mod tests {
                 state: StdMutex::new(state),
                 pushed: StdMutex::new(vec![]),
                 messages: StdMutex::new(vec![]),
-                thread: StdMutex::new(test_agent_thread()),
+                thread: StdMutex::new(refact_chat_api::ThreadParams {
+                    auto_compact_enabled: Some(true),
+                    ..test_agent_thread()
+                }),
                 updates: StdMutex::new(vec![]),
             }
         }
@@ -386,7 +393,10 @@ mod tests {
                 state: StdMutex::new(state),
                 pushed: StdMutex::new(vec![]),
                 messages: StdMutex::new(messages),
-                thread: StdMutex::new(test_agent_thread()),
+                thread: StdMutex::new(refact_chat_api::ThreadParams {
+                    auto_compact_enabled: Some(true),
+                    ..test_agent_thread()
+                }),
                 updates: StdMutex::new(vec![]),
             }
         }
@@ -788,6 +798,47 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].previous_response_id, None);
         assert!(output.contains("Auto-compaction: applied before steering."));
+        assert_eq!(mock.pushed_commands().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_agent_steer_skips_autocompaction_when_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let gcx = write_task(
+            temp.path(),
+            test_card("doing", Some("agent-chat-1".to_string())),
+        )
+        .await;
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "hi".to_string()),
+            ChatMessage::new("tool".to_string(), "x".repeat(40_000)),
+        ];
+        let mock = Arc::new(MockChatFacade::with_messages(
+            SessionState::Completed,
+            messages,
+        ));
+        *mock.thread.lock().unwrap() = refact_chat_api::ThreadParams {
+            auto_compact_enabled: Some(false),
+            ..test_agent_thread()
+        };
+        let ccx = planner_ccx(gcx, mock.clone(), "planner").await;
+        let mut tool = ToolAgentSteer::new();
+
+        let output = tool_output_text(
+            tool.tool_execute(
+                ccx,
+                &"call".to_string(),
+                &args(&[
+                    ("card_id", json!("T-29")),
+                    ("message", json!("Continue now")),
+                ]),
+            )
+            .await
+            .unwrap(),
+        );
+
+        assert!(mock.updates().is_empty());
+        assert!(!output.contains("Auto-compaction: applied before steering."));
         assert_eq!(mock.pushed_commands().len(), 1);
     }
 }

@@ -190,6 +190,8 @@ impl ChatSession {
             closed_flag: Arc::new(AtomicBool::new(false)),
             external_reload_pending: false,
             last_prompt_messages: Vec::new(),
+            tier1_compact_attempts: 0,
+            tier1_compaction_disabled: false,
             cache_guard_snapshot: None,
             cache_guard_force_next: false,
             task_agent_error: None,
@@ -251,6 +253,8 @@ impl ChatSession {
             closed: false,
             closed_flag: Arc::new(AtomicBool::new(false)),
             last_prompt_messages: Vec::new(),
+            tier1_compact_attempts: 0,
+            tier1_compaction_disabled: false,
             cache_guard_snapshot: None,
             cache_guard_force_next: false,
             task_agent_error: None,
@@ -273,6 +277,21 @@ impl ChatSession {
     pub fn increment_version(&mut self) {
         self.trajectory_version += 1;
         self.trajectory_dirty = true;
+    }
+
+    pub fn reset_compaction_runtime_state(&mut self) {
+        self.last_prompt_messages.clear();
+        self.tier1_compact_attempts = 0;
+        self.tier1_compaction_disabled = false;
+        self.thread.previous_response_id = None;
+        self.cache_guard_force_next = true;
+    }
+
+    pub fn replace_messages(&mut self, messages: Vec<ChatMessage>) {
+        self.messages = messages;
+        self.reset_compaction_runtime_state();
+        self.increment_version();
+        self.touch();
     }
 
     pub fn set_active_skill(&mut self, name: String) {
@@ -469,6 +488,8 @@ impl ChatSession {
         }
         let index = self.messages.len();
         self.messages.push(message.clone());
+        self.tier1_compact_attempts = 0;
+        self.tier1_compaction_disabled = false;
         self.emit(ChatEvent::MessageAdded { message, index });
         self.increment_version();
         self.touch();
@@ -529,6 +550,8 @@ impl ChatSession {
         }
         let insert_idx = index.min(self.messages.len());
         self.messages.insert(insert_idx, message.clone());
+        self.tier1_compact_attempts = 0;
+        self.tier1_compaction_disabled = false;
         self.emit(ChatEvent::MessageAdded {
             message,
             index: insert_idx,
@@ -544,6 +567,8 @@ impl ChatSession {
             .position(|m| m.message_id == message_id)
         {
             self.messages[idx] = message.clone();
+            self.tier1_compact_attempts = 0;
+            self.tier1_compaction_disabled = false;
             self.thread.previous_response_id = None;
             self.emit(ChatEvent::MessageUpdated {
                 message_id: message_id.to_string(),
@@ -571,6 +596,8 @@ impl ChatSession {
                 .unwrap_or_default();
 
             self.messages.remove(idx);
+            self.tier1_compact_attempts = 0;
+            self.tier1_compaction_disabled = false;
             self.thread.previous_response_id = None;
             self.emit(ChatEvent::MessageRemoved {
                 message_id: message_id.to_string(),
@@ -602,6 +629,8 @@ impl ChatSession {
     pub fn truncate_messages(&mut self, from_index: usize) {
         if from_index < self.messages.len() {
             self.messages.truncate(from_index);
+            self.tier1_compact_attempts = 0;
+            self.tier1_compaction_disabled = false;
             self.thread.previous_response_id = None;
             self.emit(ChatEvent::MessagesTruncated { from_index });
             self.increment_version();
@@ -2295,6 +2324,30 @@ mod tests {
         session.set_runtime_state(SessionState::Idle, None);
 
         assert!(session.wake_up_at.is_none());
+        assert!(session.trajectory_dirty);
+    }
+
+    #[test]
+    fn replace_messages_resets_compaction_runtime_state() {
+        let mut session = make_session();
+        session.last_prompt_messages =
+            vec![ChatMessage::new("user".to_string(), "old".to_string())];
+        session.tier1_compact_attempts = 2;
+        session.tier1_compaction_disabled = true;
+        session.thread.previous_response_id = Some("resp-old".to_string());
+        session.cache_guard_force_next = false;
+        session.trajectory_dirty = false;
+
+        session.replace_messages(vec![ChatMessage::new(
+            "user".to_string(),
+            "new".to_string(),
+        )]);
+
+        assert!(session.last_prompt_messages.is_empty());
+        assert_eq!(session.tier1_compact_attempts, 0);
+        assert!(!session.tier1_compaction_disabled);
+        assert!(session.thread.previous_response_id.is_none());
+        assert!(session.cache_guard_force_next);
         assert!(session.trajectory_dirty);
     }
 

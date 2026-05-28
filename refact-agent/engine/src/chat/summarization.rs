@@ -564,21 +564,19 @@ pub async fn maybe_apply_tier1(
     gcx: Arc<GlobalContext>,
     session_arc: &Arc<tokio::sync::Mutex<crate::chat::types::ChatSession>>,
     thread: &crate::chat::types::ThreadParams,
-    tier1_compact_count: &mut usize,
-    tier1_disabled_for_session: &mut bool,
 ) {
-    if *tier1_disabled_for_session {
-        return;
-    }
-    if !thread.auto_compact_enabled.unwrap_or(true) {
-        return;
-    }
-    if *tier1_compact_count >= MAX_TIER1_COMPACT_ATTEMPTS {
+    if !thread.auto_compact_enabled.unwrap_or(false) {
         return;
     }
 
     let raw_messages = {
         let session = session_arc.lock().await;
+        if session.tier1_compaction_disabled {
+            return;
+        }
+        if session.tier1_compact_attempts >= MAX_TIER1_COMPACT_ATTEMPTS {
+            return;
+        }
         let last_visible_has_pending_tool_calls = session
             .messages
             .iter()
@@ -645,6 +643,11 @@ pub async fn maybe_apply_tier1(
         return;
     }
 
+    let next_attempt = {
+        let session = session_arc.lock().await;
+        session.tier1_compact_attempts + 1
+    };
+
     warn!(
         "Context at {:?} pressure after existing summaries (raw {:?}, anchors: {}, raw_tokens: {}, linearized_tokens: {}), attempting tier1 summarization (attempt {}/{}, full_recompact={})",
         linearized_pressure,
@@ -652,7 +655,7 @@ pub async fn maybe_apply_tier1(
         anchor_count,
         raw_budget.used_tokens_estimate,
         linearized_used_tokens,
-        *tier1_compact_count + 1,
+        next_attempt,
         MAX_TIER1_COMPACT_ATTEMPTS,
         force_full_recompact,
     );
@@ -670,9 +673,9 @@ pub async fn maybe_apply_tier1(
     .await
     {
         Ok(mut summ_msg) => {
-            *tier1_compact_count += 1;
             translate_summarized_range_to_original(&mut summ_msg, &original_indices);
             let mut session = session_arc.lock().await;
+            session.tier1_compact_attempts += 1;
             if force_full_recompact {
                 if let Some((orig_start, orig_end)) = summ_msg.summarized_range {
                     let merged_range = SummaryRange {
@@ -719,14 +722,15 @@ pub async fn maybe_apply_tier1(
             );
         }
         Err(failure) => {
+            let mut session = session_arc.lock().await;
             if failure.is_structural() {
-                *tier1_disabled_for_session = true;
+                session.tier1_compaction_disabled = true;
                 warn!(
                     "Tier1 summarization structurally disabled for this session: {}",
                     failure
                 );
             } else {
-                *tier1_compact_count += 1;
+                session.tier1_compact_attempts += 1;
                 warn!("Tier1 summarization failed (non-fatal): {}", failure);
             }
         }
