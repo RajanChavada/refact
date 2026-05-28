@@ -18,6 +18,7 @@ use crate::chat::types::{ChatCommand, CommandRequest};
 use crate::files_correction::get_active_project_path;
 use crate::global_context::SharedGlobalContext;
 
+use super::cron_expr::next_run_ms;
 use super::jitter::{jittered_next_run_ms, one_shot_jittered_next_run_ms, JitterConfig};
 use super::store::{CronStore, InMemoryCronStore, JsonFileCronStore};
 use super::types::ScheduledTask;
@@ -57,6 +58,8 @@ impl CronRunner {
     }
 
     async fn run(mut self) {
+        self.catch_up().await;
+
         loop {
             if self.shutdown_flag.load(Ordering::Relaxed) {
                 break;
@@ -78,6 +81,65 @@ impl CronRunner {
             }
 
             self.fire_due_tasks(now_ms()).await;
+        }
+    }
+
+    async fn catch_up(&mut self) {
+        let now = now_ms();
+        let mut missed_counts = HashMap::<String, u64>::new();
+
+        for task in self.store.list().await {
+            if self.shutdown_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            if !task.durable {
+                continue;
+            }
+            if task.recurring {
+                self.resume_recurring_task(&task, now).await;
+                continue;
+            }
+            if !missed_one_shot_task(&task, now) {
+                continue;
+            }
+            let Some(chat_id) = task.chat_id.clone() else {
+                continue;
+            };
+            match self.fire_with_missed(&task, true, true).await {
+                Ok(true) => {
+                    *missed_counts.entry(chat_id).or_default() += 1;
+                    if let Err(error) = self.store.remove(&task.id).await {
+                        tracing::warn!(
+                            "failed to remove caught-up scheduled task {}: {}",
+                            task.id,
+                            error
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!("failed to catch up scheduled task {}: {}", task.id, error);
+                }
+            }
+        }
+
+        for (chat_id, missed_count) in missed_counts {
+            self.emit_catch_up_notice(&chat_id, missed_count).await;
+        }
+    }
+
+    async fn resume_recurring_task(&self, task: &ScheduledTask, now: u64) {
+        if self
+            .scheduled_fire_at_ms(task, now)
+            .is_some_and(|fire_at| fire_at < now)
+        {
+            if let Err(error) = self
+                .store
+                .update_fired(&task.id, now, task.fire_count)
+                .await
+            {
+                tracing::warn!("failed to resume scheduled task {}: {}", task.id, error);
+            }
         }
     }
 
@@ -163,6 +225,15 @@ impl CronRunner {
     }
 
     async fn fire(&self, task: &ScheduledTask, final_fire: bool) -> Result<bool, String> {
+        self.fire_with_missed(task, final_fire, false).await
+    }
+
+    async fn fire_with_missed(
+        &self,
+        task: &ScheduledTask,
+        final_fire: bool,
+        missed: bool,
+    ) -> Result<bool, String> {
         let chat_id = task
             .chat_id
             .as_ref()
@@ -173,7 +244,11 @@ impl CronRunner {
         }
         .ok_or_else(|| format!("Chat session {chat_id} not found"))?;
         let app = AppState::from_gcx(self.gcx.clone()).await;
-        let event_message = cron_fire_message(task, final_fire);
+        let event_message = if missed {
+            cron_fire_message_with_missed(task, final_fire, missed)
+        } else {
+            cron_fire_message(task, final_fire)
+        };
         let prompt = task.prompt.clone();
         let processor_flag = {
             let mut session = session_arc.lock().await;
@@ -203,6 +278,18 @@ impl CronRunner {
             tokio::spawn(process_command_queue(app, session_arc, processor_flag));
         }
         Ok(true)
+    }
+
+    async fn emit_catch_up_notice(&self, chat_id: &str, missed_count: u64) {
+        let session_arc = {
+            let sessions = self.gcx.chat_sessions.read().await;
+            sessions.get(chat_id).cloned()
+        };
+        let Some(session_arc) = session_arc else {
+            return;
+        };
+        let mut session = session_arc.lock().await;
+        session.add_message(catch_up_notice_message(missed_count));
     }
 
     async fn emit_auto_expired_notice(&self, task: &ScheduledTask) {
@@ -294,17 +381,38 @@ pub async fn chat_is_idle(gcx: &SharedGlobalContext, chat_id: &str) -> bool {
 }
 
 fn cron_fire_message(task: &ScheduledTask, final_fire: bool) -> ChatMessage {
+    cron_fire_message_with_missed(task, final_fire, false)
+}
+
+fn cron_fire_message_with_missed(
+    task: &ScheduledTask,
+    final_fire: bool,
+    missed: bool,
+) -> ChatMessage {
+    let mut payload = json!({
+        "task_id": task.id,
+        "cron": task.cron,
+        "recurring": task.recurring,
+        "fire_count": task.fire_count.saturating_add(1),
+        "final": final_fire,
+    });
+    if missed {
+        payload["missed"] = json!(true);
+    }
     event(
         EventSubkind::CronFire,
         "scheduler.cron",
-        json!({
-            "task_id": task.id,
-            "cron": task.cron,
-            "recurring": task.recurring,
-            "fire_count": task.fire_count.saturating_add(1),
-            "final": final_fire,
-        }),
+        payload,
         task.prompt.clone(),
+    )
+}
+
+fn catch_up_notice_message(missed_count: u64) -> ChatMessage {
+    event(
+        EventSubkind::SystemNotice,
+        "scheduler.cron",
+        json!({ "missed_count": missed_count }),
+        format!("Caught up {missed_count} missed scheduled tasks"),
     )
 }
 
@@ -336,6 +444,13 @@ fn scheduled_fire_at_ms(task: &ScheduledTask, now: u64, jitter_cfg: &JitterConfi
     } else {
         None
     }
+}
+
+fn missed_one_shot_task(task: &ScheduledTask, now: u64) -> bool {
+    !task.recurring
+        && task.last_fired_at_ms.is_none()
+        && task.fire_count == 0
+        && next_run_ms(&task.cron, task.created_at_ms, RUNNER_TZ).is_some_and(|next| next < now)
 }
 
 fn task_is_due(task: &ScheduledTask, now: u64, jitter_cfg: &JitterConfig) -> bool {
