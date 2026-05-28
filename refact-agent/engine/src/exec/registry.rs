@@ -17,6 +17,11 @@ use crate::exec::types::{
 const REMOVE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 const PROCESS_OUTPUT_CHANNEL_CAPACITY: usize = 4096;
+const STDIN_OUTPUT_QUIET_PERIOD: Duration = Duration::from_millis(100);
+#[cfg(not(test))]
+const STDIN_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const STDIN_WRITE_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub type ProcessCompletionTx = broadcast::Sender<ProcessCompletionEvent>;
 
@@ -154,6 +159,34 @@ fn status_exit_code(status: &ExecStatus) -> Option<i32> {
         | ExecStatus::Failed { .. }
         | ExecStatus::Killed
         | ExecStatus::TimedOut => None,
+    }
+}
+
+async fn write_stdin_bytes(
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    bytes: Vec<u8>,
+) -> Result<usize, String> {
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    let bytes_len = bytes.len();
+    let write_task = tokio::task::spawn_blocking(move || {
+        let mut writer = writer.blocking_lock();
+        writer
+            .write_all(&bytes)
+            .map_err(|error| format!("failed to write stdin: {error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("failed to flush stdin: {error}"))?;
+        Ok(bytes_len)
+    });
+    match tokio::time::timeout(STDIN_WRITE_TIMEOUT, write_task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!("stdin writer task failed: {error}")),
+        Err(_) => Err(format!(
+            "timed out while writing stdin after {:.3}s",
+            STDIN_WRITE_TIMEOUT.as_secs_f64()
+        )),
     }
 }
 
@@ -480,19 +513,7 @@ impl ExecRegistry {
                 .ok_or_else(|| format!("process is not PTY-backed: {process_id}"))?;
             (writer, record.transcript.next_seq())
         };
-        let bytes_written = if chars.is_empty() {
-            0
-        } else {
-            let bytes = chars.as_bytes();
-            let mut writer = writer.lock().await;
-            writer
-                .write_all(bytes)
-                .map_err(|error| format!("failed to write stdin: {error}"))?;
-            writer
-                .flush()
-                .map_err(|error| format!("failed to flush stdin: {error}"))?;
-            bytes.len()
-        };
+        let bytes_written = write_stdin_bytes(writer, chars.as_bytes().to_vec()).await?;
         self.wait_for_output_since(
             process_id,
             since_seq,
@@ -519,25 +540,50 @@ impl ExecRegistry {
         if yield_time.is_zero() {
             return;
         }
-        let _ = tokio::time::timeout(yield_time, async {
-            loop {
-                if !self
-                    .read(process_id, since_seq, Some(1))
-                    .await
-                    .chunks
-                    .is_empty()
-                {
-                    break;
+        let started = tokio::time::Instant::now();
+        let deadline = started + yield_time;
+        let initial_read = self.read(process_id, since_seq, None).await;
+        let mut observed_latest_seq = initial_read.latest_seq;
+        let mut quiet_deadline =
+            (observed_latest_seq > since_seq).then_some(started + STDIN_OUTPUT_QUIET_PERIOD);
+
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            if quiet_deadline.map(|quiet| now >= quiet).unwrap_or(false) {
+                break;
+            }
+            let wait_until = match quiet_deadline {
+                Some(quiet) if quiet < deadline => quiet,
+                Some(_) | None => deadline,
+            };
+            match tokio::time::timeout_at(wait_until, output_rx.recv()).await {
+                Ok(Ok(chunk)) if chunk.process_id == *process_id && chunk.seq >= since_seq => {
+                    observed_latest_seq = observed_latest_seq.max(chunk.seq.saturating_add(1));
+                    quiet_deadline = Some(tokio::time::Instant::now() + STDIN_OUTPUT_QUIET_PERIOD);
                 }
-                match output_rx.recv().await {
-                    Ok(chunk) if chunk.process_id == *process_id => {}
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                    let read = self.read(process_id, since_seq, None).await;
+                    if read.latest_seq > observed_latest_seq {
+                        observed_latest_seq = read.latest_seq;
+                        quiet_deadline =
+                            Some(tokio::time::Instant::now() + STDIN_OUTPUT_QUIET_PERIOD);
+                    }
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                Err(_) => {
+                    if quiet_deadline
+                        .map(|quiet| wait_until == quiet)
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
                 }
             }
-        })
-        .await;
+        }
     }
 
     pub async fn set_status(
@@ -686,19 +732,15 @@ impl ExecRegistry {
                 .map(|runtime| runtime.control_tx.is_closed())
                 .unwrap_or(false)
             {
-                record.set_status(ExecStatus::Failed {
-                    message: "process runtime stopped before terminal status".to_string(),
-                });
-                let snapshot = record.snapshot.clone();
-                let terminal = record
-                    .runtime
-                    .as_ref()
-                    .map(|runtime| runtime.terminal.clone());
                 drop(records);
-                if let Some(terminal) = terminal {
-                    terminal.notify_waiters();
-                }
-                return Ok(snapshot);
+                return self
+                    .set_status(
+                        process_id,
+                        ExecStatus::Failed {
+                            message: "process runtime stopped before terminal status".to_string(),
+                        },
+                    )
+                    .await;
             }
             let terminal = record
                 .runtime
@@ -1142,11 +1184,25 @@ async fn cleanup_target(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Write};
     use std::path::PathBuf;
 
     use super::*;
     use crate::exec::transcript::DEFAULT_MAX_BYTES;
     use crate::exec::types::{ExecMode, ExecOwnerMeta, ExecStatusKind};
+
+    struct BlockingWriter;
+
+    impl Write for BlockingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(0)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn meta(process_id: &str, mode: ExecMode, command: &str) -> ExecProcessMeta {
         ExecProcessMeta::new(mode, command.to_string())
@@ -1553,9 +1609,11 @@ mod tests {
     #[tokio::test]
     async fn test_wait_marks_closed_runtime_terminal() {
         let registry = ExecRegistry::new();
+        let mut rx = registry.subscribe_completion();
         let snapshot = registry
             .register(
-                meta("exec_dead_runtime", ExecMode::Background, "sleep 1"),
+                meta("exec_dead_runtime", ExecMode::Background, "sleep 1")
+                    .with_chat_id("chat-dead-runtime"),
                 DEFAULT_MAX_BYTES,
             )
             .await;
@@ -1592,6 +1650,118 @@ mod tests {
                 message: "process runtime stopped before terminal status".to_string()
             }
         );
+
+        let event = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .expect("completion event should be emitted")
+            .expect("completion event should be received");
+        assert_eq!(event.process_id, snapshot.meta.process_id);
+        assert_eq!(event.chat_id, "chat-dead-runtime");
+        assert_eq!(event.status, waited.status);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn tool_process_write_stdin_timeout_does_not_block_runtime() {
+        let registry = ExecRegistry::new();
+        let snapshot = registry
+            .register(
+                meta(
+                    "exec_blocking_stdin",
+                    ExecMode::Background,
+                    "blocking stdin",
+                ),
+                DEFAULT_MAX_BYTES,
+            )
+            .await;
+        let process_id = snapshot.meta.process_id.clone();
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        registry
+            .attach_runtime(
+                &process_id,
+                ExecProcessRuntime {
+                    control_tx,
+                    terminal: Arc::new(Notify::new()),
+                    stdin_writer: Some(Arc::new(Mutex::new(Box::new(BlockingWriter)))),
+                },
+            )
+            .await
+            .unwrap();
+        registry.mark_started(&process_id).await.unwrap();
+        let ticker = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            true
+        });
+
+        let err = registry
+            .write_stdin(&process_id, "hello", 0)
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("timed out while writing stdin"));
+        assert!(ticker.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn tool_process_write_stdin_waits_for_delayed_chunks_until_quiet_period() {
+        let registry = ExecRegistry::new();
+        let snapshot = registry
+            .register(
+                meta(
+                    "exec_delayed_chunks",
+                    ExecMode::Background,
+                    "delayed chunks",
+                ),
+                DEFAULT_MAX_BYTES,
+            )
+            .await;
+        let process_id = snapshot.meta.process_id.clone();
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        registry
+            .attach_runtime(
+                &process_id,
+                ExecProcessRuntime {
+                    control_tx,
+                    terminal: Arc::new(Notify::new()),
+                    stdin_writer: Some(Arc::new(Mutex::new(Box::new(Vec::<u8>::new())))),
+                },
+            )
+            .await
+            .unwrap();
+        registry.mark_started(&process_id).await.unwrap();
+        let writer_registry = registry.clone();
+        let writer_process_id = process_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            writer_registry
+                .append_output(
+                    &writer_process_id,
+                    ExecOutputStream::Combined,
+                    "one\n".to_string(),
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            writer_registry
+                .append_output(
+                    &writer_process_id,
+                    ExecOutputStream::Combined,
+                    "two\n".to_string(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let result = registry.write_stdin(&process_id, "", 300).await.unwrap();
+
+        let text = result
+            .read
+            .chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>();
+        assert_eq!(text, "one\ntwo\n");
+        assert_eq!(result.chunks_returned, 2);
     }
 
     #[tokio::test]

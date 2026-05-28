@@ -1239,7 +1239,7 @@ fn stream_label(stream: ProcessStreamSelection) -> &'static str {
     }
 }
 
-fn status_label(status: &ExecStatus) -> &'static str {
+pub(super) fn status_label(status: &ExecStatus) -> &'static str {
     match status {
         ExecStatus::Starting => "starting",
         ExecStatus::Running => "running",
@@ -1268,7 +1268,7 @@ fn tool_failed_for_status(status: &ExecStatus) -> Option<bool> {
     }
 }
 
-fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
+pub(super) fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
     let cwd = snapshot
         .meta
         .cwd
@@ -1284,13 +1284,11 @@ fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
         .meta
         .started_at_ms
         .unwrap_or(snapshot.meta.created_at_ms);
-    let duration = Duration::from_millis(
-        snapshot
-            .meta
-            .ended_at_ms
-            .unwrap_or_else(current_timestamp_ms)
-            .saturating_sub(started_at_ms),
-    );
+    let duration_ms = snapshot
+        .meta
+        .ended_at_ms
+        .unwrap_or_else(current_timestamp_ms)
+        .saturating_sub(started_at_ms);
     json!({
         "process_id": snapshot.meta.process_id.as_str(),
         "status": status_label(&snapshot.status),
@@ -1309,7 +1307,7 @@ fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
         "started_at_ms": snapshot.meta.started_at_ms,
         "ended_at": snapshot.meta.ended_at_ms,
         "ended_at_ms": snapshot.meta.ended_at_ms,
-        "duration_ms": duration.as_millis() as u64,
+        "duration_ms": duration_ms,
         "exit_code": exit_code(&snapshot.status),
         "persisted_output_path": snapshot.disk_log_path.as_ref().map(|path| path.to_string_lossy().to_string()),
     })
@@ -1336,7 +1334,7 @@ fn exec_extra(
     extra
 }
 
-fn read_value(read: &ExecReadResult) -> Value {
+pub(super) fn read_value(read: &ExecReadResult) -> Value {
     json!({
         "process_id": read.process_id.as_str(),
         "found": read.found,

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -8,14 +7,12 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
-use crate::exec::types::{current_timestamp_ms, normalize_workspace_path};
-use crate::exec::{
-    ExecOutputChunk, ExecProcessId, ExecProcessSnapshot, ExecReadResult, ExecStatus,
-    ExecWriteStdinResult,
-};
+use crate::exec::types::normalize_workspace_path;
+use crate::exec::{ExecOutputChunk, ExecProcessId, ExecProcessSnapshot, ExecWriteStdinResult};
 use crate::files_correction::get_active_project_path;
 use crate::postprocessing::pp_command_output::{output_mini_postprocessing, OutputFilter};
 use crate::tools::file_edit::auxiliary::active_execution_scope;
+use crate::tools::tool_process::{process_value, read_value};
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 use crate::worktrees::scope::ExecutionScope;
 
@@ -247,165 +244,4 @@ fn exec_extra(
     let mut extra = serde_json::Map::new();
     extra.insert("exec".to_string(), value);
     extra
-}
-
-fn process_value(snapshot: &ExecProcessSnapshot) -> Value {
-    let cwd = snapshot
-        .meta
-        .cwd
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string());
-    let workspace = snapshot
-        .meta
-        .owner
-        .workspace
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string());
-    let started_at_ms = snapshot
-        .meta
-        .started_at_ms
-        .unwrap_or(snapshot.meta.created_at_ms);
-    let duration = Duration::from_millis(
-        snapshot
-            .meta
-            .ended_at_ms
-            .unwrap_or_else(current_timestamp_ms)
-            .saturating_sub(started_at_ms),
-    );
-    json!({
-        "process_id": snapshot.meta.process_id.as_str(),
-        "status": status_label(&snapshot.status),
-        "status_detail": serde_json::to_value(&snapshot.status).unwrap_or(Value::Null),
-        "mode": snapshot.meta.mode.to_string(),
-        "service_name": snapshot.meta.owner.service_name.as_deref(),
-        "chat_id": snapshot.meta.owner.chat_id.as_deref(),
-        "tool_call_id": snapshot.meta.owner.tool_call_id.as_deref(),
-        "workspace": workspace,
-        "command": snapshot.meta.command.as_str(),
-        "cwd": cwd,
-        "short_description": snapshot.meta.short_description.as_str(),
-        "created_at": snapshot.meta.created_at_ms,
-        "created_at_ms": snapshot.meta.created_at_ms,
-        "started_at": snapshot.meta.started_at_ms,
-        "started_at_ms": snapshot.meta.started_at_ms,
-        "ended_at": snapshot.meta.ended_at_ms,
-        "ended_at_ms": snapshot.meta.ended_at_ms,
-        "duration_ms": duration.as_millis() as u64,
-        "exit_code": exit_code(&snapshot.status),
-    })
-}
-
-fn read_value(read: &ExecReadResult) -> Value {
-    json!({
-        "process_id": read.process_id.as_str(),
-        "found": read.found,
-        "since_seq": read.since_seq,
-        "next_seq": read.next_seq,
-        "latest_seq": read.latest_seq,
-        "total_bytes_appended": read.total_bytes_appended,
-        "total_lines_appended": read.total_lines_appended,
-        "dropped_chunks": read.dropped_chunks,
-        "dropped_bytes": read.dropped_bytes,
-        "truncated_chunks": read.truncated_chunks,
-        "current_bytes": read.current_bytes,
-        "max_bytes": read.max_bytes,
-        "chunk_count": read.chunk_count,
-        "is_truncated": read.is_truncated,
-    })
-}
-
-fn status_label(status: &ExecStatus) -> &'static str {
-    match status {
-        ExecStatus::Starting => "starting",
-        ExecStatus::Running => "running",
-        ExecStatus::Exited { .. } => "exited",
-        ExecStatus::Failed { .. } => "failed",
-        ExecStatus::Killed => "killed",
-        ExecStatus::TimedOut => "timed_out",
-    }
-}
-
-fn exit_code(status: &ExecStatus) -> Option<i32> {
-    match status {
-        ExecStatus::Exited { exit_code } => *exit_code,
-        ExecStatus::Starting
-        | ExecStatus::Running
-        | ExecStatus::Failed { .. }
-        | ExecStatus::Killed
-        | ExecStatus::TimedOut => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app_state::AppState;
-    use crate::exec::{ExecMode, ExecOwnerMeta, ExecProcessMeta};
-    use crate::exec::types::DEFAULT_EXEC_OUTPUT_LIMIT_BYTES;
-
-    async fn ccx_for_chat(
-        gcx: Arc<crate::global_context::GlobalContext>,
-        chat_id: &str,
-    ) -> Arc<AMutex<AtCommandsContext>> {
-        Arc::new(AMutex::new(
-            AtCommandsContext::new_with_abort(
-                AppState::from_gcx(gcx).await,
-                4096,
-                20,
-                false,
-                Vec::new(),
-                chat_id.to_string(),
-                None,
-                "model".to_string(),
-                None,
-                None,
-                None,
-            )
-            .await,
-        ))
-    }
-
-    fn args(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
-        entries
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect()
-    }
-
-    #[tokio::test]
-    async fn cross_chat_write_stdin_denied() {
-        let gcx = crate::global_context::tests::make_test_gcx().await;
-        let process_id = ExecProcessId("exec_write_stdin_other_chat".to_string());
-        gcx.exec_registry
-            .register(
-                ExecProcessMeta::new(ExecMode::Background, "cat".to_string())
-                    .with_process_id(process_id.clone())
-                    .with_owner(ExecOwnerMeta {
-                        chat_id: Some("chat-a".to_string()),
-                        ..ExecOwnerMeta::default()
-                    }),
-                DEFAULT_EXEC_OUTPUT_LIMIT_BYTES,
-            )
-            .await;
-        gcx.exec_registry.mark_started(&process_id).await.unwrap();
-        let ccx = ccx_for_chat(gcx, "chat-b").await;
-        let mut tool = ToolProcessWriteStdin {
-            config_path: String::new(),
-        };
-
-        let err = tool
-            .tool_execute(
-                ccx,
-                &"stdin".to_string(),
-                &args(vec![
-                    ("process_id", json!(process_id.as_str())),
-                    ("chars", json!("hi\n")),
-                    ("yield_time_ms", json!(0)),
-                ]),
-            )
-            .await
-            .unwrap_err();
-
-        assert_eq!(err, "process access denied: exec_write_stdin_other_chat");
-    }
 }
