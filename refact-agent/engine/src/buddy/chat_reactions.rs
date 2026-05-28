@@ -20,6 +20,80 @@ const HUMOR_BUCKET_PERCENT: u64 = 40;
 const CHAT_REACTION_ECHO_NGRAM_WORDS: usize = 3;
 const CHAT_REACTION_ECHO_NGRAM_MIN_CHARS: usize = 18;
 const CHAT_REACTION_ECHO_LONG_TOKEN_MIN_CHARS: usize = 12;
+const CHAT_REACTION_ECHO_SHORT_PHRASE_WORDS: usize = 2;
+const CHAT_REACTION_ECHO_SHORT_PHRASE_MIN_CHARS: usize = 10;
+
+const CHAT_REACTION_ECHO_IDENTIFYING_WORDS: &[&str] = &[
+    "account",
+    "accounts",
+    "billing",
+    "client",
+    "clients",
+    "contract",
+    "contracts",
+    "customer",
+    "customers",
+    "import",
+    "invoice",
+    "invoices",
+    "payroll",
+    "pipeline",
+    "project",
+    "roadmap",
+    "tenant",
+    "tenants",
+    "vendor",
+    "vendors",
+];
+
+const CHAT_REACTION_ECHO_GENERIC_WORDS: &[&str] = &[
+    "again",
+    "answer",
+    "before",
+    "better",
+    "change",
+    "changes",
+    "chat",
+    "check",
+    "checkpoint",
+    "choices",
+    "comment",
+    "compare",
+    "debug",
+    "edge",
+    "fallback",
+    "feature",
+    "flow",
+    "generic",
+    "helper",
+    "issue",
+    "iteration",
+    "little",
+    "message",
+    "naming",
+    "option",
+    "options",
+    "output",
+    "phrase",
+    "plan",
+    "please",
+    "quick",
+    "reaction",
+    "response",
+    "retry",
+    "review",
+    "signal",
+    "small",
+    "step",
+    "task",
+    "testing",
+    "thread",
+    "tiny",
+    "update",
+    "wording",
+    "work",
+    "working",
+];
 
 // BUG keywords: exact-prefix token match prevents false positives from words like debug, latest,
 // contest (e.g. "debug" does not start with "bug"). Removed: fail, failing, broken (too noisy).
@@ -352,20 +426,79 @@ fn normalize_chat_reaction_speech(raw: &str) -> String {
         .to_string()
 }
 
+fn echo_word_tokens(lower: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, ch) in lower.char_indices() {
+        let is_token = ch.is_alphanumeric() || ch == '_';
+        match (is_token, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                result.push(&lower[s..i]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        result.push(&lower[s..]);
+    }
+    result
+}
+
+fn is_redacted_echo_token(token: &str) -> bool {
+    token == "redacted"
+}
+
+fn is_generic_echo_token(token: &str) -> bool {
+    token.chars().count() <= 3 || CHAT_REACTION_ECHO_GENERIC_WORDS.contains(&token)
+}
+
+fn is_identifying_echo_token(token: &str) -> bool {
+    if CHAT_REACTION_ECHO_IDENTIFYING_WORDS.contains(&token) {
+        return true;
+    }
+    token.chars().any(|ch| !ch.is_ascii()) || token.chars().count() >= 6
+}
+
+fn is_identifying_echo_phrase(tokens: &[&str]) -> bool {
+    tokens.iter().any(|token| is_identifying_echo_token(token))
+        && !tokens.iter().all(|token| is_generic_echo_token(token))
+}
+
+fn generated_contains_echo_phrase(generated_tokens: &[&str], phrase_tokens: &[&str]) -> bool {
+    generated_tokens
+        .windows(phrase_tokens.len())
+        .any(|window| window == phrase_tokens)
+}
+
 fn contains_analysis_echo(generated: &str, analysis_text: &str) -> bool {
     let generated_lower = generated.to_lowercase();
+    let generated_tokens = echo_word_tokens(&generated_lower);
     let analysis_lower = analysis_text.to_lowercase();
-    let tokens: Vec<&str> = word_tokens(&analysis_lower)
+    let tokens: Vec<&str> = echo_word_tokens(&analysis_lower)
         .into_iter()
-        .filter(|token| token.chars().count() >= 4 && *token != "redacted")
+        .filter(|token| !is_redacted_echo_token(token))
         .collect();
 
     for token in &tokens {
         if token.chars().count() >= CHAT_REACTION_ECHO_LONG_TOKEN_MIN_CHARS
-            && generated_lower.contains(token)
+            && generated_tokens.contains(token)
         {
             return true;
         }
+    }
+
+    if tokens.len() >= CHAT_REACTION_ECHO_SHORT_PHRASE_WORDS
+        && tokens
+            .windows(CHAT_REACTION_ECHO_SHORT_PHRASE_WORDS)
+            .any(|window| {
+                is_identifying_echo_phrase(window)
+                    && window.join(" ").chars().count() >= CHAT_REACTION_ECHO_SHORT_PHRASE_MIN_CHARS
+                    && generated_contains_echo_phrase(&generated_tokens, window)
+            })
+    {
+        return true;
     }
 
     if tokens.len() < CHAT_REACTION_ECHO_NGRAM_WORDS {
@@ -373,10 +506,9 @@ fn contains_analysis_echo(generated: &str, analysis_text: &str) -> bool {
     }
     tokens
         .windows(CHAT_REACTION_ECHO_NGRAM_WORDS)
-        .map(|window| window.join(" "))
-        .any(|phrase| {
-            phrase.chars().count() >= CHAT_REACTION_ECHO_NGRAM_MIN_CHARS
-                && generated_lower.contains(&phrase)
+        .any(|window| {
+            window.join(" ").chars().count() >= CHAT_REACTION_ECHO_NGRAM_MIN_CHARS
+                && generated_contains_echo_phrase(&generated_tokens, window)
         })
 }
 
@@ -1116,6 +1248,70 @@ mod tests {
         assert!(!text
             .to_lowercase()
             .contains("private customer import pipeline"));
+        assert!(text.chars().count() <= CHAT_REACTION_SPEECH_MAX_CHARS);
+    }
+
+    #[test]
+    fn generated_speech_echoing_two_word_private_phrase_falls_back() {
+        for (analysis, generated, echoed) in [
+            (
+                "please keep the Acme roadmap details private while planning",
+                "Tiny signal: Acme roadmap deserves a checkpoint.",
+                "acme roadmap",
+            ),
+            (
+                "review the Northwind accounts import without leaking names",
+                "Northwind accounts look like they need tiny gremlin gloves.",
+                "northwind accounts",
+            ),
+            (
+                "compare the customer import behavior before we pick a fix",
+                "Customer import might want one assumption check.",
+                "customer import",
+            ),
+        ] {
+            let text =
+                safe_chat_reaction_speech_text(ChatReactionKind::Insight, analysis, generated);
+
+            assert!(
+                INSIGHT_LINES.contains(&text.as_str()),
+                "expected fallback for {echoed}, got: {text}"
+            );
+            assert!(!text.to_lowercase().contains(echoed));
+            assert!(text.chars().count() <= CHAT_REACTION_SPEECH_MAX_CHARS);
+        }
+    }
+
+    #[test]
+    fn generated_speech_echoing_non_ascii_private_phrase_falls_back() {
+        let analysis = "please summarize the 東京 roadmap without repeating private names";
+        let generated = "Tiny signal: 東京 roadmap needs snack-sized caution.";
+        let text = safe_chat_reaction_speech_text(ChatReactionKind::Insight, analysis, generated);
+
+        assert!(INSIGHT_LINES.contains(&text.as_str()));
+        assert!(!text.to_lowercase().contains("東京 roadmap"));
+        assert!(text.chars().count() <= CHAT_REACTION_SPEECH_MAX_CHARS);
+    }
+
+    #[test]
+    fn generated_speech_echoing_mixed_unicode_ascii_identifier_falls_back() {
+        let analysis = "please debug ProjectΔ import while keeping the identifier private";
+        let generated = "Tiny alarm: ProjectΔ import is doing suspicious parkour.";
+        let text =
+            safe_chat_reaction_speech_text(ChatReactionKind::BugCandidate, analysis, generated);
+
+        assert!(BUG_LINES.contains(&text.as_str()));
+        assert!(!text.to_lowercase().contains("projectδ import"));
+        assert!(text.chars().count() <= CHAT_REACTION_SPEECH_MAX_CHARS);
+    }
+
+    #[test]
+    fn generic_buddy_phrasing_with_common_words_does_not_fallback() {
+        let analysis = "please compare the options and keep the next step tidy";
+        let generated = "Tiny signal: compare options before picking one small step.";
+        let text = sanitize_chat_reaction_speech_text(generated, analysis).unwrap();
+
+        assert_eq!(text, generated);
         assert!(text.chars().count() <= CHAT_REACTION_SPEECH_MAX_CHARS);
     }
 
