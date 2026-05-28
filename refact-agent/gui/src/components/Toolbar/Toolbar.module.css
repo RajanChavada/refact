@@ -156,6 +156,20 @@
   white-space: nowrap;
 }
 
+.tabNotificationBadge {
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--red-9);
+  color: var(--red-contrast);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
 .tabClose {
   position: absolute;
   right: 8px;

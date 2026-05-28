@@ -505,6 +505,16 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
                     <StatusDot state={statusState} size="small" />
                   </span>
                   <span className={styles.tabTitle}>{tab.title}</span>
+                  {tab.unreadNotificationCount > 0 && (
+                    <span
+                      className={styles.tabNotificationBadge}
+                      aria-label={`${tab.unreadNotificationCount} unread process notifications`}
+                    >
+                      {tab.unreadNotificationCount > 9
+                        ? "9+"
+                        : tab.unreadNotificationCount}
+                    </span>
+                  )}
                   {!tab.is_buddy_chat && modeLabel && (
                     <Badge
                       size="1"

@@ -45,3 +45,17 @@
 .modeBadge {
   flex-shrink: 0;
 }
+
+.notificationBadge {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--red-9);
+  color: var(--red-contrast);
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+  font-weight: 600;
+}

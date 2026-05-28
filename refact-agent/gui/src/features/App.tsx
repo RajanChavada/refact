@@ -88,6 +88,7 @@ import {
 } from "../utils/chatUiPersistence";
 import { InternalLinkProvider } from "../contexts/InternalLinkContext";
 import { parseRefactLink } from "../contexts/internalLinkUtils";
+import { ProcessCompletedToasts } from "./Notifications";
 
 export interface AppProps {
   style?: React.CSSProperties;
@@ -595,6 +596,7 @@ export const InnerApp: React.FC<AppProps> = ({ style }: AppProps) => {
               <SchedulerPanel onBack={goBack} />
             )}
           </PageWrapper>
+          <ProcessCompletedToasts />
         </>
       )}
     </Flex>
