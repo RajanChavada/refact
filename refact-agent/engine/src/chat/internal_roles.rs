@@ -6,6 +6,7 @@ use crate::call_validation::{ChatContent, ChatMessage};
 
 pub const EVENT_ROLE: &str = "event";
 pub const PLAN_ROLE: &str = "plan";
+pub const MAX_PLAN_BODY_CHARS: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,20 +73,34 @@ pub fn plan(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    let content_str: String = content.into();
+    let original_chars = content_str.chars().count();
+    let (body, truncated) = if original_chars > MAX_PLAN_BODY_CHARS {
+        let kept: String = content_str.chars().take(MAX_PLAN_BODY_CHARS).collect();
+        let marker = format!(
+            "\n\n[truncated: kept {} of {} chars]",
+            MAX_PLAN_BODY_CHARS, original_chars
+        );
+        (kept + &marker, true)
+    } else {
+        (content_str, false)
+    };
+    let mut plan_meta = json!({
+        "mode": mode.into(),
+        "version": version,
+        "created_at_ms": created_at_ms,
+        "supersedes": supersedes,
+    });
+    if truncated {
+        plan_meta["truncated"] = json!(true);
+        plan_meta["original_chars"] = json!(original_chars);
+    }
     let mut extra = serde_json::Map::new();
-    extra.insert(
-        "plan".to_string(),
-        json!({
-            "mode": mode.into(),
-            "version": version,
-            "created_at_ms": created_at_ms,
-            "supersedes": supersedes,
-        }),
-    );
+    extra.insert("plan".to_string(), plan_meta);
     ChatMessage {
         message_id: Uuid::new_v4().to_string(),
         role: PLAN_ROLE.to_string(),
-        content: ChatContent::SimpleText(content.into()),
+        content: ChatContent::SimpleText(body),
         extra,
         ..Default::default()
     }
@@ -152,6 +167,23 @@ mod tests {
         assert_eq!(plan_meta["mode"], json!("task_planner"));
         assert_eq!(plan_meta["version"], json!(2));
         assert!(plan_meta["supersedes"].is_null());
+    }
+
+    #[test]
+    fn test_plan_truncates_oversized_body() {
+        let oversized = "a".repeat(MAX_PLAN_BODY_CHARS + 100);
+        let msg = plan("agent", 1, &oversized, None);
+        let body = match &msg.content {
+            ChatContent::SimpleText(s) => s.as_str(),
+            _ => panic!("expected SimpleText"),
+        };
+        assert!(body.contains("[truncated:"), "truncation marker should be present");
+        let plan_meta = msg.extra.get("plan").unwrap();
+        assert_eq!(plan_meta["truncated"], json!(true));
+        assert_eq!(
+            plan_meta["original_chars"].as_u64().unwrap(),
+            (MAX_PLAN_BODY_CHARS + 100) as u64
+        );
     }
 
     #[test]

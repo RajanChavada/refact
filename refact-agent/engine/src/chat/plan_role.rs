@@ -128,6 +128,56 @@ mod tests {
     }
 
     #[test]
+    fn oversized_plan_body_is_truncated() {
+        let oversized = "x".repeat(internal_roles::MAX_PLAN_BODY_CHARS + 100);
+        let mut session = make_session();
+        install_plan(&mut session, "agent", &oversized);
+        let msg = current_plan(&session).unwrap();
+        let body = match &msg.content {
+            crate::call_validation::ChatContent::SimpleText(s) => s.as_str(),
+            _ => panic!("expected SimpleText"),
+        };
+        assert!(
+            body.chars().count() < oversized.chars().count(),
+            "body should be shorter than original"
+        );
+        assert!(body.contains("[truncated:"), "truncation marker must be present");
+    }
+
+    #[test]
+    fn plan_truncation_preserves_utf8_boundary() {
+        let oversized: String = "✓".repeat(internal_roles::MAX_PLAN_BODY_CHARS + 100);
+        let mut session = make_session();
+        install_plan(&mut session, "agent", &oversized);
+        let msg = current_plan(&session).unwrap();
+        let body = match &msg.content {
+            crate::call_validation::ChatContent::SimpleText(s) => s.clone(),
+            _ => panic!("expected SimpleText"),
+        };
+        assert!(!body.is_empty());
+        assert!(
+            std::str::from_utf8(body.as_bytes()).is_ok(),
+            "body must be valid UTF-8"
+        );
+        assert!(body.contains("[truncated:"), "truncation marker must be present");
+    }
+
+    #[test]
+    fn plan_metadata_records_truncation() {
+        let oversized = "y".repeat(internal_roles::MAX_PLAN_BODY_CHARS + 50);
+        let original_len = oversized.chars().count();
+        let mut session = make_session();
+        install_plan(&mut session, "agent", &oversized);
+        let msg = current_plan(&session).unwrap();
+        let plan_meta = msg.extra.get("plan").unwrap();
+        assert_eq!(plan_meta["truncated"], serde_json::json!(true));
+        assert_eq!(
+            plan_meta["original_chars"],
+            serde_json::json!(original_len)
+        );
+    }
+
+    #[test]
     fn install_emits_message_added_event() {
         let mut session = make_session();
         let mut rx = session.subscribe();
