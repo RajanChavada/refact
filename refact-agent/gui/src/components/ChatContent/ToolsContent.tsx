@@ -77,6 +77,7 @@ import {
   TaskDoneTool,
   AskQuestionsTool,
   ChromeTool,
+  SleepToolCard,
   OpenAIResponsesTool,
   OpenAIWebSearchCallTool,
   OpenAIFileSearchCallTool,
@@ -1519,6 +1520,26 @@ function processToolCalls(
         key={`compress-tool-${head.id ?? processed.length}`}
         toolCall={normalizedHead}
         toolType={headName}
+      />
+    );
+    return processToolCalls(
+      tail,
+      toolResults,
+      features,
+      [...processed, elem],
+      contextFilesByToolId,
+      diffsByToolId,
+      activeToolCallId,
+      backgroundAgents,
+      onOpenTrajectory,
+    );
+  }
+
+  if (headName === "sleep") {
+    const elem = (
+      <SleepToolCard
+        key={`sleep-tool-${processed.length}`}
+        toolCall={normalizedHead}
       />
     );
     return processToolCalls(

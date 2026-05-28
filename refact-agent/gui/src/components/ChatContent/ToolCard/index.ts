@@ -36,5 +36,6 @@ export { CompressReportTool } from "./CompressReportTool";
 export { ReportToolCard } from "./ReportToolCard";
 export { AskQuestionsTool } from "./AskQuestionsTool";
 export { ChromeTool } from "./ChromeTool";
+export { SleepToolCard } from "./SleepToolCard";
 export { useAutoExpandCollapse } from "./useAutoExpandCollapse";
 export { truncateMiddle, basename } from "./utils";
