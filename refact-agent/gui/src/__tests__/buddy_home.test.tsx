@@ -2723,6 +2723,103 @@ describe("BuddySettingsPanel_autosave", () => {
   });
 });
 
+describe("BuddySettingsPanel_renders_all_settings", () => {
+  it("renders all required setting labels and controls", () => {
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    render(<BuddySettingsPanel />, { store });
+
+    expect(
+      screen.getByRole("switch", { name: /buddy enabled/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /quiet mode/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /auto diagnostics/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /auto issue creation/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /proactive suggestions/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /chat pattern observation/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /live chat reactions/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /autonomous buddy chats/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /housekeeping/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /humor enabled/i }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "off" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "light" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "normal" })).toBeInTheDocument();
+
+    expect(
+      screen.getByRole("button", { name: "read_only" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "suggest" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "safe_auto" }),
+    ).toBeInTheDocument();
+
+    expect(
+      screen.getByRole("textbox", { name: /personality prompt/i }),
+    ).toBeInTheDocument();
+
+    expect(
+      screen.getByRole("spinbutton", { name: /daily digest hour/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders all observer toggle labels", () => {
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    render(<BuddySettingsPanel />, { store });
+
+    expect(
+      screen.getByRole("checkbox", { name: /task health/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /trajectory clutter/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /chat pattern/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /customization drift/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /memory garden/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /mcp auth/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /git pressure/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /diagnostics/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /provider health/i }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("BuddyDraftPreview_renders_draft_metadata", () => {
   it("shows title and explanation from draft without DOM nesting warnings", () => {
     const draft: BuddyDraft = {

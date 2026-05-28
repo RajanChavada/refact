@@ -152,6 +152,121 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
       </div>
 
       <div className={styles.section}>
+        <Text size="1" weight="bold" color="gray" className={styles.label}>
+          CORE
+        </Text>
+        <div className={styles.row}>
+          <Text size="2">Buddy enabled</Text>
+          <Switch
+            checked={liveSettings.enabled}
+            onCheckedChange={(v) => handleSwitch("enabled", v)}
+            aria-label="buddy enabled"
+            data-testid="buddy-toggle-enabled"
+          />
+        </div>
+        <div className={styles.row}>
+          <Text size="2">Quiet mode</Text>
+          <Switch
+            checked={liveSettings.quiet_mode}
+            onCheckedChange={(v) => handleSwitch("quiet_mode", v)}
+            aria-label="quiet mode"
+          />
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <Text size="1" weight="bold" color="gray" className={styles.label}>
+          DIAGNOSTICS &amp; ISSUES
+        </Text>
+        <div className={styles.row}>
+          <Text size="2">Auto diagnostics</Text>
+          <Switch
+            checked={liveSettings.auto_diagnostics}
+            onCheckedChange={(v) => handleSwitch("auto_diagnostics", v)}
+            aria-label="auto diagnostics"
+            data-testid="buddy-toggle-auto-diagnostics"
+          />
+        </div>
+        <div className={styles.row}>
+          <Text size="2">Auto issue creation</Text>
+          <Switch
+            checked={liveSettings.auto_issue_creation}
+            onCheckedChange={(v) => handleSwitch("auto_issue_creation", v)}
+            aria-label="auto issue creation"
+            data-testid="buddy-toggle-auto-issue-creation"
+          />
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <Text size="1" weight="bold" color="gray" className={styles.label}>
+          CHAT &amp; NOTIFICATIONS
+        </Text>
+        <div className={styles.row}>
+          <Text size="2">Proactive suggestions</Text>
+          <Switch
+            checked={liveSettings.proactive_enabled}
+            onCheckedChange={(v) => handleSwitch("proactive_enabled", v)}
+            aria-label="proactive suggestions"
+            data-testid="buddy-toggle-proactive"
+          />
+        </div>
+        <div className={styles.row}>
+          <span className={styles.settingText}>
+            <Text size="2">Chat pattern observation</Text>
+            <small className={styles.settingDescription}>
+              Periodic background scan for retry/stuck chat patterns.
+              Independent from live chat reactions.
+            </small>
+          </span>
+          <Switch
+            checked={liveSettings.message_observation_enabled}
+            onCheckedChange={(v) =>
+              handleSwitch("message_observation_enabled", v)
+            }
+            aria-label="chat pattern observation enabled"
+            data-testid="buddy-toggle-chat-pattern-observation"
+          />
+        </div>
+        <div className={styles.row}>
+          <span className={styles.settingText}>
+            <Text size="2">Live chat reactions</Text>
+            <small className={styles.settingDescription}>
+              Pixel reacts to your messages with short comments, insights, or
+              bug-candidate flags. Uses redacted input transiently and does not
+              store it.
+            </small>
+          </span>
+          <Switch
+            checked={liveSettings.chat_reactions_enabled}
+            onCheckedChange={(v) => handleSwitch("chat_reactions_enabled", v)}
+            aria-label="live chat reactions enabled"
+            data-testid="buddy-toggle-live-chat-reactions"
+          />
+        </div>
+        <div className={styles.row}>
+          <Text size="2">Autonomous Buddy chats</Text>
+          <Switch
+            checked={liveSettings.autonomous_chats_enabled}
+            onCheckedChange={(v) => handleSwitch("autonomous_chats_enabled", v)}
+            aria-label="autonomous buddy chats"
+            data-testid="buddy-toggle-autonomous-chats"
+          />
+        </div>
+        <div className={styles.row}>
+          <Text size="2">Housekeeping</Text>
+          <Switch
+            checked={liveSettings.housekeeping_enabled}
+            onCheckedChange={(v) => handleSwitch("housekeeping_enabled", v)}
+            aria-label="housekeeping enabled"
+          />
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <Text size="1" weight="bold" color="gray" className={styles.label}>
+          PERSONALITY
+        </Text>
         <div className={styles.row}>
           <Text size="2">Humor</Text>
           <Switch
@@ -196,69 +311,6 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
             )}
           </div>
         </div>
-        <div className={styles.row}>
-          <Text size="2">Quiet mode</Text>
-          <Switch
-            checked={liveSettings.quiet_mode}
-            onCheckedChange={(v) => handleSwitch("quiet_mode", v)}
-            aria-label="quiet mode"
-          />
-        </div>
-        <div className={styles.row}>
-          <span className={styles.settingText}>
-            <Text size="2">Chat pattern observation</Text>
-            <small className={styles.settingDescription}>
-              Periodic background scan for retry/stuck chat patterns.
-              Independent from live chat reactions.
-            </small>
-          </span>
-          <Switch
-            checked={liveSettings.message_observation_enabled}
-            onCheckedChange={(v) =>
-              handleSwitch("message_observation_enabled", v)
-            }
-            aria-label="chat pattern observation enabled"
-            data-testid="buddy-toggle-chat-pattern-observation"
-          />
-        </div>
-        <div className={styles.row}>
-          <span className={styles.settingText}>
-            <Text size="2">Live chat reactions</Text>
-            <small className={styles.settingDescription}>
-              Pixel reacts to your messages with short comments, insights, or
-              bug-candidate flags. Uses redacted input transiently and does not
-              store it.
-            </small>
-          </span>
-          <Switch
-            checked={liveSettings.chat_reactions_enabled}
-            onCheckedChange={(v) => handleSwitch("chat_reactions_enabled", v)}
-            aria-label="live chat reactions enabled"
-            data-testid="buddy-toggle-live-chat-reactions"
-          />
-        </div>
-        <div className={styles.row}>
-          <Text size="2">Housekeeping</Text>
-          <Switch
-            checked={liveSettings.housekeeping_enabled}
-            onCheckedChange={(v) => handleSwitch("housekeeping_enabled", v)}
-            aria-label="housekeeping enabled"
-          />
-        </div>
-        <div className={styles.row}>
-          <Text size="2">Daily digest hour (0–23)</Text>
-          <input
-            type="number"
-            min={0}
-            max={23}
-            className={styles.digestInput}
-            value={liveSettings.daily_digest_hour ?? ""}
-            onChange={(e) => handleDigestHourChange(e.target.value)}
-            aria-label="daily digest hour"
-            placeholder="off"
-            data-testid="buddy-digest-hour"
-          />
-        </div>
       </div>
 
       <div className={styles.section}>
@@ -285,6 +337,26 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
             Clear
           </Button>
         ) : null}
+      </div>
+
+      <div className={styles.section}>
+        <Text size="1" weight="bold" color="gray" className={styles.label}>
+          SCHEDULE
+        </Text>
+        <div className={styles.row}>
+          <Text size="2">Daily digest hour (0–23)</Text>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            className={styles.digestInput}
+            value={liveSettings.daily_digest_hour ?? ""}
+            onChange={(e) => handleDigestHourChange(e.target.value)}
+            aria-label="daily digest hour"
+            placeholder="off"
+            data-testid="buddy-digest-hour"
+          />
+        </div>
       </div>
 
       <div className={styles.section}>
