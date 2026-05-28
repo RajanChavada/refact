@@ -878,9 +878,12 @@ impl ExecRegistry {
                     Ok(Ok(_)) => self.mark_killed(&target.process_id).await,
                     Ok(Err(err)) => {
                         let message = err.to_string();
-                        let _ = self
-                            .mark_failed(&target.process_id, message.clone())
-                            .await?;
+                        self.keep_remove_failure(
+                            &target.process_id,
+                            message.clone(),
+                            Some(child),
+                        )
+                        .await;
                         Err(message)
                     }
                     Err(_) => {
@@ -888,9 +891,12 @@ impl ExecRegistry {
                             "timed out while removing child process after {:.3}s",
                             timeout.as_secs_f64()
                         );
-                        let _ = self
-                            .mark_failed(&target.process_id, message.clone())
-                            .await?;
+                        self.keep_remove_failure(
+                            &target.process_id,
+                            message.clone(),
+                            Some(child),
+                        )
+                        .await;
                         Err(message)
                     }
                 }
@@ -1014,6 +1020,34 @@ impl ExecRegistry {
     }
 
     async fn keep_cleanup_failure(
+        &self,
+        process_id: &ExecProcessId,
+        message: String,
+        child: Option<tokio::process::Child>,
+    ) {
+        let terminal = {
+            let mut records = self.records.lock().await;
+            let Some(record) = records.get_mut(process_id) else {
+                return;
+            };
+            if record.child.is_none() {
+                record.child = child;
+            }
+            if record.snapshot.meta.ended_at_ms.is_none() {
+                record.snapshot.meta.ended_at_ms = Some(current_timestamp_ms());
+            }
+            record.snapshot.status = ExecStatus::Failed { message };
+            record
+                .runtime
+                .as_ref()
+                .map(|runtime| runtime.terminal.clone())
+        };
+        if let Some(terminal) = terminal {
+            terminal.notify_waiters();
+        }
+    }
+
+    async fn keep_remove_failure(
         &self,
         process_id: &ExecProcessId,
         message: String,
@@ -2301,5 +2335,68 @@ mod tests {
         assert_eq!(append_result.process_id, process_id);
         let read = registry.read(&process_id, 0, None).await;
         assert_eq!(read.chunks, vec![append_result]);
+    }
+
+    #[tokio::test]
+    async fn keep_remove_failure_sets_failed_status_and_keeps_record() {
+        let registry = ExecRegistry::new();
+        let snapshot = registry
+            .register(
+                meta("exec_keep_remove_fail", ExecMode::Background, "sleep 1"),
+                DEFAULT_MAX_BYTES,
+            )
+            .await;
+        let process_id = snapshot.meta.process_id.clone();
+
+        registry
+            .keep_remove_failure(&process_id, "remove timed out".to_string(), None)
+            .await;
+
+        let retained = registry.get(&process_id).await.unwrap();
+        assert!(
+            matches!(&retained.status, ExecStatus::Failed { message } if message == "remove timed out")
+        );
+        assert!(retained.meta.ended_at_ms.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keep_remove_failure_restores_child_for_retry() {
+        let registry = ExecRegistry::new();
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("sleep 30");
+        unsafe {
+            command.pre_exec(|| {
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+        let child = command.spawn().expect("spawn child");
+        let child_pid = child.id().expect("child pid");
+        let snapshot = registry
+            .register_with_child(
+                meta("exec_restore_child_retry", ExecMode::Background, "sleep 30"),
+                DEFAULT_MAX_BYTES,
+                child,
+            )
+            .await;
+        let process_id = snapshot.meta.process_id.clone();
+        registry.mark_started(&process_id).await.unwrap();
+
+        let target = registry.remove_target(&process_id).await.unwrap();
+        let extracted_child = target.child;
+
+        registry
+            .keep_remove_failure(&process_id, "remove timed out".to_string(), extracted_child)
+            .await;
+
+        let retained = registry.get(&process_id).await.unwrap();
+        assert!(matches!(retained.status, ExecStatus::Failed { .. }));
+        assert!(process_exists(child_pid));
+
+        registry.remove(&process_id).await.unwrap();
+        assert!(registry.get(&process_id).await.is_none());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!process_exists(child_pid));
     }
 }
