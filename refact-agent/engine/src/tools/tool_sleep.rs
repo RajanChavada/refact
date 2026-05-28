@@ -16,6 +16,8 @@ use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType
 
 const MIN_DURATION_MS: u64 = 100;
 const MAX_DURATION_MS: u64 = 3_600_000;
+const MIN_TICK_INTERVAL_MS: u64 = 5_000;
+const ABORT_POLL_MS: u64 = 50;
 pub struct ToolSleep {
     pub config_path: String,
 }
@@ -129,12 +131,22 @@ fn parse_sleep_request(args: &HashMap<String, Value>) -> Result<SleepRequest, St
     }
 
     let tick_interval_ms = optional_u64(args, "tick_interval_ms")?;
+    if let Some(tick_interval_ms) = tick_interval_ms {
+        if tick_interval_ms < MIN_TICK_INTERVAL_MS {
+            return Err(format!(
+                "tick_interval_ms must be at least {MIN_TICK_INTERVAL_MS}"
+            ));
+        }
+    }
 
     let description = match args.get("description") {
-        Some(Value::String(description)) => description.clone(),
+        Some(Value::String(description)) => description.trim().to_string(),
         Some(_) => return Err("description must be a string".to_string()),
         None => return Err("Missing required argument 'description'".to_string()),
     };
+    if description.is_empty() {
+        return Err("description must be a non-empty string".to_string());
+    }
     if description.chars().count() > 80 {
         return Err("description must be at most 80 chars".to_string());
     }
@@ -243,10 +255,14 @@ async fn wait_for_abort(abort_flag: Arc<AtomicBool>, abort_notify: Option<Arc<No
         if abort_flag.load(Ordering::Relaxed) {
             return;
         }
-        if let Some(abort_notify) = &abort_notify {
-            abort_notify.notified().await;
-        } else {
-            sleep(Duration::from_millis(10)).await;
+        match &abort_notify {
+            Some(abort_notify) => {
+                tokio::select! {
+                    _ = abort_notify.notified() => {}
+                    _ = sleep(Duration::from_millis(ABORT_POLL_MS)) => {}
+                }
+            }
+            None => sleep(Duration::from_millis(ABORT_POLL_MS)).await,
         }
     }
 }
@@ -300,6 +316,64 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
 
+    fn sleep_args(tick_interval_ms: Option<u64>, description: &str) -> HashMap<String, Value> {
+        let mut args = HashMap::new();
+        args.insert("duration_ms".to_string(), json!(MIN_DURATION_MS));
+        args.insert("description".to_string(), json!(description));
+        if let Some(tick_interval_ms) = tick_interval_ms {
+            args.insert("tick_interval_ms".to_string(), json!(tick_interval_ms));
+        }
+        args
+    }
+
+    fn parse_error(args: HashMap<String, Value>) -> String {
+        match parse_sleep_request(&args) {
+            Ok(_) => panic!("expected parse_sleep_request to fail"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn parse_rejects_zero_tick_interval() {
+        let error = parse_error(sleep_args(Some(0), "wait"));
+
+        assert_eq!(
+            error,
+            format!("tick_interval_ms must be at least {MIN_TICK_INTERVAL_MS}")
+        );
+    }
+
+    #[test]
+    fn parse_rejects_tick_interval_below_schema_minimum() {
+        let error = parse_error(sleep_args(Some(MIN_TICK_INTERVAL_MS - 1), "wait"));
+
+        assert_eq!(
+            error,
+            format!("tick_interval_ms must be at least {MIN_TICK_INTERVAL_MS}")
+        );
+    }
+
+    #[test]
+    fn parse_rejects_empty_description() {
+        let error = parse_error(sleep_args(None, ""));
+
+        assert_eq!(error, "description must be a non-empty string");
+    }
+
+    #[test]
+    fn parse_rejects_whitespace_description() {
+        let error = parse_error(sleep_args(None, "   \t\n"));
+
+        assert_eq!(error, "description must be a non-empty string");
+    }
+
+    #[test]
+    fn parse_trims_description() {
+        let request = parse_sleep_request(&sleep_args(None, "  wait  ")).unwrap();
+
+        assert_eq!(request.description, "wait");
+    }
+
     #[tokio::test]
     async fn short_sleep_returns_correct_slept_ms() {
         let outcome = sleep_with_ticks(
@@ -331,6 +405,46 @@ mod tests {
         sleep(Duration::from_millis(120)).await;
         abort_flag.store(true, Ordering::Relaxed);
         let outcome = run.await.unwrap();
+
+        assert!(outcome.interrupted);
+        assert!(outcome.slept_ms < 500, "slept_ms was {}", outcome.slept_ms);
+    }
+
+    #[tokio::test]
+    async fn abort_set_before_sleep_returns_interrupted_quickly() {
+        let outcome = sleep_with_ticks(
+            2_000,
+            None,
+            Arc::new(AtomicBool::new(true)),
+            Some(Arc::new(Notify::new())),
+            |_| async { false },
+        )
+        .await;
+
+        assert!(outcome.interrupted);
+        assert!(outcome.slept_ms < 100, "slept_ms was {}", outcome.slept_ms);
+    }
+
+    #[tokio::test]
+    async fn abort_polling_interrupts_without_notify_wakeup() {
+        let abort_flag = Arc::new(AtomicBool::new(false));
+        let abort_notify = Arc::new(Notify::new());
+        let run = tokio::spawn({
+            let abort_flag = abort_flag.clone();
+            async move {
+                sleep_with_ticks(2_000, None, abort_flag, Some(abort_notify), |_| async {
+                    false
+                })
+                .await
+            }
+        });
+
+        sleep(Duration::from_millis(20)).await;
+        abort_flag.store(true, Ordering::Relaxed);
+        let outcome = tokio::time::timeout(Duration::from_millis(500), run)
+            .await
+            .expect("sleep did not observe abort without notify wakeup")
+            .unwrap();
 
         assert!(outcome.interrupted);
         assert!(outcome.slept_ms < 500, "slept_ms was {}", outcome.slept_ms);
