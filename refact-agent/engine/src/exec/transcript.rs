@@ -46,6 +46,8 @@ pub struct ExecTranscript {
     spill: Option<Arc<Mutex<SpillState>>>,
     disk_log_path: Option<PathBuf>,
     last_spill_error: Option<String>,
+    pre_spill_buffer: String,
+    spill_started: bool,
 }
 
 struct SpillState {
@@ -212,6 +214,8 @@ impl ExecTranscript {
             spill,
             disk_log_path: None,
             last_spill_error: None,
+            pre_spill_buffer: String::new(),
+            spill_started: false,
         }
     }
 
@@ -283,15 +287,26 @@ impl ExecTranscript {
     }
 
     fn prepare_spill_append(&mut self, text: &str) -> Option<SpillAppend> {
-        if text.is_empty()
-            || self.total_bytes_appended.saturating_add(text.len()) <= self.spill_threshold_bytes
-        {
+        if text.is_empty() {
             return None;
         }
         let state = self.spill.as_ref()?.clone();
+        if self.spill_started {
+            return Some(SpillAppend {
+                state,
+                text: text.to_string(),
+            });
+        }
+        if self.total_bytes_appended.saturating_add(text.len()) <= self.spill_threshold_bytes {
+            self.pre_spill_buffer.push_str(text);
+            return None;
+        }
+        self.spill_started = true;
+        let mut full_text = std::mem::take(&mut self.pre_spill_buffer);
+        full_text.push_str(text);
         Some(SpillAppend {
             state,
-            text: text.to_string(),
+            text: full_text,
         })
     }
 
@@ -447,6 +462,7 @@ async fn create_spill_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::spill::SpillTarget;
 
     fn make_transcript(max_bytes: usize) -> ExecTranscript {
         ExecTranscript::new(ExecProcessId("exec_test".to_string()), max_bytes)
@@ -731,6 +747,97 @@ mod tests {
         assert_eq!(t.read(0, None).chunks, vec![chunk]);
         assert!(t.last_spill_error().is_some());
         assert!(t.disk_log_path().is_none());
+    }
+
+    #[tokio::test]
+    async fn spill_backfills_output_before_threshold() {
+        let temp = tempfile::tempdir().unwrap();
+        let process_id = ExecProcessId("exec_backfill_pre".to_string());
+        let target = SpillTarget::with_root(temp.path().to_path_buf(), "chat-bp", &process_id);
+        let mut t = ExecTranscript::new_with_spill(
+            process_id.clone(),
+            4096,
+            Some("chat-bp".to_string()),
+            20,
+        );
+        t.set_spill_target_for_test(target);
+
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "hello".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, " world".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "!!!".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "crosses_here".to_string());
+        let result = sa.expect("spill fires at threshold crossing").write().await;
+        t.record_spill_result(&result);
+        assert!(result.is_ok());
+
+        let persisted = std::fs::read_to_string(t.disk_log_path().unwrap()).unwrap();
+        assert_eq!(persisted, "hello world!!!crosses_here");
+    }
+
+    #[tokio::test]
+    async fn spill_backfills_even_if_ring_evicted_before_threshold() {
+        let temp = tempfile::tempdir().unwrap();
+        let process_id = ExecProcessId("exec_backfill_ring".to_string());
+        let target = SpillTarget::with_root(temp.path().to_path_buf(), "chat-br", &process_id);
+        let mut t = ExecTranscript::new_with_spill(
+            process_id.clone(),
+            12,
+            Some("chat-br".to_string()),
+            25,
+        );
+        t.set_spill_target_for_test(target);
+
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "chunk_one".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "chunk_two".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "big_chunk".to_string());
+        let result = sa.expect("spill fires when threshold crossed").write().await;
+        t.record_spill_result(&result);
+        assert!(result.is_ok());
+
+        let persisted = std::fs::read_to_string(t.disk_log_path().unwrap()).unwrap();
+        assert_eq!(persisted, "chunk_onechunk_twobig_chunk");
+        assert!(t.dropped_chunks() > 0, "ring must have evicted chunks");
+    }
+
+    #[tokio::test]
+    async fn spill_backfill_happens_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let process_id = ExecProcessId("exec_backfill_once".to_string());
+        let target = SpillTarget::with_root(temp.path().to_path_buf(), "chat-bo", &process_id);
+        let mut t = ExecTranscript::new_with_spill(
+            process_id.clone(),
+            12,
+            Some("chat-bo".to_string()),
+            25,
+        );
+        t.set_spill_target_for_test(target);
+
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "chunk_one".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "chunk_two".to_string());
+        assert!(sa.is_none());
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "big_chunk".to_string());
+        let result = sa.expect("first threshold crossing").write().await;
+        t.record_spill_result(&result);
+        assert!(result.is_ok());
+
+        let (_c, sa) = t.append_chunk(ExecOutputStream::Stdout, "extra".to_string());
+        let result = sa.expect("subsequent chunk also spills").write().await;
+        t.record_spill_result(&result);
+        assert!(result.is_ok());
+
+        let persisted = std::fs::read_to_string(t.disk_log_path().unwrap()).unwrap();
+        assert_eq!(persisted, "chunk_onechunk_twobig_chunkextra");
+        assert_eq!(
+            persisted.matches("chunk_one").count(),
+            1,
+            "pre-threshold content must not be duplicated"
+        );
     }
 
     #[test]
