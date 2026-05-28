@@ -362,7 +362,7 @@ impl CronRunner {
             if session.closed {
                 return Err(format!("Chat session {chat_id} is closed"));
             }
-            if !session.is_idle() {
+            if !session.is_idle() || session.command_queue.iter().any(|r| !r.priority) {
                 return Ok(false);
             }
             session.add_message(event_message);
@@ -504,7 +504,7 @@ async fn chat_fire_status(gcx: &SharedGlobalContext, chat_id: &str) -> ChatFireS
     if session.closed {
         return ChatFireStatus::Closed;
     }
-    if session.is_idle() {
+    if session.is_idle() && !session.command_queue.iter().any(|r| !r.priority) {
         ChatFireStatus::Fireable
     } else {
         ChatFireStatus::Busy
@@ -1213,6 +1213,56 @@ mod tests {
         assert_eq!(
             set_params_count, 1,
             "exactly one SetParams (the mode change) must be queued; no auto-restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn cron_defers_when_non_priority_user_message_queued() {
+        let now = now_ms();
+        let store = Arc::new(InMemoryCronStore::new());
+        let mut t = due_task("cron_defer_non_priority", now);
+        t.mode = Some("agent".to_string());
+        store.add(t).await.unwrap();
+        let gcx = gcx_with_session(SessionState::Idle).await;
+
+        {
+            let session_arc = session(&gcx).await;
+            let mut sess = session_arc.lock().await;
+            sess.command_queue.push_back(CommandRequest {
+                client_request_id: "user-non-priority".to_string(),
+                priority: false,
+                command: ChatCommand::UserMessage {
+                    content: serde_json::Value::String("user message".to_string()),
+                    attachments: vec![],
+                    context_files: vec![],
+                    suppress_auto_enrichment: false,
+                },
+            });
+        }
+
+        let mut runner = CronRunner::new(store.clone(), gcx.clone());
+        runner.fire_due_tasks(now).await;
+
+        assert!(
+            runner.deferred_until_ms.contains_key("cron_defer_non_priority"),
+            "cron must be deferred when non-priority message is in queue"
+        );
+
+        let session_arc = session(&gcx).await;
+        let sess = session_arc.lock().await;
+        assert_eq!(
+            sess.command_queue.len(),
+            1,
+            "cron must not inject commands ahead of non-priority user message"
+        );
+        assert!(
+            matches!(&sess.command_queue[0].command, ChatCommand::UserMessage { content, .. }
+                if content.as_str() == Some("user message")),
+            "non-priority user message must remain first and only in queue"
+        );
+        assert!(
+            sess.messages.iter().all(|m| m.role != EVENT_ROLE),
+            "no cron event should be added when deferred"
         );
     }
 }
