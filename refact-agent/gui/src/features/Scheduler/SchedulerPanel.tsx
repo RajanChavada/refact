@@ -9,8 +9,12 @@ import {
   useDeleteCronMutation,
   useGetCronTasksQuery,
 } from "../../services/refact/schedulerApi";
-import { selectLastCronFireAt } from "./schedulerSlice";
+import {
+  selectCurrentThreadId,
+  selectThreadMode,
+} from "../Chat/Thread/selectors";
 import { CronCreateForm } from "./CronCreateForm";
+import { selectLastCronFireAt } from "./schedulerSlice";
 import { CronList } from "./CronList";
 import styles from "./Scheduler.module.css";
 
@@ -29,6 +33,8 @@ export const SchedulerPanel: React.FC<SchedulerPanelProps> = ({ onBack }) => {
   const [deleteCron, deleteState] = useDeleteCronMutation();
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const lastCronFireAt = useAppSelector(selectLastCronFireAt);
+  const currentThreadId = useAppSelector(selectCurrentThreadId);
+  const currentMode = useAppSelector(selectThreadMode);
 
   const sortedTasks = useMemo(
     () =>
@@ -40,8 +46,14 @@ export const SchedulerPanel: React.FC<SchedulerPanelProps> = ({ onBack }) => {
     [tasks],
   );
 
-  const handleCreate = async (request: CreateCronRequest) => {
-    await createCron(request).unwrap();
+  const handleCreate = async (
+    request: Omit<CreateCronRequest, "chat_id" | "mode">,
+  ) => {
+    await createCron({
+      ...request,
+      chat_id: currentThreadId,
+      mode: currentMode ?? undefined,
+    }).unwrap();
   };
 
   const handleDelete = async (id: string) => {

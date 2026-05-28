@@ -22,6 +22,8 @@ export type CreateCronRequest = {
   recurring: boolean;
   durable: boolean;
   description: string;
+  chat_id: string;
+  mode?: string;
 };
 
 export type CreateCronResponse = {

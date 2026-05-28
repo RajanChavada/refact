@@ -17,8 +17,10 @@ import styles from "./Scheduler.module.css";
 
 type CronPreset = "hourly" | "daily" | "weekdays" | "five-min" | "custom";
 
+type CronCreateFormData = Omit<CreateCronRequest, "chat_id" | "mode">;
+
 type CronCreateFormProps = {
-  onSubmit: (request: CreateCronRequest) => Promise<void>;
+  onSubmit: (request: CronCreateFormData) => Promise<void>;
   isLoading?: boolean;
   error?: unknown;
   taskCount: number;

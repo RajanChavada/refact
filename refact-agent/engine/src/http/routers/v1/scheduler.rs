@@ -36,6 +36,8 @@ pub struct CronCreateRequest {
     #[serde(default)]
     pub durable: bool,
     pub description: String,
+    pub chat_id: String,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,6 +95,7 @@ pub async fn handle_v1_scheduler_cron_post(
     State(app): State<AppState>,
     Json(request): Json<CronCreateRequest>,
 ) -> Result<Json<CronCreateResponse>, ScratchError> {
+    validate_chat_target(&app, &request.chat_id).await?;
     let durable_store = active_durable_cron_store(app.gcx.clone())
         .await
         .map_err(|e| ScratchError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -102,8 +105,8 @@ pub async fn handle_v1_scheduler_cron_post(
         change_notify: crate::scheduler::runner_change_notify(),
         now_ms: unix_now_ms(),
         timezone: scheduler_timezone(),
-        chat_id: None,
-        mode: None,
+        chat_id: Some(request.chat_id),
+        mode: request.mode,
     };
     let outcome = create_cron_job(
         CronCreateInput {
@@ -175,6 +178,33 @@ fn task_response(
 
 fn first_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
+}
+
+async fn validate_chat_target(app: &AppState, chat_id: &str) -> Result<(), ScratchError> {
+    if chat_id.trim().is_empty() {
+        return Err(ScratchError::new(
+            StatusCode::BAD_REQUEST,
+            "chat_id is required".to_string(),
+        ));
+    }
+    let session_arc = {
+        let sessions = app.gcx.chat_sessions.read().await;
+        sessions.get(chat_id).cloned()
+    };
+    let Some(session_arc) = session_arc else {
+        return Err(ScratchError::new(
+            StatusCode::BAD_REQUEST,
+            format!("chat session `{chat_id}` not found"),
+        ));
+    };
+    let session = session_arc.lock().await;
+    if session.closed {
+        return Err(ScratchError::new(
+            StatusCode::BAD_REQUEST,
+            format!("chat session `{chat_id}` is closed"),
+        ));
+    }
+    Ok(())
 }
 
 fn unix_now_ms() -> u64 {
