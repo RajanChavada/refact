@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use regex::Regex;
@@ -25,8 +25,17 @@ use crate::worktrees::scope::ExecutionScope;
 const DEFAULT_MAX_DURATION_MS: u64 = 30_000;
 const MIN_MAX_DURATION_MS: u64 = 1_000;
 const MAX_MAX_DURATION_MS: u64 = 600_000;
-const IDLE_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+const IDLE_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const ABORT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_MAX_EVENTS: usize = 100;
+const MAX_MAX_EVENTS: usize = 1_000;
+const DEFAULT_MAX_LINE_BYTES: usize = 8_192;
+const MAX_MAX_LINE_BYTES: usize = 65_536;
+const TRUNCATION_MARKER: &str = "[truncated]";
+const MIN_MAX_LINE_BYTES: usize = TRUNCATION_MARKER.len();
+const RATE_LIMIT_PER_SECOND: usize = 10;
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
+const SUMMARY_PREVIEW_BYTES: usize = 200;
 
 pub struct ToolProcessSubscribe {
     pub config_path: String,
@@ -36,6 +45,25 @@ struct SubscribeArgs {
     process_id: ExecProcessId,
     regex_filter: Option<Regex>,
     max_duration_ms: u64,
+    max_events: usize,
+    max_line_bytes: usize,
+}
+
+struct SubscriptionConfig {
+    regex_filter: Option<Regex>,
+    max_duration: Duration,
+    max_events: usize,
+    max_line_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SubscribeEvent {
+    Line(String),
+    Summary {
+        line_count: usize,
+        first_line: String,
+        last_line: String,
+    },
 }
 
 #[async_trait]
@@ -70,8 +98,12 @@ impl Tool for ToolProcessSubscribe {
             exec_registry,
             parsed.process_id.clone(),
             chat_id,
-            parsed.regex_filter,
-            Duration::from_millis(parsed.max_duration_ms),
+            SubscriptionConfig {
+                regex_filter: parsed.regex_filter,
+                max_duration: Duration::from_millis(parsed.max_duration_ms),
+                max_events: parsed.max_events,
+                max_line_bytes: parsed.max_line_bytes,
+            },
             abort_flag,
         );
 
@@ -80,6 +112,8 @@ impl Tool for ToolProcessSubscribe {
             json!({
                 "subscribed": true,
                 "max_duration_ms": parsed.max_duration_ms,
+                "max_events": parsed.max_events,
+                "max_line_bytes": parsed.max_line_bytes,
                 "process_id": parsed.process_id.as_str(),
             })
             .to_string(),
@@ -117,21 +151,11 @@ fn spawn_process_subscription(
     exec_registry: Arc<ExecRegistry>,
     process_id: ExecProcessId,
     chat_id: String,
-    regex_filter: Option<Regex>,
-    max_duration: Duration,
+    config: SubscriptionConfig,
     abort_flag: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        run_process_subscription(
-            gcx,
-            exec_registry,
-            process_id,
-            chat_id,
-            regex_filter,
-            max_duration,
-            abort_flag,
-        )
-        .await;
+        run_process_subscription(gcx, exec_registry, process_id, chat_id, config, abort_flag).await;
     })
 }
 
@@ -140,37 +164,77 @@ async fn run_process_subscription(
     exec_registry: Arc<ExecRegistry>,
     process_id: ExecProcessId,
     chat_id: String,
-    regex_filter: Option<Regex>,
-    max_duration: Duration,
+    config: SubscriptionConfig,
     abort_flag: Arc<AtomicBool>,
 ) {
     let mut output_rx = exec_registry.subscribe_output();
-    let mut pending = String::new();
-    let timeout = tokio::time::sleep(max_duration);
+    let mut state = SubscriptionState::new(
+        config.regex_filter,
+        config.max_events,
+        config.max_line_bytes,
+    );
+    let timeout = tokio::time::sleep(config.max_duration);
     tokio::pin!(timeout);
     let wait_process_id = process_id.clone();
     let process_finished = exec_registry.wait(&wait_process_id);
     tokio::pin!(process_finished);
+    let mut input_finished = false;
     loop {
-        if abort_flag.load(Ordering::Relaxed) {
+        if gcx.shutdown_flag.load(Ordering::Relaxed) || abort_flag.load(Ordering::Relaxed) {
             break;
+        }
+        if input_finished {
+            if state.needs_timer() {
+                state.finalize_ready_summary(Instant::now());
+                if !try_flush_events_when_idle(
+                    gcx.clone(),
+                    &chat_id,
+                    &process_id,
+                    &mut state.events,
+                    abort_flag.clone(),
+                )
+                .await
+                {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
         tokio::select! {
             biased;
-            _ = &mut timeout => break,
+            _ = &mut timeout, if !input_finished => {
+                let now = Instant::now();
+                state.flush_pending_line(now);
+                state.finalize_summaries();
+                if !try_flush_events_when_idle(
+                    gcx.clone(),
+                    &chat_id,
+                    &process_id,
+                    &mut state.events,
+                    abort_flag.clone(),
+                ).await {
+                    break;
+                }
+                input_finished = true;
+            },
             _ = wait_for_abort(abort_flag.clone()) => break,
-            received = output_rx.recv() => match received {
+            received = output_rx.recv(), if !input_finished => match received {
                 Ok(chunk) => {
                     if should_process_chunk(&chunk, &process_id) {
-                        emit_matching_lines(
+                        if state.push_text(&chunk.text, Instant::now()) {
+                            state.finalize_summaries();
+                            input_finished = true;
+                        }
+                        if !try_flush_events_when_idle(
                             gcx.clone(),
-                            chat_id.clone(),
-                            process_id.clone(),
-                            &regex_filter,
+                            &chat_id,
+                            &process_id,
+                            &mut state.events,
                             abort_flag.clone(),
-                            &mut pending,
-                            &chunk.text,
-                        );
+                        ).await {
+                            break;
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -178,22 +242,29 @@ async fn run_process_subscription(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
-            result = &mut process_finished => {
+            result = &mut process_finished, if !input_finished => {
                 if let Err(error) = result {
                     tracing::debug!("process subscription wait ended for {process_id}: {error}");
                 }
-                break;
+                let now = Instant::now();
+                state.flush_pending_line(now);
+                state.finalize_summaries();
+                input_finished = true;
+            },
+            _ = tokio::time::sleep(IDLE_FLUSH_INTERVAL), if state.needs_timer() => {
+                state.finalize_ready_summary(Instant::now());
+                if !try_flush_events_when_idle(
+                    gcx.clone(),
+                    &chat_id,
+                    &process_id,
+                    &mut state.events,
+                    abort_flag.clone(),
+                ).await {
+                    break;
+                }
             }
         }
     }
-    flush_pending_line(
-        gcx,
-        chat_id,
-        process_id,
-        &regex_filter,
-        abort_flag,
-        &mut pending,
-    );
 }
 
 async fn wait_for_abort(abort_flag: Arc<AtomicBool>) {
@@ -210,131 +281,294 @@ fn should_process_chunk(chunk: &ExecOutputChunk, process_id: &ExecProcessId) -> 
         )
 }
 
-fn emit_matching_lines(
-    gcx: SharedGlobalContext,
-    chat_id: String,
-    process_id: ExecProcessId,
-    regex_filter: &Option<Regex>,
-    abort_flag: Arc<AtomicBool>,
-    pending: &mut String,
-    text: &str,
-) {
-    pending.push_str(text);
-    while let Some(newline_index) = pending.find('\n') {
-        let mut line: String = pending.drain(..=newline_index).collect();
-        line.pop();
+struct SubscriptionState {
+    regex_filter: Option<Regex>,
+    max_events: usize,
+    max_line_bytes: usize,
+    pending: String,
+    pending_truncated: bool,
+    events: VecDeque<SubscribeEvent>,
+    event_count: usize,
+    recent_event_times: VecDeque<Instant>,
+    active_summary: Option<SummaryBuilder>,
+}
+
+impl SubscriptionState {
+    fn new(regex_filter: Option<Regex>, max_events: usize, max_line_bytes: usize) -> Self {
+        Self {
+            regex_filter,
+            max_events,
+            max_line_bytes: max_line_bytes.clamp(MIN_MAX_LINE_BYTES, MAX_MAX_LINE_BYTES),
+            pending: String::new(),
+            pending_truncated: false,
+            events: VecDeque::new(),
+            event_count: 0,
+            recent_event_times: VecDeque::new(),
+            active_summary: None,
+        }
+    }
+
+    fn push_text(&mut self, text: &str, now: Instant) -> bool {
+        if self.reached_cap() {
+            return true;
+        }
+        for segment in text.split_inclusive('\n') {
+            if let Some(line_part) = segment.strip_suffix('\n') {
+                self.append_pending(line_part);
+                let mut line = std::mem::take(&mut self.pending);
+                self.pending_truncated = false;
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                if self.enqueue_line(line, now) {
+                    return true;
+                }
+            } else {
+                self.append_pending(segment);
+            }
+        }
+        false
+    }
+
+    fn append_pending(&mut self, text: &str) {
+        if text.is_empty() || self.pending_truncated {
+            return;
+        }
+        if self.pending.len() + text.len() <= self.max_line_bytes {
+            self.pending.push_str(text);
+            return;
+        }
+
+        let prefix_limit = self.max_line_bytes.saturating_sub(TRUNCATION_MARKER.len());
+        truncate_string_to_byte_limit(&mut self.pending, prefix_limit);
+        let remaining = prefix_limit.saturating_sub(self.pending.len());
+        if remaining > 0 {
+            self.pending.push_str(prefix_by_bytes(text, remaining));
+        }
+        self.pending.push_str(TRUNCATION_MARKER);
+        self.pending_truncated = true;
+    }
+
+    fn flush_pending_line(&mut self, now: Instant) -> bool {
+        if self.reached_cap() {
+            return true;
+        }
+        if self.pending.is_empty() {
+            return false;
+        }
+        let mut line = std::mem::take(&mut self.pending);
+        self.pending_truncated = false;
         if line.ends_with('\r') {
             line.pop();
         }
-        emit_if_matches(
-            gcx.clone(),
-            chat_id.clone(),
-            process_id.clone(),
-            regex_filter,
-            abort_flag.clone(),
-            line,
-        );
+        self.enqueue_line(line, now)
+    }
+
+    fn enqueue_line(&mut self, line: String, now: Instant) -> bool {
+        if !line_matches(self.regex_filter.as_ref(), &line) {
+            return false;
+        }
+        self.finalize_ready_summary(now);
+        self.drop_old_event_times(now);
+        if self.event_count >= self.max_events {
+            return true;
+        }
+        if self.active_summary.is_some() || self.recent_event_times.len() >= RATE_LIMIT_PER_SECOND {
+            self.add_summary_line(line, now);
+            return self.event_count >= self.max_events;
+        }
+        self.events.push_back(SubscribeEvent::Line(line));
+        self.event_count += 1;
+        self.recent_event_times.push_back(now);
+        self.event_count >= self.max_events
+    }
+
+    fn add_summary_line(&mut self, line: String, now: Instant) {
+        if let Some(summary) = &mut self.active_summary {
+            summary.add_line(line);
+            return;
+        }
+        if self.event_count >= self.max_events {
+            return;
+        }
+        self.active_summary = Some(SummaryBuilder::new(now, line));
+        self.event_count += 1;
+    }
+
+    fn finalize_ready_summary(&mut self, now: Instant) {
+        let should_finalize = self
+            .active_summary
+            .as_ref()
+            .is_some_and(|summary| duration_since(now, summary.started_at) >= RATE_LIMIT_WINDOW);
+        if should_finalize {
+            self.finalize_summaries();
+        }
+    }
+
+    fn finalize_summaries(&mut self) {
+        if let Some(summary) = self.active_summary.take() {
+            self.events.push_back(summary.into_event());
+        }
+    }
+
+    fn drop_old_event_times(&mut self, now: Instant) {
+        while self
+            .recent_event_times
+            .front()
+            .is_some_and(|time| duration_since(now, *time) >= RATE_LIMIT_WINDOW)
+        {
+            self.recent_event_times.pop_front();
+        }
+    }
+
+    fn has_events(&self) -> bool {
+        !self.events.is_empty()
+    }
+
+    fn needs_timer(&self) -> bool {
+        self.has_events() || self.active_summary.is_some()
+    }
+
+    fn reached_cap(&self) -> bool {
+        self.event_count >= self.max_events
     }
 }
 
-fn flush_pending_line(
-    gcx: SharedGlobalContext,
-    chat_id: String,
-    process_id: ExecProcessId,
-    regex_filter: &Option<Regex>,
-    abort_flag: Arc<AtomicBool>,
-    pending: &mut String,
-) {
-    if pending.is_empty() {
+struct SummaryBuilder {
+    started_at: Instant,
+    line_count: usize,
+    first_line: String,
+    last_line: String,
+}
+
+impl SummaryBuilder {
+    fn new(started_at: Instant, line: String) -> Self {
+        let preview = preview_line(&line);
+        Self {
+            started_at,
+            line_count: 1,
+            first_line: preview.clone(),
+            last_line: preview,
+        }
+    }
+
+    fn add_line(&mut self, line: String) {
+        self.line_count += 1;
+        self.last_line = preview_line(&line);
+    }
+
+    fn into_event(self) -> SubscribeEvent {
+        SubscribeEvent::Summary {
+            line_count: self.line_count,
+            first_line: self.first_line,
+            last_line: self.last_line,
+        }
+    }
+}
+
+fn duration_since(now: Instant, earlier: Instant) -> Duration {
+    now.checked_duration_since(earlier).unwrap_or_default()
+}
+
+fn prefix_by_bytes(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+fn truncate_string_to_byte_limit(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
         return;
     }
-    let mut line = std::mem::take(pending);
-    if line.ends_with('\r') {
-        line.pop();
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
     }
-    emit_if_matches(gcx, chat_id, process_id, regex_filter, abort_flag, line);
+    value.truncate(end);
 }
 
-fn emit_if_matches(
-    gcx: SharedGlobalContext,
-    chat_id: String,
-    process_id: ExecProcessId,
-    regex_filter: &Option<Regex>,
-    abort_flag: Arc<AtomicBool>,
-    line: String,
-) {
-    if line_matches(regex_filter.as_ref(), &line) {
-        tokio::spawn(async move {
-            inject_line_when_idle(gcx, chat_id, process_id, line, abort_flag).await;
-        });
-    }
+fn preview_line(line: &str) -> String {
+    prefix_by_bytes(line, SUMMARY_PREVIEW_BYTES).to_string()
 }
 
 fn line_matches(regex_filter: Option<&Regex>, line: &str) -> bool {
     regex_filter
-        .map(|regex| {
-            regex
-                .find(line)
-                .map(|matched| matched.start() == 0 && matched.end() == line.len())
-                .unwrap_or(false)
-        })
+        .map(|regex| regex.is_match(line))
         .unwrap_or(true)
 }
 
-async fn inject_line_when_idle(
+async fn try_flush_events_when_idle(
     gcx: SharedGlobalContext,
-    chat_id: String,
-    process_id: ExecProcessId,
-    line: String,
+    chat_id: &str,
+    process_id: &ExecProcessId,
+    events: &mut VecDeque<SubscribeEvent>,
     abort_flag: Arc<AtomicBool>,
-) {
+) -> bool {
+    if events.is_empty() {
+        return true;
+    }
     if abort_flag.load(Ordering::Relaxed) {
-        return;
+        return false;
     }
     let session_arc = {
         let sessions = gcx.chat_sessions.read().await;
-        sessions.get(&chat_id).cloned()
+        sessions.get(chat_id).cloned()
     };
     let Some(session_arc) = session_arc else {
-        return;
+        return false;
     };
-    loop {
-        if gcx.shutdown_flag.load(Ordering::Relaxed) {
-            return;
-        }
-        if abort_flag.load(Ordering::Relaxed) {
-            return;
-        }
-        let notify = {
-            let mut session = session_arc.lock().await;
-            if session.closed {
-                return;
-            }
-            if is_stream_busy(session.runtime.state) {
-                session.queue_notify.clone()
-            } else {
-                session.add_message(subscription_message(process_id, line));
-                return;
-            }
-        };
-        let _ = tokio::time::timeout(IDLE_WAIT_TIMEOUT, notify.notified()).await;
+    if gcx.shutdown_flag.load(Ordering::Relaxed) || abort_flag.load(Ordering::Relaxed) {
+        return false;
     }
+    let mut session = session_arc.lock().await;
+    if session.closed {
+        return false;
+    }
+    if !session.is_idle() {
+        return true;
+    }
+    while let Some(event) = events.pop_front() {
+        session.add_message(subscription_message(process_id.clone(), event));
+    }
+    true
 }
 
-fn is_stream_busy(state: SessionState) -> bool {
-    matches!(
-        state,
-        SessionState::Generating | SessionState::ExecutingTools
-    )
-}
-
-fn subscription_message(process_id: ExecProcessId, line: String) -> ChatMessage {
-    event(
-        EventSubkind::SystemNotice,
-        "exec.subscribe",
-        json!({"process_id": process_id, "line": line}),
-        line,
-    )
+fn subscription_message(process_id: ExecProcessId, event_value: SubscribeEvent) -> ChatMessage {
+    match event_value {
+        SubscribeEvent::Line(line) => event(
+            EventSubkind::SystemNotice,
+            "exec.subscribe",
+            json!({"process_id": process_id, "line": line}),
+            line,
+        ),
+        SubscribeEvent::Summary {
+            line_count,
+            first_line,
+            last_line,
+        } => {
+            let content = format!(
+                "Process {} matched {line_count} additional lines; first: {first_line}; last: {last_line}",
+                process_id.as_str()
+            );
+            event(
+                EventSubkind::SystemNotice,
+                "exec.subscribe",
+                json!({
+                    "process_id": process_id,
+                    "summary": true,
+                    "line_count": line_count,
+                    "first_line": first_line,
+                    "last_line": last_line,
+                }),
+                content,
+            )
+        }
+    }
 }
 
 async fn current_workspace(
@@ -355,7 +589,9 @@ fn process_subscribe_input_schema() -> Value {
         "properties": {
             "process_id": { "type": "string" },
             "regex_filter": { "type": "string", "description": "Optional regex. Only matching lines fire notifications. Empty = all lines." },
-            "max_duration_ms": { "type": "integer", "default": DEFAULT_MAX_DURATION_MS, "minimum": MIN_MAX_DURATION_MS, "maximum": MAX_MAX_DURATION_MS }
+            "max_duration_ms": { "type": "integer", "default": DEFAULT_MAX_DURATION_MS, "minimum": MIN_MAX_DURATION_MS, "maximum": MAX_MAX_DURATION_MS },
+            "max_events": { "type": "integer", "default": DEFAULT_MAX_EVENTS, "minimum": 1, "maximum": MAX_MAX_EVENTS },
+            "max_line_bytes": { "type": "integer", "default": DEFAULT_MAX_LINE_BYTES, "minimum": MIN_MAX_LINE_BYTES, "maximum": MAX_MAX_LINE_BYTES }
         },
         "required": ["process_id"]
     })
@@ -380,10 +616,20 @@ fn parse_subscribe_args(args: &HashMap<String, Value>) -> Result<SubscribeArgs, 
         .map(|filter| Regex::new(&filter).map_err(|error| format!("invalid regex_filter: {error}")))
         .transpose()?;
     let max_duration_ms = parse_max_duration_ms(args)?;
+    let max_events = parse_usize_arg(args, "max_events", DEFAULT_MAX_EVENTS, 1, MAX_MAX_EVENTS)?;
+    let max_line_bytes = parse_usize_arg(
+        args,
+        "max_line_bytes",
+        DEFAULT_MAX_LINE_BYTES,
+        MIN_MAX_LINE_BYTES,
+        MAX_MAX_LINE_BYTES,
+    )?;
     Ok(SubscribeArgs {
         process_id,
         regex_filter,
         max_duration_ms,
+        max_events,
+        max_line_bytes,
     })
 }
 
@@ -437,12 +683,39 @@ fn parse_max_duration_ms(args: &HashMap<String, Value>) -> Result<u64, String> {
     Ok(value)
 }
 
+fn parse_usize_arg(
+    args: &HashMap<String, Value>,
+    name: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> Result<usize, String> {
+    let value = match args.get(name) {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .ok_or_else(|| format!("argument `{name}` must be an integer"))?,
+        Some(Value::String(value)) if value.trim().is_empty() => default as u64,
+        Some(Value::String(value)) => value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("argument `{name}` must be an integer"))?,
+        Some(Value::Null) | None => default as u64,
+        Some(value) => return Err(format!("argument `{name}` is not an integer: {value:?}")),
+    };
+    let value = usize::try_from(value)
+        .map_err(|_| format!("argument `{name}` must be between {min} and {max}"))?;
+    if !(min..=max).contains(&value) {
+        return Err(format!("argument `{name}` must be between {min} and {max}"));
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app_state::AppState;
     use crate::chat::internal_roles::EVENT_ROLE;
-    use crate::chat::types::ChatSession;
+    use crate::chat::types::{ChatSession, SessionState};
     use crate::exec::{ExecMode, ExecOwnerMeta, ExecSpawnRequest};
     use crate::global_context::GlobalContext;
 
@@ -604,6 +877,24 @@ mod tests {
         }
     }
 
+    async fn wait_for_subscribe_event_count_for(
+        session: &Arc<AMutex<ChatSession>>,
+        expected_count: usize,
+        timeout: Duration,
+    ) -> Option<Vec<ChatMessage>> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let events = subscribe_events(session).await;
+            if events.len() >= expected_count {
+                return Some(events);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     #[tokio::test]
     async fn subscribe_injects_matching_line() {
         let chat_id = "subscribe-injects-matching-line";
@@ -618,14 +909,20 @@ mod tests {
             ccx,
             args(vec![
                 ("process_id", json!(process_id.as_str())),
-                ("regex_filter", json!("READY")),
+                ("regex_filter", json!("^READY$")),
                 ("max_duration_ms", json!(5_000)),
             ]),
         )
         .await;
         assert_eq!(
             serde_json::from_str::<Value>(&message.content.content_text_only()).unwrap(),
-            json!({"subscribed": true, "max_duration_ms": 5_000, "process_id": process_id.as_str()})
+            json!({
+                "subscribed": true,
+                "max_duration_ms": 5_000,
+                "max_events": DEFAULT_MAX_EVENTS,
+                "max_line_bytes": DEFAULT_MAX_LINE_BYTES,
+                "process_id": process_id.as_str()
+            })
         );
         let _ = gcx.exec_registry.wait(&process_id).await.unwrap();
 
@@ -643,6 +940,95 @@ mod tests {
         assert!(events
             .iter()
             .all(|message| message.extra["event"]["payload"]["process_id"] == json!(process_id)));
+    }
+
+    #[test]
+    fn regex_filter_uses_substring_match() {
+        let regex = Regex::new("error").unwrap();
+
+        assert!(line_matches(Some(&regex), "fatal error: bind failed"));
+    }
+
+    #[test]
+    fn pending_no_newline_buffer_is_truncated() {
+        let mut state = SubscriptionState::new(None, DEFAULT_MAX_EVENTS, 32);
+
+        state.push_text(&"x".repeat(1_000), Instant::now());
+
+        assert_eq!(state.pending.len(), 32);
+        assert!(state.pending.ends_with(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn max_events_caps_injections() {
+        let mut state = SubscriptionState::new(None, 3, DEFAULT_MAX_LINE_BYTES);
+
+        let reached_cap = state.push_text("one\ntwo\nthree\nfour\n", Instant::now());
+
+        assert!(reached_cap);
+        assert_eq!(state.event_count, 3);
+        assert_eq!(state.events.len(), 3);
+    }
+
+    #[test]
+    fn high_rate_matches_are_coalesced() {
+        let mut state = SubscriptionState::new(None, DEFAULT_MAX_EVENTS, DEFAULT_MAX_LINE_BYTES);
+
+        state.push_text(
+            &format!(
+                "{}\n",
+                (0..12)
+                    .map(|i| format!("line-{i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Instant::now(),
+        );
+        state.finalize_summaries();
+
+        assert_eq!(state.events.len(), RATE_LIMIT_PER_SECOND + 1);
+        assert!(matches!(
+            state.events.back().unwrap(),
+            SubscribeEvent::Summary { line_count: 2, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn paused_session_gets_no_injections_until_idle() {
+        let chat_id = "paused-session-gets-no-injections-until-idle";
+        let (gcx, ccx, session) = test_context(chat_id).await;
+        {
+            let mut session = session.lock().await;
+            session.set_runtime_state(SessionState::Paused, None);
+        }
+        let process_id = spawn_background(&gcx, chat_id, ready_command()).await;
+        let mut tool = ToolProcessSubscribe {
+            config_path: String::new(),
+        };
+
+        let _ = run_tool(
+            &mut tool,
+            ccx,
+            args(vec![
+                ("process_id", json!(process_id.as_str())),
+                ("regex_filter", json!("READY")),
+                ("max_duration_ms", json!(5_000)),
+            ]),
+        )
+        .await;
+        let _ = gcx.exec_registry.wait(&process_id).await.unwrap();
+        assert!(
+            wait_for_subscribe_event_count_for(&session, 1, Duration::from_millis(200))
+                .await
+                .is_none()
+        );
+
+        {
+            let mut session = session.lock().await;
+            session.set_runtime_state(SessionState::Idle, None);
+        }
+
+        wait_for_subscribe_event_count(&session, 2).await;
     }
 
     #[tokio::test]
@@ -683,8 +1069,12 @@ mod tests {
             gcx.exec_registry.clone(),
             process_id.clone(),
             chat_id.to_string(),
-            None,
-            Duration::from_secs(10),
+            SubscriptionConfig {
+                regex_filter: None,
+                max_duration: Duration::from_secs(10),
+                max_events: DEFAULT_MAX_EVENTS,
+                max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+            },
             Arc::new(AtomicBool::new(false)),
         );
 
@@ -705,8 +1095,12 @@ mod tests {
             gcx.exec_registry.clone(),
             process_id.clone(),
             chat_id.to_string(),
-            None,
-            Duration::from_millis(50),
+            SubscriptionConfig {
+                regex_filter: None,
+                max_duration: Duration::from_millis(50),
+                max_events: DEFAULT_MAX_EVENTS,
+                max_line_bytes: DEFAULT_MAX_LINE_BYTES,
+            },
             Arc::new(AtomicBool::new(false)),
         );
 
