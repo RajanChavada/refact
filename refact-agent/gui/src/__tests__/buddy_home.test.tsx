@@ -2636,6 +2636,158 @@ describe("BuddySettingsPanel_autosave", () => {
     });
   });
 
+  it("delete all prompt text and debounce sends clear_personality_prompt flag", async () => {
+    vi.useFakeTimers();
+    const capturedBodies: unknown[] = [];
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBodies.push(await request.json());
+          return HttpResponse.json({
+            ...makeSnapshot().settings,
+            personality_prompt: null,
+          });
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(
+      setBuddySnapshot(
+        makeSnapshot(undefined, {
+          settings: {
+            ...makeSnapshot().settings,
+            personality_prompt: "Custom personality text",
+          },
+        }),
+      ),
+    );
+
+    try {
+      render(<BuddySettingsPanel />, { store });
+
+      const textarea = screen.getByRole("textbox", {
+        name: /personality prompt/i,
+      });
+      fireEvent.change(textarea, { target: { value: "" } });
+
+      expect(capturedBodies).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(750);
+
+      await waitFor(() => {
+        expect(capturedBodies).toEqual([{ clear_personality_prompt: true }]);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delete all prompt text and blur sends clear_personality_prompt flag", async () => {
+    const capturedBodies: unknown[] = [];
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBodies.push(await request.json());
+          return HttpResponse.json({
+            ...makeSnapshot().settings,
+            personality_prompt: null,
+          });
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(
+      setBuddySnapshot(
+        makeSnapshot(undefined, {
+          settings: {
+            ...makeSnapshot().settings,
+            personality_prompt: "Custom personality text",
+          },
+        }),
+      ),
+    );
+
+    render(<BuddySettingsPanel />, { store });
+
+    const textarea = screen.getByRole("textbox", {
+      name: /personality prompt/i,
+    });
+    fireEvent.change(textarea, { target: { value: "" } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => {
+      expect(capturedBodies).toEqual([{ clear_personality_prompt: true }]);
+    });
+  });
+
+  it("prompt draft survives unrelated live settings update before debounce fires", async () => {
+    vi.useFakeTimers();
+    const capturedBodies: unknown[] = [];
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBodies.push(await request.json());
+          return HttpResponse.json({
+            ...makeSnapshot().settings,
+            quiet_mode: true,
+            personality_prompt: "Server prompt",
+          });
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(
+      setBuddySnapshot(
+        makeSnapshot(undefined, {
+          settings: {
+            ...makeSnapshot().settings,
+            personality_prompt: "Server prompt",
+          },
+        }),
+      ),
+    );
+
+    try {
+      render(<BuddySettingsPanel />, { store });
+
+      const textarea = screen.getByRole("textbox", {
+        name: /personality prompt/i,
+      });
+      fireEvent.focus(textarea);
+      fireEvent.change(textarea, { target: { value: "Unsaved local prompt" } });
+      store.dispatch(
+        setBuddySnapshot(
+          makeSnapshot(undefined, {
+            settings: {
+              ...makeSnapshot().settings,
+              quiet_mode: true,
+              personality_prompt: "Server prompt",
+            },
+          }),
+        ),
+      );
+
+      expect(textarea).toHaveValue("Unsaved local prompt");
+
+      await vi.advanceTimersByTimeAsync(750);
+
+      await waitFor(() => {
+        expect(capturedBodies).toEqual([
+          { personality_prompt: "Unsaved local prompt" },
+        ]);
+      });
+      expect(textarea).toHaveValue("Unsaved local prompt");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("prompt clear button sends clear_personality_prompt flag", async () => {
     let capturedBody: unknown;
     server.use(

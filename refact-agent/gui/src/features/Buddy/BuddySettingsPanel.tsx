@@ -11,6 +11,15 @@ const PROMPT_DEBOUNCE_MS = 700;
 
 type SaveStatus = "idle" | "saving" | "saved" | "failed";
 
+type BuddySettingsPatch = Partial<BuddySettings> & {
+  clear_personality_prompt?: boolean;
+};
+
+const buildPromptPatch = (value: string): BuddySettingsPatch => {
+  if (value.trim() === "") return { clear_personality_prompt: true };
+  return { personality_prompt: value };
+};
+
 const OBSERVER_LABELS: Record<keyof BuddySettings["observers"], string> = {
   task_health: "Task Health",
   trajectory_clutter: "Trajectory Clutter",
@@ -32,12 +41,18 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
   const [updateSettingsMutation] = useUpdateBuddySettingsMutation();
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [promptDraft, setPromptDraft] = useState<string>("");
+  const [promptFocused, setPromptFocused] = useState(false);
+  const [promptDirty, setPromptDirty] = useState(false);
+  const promptDraftRef = useRef("");
   const promptDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    setPromptDraft(liveSettings?.personality_prompt ?? "");
-  }, [liveSettings?.personality_prompt]);
+    if (promptFocused || promptDirty) return;
+    const nextPrompt = liveSettings?.personality_prompt ?? "";
+    promptDraftRef.current = nextPrompt;
+    setPromptDraft(nextPrompt);
+  }, [liveSettings?.personality_prompt, promptDirty, promptFocused]);
 
   useEffect(() => {
     return () => {
@@ -48,20 +63,28 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
   }, []);
 
   const autoSave = useCallback(
-    async (
-      patch: Partial<BuddySettings> & { clear_personality_prompt?: boolean },
-    ) => {
+    async (patch: BuddySettingsPatch) => {
       setSaveStatus("saving");
       if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
       try {
         await updateSettingsMutation(patch).unwrap();
         setSaveStatus("saved");
         savedTimerRef.current = setTimeout(() => setSaveStatus("idle"), 2000);
+        return true;
       } catch {
         setSaveStatus("failed");
+        return false;
       }
     },
     [updateSettingsMutation],
+  );
+
+  const savePromptValue = useCallback(
+    async (value: string) => {
+      const saved = await autoSave(buildPromptPatch(value));
+      if (saved && promptDraftRef.current === value) setPromptDirty(false);
+    },
+    [autoSave],
   );
 
   if (!liveSettings) return null;
@@ -87,28 +110,34 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
 
   const handlePromptChange = (val: string) => {
     setPromptDraft(val);
+    promptDraftRef.current = val;
+    setPromptDirty(true);
     if (promptDebounceRef.current !== null)
       clearTimeout(promptDebounceRef.current);
     promptDebounceRef.current = setTimeout(() => {
-      void autoSave({ personality_prompt: val || null });
+      promptDebounceRef.current = null;
+      void savePromptValue(val);
     }, PROMPT_DEBOUNCE_MS);
   };
 
   const handlePromptBlur = () => {
+    setPromptFocused(false);
     if (promptDebounceRef.current !== null) {
       clearTimeout(promptDebounceRef.current);
       promptDebounceRef.current = null;
     }
-    void autoSave({ personality_prompt: promptDraft || null });
+    void savePromptValue(promptDraftRef.current);
   };
 
   const handlePromptClear = () => {
     setPromptDraft("");
+    promptDraftRef.current = "";
+    setPromptDirty(true);
     if (promptDebounceRef.current !== null) {
       clearTimeout(promptDebounceRef.current);
       promptDebounceRef.current = null;
     }
-    void autoSave({ clear_personality_prompt: true });
+    void savePromptValue("");
   };
 
   const handleDigestHourChange = (raw: string) => {
@@ -324,6 +353,7 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
           placeholder="Custom personality instructions…"
           value={promptDraft}
           onChange={(e) => handlePromptChange(e.target.value)}
+          onFocus={() => setPromptFocused(true)}
           onBlur={handlePromptBlur}
           aria-label="personality prompt"
           data-testid="buddy-personality-prompt"
