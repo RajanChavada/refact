@@ -60,7 +60,7 @@ impl Tool for ToolSleep {
                     "tick_interval_ms": {
                         "type": "integer",
                         "minimum": 5000,
-                        "description": "Optional. If set, inject event(tick) at each interval so you can react mid-sleep."
+                        "description": "Optional. If set, tick markers are collected during sleep and enqueued after the sleep tool result to preserve provider tool-result ordering. Sleep remains user-interruptible at any time."
                     },
                     "description": {
                         "type": "string",
@@ -532,6 +532,25 @@ mod tests {
         );
         assert!(outcome.ticks.iter().all(|message| message.role == "event"));
         assert_eq!(outcome.ticks[0].extra["event"]["subkind"], json!("tick"));
+    }
+
+    #[test]
+    fn sleep_schema_documents_post_result_ticks() {
+        let tool = ToolSleep {
+            config_path: String::new(),
+        };
+        let desc = tool.tool_description();
+        let tick_desc = desc.input_schema["properties"]["tick_interval_ms"]["description"]
+            .as_str()
+            .expect("tick_interval_ms description must be a string");
+        assert!(
+            tick_desc.contains("enqueued after the sleep tool result"),
+            "tick_interval_ms description should mention post-result enqueueing, got: {tick_desc}"
+        );
+        assert!(
+            !tick_desc.contains("react mid-sleep"),
+            "tick_interval_ms description must not promise mid-sleep reaction, got: {tick_desc}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
