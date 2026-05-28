@@ -1,4 +1,4 @@
-schema_version: 17
+schema_version: 18
 id: setup_skills
 title: Setup Skills
 description: Guided setup for project-specific skills
@@ -233,6 +233,12 @@ tool_confirm:
     - match: "ask_questions"
       action: auto
     - match: "shell"
+      action: ask
+    - match: "process_start"
+      action: ask
+    - match: "process_kill"
+      action: ask
+    - match: "cron_create"
       action: ask
     - match: "create_textdoc"
       action: ask

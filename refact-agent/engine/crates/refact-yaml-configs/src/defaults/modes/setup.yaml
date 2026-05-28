@@ -1,4 +1,4 @@
-schema_version: 17
+schema_version: 18
 id: setup
 title: Setup Project
 description: Analyze the project and configure Refact artifacts (AGENTS, commands, skills, subagents, integrations, knowledge)
@@ -256,7 +256,6 @@ tools:
   - update_textdoc_by_lines
   - update_textdoc_regex
   - undo_textdoc
-  - subagent
   - strategic_planning
   - deep_research
   - tasks_set
@@ -282,8 +281,6 @@ tool_confirm:
       action: auto
     - match: "get_trajectory_context"
       action: auto
-    - match: "subagent"
-      action: ask
     - match: "strategic_planning"
       action: auto
     - match: "deep_research"
@@ -295,6 +292,12 @@ tool_confirm:
     - match: "ask_questions"
       action: auto
     - match: "shell"
+      action: ask
+    - match: "process_start"
+      action: ask
+    - match: "process_kill"
+      action: ask
+    - match: "cron_create"
       action: ask
     - match: "create_textdoc"
       action: ask
