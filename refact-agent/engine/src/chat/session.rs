@@ -1534,8 +1534,23 @@ async fn cleanup_idle_session(
     chat_id: &str,
     session_arc: Arc<AMutex<ChatSession>>,
 ) -> bool {
-    super::trajectories::maybe_save_trajectory(app, session_arc.clone()).await;
+    if !save_idle_session_for_cleanup(app, session_arc.clone()).await {
+        return false;
+    }
     remove_idle_session_if_safe(sessions, chat_id, session_arc).await
+}
+
+async fn save_idle_session_for_cleanup(
+    app: AppState,
+    session_arc: Arc<AMutex<ChatSession>>,
+) -> bool {
+    match super::trajectories::try_save_trajectory(app, session_arc).await {
+        Ok(saved) => saved,
+        Err(error) => {
+            warn!("{}", error);
+            false
+        }
+    }
 }
 
 async fn remove_idle_session_if_safe(
@@ -2663,6 +2678,47 @@ mod tests {
                 .await
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_save_failure_keeps_session_mapped_and_open() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (app, _config_dir) = test_app_with_workspace(workspace.path()).await;
+        let chat_id = "cleanup-save-failure-keeps-session";
+        let session_arc = Arc::new(AMutex::new(ChatSession::new(chat_id.to_string())));
+        {
+            let mut session = session_arc.lock().await;
+            session.thread.task_meta = Some(TaskMeta {
+                task_id: "missing-task-for-save-failure".to_string(),
+                role: "agents".to_string(),
+                agent_id: Some("agent".to_string()),
+                card_id: Some("card".to_string()),
+                planner_chat_id: None,
+            });
+            session.add_message(ChatMessage::new("user".to_string(), "hello".to_string()));
+            session.last_activity =
+                Instant::now() - session_idle_timeout() - std::time::Duration::from_secs(1);
+        }
+        app.chat
+            .sessions
+            .write()
+            .await
+            .insert(chat_id.to_string(), session_arc.clone());
+
+        assert!(
+            !cleanup_idle_session(
+                app.clone(),
+                &app.chat.sessions,
+                chat_id,
+                session_arc.clone(),
+            )
+            .await
+        );
+
+        assert!(app.chat.sessions.read().await.get(chat_id).is_some());
+        let session = session_arc.lock().await;
+        assert!(!session.closed);
+        assert!(session.trajectory_dirty);
     }
 
     #[tokio::test]

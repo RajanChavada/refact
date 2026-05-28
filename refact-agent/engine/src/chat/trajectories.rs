@@ -1270,11 +1270,14 @@ pub async fn save_trajectory_snapshot(
     Ok(())
 }
 
-pub async fn maybe_save_trajectory(app: AppState, session_arc: Arc<AMutex<ChatSession>>) {
+pub async fn try_save_trajectory(
+    app: AppState,
+    session_arc: Arc<AMutex<ChatSession>>,
+) -> Result<bool, String> {
     let snapshot = {
         let session = session_arc.lock().await;
         if !session.trajectory_dirty {
-            return;
+            return Ok(true);
         }
         trajectory_snapshot_from_session(&session)
     };
@@ -1282,16 +1285,20 @@ pub async fn maybe_save_trajectory(app: AppState, session_arc: Arc<AMutex<ChatSe
     let saved_version = snapshot.version;
     let chat_id = snapshot.chat_id.clone();
 
-    match save_trajectory_snapshot(app.gcx.clone(), snapshot).await {
-        Ok(()) => {
-            let mut session = session_arc.lock().await;
-            if session.trajectory_version == saved_version {
-                session.trajectory_dirty = false;
-            }
-        }
-        Err(e) => {
-            warn!("Failed to save trajectory for {}: {}", chat_id, e);
-        }
+    save_trajectory_snapshot(app.gcx.clone(), snapshot)
+        .await
+        .map_err(|e| format!("Failed to save trajectory for {}: {}", chat_id, e))?;
+
+    let mut session = session_arc.lock().await;
+    if session.trajectory_version == saved_version {
+        session.trajectory_dirty = false;
+    }
+    Ok(!session.trajectory_dirty)
+}
+
+pub async fn maybe_save_trajectory(app: AppState, session_arc: Arc<AMutex<ChatSession>>) {
+    if let Err(e) = try_save_trajectory(app, session_arc).await {
+        warn!("{}", e);
     }
 }
 
