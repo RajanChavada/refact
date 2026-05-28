@@ -2486,36 +2486,193 @@ describe("buildBuddySceneSpeech", () => {
   });
 });
 
-describe("BuddySettingsPanel_local_state_save", () => {
-  it("editing input does not update store until Save clicked", async () => {
+describe("BuddySettingsPanel_autosave", () => {
+  it("toggling a switch immediately sends partial patch to server", async () => {
+    let capturedBody: unknown;
     server.use(
-      http.post("http://127.0.0.1:8001/v1/buddy/settings", () =>
-        HttpResponse.json({ enabled: true }),
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBody = await request.json();
+          return HttpResponse.json({
+            ...makeSnapshot().settings,
+            quiet_mode: true,
+          });
+        },
       ),
     );
 
     const store = setUpStore({ ...CONFIG_STATE });
     store.dispatch(setBuddySnapshot(makeSnapshot()));
 
-    const { user } = render(<BuddySettingsPanel />, {
-      preloadedState: { ...CONFIG_STATE, buddy: store.getState().buddy },
+    const { user } = render(<BuddySettingsPanel />, { store });
+
+    const quietSwitch = await screen.findByRole("switch", {
+      name: /quiet mode/i,
     });
-
-    const panel = await screen.findByTestId("buddy-settings-panel");
-    expect(panel).toBeInTheDocument();
-
-    const quietSwitch = screen.getByRole("switch", { name: /quiet mode/i });
-    const currentChecked = quietSwitch.getAttribute("data-state") === "checked";
     await user.click(quietSwitch);
 
-    const afterClick = quietSwitch.getAttribute("data-state") === "checked";
-    expect(afterClick).toBe(!currentChecked);
-
-    const storeSettings = store.getState().buddy.snapshot?.settings;
-    expect(storeSettings?.quiet_mode).toBe(currentChecked);
+    await waitFor(() => {
+      expect(capturedBody).toMatchObject({ quiet_mode: true });
+    });
   });
 
-  it("successful save calls onClose", async () => {
+  it("clicking a segmented enum button immediately sends partial patch", async () => {
+    let capturedBody: unknown;
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBody = await request.json();
+          return HttpResponse.json({
+            ...makeSnapshot().settings,
+            humor_level: "normal",
+          });
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    const { user } = render(<BuddySettingsPanel />, { store });
+
+    await user.click(screen.getByRole("button", { name: "normal" }));
+
+    await waitFor(() => {
+      expect(capturedBody).toMatchObject({ humor_level: "normal" });
+    });
+  });
+
+  it("mutation success updates Redux settings via onQueryStarted", async () => {
+    const updatedSettings = {
+      ...makeSnapshot().settings,
+      humor_level: "normal" as const,
+    };
+    server.use(
+      http.post("http://127.0.0.1:8001/v1/buddy/settings", () =>
+        HttpResponse.json(updatedSettings),
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    const { user } = render(<BuddySettingsPanel />, { store });
+
+    await user.click(screen.getByRole("button", { name: "normal" }));
+
+    await waitFor(() => {
+      expect(store.getState().buddy.snapshot?.settings.humor_level).toBe(
+        "normal",
+      );
+    });
+  });
+
+  it("prompt change after debounce period sends personality_prompt patch", async () => {
+    vi.useFakeTimers();
+    let capturedBody: unknown;
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBody = await request.json();
+          return HttpResponse.json(makeSnapshot().settings);
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    try {
+      render(<BuddySettingsPanel />, { store });
+
+      const textarea = screen.getByRole("textbox", {
+        name: /personality prompt/i,
+      });
+      fireEvent.change(textarea, { target: { value: "Be more chaotic" } });
+
+      expect(capturedBody).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(750);
+
+      await waitFor(() => {
+        expect(capturedBody).toMatchObject({
+          personality_prompt: "Be more chaotic",
+        });
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prompt blur saves immediately without waiting for debounce", async () => {
+    let capturedBody: unknown;
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBody = await request.json();
+          return HttpResponse.json(makeSnapshot().settings);
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    render(<BuddySettingsPanel />, { store });
+
+    const textarea = screen.getByRole("textbox", {
+      name: /personality prompt/i,
+    });
+    fireEvent.change(textarea, { target: { value: "Be calm" } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => {
+      expect(capturedBody).toMatchObject({ personality_prompt: "Be calm" });
+    });
+  });
+
+  it("prompt clear button sends clear_personality_prompt flag", async () => {
+    let capturedBody: unknown;
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          capturedBody = await request.json();
+          return HttpResponse.json({
+            ...makeSnapshot().settings,
+            personality_prompt: null,
+          });
+        },
+      ),
+    );
+
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(
+      setBuddySnapshot(
+        makeSnapshot(undefined, {
+          settings: {
+            ...makeSnapshot().settings,
+            personality_prompt: "Custom personality text",
+          },
+        }),
+      ),
+    );
+
+    const { user } = render(<BuddySettingsPanel />, { store });
+
+    const clearBtn = await screen.findByTestId("buddy-clear-prompt");
+    await user.click(clearBtn);
+
+    await waitFor(() => {
+      expect(capturedBody).toMatchObject({ clear_personality_prompt: true });
+    });
+  });
+
+  it("shows Saved status after successful mutation", async () => {
     server.use(
       http.post("http://127.0.0.1:8001/v1/buddy/settings", () =>
         HttpResponse.json(makeSnapshot().settings),
@@ -2524,77 +2681,45 @@ describe("BuddySettingsPanel_local_state_save", () => {
 
     const store = setUpStore({ ...CONFIG_STATE });
     store.dispatch(setBuddySnapshot(makeSnapshot()));
-    const onClose = vi.fn();
 
-    const { user } = render(<BuddySettingsPanel onClose={onClose} />, {
-      preloadedState: { ...CONFIG_STATE, buddy: store.getState().buddy },
-    });
+    const { user } = render(<BuddySettingsPanel />, { store });
 
-    await user.click(screen.getByRole("button", { name: /save/i }));
+    await user.click(
+      screen.getByRole("switch", { name: /housekeeping enabled/i }),
+    );
 
     await waitFor(() => {
-      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Saved")).toBeInTheDocument();
     });
   });
 
-  it("failed save keeps panel open, preserves edits, and shows an alert", async () => {
+  it("shows Failed status on save error without unhandled rejections", async () => {
     server.use(
       http.post("http://127.0.0.1:8001/v1/buddy/settings", () =>
         HttpResponse.json({ error: "nope" }, { status: 500 }),
       ),
     );
 
-    const store = setUpStore({ ...CONFIG_STATE });
-    store.dispatch(setBuddySnapshot(makeSnapshot()));
-    const onClose = vi.fn();
-
-    const { user } = render(<BuddySettingsPanel onClose={onClose} />, {
-      preloadedState: { ...CONFIG_STATE, buddy: store.getState().buddy },
-    });
-
-    const quietSwitch = screen.getByRole("switch", { name: /quiet mode/i });
-    await user.click(quietSwitch);
-    expect(quietSwitch).toHaveAttribute("data-state", "checked");
-
-    await user.click(screen.getByRole("button", { name: /save/i }));
-
-    expect(onClose).not.toHaveBeenCalled();
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /failed to save buddy settings/i,
-    );
-    expect(screen.getByTestId("buddy-settings-panel")).toBeInTheDocument();
-    expect(quietSwitch).toHaveAttribute("data-state", "checked");
-  });
-
-  it("retry success clears save error and closes", async () => {
-    let attempts = 0;
-    server.use(
-      http.post("http://127.0.0.1:8001/v1/buddy/settings", () => {
-        attempts += 1;
-        if (attempts === 1) {
-          return HttpResponse.json({ error: "nope" }, { status: 500 });
-        }
-        return HttpResponse.json(makeSnapshot().settings);
-      }),
-    );
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
 
     const store = setUpStore({ ...CONFIG_STATE });
     store.dispatch(setBuddySnapshot(makeSnapshot()));
-    const onClose = vi.fn();
 
-    const { user } = render(<BuddySettingsPanel onClose={onClose} />, {
-      preloadedState: { ...CONFIG_STATE, buddy: store.getState().buddy },
-    });
+    try {
+      const { user } = render(<BuddySettingsPanel />, { store });
 
-    await user.click(screen.getByRole("button", { name: /save/i }));
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
+      await user.click(
+        screen.getByRole("switch", { name: /housekeeping enabled/i }),
+      );
 
-    await user.click(screen.getByRole("button", { name: /save/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Failed");
 
-    await waitFor(() => {
-      expect(onClose).toHaveBeenCalledTimes(1);
-    });
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", unhandled);
+    }
   });
 });
 

@@ -80,6 +80,31 @@
   font-size: 11px;
 }
 
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.saveStatus {
+  font-size: var(--font-size-1);
+}
+
+.digestInput {
+  width: 56px;
+  padding: 2px 6px;
+  border-radius: var(--radius-2);
+  border: 1px solid var(--gray-a4);
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-size-1);
+  text-align: right;
+}
+
+.digestInput:focus {
+  outline: 1px solid var(--accent-a6);
+}
+
 .footer {
   display: flex;
   gap: var(--space-2);

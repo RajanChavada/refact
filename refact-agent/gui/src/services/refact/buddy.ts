@@ -19,6 +19,7 @@ import {
   addDraft,
   removeDraft,
   replaceOpportunities,
+  updateBuddySettings as updateBuddySettingsAction,
 } from "../../features/Buddy/buddySlice";
 
 type BuddyApiState = {
@@ -292,6 +293,14 @@ export const buddyApi = createApi({
         return { data: result.data as BuddySettings };
       },
       invalidatesTags: ["BuddySnapshot"],
+      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          dispatch(updateBuddySettingsAction(data));
+        } catch {
+          return;
+        }
+      },
     }),
     careBuddy: builder.mutation<BuddyCareResponse, BuddyCareRequest>({
       queryFn: async (body, api, _opts, baseQuery) => {
