@@ -517,15 +517,6 @@ export const ExecToolCard: React.FC<ExecToolCardProps> = ({
               />
 
 
-              {metadata?.tty && metadata.process_id && metadata.status !== "exited" && metadata.status !== "killed" && metadata.status !== "timed_out" && metadata.status !== "failed" && (
-                <Box className={styles.stdinInputRow}>
-                  <Text size="1" className={styles.stdinBanner}>
-                    Interactive PTY process — direct stdin available
-                  </Text>
-                  <ProcessStdinInput processId={metadata.process_id} />
-                </Box>
-              )}
-
               {!metadata && (
                 <Flex align="center" gap="1" mt="2">
                   <LapTimerIcon />
