@@ -66,7 +66,7 @@ mod tests {
             .unwrap();
         let process_id = result.snapshot.meta.process_id.clone();
 
-        registry.write_stdin(&process_id, b"hi\n").await.unwrap();
+        registry.write_stdin(&process_id, "hi\n", 0).await.unwrap();
 
         for _ in 0..40 {
             let read = registry.read(&process_id, 0, None).await;

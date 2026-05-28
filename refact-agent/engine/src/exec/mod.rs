@@ -14,5 +14,5 @@ pub use types::{
     generate_short_description, sanitize_short_description, ExecMode, ExecOutputChunk,
     ExecOutputLimits, ExecOutputStream, ExecOwnerMeta, ExecProcessFilter, ExecProcessId,
     ExecProcessMeta, ExecProcessSnapshot, ExecReadResult, ExecReadinessProbe, ExecServiceLookup,
-    ExecSpawnRequest, ExecStatus, ExecStatusKind,
+    ExecSpawnRequest, ExecStatus, ExecStatusKind, ExecWriteStdinResult,
 };

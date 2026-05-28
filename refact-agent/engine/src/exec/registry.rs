@@ -11,7 +11,7 @@ use crate::exec::transcript::{
 use crate::exec::types::{
     current_timestamp_ms, ExecMode, ExecOutputChunk, ExecOutputStream, ExecProcessFilter,
     ExecProcessId, ExecProcessMeta, ExecProcessSnapshot, ExecReadResult, ExecServiceLookup,
-    ExecStatus,
+    ExecStatus, ExecWriteStdinResult,
 };
 
 const REMOVE_KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -427,9 +427,11 @@ impl ExecRegistry {
     pub async fn write_stdin(
         &self,
         process_id: &ExecProcessId,
-        bytes: &[u8],
-    ) -> Result<usize, String> {
-        let writer = {
+        chars: &str,
+        yield_time_ms: u64,
+    ) -> Result<ExecWriteStdinResult, String> {
+        let mut output_rx = self.subscribe_output();
+        let (writer, since_seq) = {
             let records = self.records.lock().await;
             let record = records
                 .get(process_id)
@@ -437,20 +439,71 @@ impl ExecRegistry {
             if record.snapshot.status.is_terminal() {
                 return Err(format!("process is not running: {process_id}"));
             }
-            record
+            let writer = record
                 .runtime
                 .as_ref()
                 .and_then(|runtime| runtime.stdin_writer.clone())
-                .ok_or_else(|| format!("process stdin is not available: {process_id}"))?
+                .ok_or_else(|| format!("process is not PTY-backed: {process_id}"))?;
+            (writer, record.transcript.next_seq())
         };
-        let mut writer = writer.lock().await;
-        writer
-            .write_all(bytes)
-            .map_err(|error| format!("failed to write stdin: {error}"))?;
-        writer
-            .flush()
-            .map_err(|error| format!("failed to flush stdin: {error}"))?;
-        Ok(bytes.len())
+        let bytes_written = if chars.is_empty() {
+            0
+        } else {
+            let bytes = chars.as_bytes();
+            let mut writer = writer.lock().await;
+            writer
+                .write_all(bytes)
+                .map_err(|error| format!("failed to write stdin: {error}"))?;
+            writer
+                .flush()
+                .map_err(|error| format!("failed to flush stdin: {error}"))?;
+            bytes.len()
+        };
+        self.wait_for_output_since(
+            process_id,
+            since_seq,
+            Duration::from_millis(yield_time_ms),
+            &mut output_rx,
+        )
+        .await;
+        let read = self.read(process_id, since_seq, None).await;
+        Ok(ExecWriteStdinResult {
+            process_id: process_id.clone(),
+            bytes_written,
+            chunks_returned: read.chunks.len(),
+            read,
+        })
+    }
+
+    async fn wait_for_output_since(
+        &self,
+        process_id: &ExecProcessId,
+        since_seq: u64,
+        yield_time: Duration,
+        output_rx: &mut broadcast::Receiver<ExecOutputChunk>,
+    ) {
+        if yield_time.is_zero() {
+            return;
+        }
+        let _ = tokio::time::timeout(yield_time, async {
+            loop {
+                if !self
+                    .read(process_id, since_seq, Some(1))
+                    .await
+                    .chunks
+                    .is_empty()
+                {
+                    break;
+                }
+                match output_rx.recv().await {
+                    Ok(chunk) if chunk.process_id == *process_id => {}
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .await;
     }
 
     pub async fn set_status(

@@ -635,6 +635,14 @@ impl ExecReadResult {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecWriteStdinResult {
+    pub process_id: ExecProcessId,
+    pub bytes_written: usize,
+    pub chunks_returned: usize,
+    pub read: ExecReadResult,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

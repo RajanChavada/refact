@@ -40,6 +40,7 @@ mod tool_mcp_search;
 mod tool_mv;
 mod tool_process;
 mod tool_process_subscribe;
+mod tool_process_write_stdin;
 mod tool_regex_search;
 mod tool_rm;
 mod tool_search;
