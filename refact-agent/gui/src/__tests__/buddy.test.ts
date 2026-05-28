@@ -77,6 +77,7 @@ import type {
 } from "../features/Buddy/types";
 import { buildBuddyInvestigationPrompt } from "../features/Buddy/investigation";
 import { withBuddyErrorReport } from "../features/Buddy/BuddyErrorBoundary";
+import { createChatWithId } from "../features/Chat/Thread/actions";
 import {
   addBuddyCrashBreadcrumb,
   beginBuddyCrashSession,
@@ -3858,6 +3859,307 @@ describe("buddy chat reactions settings and bubbles", () => {
       fireEvent.click(dismissButton);
 
       await expectNoCompanionNotification(container, "runtime:bug-candidate-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each<[string, string, string]>([
+    [
+      "speech_insight",
+      "chat-reaction-insight",
+      "Tiny pattern gremlin says this is connected.",
+    ],
+    [
+      "speech_humor",
+      "chat-reaction-humor",
+      "I put the bug in a tiny wizard hat. Morale improved.",
+    ],
+  ])(
+    "%s live chat reaction renders without error controls",
+    async (signalType, eventId, speechText) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+      try {
+        const store = setUpStore();
+        const reaction = makeChatRuntimeEvent({
+          id: eventId,
+          signal_type: signalType,
+          title: "Chat reaction",
+          source: "chat_reactions",
+          status: "info",
+          priority: "normal",
+          speech_text: speechText,
+          controls: [],
+          created_at: "2024-01-01T00:00:00Z",
+          ttl_ms: 90_000,
+        });
+        store.dispatch(
+          setBuddySnapshot(makeSnapshot({ runtime_queue: [reaction] })),
+        );
+
+        const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+        await expectCompanionNotificationText(
+          container,
+          `runtime:${eventId}`,
+          speechText,
+        );
+        expect(
+          screen.queryByRole("button", { name: "Investigate" }),
+        ).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test("chat reaction runtime event preserves explicit controls", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      const reaction = makeChatRuntimeEvent({
+        id: "chat-reaction-explicit-control",
+        signal_type: "speech_insight",
+        title: "Chat reaction",
+        source: "chat_reactions",
+        status: "info",
+        priority: "normal",
+        speech_text: "I found a breadcrumb with suspicious glitter.",
+        controls: [
+          {
+            id: "open-buddy-reaction",
+            label: "Open Buddy",
+            action: "open_buddy",
+            style: "primary",
+          },
+        ],
+        created_at: "2024-01-01T00:00:00Z",
+      });
+      store.dispatch(
+        setBuddySnapshot(makeSnapshot({ runtime_queue: [reaction] })),
+      );
+
+      const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+      await expectCompanionNotification(
+        container,
+        "runtime:chat-reaction-explicit-control",
+      );
+      expect(
+        await screen.findByRole("button", { name: "Open Buddy" }),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each<[string, Partial<BuddyRuntimeEvent>]>([
+    ["failed", { status: "failed", priority: "normal" }],
+    ["high", { status: "info", priority: "high" }],
+    ["critical", { status: "info", priority: "critical" }],
+  ])(
+    "%s runtime event still receives error controls",
+    async (_label, overrides) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+      try {
+        const store = setUpStore();
+        const runtime = makeChatRuntimeEvent({
+          id: `runtime-error-controls-${_label}`,
+          title: "Runtime needs help",
+          controls: [],
+          created_at: "2024-01-01T00:00:00Z",
+          ...overrides,
+        });
+        store.dispatch(
+          setBuddySnapshot(makeSnapshot({ runtime_queue: [runtime] })),
+        );
+
+        const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+        await expectCompanionNotification(
+          container,
+          `runtime:runtime-error-controls-${_label}`,
+        );
+        expect(
+          await screen.findByRole("button", { name: "Investigate" }),
+        ).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test("live chat reaction beats stale thread error but critical runtime error wins", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      store.dispatch(createChatWithId({ id: "chat-a" }));
+      store.dispatch({
+        type: "chatThread/updateChatRuntimeFromSessionState",
+        payload: {
+          id: "chat-a",
+          session_state: "error",
+          error: "Old socket goblin",
+        },
+      });
+      store.dispatch(
+        recordChatBubbleImpression({
+          id: "prior-actionable-reaction-ranking",
+          kind: "actionable",
+        }),
+      );
+      store.dispatch(
+        setBuddySnapshot(
+          makeSnapshot({
+            runtime_queue: [
+              makeChatRuntimeEvent({
+                id: "reaction-over-thread-error",
+                signal_type: "speech_humor",
+                title: "Chat reaction",
+                source: "chat_reactions",
+                status: "info",
+                priority: "normal",
+                speech_text: "The chat gremlin is juggling rubber ducks.",
+                controls: [],
+                created_at: "2024-01-01T00:00:00Z",
+              }),
+            ],
+          }),
+        ),
+      );
+
+      const rendered = renderBuddyChatCompanion(store, "chat-a");
+      await expectCompanionNotification(
+        rendered.container,
+        "runtime:reaction-over-thread-error",
+      );
+      expectNoCompanionNotificationNow(
+        rendered.container,
+        "thread-error:chat-a",
+      );
+
+      vi.setSystemTime(new Date("2024-01-01T00:00:01Z"));
+      store.dispatch(
+        enqueueRuntimeEvent(
+          makeChatRuntimeEvent({
+            id: "critical-over-reaction",
+            title: "Critical runtime failure",
+            status: "failed",
+            priority: "critical",
+            controls: [],
+            created_at: "2024-01-01T00:00:01Z",
+          }),
+        ),
+      );
+
+      await expectCompanionNotification(
+        rendered.container,
+        "runtime:critical-over-reaction",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("same thread error keeps first seen timestamp across rerenders", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      store.dispatch(createChatWithId({ id: "chat-a" }));
+      store.dispatch({
+        type: "chatThread/updateChatRuntimeFromSessionState",
+        payload: {
+          id: "chat-a",
+          session_state: "error",
+          error: "Stable stale error",
+        },
+      });
+      store.dispatch(
+        recordChatBubbleImpression({
+          id: "prior-actionable-stable-error",
+          kind: "actionable",
+        }),
+      );
+      store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+      const rendered = renderBuddyChatCompanion(store, "chat-a");
+      await expectCompanionNotification(
+        rendered.container,
+        "thread-error:chat-a",
+      );
+
+      vi.setSystemTime(new Date("2024-01-01T00:02:00Z"));
+      rendered.rerender(
+        React.createElement(BuddyChatCompanion, { chatId: "chat-a" }),
+      );
+      store.dispatch(
+        enqueueRuntimeEvent(
+          makeChatRuntimeEvent({
+            id: "fresh-reaction-after-stable-error",
+            signal_type: "speech_insight",
+            title: "Chat reaction",
+            source: "chat_reactions",
+            status: "info",
+            priority: "normal",
+            speech_text:
+              "Fresh breadcrumb detected. Tiny detective hat deployed.",
+            controls: [],
+            created_at: "2024-01-01T00:02:00Z",
+          }),
+        ),
+      );
+
+      await expectCompanionNotification(
+        rendered.container,
+        "runtime:fresh-reaction-after-stable-error",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("playful humor reaction renders as normal Buddy bubble text", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    try {
+      const store = setUpStore();
+      const jokeText =
+        "I put this bug in a tiny wizard hat and now it owes us answers.";
+      store.dispatch(
+        setBuddySnapshot(
+          makeSnapshot({
+            runtime_queue: [
+              makeChatRuntimeEvent({
+                id: "playful-humor-reaction",
+                signal_type: "speech_humor",
+                title: "Chat: humor",
+                source: "chat_reactions",
+                status: "info",
+                priority: "normal",
+                speech_text: jokeText,
+                controls: [],
+                created_at: "2024-01-01T00:00:00Z",
+              }),
+            ],
+          }),
+        ),
+      );
+
+      const { container } = renderBuddyChatCompanion(store, "chat-a");
+
+      await expectCompanionNotificationText(
+        container,
+        "runtime:playful-humor-reaction",
+        jokeText,
+      );
+      expect(
+        screen.queryByRole("button", { name: "Investigate" }),
+      ).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

@@ -106,7 +106,17 @@ const AMBIENT_SIGNALS = new Set<string>([
 const AMBIENT_INTENTS = new Set<string>([
   "humor",
   "insight",
+  "interaction_comment",
   "memory_pulse_commentary",
+]);
+const LIVE_CHAT_REACTION_SIGNALS = new Set<string>([
+  "speech_humor",
+  "speech_insight",
+  "chat_bug_candidate",
+  "chat_interaction",
+  "chat_interaction_comment",
+  "interaction_comment",
+  "live_interaction_reaction",
 ]);
 const DURABLE_SPEECH_INTENTS = new Set<string>([
   "tour",
@@ -131,6 +141,29 @@ function isAmbientToken(value: string | null | undefined): boolean {
   const token = normalizedPolicyToken(value);
   if (!token) return false;
   return AMBIENT_INTENTS.has(token) || AMBIENT_SIGNALS.has(token);
+}
+
+function isLiveChatReactionSignal(value: string | null | undefined): boolean {
+  const token = normalizedPolicyToken(value);
+  if (!token) return false;
+  return LIVE_CHAT_REACTION_SIGNALS.has(token);
+}
+
+function isLiveChatReactionEvent(event: BuddyRuntimeEvent): boolean {
+  return (
+    event.source === "chat_reactions" ||
+    isLiveChatReactionSignal(event.signal_type) ||
+    isLiveChatReactionSignal(event.source) ||
+    isLiveChatReactionSignal(event.dedupe_key ?? undefined)
+  );
+}
+
+function isErrorRuntimeEvent(event: BuddyRuntimeEvent): boolean {
+  return (
+    event.status === "failed" ||
+    event.priority === "critical" ||
+    event.priority === "high"
+  );
 }
 
 function isDurableSpeechToken(value: string | null | undefined): boolean {
@@ -213,7 +246,8 @@ function classifyRuntimeEvent(event: BuddyRuntimeEvent): BuddyChatBubbleClass {
   if (
     isAmbientToken(event.signal_type) ||
     isAmbientToken(event.source) ||
-    isAmbientToken(event.dedupe_key ?? undefined)
+    isAmbientToken(event.dedupe_key ?? undefined) ||
+    (isLiveChatReactionEvent(event) && !isErrorRuntimeEvent(event))
   ) {
     return "ambient";
   }
@@ -225,9 +259,7 @@ function classifyRuntimeEvent(event: BuddyRuntimeEvent): BuddyChatBubbleClass {
     return "actionable";
   }
   if (
-    event.status === "failed" ||
-    event.priority === "critical" ||
-    event.priority === "high" ||
+    isErrorRuntimeEvent(event) ||
     (event.controls?.length ?? 0) > 0 ||
     event.persistent === true
   ) {
@@ -266,11 +298,13 @@ function pickNotificationCandidate(
   const eligible = candidates.filter(isCandidateFresh);
   if (eligible.length === 0) return null;
   const sorted = [...eligible].sort((left, right) => left.rank - right.rank);
+  const top = sorted[0] ?? null;
   const ambient = sorted.find((candidate) => candidate.kind === "ambient");
+  if (top && top.rank < 20 && ambient?.rank !== top.rank) return top;
   if (ambient && ambientRatio(impressions) < AMBIENT_RATIO_TARGET) {
     return ambient;
   }
-  return sorted[0] ?? null;
+  return top;
 }
 
 function speechMatchesChat(
@@ -321,6 +355,26 @@ function runtimeCandidates(
     .sort(compareBuddyRuntimeEvents);
 }
 
+function runtimeEventControls(
+  event: BuddyRuntimeEvent,
+  errorControls: BuddyControl[],
+): BuddyControl[] {
+  if (event.controls?.length) return event.controls;
+  return isErrorRuntimeEvent(event) ? errorControls : [];
+}
+
+function runtimeEventRank(event: BuddyRuntimeEvent, index: number): number {
+  if (event.priority === "critical") return 10 + index;
+  if (event.priority === "high") return 20 + index;
+  if (isLiveChatReactionEvent(event)) return 30 + index;
+  if (isErrorRuntimeEvent(event)) return 40 + index;
+  return 50 + index;
+}
+
+function threadErrorKey(chatId: string, error: string): string {
+  return `${chatId}:${error}`;
+}
+
 export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const dispatch = useAppDispatch();
   const enabled = useAppSelector(selectIsBuddyEnabled);
@@ -354,6 +408,7 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
   const pendingRef = useRef(false);
   const prevChatIdRef = useRef(chatId);
   const recordedNotificationIdsRef = useRef<Set<string>>(new Set());
+  const threadErrorFirstSeenRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     if (prevChatIdRef.current !== chatId) {
@@ -476,14 +531,14 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
       if (!isEligible(id)) continue;
       candidates.push({
         kind: classifyRuntimeEvent(event),
-        rank: event.priority === "critical" ? 20 + index : 40 + index,
+        rank: runtimeEventRank(event, index),
         notification: {
           id,
           sourceId: event.id,
           text: formatBuddyRuntimeEventText(event),
           createdAt: event.created_at,
           source: "runtime",
-          controls: event.controls?.length ? event.controls : errorControls,
+          controls: runtimeEventControls(event, errorControls),
           diagnostic: chatDiagnostic,
           ttlMs: event.ttl_ms,
         },
@@ -497,14 +552,21 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
       isEligible(threadId) &&
       !isBuddyOverlaySuppressedIssue(normalizedThreadError, chatDiagnostic)
     ) {
+      const firstSeenKey = threadErrorKey(chatId, normalizedThreadError);
+      const existingCreatedAt =
+        threadErrorFirstSeenRef.current.get(firstSeenKey);
+      const createdAt = existingCreatedAt ?? new Date().toISOString();
+      if (!existingCreatedAt) {
+        threadErrorFirstSeenRef.current.set(firstSeenKey, createdAt);
+      }
       candidates.push({
         kind: "actionable",
-        rank: 30,
+        rank: 40,
         notification: {
           id: threadId,
           sourceId: chatId,
           text: normalizedThreadError.slice(0, 160),
-          createdAt: new Date().toISOString(),
+          createdAt,
           source: "thread",
           controls: errorControls,
           diagnostic: chatDiagnostic,
@@ -642,16 +704,19 @@ export const BuddyChatCompanion: React.FC<Props> = ({ chatId }) => {
     if (chatBubbleSnoozedUntil != null && chatBubbleSnoozedUntil > Date.now()) {
       return null;
     }
+    const pickedCandidate = pickNotificationCandidate(
+      notificationCandidates,
+      chatBubbleImpressions,
+    );
     const activeCandidate = notificationCandidates.find(
       (candidate) =>
         candidate.notification.id === activeNotificationId &&
         isCandidateFresh(candidate),
     );
-    if (activeCandidate) return activeCandidate;
-    return pickNotificationCandidate(
-      notificationCandidates,
-      chatBubbleImpressions,
-    );
+    if (activeCandidate && pickedCandidate === activeCandidate) {
+      return activeCandidate;
+    }
+    return pickedCandidate;
   }, [
     activeNotificationId,
     chatBubbleImpressions,
