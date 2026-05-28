@@ -1284,6 +1284,35 @@ pub async fn process_command_queue(
                 let mut session = session_arc.lock().await;
                 session.abort_stream();
             }
+            ChatCommand::CleanBackgroundProcesses { include_services } => {
+                let chat_id = {
+                    let session = session_arc.lock().await;
+                    session.chat_id.clone()
+                };
+                match super::session::clean_background_processes_for_chat(
+                    app.clone(),
+                    &chat_id,
+                    include_services,
+                )
+                .await
+                {
+                    Ok(killed) => {
+                        let mut session = session_arc.lock().await;
+                        session.add_background_process_cleanup_notice(killed.len());
+                        drop(session);
+                        maybe_save_trajectory(app.clone(), session_arc.clone()).await;
+                    }
+                    Err(error) => {
+                        warn!("CleanBackgroundProcesses failed: {}", error);
+                        let mut session = session_arc.lock().await;
+                        session.emit(ChatEvent::RuntimeUpdated {
+                            state: SessionState::Error,
+                            error: Some(error),
+                        });
+                        session.set_runtime_state(SessionState::Idle, None);
+                    }
+                }
+            }
             ChatCommand::ToolDecision {
                 tool_call_id,
                 accepted,
@@ -1912,6 +1941,8 @@ async fn create_checkpoint_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::types::DEFAULT_EXEC_OUTPUT_LIMIT_BYTES;
+    use crate::exec::{ExecMode, ExecOwnerMeta, ExecProcessId, ExecProcessMeta};
     use serde_json::json;
     use std::path::Path;
     use std::process::Command;
@@ -1950,10 +1981,137 @@ mod tests {
         run_git(root, &["commit", "-m", "initial"]);
     }
 
+    async fn register_running_process(
+        gcx: &crate::global_context::GlobalContext,
+        process_id: &str,
+        mode: ExecMode,
+        chat_id: &str,
+    ) -> ExecProcessId {
+        let snapshot = gcx
+            .exec_registry
+            .register(
+                ExecProcessMeta::new(mode, "test command".to_string())
+                    .with_process_id(ExecProcessId(process_id.to_string()))
+                    .with_owner(ExecOwnerMeta {
+                        chat_id: Some(chat_id.to_string()),
+                        ..ExecOwnerMeta::default()
+                    }),
+                DEFAULT_EXEC_OUTPUT_LIMIT_BYTES,
+            )
+            .await;
+        gcx.exec_registry
+            .mark_started(&snapshot.meta.process_id)
+            .await
+            .unwrap();
+        snapshot.meta.process_id
+    }
+
+    async fn wait_for_cleanup_notice(
+        rx: &mut tokio::sync::broadcast::Receiver<Arc<String>>,
+    ) -> ChatMessage {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let json = rx.recv().await.unwrap();
+                let envelope: EventEnvelope = serde_json::from_str(&json).unwrap();
+                if let ChatEvent::MessageAdded { message, .. } = envelope.event {
+                    if message.role == "event"
+                        && message.extra.get("event").is_some_and(|event| {
+                            event["subkind"] == json!("system_notice")
+                                && event["source"] == json!("chat.session")
+                        })
+                    {
+                        return message;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+
     #[test]
     fn test_find_allowed_command_empty_queue() {
         let queue = VecDeque::new();
         assert!(find_allowed_command_while_paused(&queue).is_none());
+    }
+
+    #[tokio::test]
+    async fn clean_background_processes_command_kills_chat_scoped() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let app = AppState::from_gcx(gcx.clone()).await;
+        let killed_background = register_running_process(
+            &gcx,
+            "exec_clean_chat_background",
+            ExecMode::Background,
+            "chat-clean",
+        )
+        .await;
+        let killed_service = register_running_process(
+            &gcx,
+            "exec_clean_chat_service",
+            ExecMode::Service,
+            "chat-clean",
+        )
+        .await;
+        let kept_other_chat = register_running_process(
+            &gcx,
+            "exec_clean_other_chat_background",
+            ExecMode::Background,
+            "chat-other",
+        )
+        .await;
+        let kept_foreground = register_running_process(
+            &gcx,
+            "exec_clean_chat_foreground",
+            ExecMode::Foreground,
+            "chat-clean",
+        )
+        .await;
+        let session_arc = Arc::new(AMutex::new(ChatSession::new("chat-clean".to_string())));
+        let (processor_running, mut rx) = {
+            let mut session = session_arc.lock().await;
+            let rx = session.subscribe();
+            session.command_queue.push_back(CommandRequest {
+                client_request_id: "clean-background".to_string(),
+                priority: false,
+                command: ChatCommand::CleanBackgroundProcesses {
+                    include_services: true,
+                },
+            });
+            session.emit_queue_update();
+            (session.queue_processor_running.clone(), rx)
+        };
+        processor_running.store(true, Ordering::SeqCst);
+
+        let handle = tokio::spawn(process_command_queue(
+            app,
+            session_arc.clone(),
+            processor_running,
+        ));
+        let notice = wait_for_cleanup_notice(&mut rx).await;
+
+        assert_eq!(
+            notice.content.content_text_only(),
+            "Cleared 2 background processes from this chat"
+        );
+        let event = notice.extra.get("event").unwrap();
+        assert_eq!(event["subkind"], json!("system_notice"));
+        assert_eq!(event["source"], json!("chat.session"));
+        assert_eq!(event["payload"], json!({ "killed_count": 2 }));
+        assert!(gcx.exec_registry.get(&killed_background).await.is_none());
+        assert!(gcx.exec_registry.get(&killed_service).await.is_none());
+        assert!(gcx.exec_registry.get(&kept_other_chat).await.is_some());
+        assert!(gcx.exec_registry.get(&kept_foreground).await.is_some());
+
+        {
+            let mut session = session_arc.lock().await;
+            session.close_event_channel();
+            session.queue_notify.notify_waiters();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

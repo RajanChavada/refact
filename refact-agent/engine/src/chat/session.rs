@@ -12,6 +12,7 @@ use crate::app_state::AppState;
 use crate::call_validation::{ChatContent, ChatMessage};
 use crate::chat::diagnostics::make_ui_only_error_message;
 use crate::chat::internal_roles::{event, EventSubkind};
+use crate::exec::{ExecMode, ExecProcessFilter, ExecProcessSnapshot, ExecStatusKind};
 use crate::ext::hooks::HookEvent;
 use crate::ext::hooks_runner::{HookPayload, get_project_dir_string, run_hooks};
 
@@ -85,6 +86,54 @@ fn tool_decision_message(decision: &str, tool_call_ids: Vec<String>, scope: &str
         }),
         format!("User {verb} {count} {noun} ({scope})"),
     )
+}
+
+fn background_process_cleanup_notice(killed_count: usize) -> ChatMessage {
+    event(
+        EventSubkind::SystemNotice,
+        "chat.session",
+        json!({ "killed_count": killed_count }),
+        format!("Cleared {killed_count} background processes from this chat"),
+    )
+}
+
+fn background_process_cleanup_modes(include_services: bool) -> Vec<ExecMode> {
+    if include_services {
+        vec![ExecMode::Background, ExecMode::Service]
+    } else {
+        vec![ExecMode::Background]
+    }
+}
+
+pub async fn clean_background_processes_for_chat(
+    app: AppState,
+    chat_id: &str,
+    include_services: bool,
+) -> Result<Vec<ExecProcessSnapshot>, String> {
+    let mut killed = Vec::new();
+    for mode in background_process_cleanup_modes(include_services) {
+        for status in [ExecStatusKind::Starting, ExecStatusKind::Running] {
+            killed.extend(
+                app.runtime
+                    .exec_registry
+                    .remove_by_owner(ExecProcessFilter {
+                        chat_id: Some(chat_id.to_string()),
+                        mode: Some(mode.clone()),
+                        status: Some(status),
+                        ..ExecProcessFilter::default()
+                    })
+                    .await?,
+            );
+        }
+    }
+    killed.sort_by(|a, b| a.meta.process_id.as_str().cmp(b.meta.process_id.as_str()));
+    Ok(killed)
+}
+
+impl ChatSession {
+    pub fn add_background_process_cleanup_notice(&mut self, killed_count: usize) {
+        self.add_message(background_process_cleanup_notice(killed_count));
+    }
 }
 
 impl ChatSession {

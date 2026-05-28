@@ -482,6 +482,10 @@ pub enum ChatCommand {
         patch: serde_json::Value,
     },
     Abort {},
+    CleanBackgroundProcesses {
+        #[serde(default)]
+        include_services: bool,
+    },
     ToolDecision {
         tool_call_id: String,
         accepted: bool,
@@ -581,6 +585,11 @@ impl CommandRequest {
                 )
             }
             ChatCommand::Abort {} => ("abort".to_string(), String::new(), String::new()),
+            ChatCommand::CleanBackgroundProcesses { include_services } => (
+                "clean_background_processes".to_string(),
+                format!("include_services={include_services}"),
+                String::new(),
+            ),
             ChatCommand::ToolDecision {
                 tool_call_id,
                 accepted,
