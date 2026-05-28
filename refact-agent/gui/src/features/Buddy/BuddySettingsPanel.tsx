@@ -277,11 +277,12 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
         </div>
         <div className={styles.row}>
           <Text size="2">Humor level</Text>
-          <div className={styles.radioGroup}>
+          <div className={styles.radioGroup} role="group" aria-label="humor level">
             {(["off", "light", "normal"] as HumorLevel[]).map((lvl) => (
               <button
                 key={lvl}
                 type="button"
+                aria-pressed={liveSettings.humor_level === lvl}
                 className={classNames(styles.radioBtn, {
                   [styles.radioBtnActive]: liveSettings.humor_level === lvl,
                 })}
@@ -294,12 +295,13 @@ export const BuddySettingsPanel: React.FC<Props> = ({ onClose }) => {
         </div>
         <div className={styles.row}>
           <Text size="2">Autonomy</Text>
-          <div className={styles.radioGroup}>
+          <div className={styles.radioGroup} role="group" aria-label="autonomy level">
             {(["read_only", "suggest", "safe_auto"] as AutonomyLevel[]).map(
               (lvl) => (
                 <button
                   key={lvl}
                   type="button"
+                  aria-pressed={liveSettings.autonomy_level === lvl}
                   className={classNames(styles.radioBtn, {
                     [styles.radioBtnActive]:
                       liveSettings.autonomy_level === lvl,

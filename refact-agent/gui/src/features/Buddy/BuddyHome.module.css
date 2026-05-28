@@ -286,7 +286,7 @@
 
 .row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   gap: var(--space-2);
   padding: 0 var(--space-3) var(--space-2);
   min-height: 0;
@@ -294,7 +294,7 @@
 }
 
 .row3 {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
 }
 
 /* Single full-width row used by the unified PERSONALITY panel. */

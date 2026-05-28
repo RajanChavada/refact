@@ -2820,6 +2820,38 @@ describe("BuddySettingsPanel_renders_all_settings", () => {
   });
 });
 
+describe("BuddySettingsPanel_segmented_controls_accessible_state", () => {
+  it("active humor_level button has aria-pressed true and others have aria-pressed false", () => {
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    render(<BuddySettingsPanel />, { store });
+
+    const lightBtn = screen.getByRole("button", { name: "light" });
+    const offBtn = screen.getByRole("button", { name: "off" });
+    const normalBtn = screen.getByRole("button", { name: "normal" });
+
+    expect(lightBtn).toHaveAttribute("aria-pressed", "true");
+    expect(offBtn).toHaveAttribute("aria-pressed", "false");
+    expect(normalBtn).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("active autonomy_level button has aria-pressed true and others have aria-pressed false", () => {
+    const store = setUpStore({ ...CONFIG_STATE });
+    store.dispatch(setBuddySnapshot(makeSnapshot()));
+
+    render(<BuddySettingsPanel />, { store });
+
+    const suggestBtn = screen.getByRole("button", { name: "suggest" });
+    const readOnlyBtn = screen.getByRole("button", { name: "read_only" });
+    const safeAutoBtn = screen.getByRole("button", { name: "safe_auto" });
+
+    expect(suggestBtn).toHaveAttribute("aria-pressed", "true");
+    expect(readOnlyBtn).toHaveAttribute("aria-pressed", "false");
+    expect(safeAutoBtn).toHaveAttribute("aria-pressed", "false");
+  });
+});
+
 describe("BuddyDraftPreview_renders_draft_metadata", () => {
   it("shows title and explanation from draft without DOM nesting warnings", () => {
     const draft: BuddyDraft = {
