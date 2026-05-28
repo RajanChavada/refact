@@ -60,7 +60,7 @@ import { useGetChatModesQuery } from "../../services/refact/chatModes";
 import styles from "./Toolbar.module.css";
 import { ConnectionStatusIndicator } from "../ConnectionStatus";
 import { getModeColor } from "../../utils/modeColors";
-import { selectLspPort } from "../../features/Config/configSlice";
+
 
 export type DashboardTab = {
   type: "dashboard";
@@ -137,7 +137,7 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
   const tabs = useAppSelector(selectTabsDisplayData);
   const allThreads = useAppSelector(selectAllThreads);
   const currentChatId = useAppSelector(selectChatId);
-  const lspPort = useAppSelector(selectLspPort);
+
   const openTasks = useAppSelector(selectOpenTasksFromRoot);
   const { data: modesData } = useGetChatModesQuery(undefined);
   const { data: tasksList = [] } = useListTasksQuery(undefined);
@@ -223,10 +223,8 @@ export const Toolbar = ({ activeTab }: ToolbarProps) => {
       openChatInBrowser();
       return;
     }
-    if (lspPort > 0) {
-      openUrl(`http://127.0.0.1:${lspPort}`);
-    }
-  }, [host, lspPort, openChatInBrowser, openUrl]);
+    openUrl(window.location.origin);
+  }, [host, openChatInBrowser, openUrl]);
 
   const goToTab = useCallback(
     (tab: Tab) => {
