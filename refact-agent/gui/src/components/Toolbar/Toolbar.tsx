@@ -61,7 +61,6 @@ import styles from "./Toolbar.module.css";
 import { ConnectionStatusIndicator } from "../ConnectionStatus";
 import { getModeColor } from "../../utils/modeColors";
 
-
 export type DashboardTab = {
   type: "dashboard";
 };

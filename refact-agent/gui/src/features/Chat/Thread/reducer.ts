@@ -221,7 +221,7 @@ const createInitialState = (): Chat => {
   );
   const currentThreadId = openThreadIds.includes(persistedTabs.currentThreadId)
     ? persistedTabs.currentThreadId
-    : (openThreadIds[openThreadIds.length - 1] ?? "");
+    : openThreadIds[openThreadIds.length - 1] ?? "";
 
   return {
     current_thread_id: currentThreadId,
@@ -345,7 +345,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
       persistedTabs.currentThreadId,
     )
       ? persistedTabs.currentThreadId
-      : (openThreadIds[openThreadIds.length - 1] ?? "");
+      : openThreadIds[openThreadIds.length - 1] ?? "";
 
     state.threads = threads;
     state.open_thread_ids = openThreadIds;
@@ -1206,7 +1206,7 @@ export const chatReducer = createReducer(initialState, (builder) => {
           auto_enrichment_enabled:
             typeof event.thread.auto_enrichment_enabled === "boolean"
               ? (event.thread.auto_enrichment_enabled as boolean)
-              : (existing?.auto_enrichment_enabled ?? false),
+              : existing?.auto_enrichment_enabled ?? false,
           auto_compact_enabled:
             typeof event.thread.auto_compact_enabled === "boolean"
               ? event.thread.auto_compact_enabled
