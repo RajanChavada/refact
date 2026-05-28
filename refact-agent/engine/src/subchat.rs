@@ -704,10 +704,10 @@ async fn parent_thread_worktree(gcx: Arc<GlobalContext>, parent_id: &str) -> Opt
 async fn resolve_subchat_worktree(
     gcx: Arc<GlobalContext>,
     parent_id: Option<&str>,
-    worktree: Option<WorktreeMeta>,
+    parent_worktree: Option<WorktreeMeta>,
 ) -> Option<WorktreeMeta> {
-    match worktree {
-        Some(worktree) => Some(worktree),
+    match parent_worktree {
+        Some(parent_worktree) => Some(parent_worktree),
         None => match parent_id {
             Some(parent_id) => parent_thread_worktree(gcx, parent_id).await,
             None => None,
@@ -2364,17 +2364,17 @@ mod subchat_tests {
     }
 
     #[tokio::test]
-    async fn subchat_worktree_config_prefers_explicit_scope_over_parent_session() {
+    async fn subchat_worktree_config_prefers_current_parent_scope_over_parent_session() {
         let gcx = make_test_gcx().await;
-        let (_parent_temp, parent_worktree) = sample_worktree();
-        let (_explicit_temp, mut explicit_worktree) = sample_worktree();
-        explicit_worktree.id = "wt-explicit-subchat".to_string();
+        let (_stored_temp, stored_worktree) = sample_worktree();
+        let (_current_temp, mut current_worktree) = sample_worktree();
+        current_worktree.id = "wt-current-parent-scope".to_string();
         let parent_chat_id = "parent-explicit-chat".to_string();
         let sessions = gcx.chat_sessions.clone();
         {
             let mut sessions_write = sessions.write().await;
             let mut parent_session = crate::chat::types::ChatSession::new(parent_chat_id.clone());
-            parent_session.thread.worktree = Some(parent_worktree);
+            parent_session.thread.worktree = Some(stored_worktree);
             sessions_write.insert(
                 parent_chat_id.clone(),
                 Arc::new(tokio::sync::Mutex::new(parent_session)),
@@ -2382,10 +2382,30 @@ mod subchat_tests {
         }
 
         let resolved =
-            resolve_subchat_worktree(gcx, Some(&parent_chat_id), Some(explicit_worktree.clone()))
+            resolve_subchat_worktree(gcx, Some(&parent_chat_id), Some(current_worktree.clone()))
                 .await;
 
-        assert_eq!(resolved, Some(explicit_worktree));
+        assert_eq!(resolved, Some(current_worktree));
+    }
+
+    #[tokio::test]
+    async fn subchat_worktree_config_does_not_invent_scope_when_parent_has_none() {
+        let gcx = make_test_gcx().await;
+        let parent_chat_id = "parent-without-worktree".to_string();
+        let sessions = gcx.chat_sessions.clone();
+        {
+            let mut sessions_write = sessions.write().await;
+            sessions_write.insert(
+                parent_chat_id.clone(),
+                Arc::new(tokio::sync::Mutex::new(
+                    crate::chat::types::ChatSession::new(parent_chat_id.clone()),
+                )),
+            );
+        }
+
+        let resolved = resolve_subchat_worktree(gcx, Some(&parent_chat_id), None).await;
+
+        assert_eq!(resolved, None);
     }
 
     #[tokio::test]
