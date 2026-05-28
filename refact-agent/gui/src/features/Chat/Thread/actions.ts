@@ -33,7 +33,10 @@ import {
 import { selectLspPort, selectApiKey } from "../../Config/configSlice";
 import { selectCurrentThreadId, selectMessagesById } from "./selectors";
 import { push } from "../../Pages/pagesSlice";
-import type { DiagnosticContext, BuddyConversationEntry } from "../../Buddy/types";
+import type {
+  DiagnosticContext,
+  BuddyConversationEntry,
+} from "../../Buddy/types";
 import {
   buildBuddyInvestigationPrompt,
   buildBuddyInvestigationTitle,

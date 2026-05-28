@@ -4766,9 +4766,7 @@ describe("restoreChat buddy_meta handling", () => {
     expect(
       store.getState().chat.threads["promoted-buddy-1"]?.thread.buddy_meta,
     ).toBeUndefined();
-    expect(store.getState().chat.open_thread_ids).toContain(
-      "promoted-buddy-1",
-    );
+    expect(store.getState().chat.open_thread_ids).toContain("promoted-buddy-1");
 
     store.dispatch(
       restoreChat({
