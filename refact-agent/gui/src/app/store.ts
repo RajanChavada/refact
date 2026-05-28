@@ -71,6 +71,7 @@ import { memoryEnrichmentApi } from "../services/refact/memoryEnrichment";
 import { buddySlice } from "../features/Buddy/buddySlice";
 import { sidebarReducer } from "../features/Sidebar/sidebarSlice";
 import { buddyApi } from "../services/refact/buddy";
+import { notificationsSlice } from "../features/Notifications";
 
 const tipOfTheDayPersistConfig = {
   key: "totd",
@@ -141,6 +142,7 @@ const rootReducer = combineSlices(
   tasksSlice,
   connectionSlice,
   browserSlice,
+  notificationsSlice,
 );
 
 const rootPersistConfig = {

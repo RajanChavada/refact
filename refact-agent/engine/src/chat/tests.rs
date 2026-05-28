@@ -7,8 +7,9 @@ mod tests {
     use crate::scratchpads::multimodality::MultimodalElement;
     use crate::chat::types::{
         BackgroundAgentSummary, BurstGuard, BurstGuardDecision, ChatEvent, ChatSession, DeltaOp,
-        SessionState, PauseReason, QueuedItem, RuntimeState, ThreadParams,
+        EventEnvelope, SessionState, PauseReason, QueuedItem, RuntimeState, ThreadParams,
     };
+    use crate::exec::{ExecMode, ExecProcessId, ExecStatus, ProcessCompletionEvent};
     use std::collections::HashSet;
 
     fn extract_extra_fields(
@@ -130,6 +131,65 @@ mod tests {
             }
             _ => panic!("Expected BackgroundAgentUpdated"),
         }
+    }
+
+    #[test]
+    fn process_completed_emits_envelope_and_message_added() {
+        let mut session = ChatSession::new("process-completed-chat".to_string());
+        let mut rx = session.subscribe();
+
+        crate::chat::notifications::inject_process_completion_message(
+            &mut session,
+            ProcessCompletionEvent {
+                process_id: ExecProcessId("exec_done".to_string()),
+                chat_id: "process-completed-chat".to_string(),
+                status: ExecStatus::Exited { exit_code: Some(0) },
+                exit_code: Some(0),
+                duration_ms: Some(123),
+                short_description: "test process".to_string(),
+                mode: ExecMode::Background,
+            },
+        );
+
+        let first_json = rx.try_recv().expect("message event");
+        let first: EventEnvelope = serde_json::from_str(&first_json).unwrap();
+        assert_eq!(first.seq, 1);
+        match first.event {
+            ChatEvent::MessageAdded { message, index } => {
+                assert_eq!(index, 0);
+                assert_eq!(message.role, "event");
+                assert_eq!(
+                    message.extra["event"]["subkind"],
+                    json!("process_completed")
+                );
+                assert_eq!(
+                    message.extra["event"]["payload"]["process_id"],
+                    json!("exec_done")
+                );
+            }
+            other => panic!("expected process-completed message_added, got {other:?}"),
+        }
+
+        let second_json = rx.try_recv().expect("process-completed envelope");
+        let second: EventEnvelope = serde_json::from_str(&second_json).unwrap();
+        assert_eq!(second.seq, 2);
+        match second.event {
+            ChatEvent::ProcessCompleted {
+                process_id,
+                status,
+                exit_code,
+                short_description,
+                mode,
+            } => {
+                assert_eq!(process_id, "exec_done");
+                assert_eq!(status, "exited");
+                assert_eq!(exit_code, Some(0));
+                assert_eq!(short_description, "test process");
+                assert_eq!(mode, "background");
+            }
+            other => panic!("expected process-completed envelope, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

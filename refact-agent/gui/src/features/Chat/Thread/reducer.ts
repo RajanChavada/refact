@@ -1436,6 +1436,20 @@ export const chatReducer = createReducer(initialState, (builder) => {
         break;
       }
 
+      case "process_completed": {
+        if (!rt) break;
+        const eventSeq = parseEventSeq(event.seq);
+        const lastSeq =
+          rt.last_applied_seq != null
+            ? parseEventSeq(rt.last_applied_seq)
+            : null;
+        if (eventSeq != null && lastSeq != null && eventSeq <= lastSeq) {
+          break;
+        }
+        rt.last_applied_seq = event.seq;
+        break;
+      }
+
       case "message_updated": {
         if (!rt) break;
         const eventSeq = parseEventSeq(event.seq);

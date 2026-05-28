@@ -306,6 +306,13 @@ pub enum ChatEvent {
         message: ChatMessage,
         index: usize,
     },
+    ProcessCompleted {
+        process_id: String,
+        status: String,
+        exit_code: Option<i32>,
+        short_description: String,
+        mode: String,
+    },
     MessageUpdated {
         message_id: String,
         message: ChatMessage,
@@ -1015,6 +1022,42 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "stream_delta");
         assert_eq!(json["message_id"], "m1");
+    }
+
+    #[test]
+    fn test_chat_event_process_completed_serde() {
+        let event = ChatEvent::ProcessCompleted {
+            process_id: "exec_done".to_string(),
+            status: "exited".to_string(),
+            exit_code: Some(0),
+            short_description: "test process".to_string(),
+            mode: "background".to_string(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "process_completed");
+        assert_eq!(json["process_id"], "exec_done");
+        assert_eq!(json["status"], "exited");
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["short_description"], "test process");
+        assert_eq!(json["mode"], "background");
+
+        let parsed: ChatEvent = serde_json::from_value(json).unwrap();
+        match parsed {
+            ChatEvent::ProcessCompleted {
+                process_id,
+                status,
+                exit_code,
+                short_description,
+                mode,
+            } => {
+                assert_eq!(process_id, "exec_done");
+                assert_eq!(status, "exited");
+                assert_eq!(exit_code, Some(0));
+                assert_eq!(short_description, "test process");
+                assert_eq!(mode, "background");
+            }
+            other => panic!("expected process completed, got {other:?}"),
+        }
     }
 
     #[test]

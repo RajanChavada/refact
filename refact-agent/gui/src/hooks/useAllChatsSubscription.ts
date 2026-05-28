@@ -21,6 +21,7 @@ import {
 } from "../features/Connection";
 import { calculateBackoff } from "../utils/backoff";
 import type { ChatEventEnvelope } from "../services/refact/chatSubscription";
+import { processCompleted } from "../features/Notifications";
 
 const DEFAULT_MAX_CHAT_SSE_SUBSCRIPTIONS = 4;
 
@@ -435,6 +436,9 @@ export function useAllChatsSubscription() {
               if (envelope.type === "stream_finished") {
                 streamedBytesRef.current.delete(chatId);
                 pendingBytesRef.current.delete(chatId);
+              }
+              if (envelope.type === "process_completed") {
+                dispatch(processCompleted(envelope));
               }
               dispatch(applyChatEvent(envelope));
             }

@@ -150,6 +150,16 @@ export type EventEnvelope =
   | {
       chat_id: string;
       seq: string;
+      type: "process_completed";
+      process_id: string;
+      status: string;
+      exit_code: number | null;
+      short_description: string;
+      mode: string;
+    }
+  | {
+      chat_id: string;
+      seq: string;
       type: "message_updated";
       message_id: string;
       message: ChatMessage;

@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 
 use crate::call_validation::ChatMessage;
 use crate::chat::internal_roles::{event, EventSubkind};
-use crate::chat::types::{ChatSession, SessionState};
+use crate::chat::types::{ChatEvent, ChatSession, SessionState};
 use crate::exec::{ExecStatus, ProcessCompletionEvent};
 use crate::global_context::SharedGlobalContext;
 
@@ -74,17 +74,32 @@ fn is_stream_busy(state: SessionState) -> bool {
     )
 }
 
-fn inject_process_completion_message(session: &mut ChatSession, event: ProcessCompletionEvent) {
-    session.add_message(process_completion_message(event));
+pub(crate) fn inject_process_completion_message(
+    session: &mut ChatSession,
+    event: ProcessCompletionEvent,
+) {
+    let envelope = process_completion_envelope_event(&event);
+    session.add_message(process_completion_message(&event));
+    session.emit(envelope);
 }
 
-fn process_completion_message(completion: ProcessCompletionEvent) -> ChatMessage {
+fn process_completion_envelope_event(completion: &ProcessCompletionEvent) -> ChatEvent {
+    ChatEvent::ProcessCompleted {
+        process_id: completion.process_id.to_string(),
+        status: status_label(&completion.status).to_string(),
+        exit_code: completion.exit_code,
+        short_description: completion.short_description.clone(),
+        mode: completion.mode.to_string(),
+    }
+}
+
+fn process_completion_message(completion: &ProcessCompletionEvent) -> ChatMessage {
     let status = status_label(&completion.status);
     let mode = completion.mode.to_string();
     let exit_code = completion.exit_code;
-    let process_id = completion.process_id.clone();
+    let process_id = completion.process_id.to_string();
     let duration_ms = completion.duration_ms;
-    let short_description = completion.short_description;
+    let short_description = completion.short_description.clone();
     let exit_text = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "unknown".to_string());
@@ -335,7 +350,7 @@ mod tests {
 
     #[test]
     fn process_completion_message_has_expected_shape() {
-        let message = process_completion_message(ProcessCompletionEvent {
+        let completion = ProcessCompletionEvent {
             process_id: ExecProcessId("exec_shape".to_string()),
             chat_id: "chat-shape".to_string(),
             status: ExecStatus::Exited { exit_code: Some(3) },
@@ -343,7 +358,8 @@ mod tests {
             duration_ms: Some(42),
             short_description: "shape process".to_string(),
             mode: ExecMode::Background,
-        });
+        };
+        let message = process_completion_message(&completion);
         let payload = process_payload(&message);
         assert_eq!(message.role, crate::chat::internal_roles::EVENT_ROLE);
         assert_eq!(
@@ -361,5 +377,35 @@ mod tests {
             message.content.content_text_only(),
             "Background process 'shape process' exited (exit 3)"
         );
+    }
+
+    #[test]
+    fn process_completion_envelope_has_expected_shape() {
+        let event = process_completion_envelope_event(&ProcessCompletionEvent {
+            process_id: ExecProcessId("exec_shape".to_string()),
+            chat_id: "chat-shape".to_string(),
+            status: ExecStatus::Exited { exit_code: Some(3) },
+            exit_code: Some(3),
+            duration_ms: Some(42),
+            short_description: "shape process".to_string(),
+            mode: ExecMode::Background,
+        });
+
+        match event {
+            ChatEvent::ProcessCompleted {
+                process_id,
+                status,
+                exit_code,
+                short_description,
+                mode,
+            } => {
+                assert_eq!(process_id, "exec_shape");
+                assert_eq!(status, "exited");
+                assert_eq!(exit_code, Some(3));
+                assert_eq!(short_description, "shape process");
+                assert_eq!(mode, "background");
+            }
+            other => panic!("expected process completed envelope, got {other:?}"),
+        }
     }
 }

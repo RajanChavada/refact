@@ -758,7 +758,10 @@ fn validate_chat_history_slice(messages: &[ChatMessage]) -> Result<(), String> {
         );
     }
 
-    if !matches!(messages[0].role.as_str(), "system" | "user" | "event" | "plan") {
+    if !matches!(
+        messages[0].role.as_str(),
+        "system" | "user" | "event" | "plan"
+    ) {
         return Err(format!(
             "Invalid chat history: first message must be 'system', 'user', 'event', or 'plan', got '{}'",
             messages[0].role

@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   subscribeToChatEvents,
   applyDeltaOps,
+  type ChatEventEnvelope,
   type DeltaOp,
 } from "../services/refact/chatSubscription";
 import type { AssistantMessage } from "../services/refact/types";
@@ -286,6 +287,51 @@ describe("chatSubscription", () => {
         );
       },
     );
+
+    it("should parse process_completed envelope without throwing", async () => {
+      const onEvent = vi.fn<(event: ChatEventEnvelope) => void>();
+      const onError = vi.fn();
+      const encoder = new TextEncoder();
+      const event: ChatEventEnvelope = {
+        chat_id: "test",
+        seq: "2",
+        type: "process_completed",
+        process_id: "exec_done",
+        status: "exited",
+        exit_code: 0,
+        short_description: "test process",
+        mode: "background",
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        body: {
+          getReader: () => {
+            let called = false;
+            return {
+              read: async () => {
+                if (called) return { done: true, value: undefined };
+                called = true;
+                return {
+                  done: false,
+                  value: encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+                };
+              },
+            };
+          },
+        },
+      });
+
+      subscribeToChatEvents("test", 8001, {
+        onEvent,
+        onError,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenCalledWith(event);
+    });
 
     it("should call onDisconnected on normal stream close", async () => {
       const onDisconnected = vi.fn();

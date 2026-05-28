@@ -12,6 +12,7 @@ import {
   subscribeToChatEvents,
   type ChatEventEnvelope,
 } from "../services/refact/chatSubscription";
+import { processCompleted } from "../features/Notifications";
 
 const DEBUG =
   typeof window !== "undefined" &&
@@ -388,6 +389,9 @@ export function useChatSubscription(
               if (envelope.type === "stream_finished") {
                 streamedBytesRef.current = 0;
                 pendingBytesRef.current = 0;
+              }
+              if (envelope.type === "process_completed") {
+                dispatch(processCompleted(envelope));
               }
               dispatch(applyChatEvent(envelope));
               callbacksRef.current.onEvent?.(envelope);
