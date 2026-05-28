@@ -1332,8 +1332,11 @@ pub async fn process_command_queue(
                 tool_failed,
             } => {
                 let mut session = session_arc.lock().await;
-                session.record_ide_tool_result(tool_call_id, content, tool_failed);
+                let completed = session.record_ide_tool_result(tool_call_id, content, tool_failed);
                 drop(session);
+                if !completed {
+                    continue;
+                }
                 if aborted_before_start_generation(&session_arc).await {
                     continue;
                 }
@@ -1676,6 +1679,7 @@ async fn handle_tool_decisions(
                 .collect::<Vec<_>>();
             session.add_tool_decision_event("approve", approved_ids, "once");
             session.add_tool_decision_event("reject", rejected_ids, "once");
+            session.drain_post_tool_side_effects();
             session.runtime.pause_reasons.clear();
             session.runtime.accepted_tool_ids.clear();
             session.runtime.auto_approved_tool_ids.clear();
@@ -1790,6 +1794,7 @@ async fn handle_tool_decisions(
             };
             session.add_message(tool_message);
         }
+        session.drain_post_tool_side_effects();
     }
 
     let had_tool_calls = !tool_calls_to_execute.is_empty();

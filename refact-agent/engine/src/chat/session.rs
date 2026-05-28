@@ -500,7 +500,65 @@ impl ChatSession {
         self.touch();
     }
 
+    fn tool_result_ids(&self) -> HashSet<String> {
+        self.messages
+            .iter()
+            .filter(|m| (m.role == "tool" || m.role == "diff") && !m.tool_call_id.is_empty())
+            .map(|m| m.tool_call_id.clone())
+            .collect()
+    }
+
+    fn assistant_tool_call_ids_matching(&self, tool_call_id: &str) -> Option<Vec<String>> {
+        self.messages.iter().rev().find_map(|message| {
+            if message.role != "assistant" {
+                return None;
+            }
+            let tool_calls = message.tool_calls.as_ref()?;
+            if tool_calls.iter().any(|tc| tc.id == tool_call_id) {
+                Some(tool_calls.iter().map(|tc| tc.id.clone()).collect())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn latest_assistant_tool_call_ids(&self) -> Option<Vec<String>> {
+        self.messages.iter().rev().find_map(|message| {
+            if message.role != "assistant" {
+                return None;
+            }
+            let tool_calls = message.tool_calls.as_ref()?;
+            if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls.iter().map(|tc| tc.id.clone()).collect())
+            }
+        })
+    }
+
+    fn all_tool_call_ids_have_results(&self, tool_call_ids: &[String]) -> bool {
+        let result_ids = self.tool_result_ids();
+        tool_call_ids.iter().all(|id| result_ids.contains(id))
+    }
+
+    fn has_pending_tool_result_window(&self) -> bool {
+        self.latest_assistant_tool_call_ids()
+            .map(|tool_call_ids| !self.all_tool_call_ids_have_results(&tool_call_ids))
+            .unwrap_or(false)
+    }
+
+    fn tool_result_window_closed_for_tool_call(&self, tool_call_id: &str) -> bool {
+        if let Some(tool_call_ids) = self.assistant_tool_call_ids_matching(tool_call_id) {
+            self.all_tool_call_ids_have_results(&tool_call_ids)
+        } else {
+            !self.has_pending_tool_result_window()
+        }
+    }
+
     pub fn drain_post_tool_side_effects(&mut self) {
+        if self.has_pending_tool_result_window() {
+            return;
+        }
         let side_effects = std::mem::take(&mut self.post_tool_side_effects);
         for message in side_effects {
             self.add_message(message);
@@ -517,7 +575,7 @@ impl ChatSession {
         tool_call_id: String,
         content: String,
         tool_failed: bool,
-    ) {
+    ) -> bool {
         let ok = !tool_failed;
         self.add_message(ChatMessage {
             message_id: Uuid::new_v4().to_string(),
@@ -527,13 +585,18 @@ impl ChatSession {
             tool_failed: Some(tool_failed),
             ..Default::default()
         });
-        self.add_message(crate::chat::internal_roles::event(
+        self.queue_post_tool_side_effect(crate::chat::internal_roles::event(
             crate::chat::internal_roles::EventSubkind::IdeCallback,
             "ide.bridge",
-            json!({"tool_call_id": tool_call_id, "ok": ok, "summary": content}),
+            json!({"tool_call_id": tool_call_id.clone(), "ok": ok, "summary": content.clone()}),
             content,
         ));
-        self.set_runtime_state(SessionState::Idle, None);
+        let completed = self.tool_result_window_closed_for_tool_call(&tool_call_id);
+        if completed {
+            self.drain_post_tool_side_effects();
+            self.set_runtime_state(SessionState::Idle, None);
+        }
+        completed
     }
 
     pub fn install_plan(
@@ -1181,7 +1244,7 @@ impl ChatSession {
         if tool_call_ids.is_empty() {
             return;
         }
-        self.add_message(tool_decision_message(decision, tool_call_ids, scope));
+        self.queue_post_tool_side_effect(tool_decision_message(decision, tool_call_ids, scope));
     }
 
     pub fn process_tool_decisions(
@@ -1210,8 +1273,6 @@ impl ChatSession {
         self.runtime.pause_reasons.retain(|r| {
             !accepted_ids.contains(&r.tool_call_id) && !denied_ids.contains(&r.tool_call_id)
         });
-        self.add_tool_decision_event("approve", accepted_ids.clone(), "once");
-        self.add_tool_decision_event("reject", denied_ids.clone(), "once");
         let after_len = self.runtime.pause_reasons.len();
 
         for denied_id in &denied_ids {
@@ -1236,6 +1297,10 @@ impl ChatSession {
                 ..Default::default()
             });
         }
+
+        self.add_tool_decision_event("approve", accepted_ids.clone(), "once");
+        self.add_tool_decision_event("reject", denied_ids.clone(), "once");
+        self.drain_post_tool_side_effects();
 
         if before_len != after_len {
             self.touch();
@@ -3506,6 +3571,77 @@ mod tests {
         }
     }
 
+    fn make_tool_result(tool_call_id: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "tool".to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            content: ChatContent::SimpleText(content.to_string()),
+            tool_failed: Some(false),
+            ..Default::default()
+        }
+    }
+
+    fn role_sequence(session: &ChatSession) -> Vec<&str> {
+        session
+            .messages
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect()
+    }
+
+    fn default_openai_settings() -> crate::llm::adapter::AdapterSettings {
+        crate::llm::adapter::AdapterSettings {
+            api_key: "test-key".to_string(),
+            auth_token: String::new(),
+            endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
+            extra_headers: Default::default(),
+            model_name: "gpt-4.1".to_string(),
+            supports_tools: true,
+            supports_reasoning: true,
+            reasoning_type: None,
+            supports_temperature: true,
+            supports_max_completion_tokens: false,
+            eof_is_done: false,
+            supports_web_search: false,
+            supports_cache_control: false,
+        }
+    }
+
+    fn assert_openai_tool_results_follow_assistant(messages: Vec<ChatMessage>) {
+        use crate::llm::adapter::LlmWireAdapter;
+        use crate::llm::adapters::openai_chat::OpenAiChatAdapter;
+
+        let req = crate::llm::canonical::LlmRequest::new("gpt-4.1".to_string(), messages);
+        let body = OpenAiChatAdapter
+            .build_http(&req, &default_openai_settings())
+            .unwrap()
+            .body;
+        let wire_messages = body["messages"].as_array().unwrap();
+        for (idx, message) in wire_messages.iter().enumerate() {
+            if message["role"] != "assistant" || message.get("tool_calls").is_none() {
+                continue;
+            }
+            let tool_calls = message["tool_calls"].as_array().unwrap();
+            let expected_ids: HashSet<String> = tool_calls
+                .iter()
+                .filter_map(|tool_call| tool_call["id"].as_str().map(str::to_string))
+                .collect();
+            let actual_ids: HashSet<String> = wire_messages
+                .iter()
+                .skip(idx + 1)
+                .take(tool_calls.len())
+                .map(|tool_result| {
+                    assert_eq!(
+                        tool_result["role"], "tool",
+                        "wire messages: {wire_messages:?}"
+                    );
+                    tool_result["tool_call_id"].as_str().unwrap().to_string()
+                })
+                .collect();
+            assert_eq!(actual_ids, expected_ids, "wire messages: {wire_messages:?}");
+        }
+    }
+
     #[test]
     fn denied_tool_call_produces_synthetic_tool_result_message() {
         let mut session = make_session();
@@ -3622,5 +3758,138 @@ mod tests {
             .find(|m| m.role == "tool")
             .expect("no tool message synthesized");
         assert_eq!(tool_msg.tool_call_id, "unique-call-abc");
+    }
+
+    #[test]
+    fn rejected_tool_decision_event_after_synthetic_tool_result() {
+        let mut session = make_session();
+        session.add_message(make_assistant_with_tool_calls(&["tc1"]));
+        session.runtime.pause_reasons.push(make_pause_reason("tc1"));
+        session.set_runtime_state(SessionState::Paused, None);
+
+        session.process_tool_decisions(&[ToolDecisionItem {
+            tool_call_id: "tc1".into(),
+            accepted: false,
+        }]);
+
+        assert_eq!(role_sequence(&session), vec!["assistant", "tool", "event"]);
+        assert_eq!(session.messages[1].tool_call_id, "tc1");
+        assert_eq!(
+            session.messages[2].extra["event"]["subkind"],
+            json!("tool_decision")
+        );
+        assert_eq!(
+            session.messages[2].extra["event"]["payload"]["decision"],
+            json!("reject")
+        );
+    }
+
+    #[test]
+    fn mixed_approve_reject_defers_event_until_accepted_tool_result() {
+        let mut session = make_session();
+        session.add_message(make_assistant_with_tool_calls(&["tc1", "tc2"]));
+        session.runtime.pause_reasons.push(make_pause_reason("tc1"));
+        session.runtime.pause_reasons.push(make_pause_reason("tc2"));
+        session.set_runtime_state(SessionState::Paused, None);
+
+        session.process_tool_decisions(&[
+            ToolDecisionItem {
+                tool_call_id: "tc1".into(),
+                accepted: false,
+            },
+            ToolDecisionItem {
+                tool_call_id: "tc2".into(),
+                accepted: true,
+            },
+        ]);
+
+        assert_eq!(role_sequence(&session), vec!["assistant", "tool"]);
+        assert_eq!(session.post_tool_side_effects.len(), 2);
+
+        session.add_message(make_tool_result("tc2", "accepted result"));
+        session.drain_post_tool_side_effects();
+
+        assert_eq!(
+            role_sequence(&session),
+            vec!["assistant", "tool", "tool", "event", "event"]
+        );
+        assert_eq!(
+            session.messages[3].extra["event"]["payload"]["decision"],
+            json!("approve")
+        );
+        assert_eq!(
+            session.messages[4].extra["event"]["payload"]["decision"],
+            json!("reject")
+        );
+    }
+
+    #[test]
+    fn ide_callback_event_deferred_until_all_ide_tool_results_present() {
+        let mut session = make_session();
+        session.add_message(make_assistant_with_tool_calls(&["tc1", "tc2"]));
+        session.runtime.state = SessionState::WaitingIde;
+
+        let completed =
+            session.record_ide_tool_result("tc1".to_string(), "first".to_string(), false);
+
+        assert!(!completed);
+        assert_eq!(role_sequence(&session), vec!["assistant", "tool"]);
+        assert_eq!(session.runtime.state, SessionState::WaitingIde);
+        assert_eq!(session.post_tool_side_effects.len(), 1);
+
+        let completed =
+            session.record_ide_tool_result("tc2".to_string(), "second".to_string(), false);
+
+        assert!(completed);
+        assert_eq!(
+            role_sequence(&session),
+            vec!["assistant", "tool", "tool", "event", "event"]
+        );
+        assert_eq!(session.runtime.state, SessionState::Idle);
+        assert!(session.post_tool_side_effects.is_empty());
+        assert_eq!(
+            session.messages[3].extra["event"]["subkind"],
+            json!("ide_callback")
+        );
+        assert_eq!(
+            session.messages[4].extra["event"]["subkind"],
+            json!("ide_callback")
+        );
+    }
+
+    #[test]
+    fn openai_wire_order_valid_after_tool_decision() {
+        let mut session = make_session();
+        session.add_message(make_assistant_with_tool_calls(&["tc1", "tc2"]));
+        session.runtime.pause_reasons.push(make_pause_reason("tc1"));
+        session.runtime.pause_reasons.push(make_pause_reason("tc2"));
+        session.set_runtime_state(SessionState::Paused, None);
+
+        session.process_tool_decisions(&[
+            ToolDecisionItem {
+                tool_call_id: "tc1".into(),
+                accepted: false,
+            },
+            ToolDecisionItem {
+                tool_call_id: "tc2".into(),
+                accepted: true,
+            },
+        ]);
+        session.add_message(make_tool_result("tc2", "accepted result"));
+        session.drain_post_tool_side_effects();
+
+        assert_openai_tool_results_follow_assistant(session.messages.clone());
+    }
+
+    #[test]
+    fn openai_wire_order_valid_after_multi_ide_callbacks() {
+        let mut session = make_session();
+        session.add_message(make_assistant_with_tool_calls(&["tc1", "tc2"]));
+        session.runtime.state = SessionState::WaitingIde;
+
+        session.record_ide_tool_result("tc1".to_string(), "first".to_string(), false);
+        session.record_ide_tool_result("tc2".to_string(), "second".to_string(), false);
+
+        assert_openai_tool_results_follow_assistant(session.messages.clone());
     }
 }
