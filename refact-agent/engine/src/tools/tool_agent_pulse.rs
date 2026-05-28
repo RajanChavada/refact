@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
-use crate::call_validation::{ChatContent, ChatMessage, ChatToolCall, ContextEnum};
+use crate::call_validation::{ChatContent, ChatMessage, ChatToolCall, ChatUsage, ContextEnum};
 use crate::tasks::storage;
 use crate::tasks::types::BoardCard;
 use crate::tools::task_tool_helpers::{
@@ -55,6 +55,8 @@ struct AgentPulse {
     last_activity_at: Option<DateTime<Utc>>,
     tokens_used: Option<usize>,
     token_cap: Option<usize>,
+    latest_usage: Option<ChatUsage>,
+    latest_finish_reason: Option<String>,
     currently_editing: Option<String>,
     last_assistant_preview: Option<String>,
     last_tool_call: Option<String>,
@@ -116,6 +118,14 @@ fn build_agent_pulse(
     let token_cap = snapshot
         .and_then(|snapshot| snapshot.thread.context_tokens_cap)
         .or_else(|| (fallback_token_cap > 0).then_some(fallback_token_cap));
+    let latest_assistant = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant");
+    let latest_usage = latest_assistant
+        .and_then(|message| message.usage.as_ref())
+        .cloned();
+    let latest_finish_reason = latest_assistant.and_then(|message| message.finish_reason.clone());
 
     AgentPulse {
         card_id: card.id.clone(),
@@ -125,6 +135,8 @@ fn build_agent_pulse(
         last_activity_at: live_last_activity.or_else(|| last_activity_timestamp(card)),
         tokens_used: tokens_used(messages),
         token_cap,
+        latest_usage,
+        latest_finish_reason,
         currently_editing: last_tool
             .as_ref()
             .and_then(|tool_call| tool_call.currently_editing.clone()),
@@ -146,12 +158,14 @@ fn render_agent_pulse_at(pulse: &AgentPulse, now: DateTime<Utc>) -> String {
     let currently_editing = pulse.currently_editing.as_deref().unwrap_or("unknown");
     let assistant = pulse.last_assistant_preview.as_deref().unwrap_or("(none)");
     let mut result = format!(
-        "# Agent Pulse: {}\n\n**Card:** {}\n**State:** {}\n**Last activity:** {}\n**Tokens used:** {}\n**Currently editing:** {}\n",
+        "# Agent Pulse: {}\n\n**Card:** {}\n**State:** {}\n**Last activity:** {}\n**Tokens used:** {}\n**Last finish reason:** {}\n**Latest response usage:** {}\n**Currently editing:** {}\n",
         pulse.card_id,
         pulse.card_title,
         format_session_state(pulse.state, &pulse.card_column),
         last_activity,
         format_tokens(pulse.tokens_used, pulse.token_cap),
+        pulse.latest_finish_reason.as_deref().unwrap_or("unknown"),
+        format_usage(pulse.latest_usage.as_ref()),
         currently_editing
     );
 
@@ -214,6 +228,28 @@ fn format_token_count(value: usize) -> String {
         text = format!("{}k", value / 1_000);
     }
     text
+}
+
+fn format_usage(usage: Option<&ChatUsage>) -> String {
+    usage
+        .map(|usage| {
+            let mut parts = vec![
+                format!("prompt={}", format_token_count(usage.prompt_tokens)),
+                format!("completion={}", format_token_count(usage.completion_tokens)),
+                format!("total={}", format_token_count(usage.total_tokens)),
+            ];
+            if let Some(cache_read) = usage.cache_read_tokens {
+                parts.push(format!("cache_read={}", format_token_count(cache_read)));
+            }
+            if let Some(cache_creation) = usage.cache_creation_tokens {
+                parts.push(format!(
+                    "cache_creation={}",
+                    format_token_count(cache_creation)
+                ));
+            }
+            parts.join(", ")
+        })
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn last_tool_call_from_messages(messages: &[ChatMessage]) -> Option<LastToolCall> {

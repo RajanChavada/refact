@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use refact_chat_history::history_limit::{
+    CompactAggression, remove_invalid_tool_calls_and_tool_calls_results,
+    tier0_deterministic_compact_with,
+};
+
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -12,7 +17,7 @@ use crate::tasks::storage;
 use crate::tasks::types::StatusUpdate;
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
 use refact_chat_api::ChatCommand;
-use refact_runtime_api::SessionState;
+use refact_runtime_api::{ChatSessionUpdate, SessionState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentSteerPriority {
@@ -110,13 +115,65 @@ fn state_label(state: SessionState) -> String {
     }
 }
 
-fn tool_output(card_id: &str, message: &str, state: SessionState) -> String {
+fn tool_output(card_id: &str, message: &str, state: SessionState, compacted: bool) -> String {
+    let compaction_note = if compacted {
+        "\nAuto-compaction: applied before steering."
+    } else {
+        ""
+    };
     format!(
-        "✅ Steered {}\n\nMessage: \"{}\"\nAgent state: {}",
+        "✅ Steered {}\n\nMessage: \"{}\"\nAgent state: {}{}",
         card_id,
         message,
-        state_label(state)
+        state_label(state),
+        compaction_note
     )
+}
+
+fn should_autocompact_before_steer(state: SessionState) -> bool {
+    matches!(state, SessionState::Completed | SessionState::Error)
+}
+
+fn autocompact_messages_for_resume(messages: &mut Vec<ChatMessage>) -> bool {
+    let before = serde_json::to_string(messages).ok();
+    let stats = tier0_deterministic_compact_with(messages, 2, CompactAggression::Aggressive);
+    remove_invalid_tool_calls_and_tool_calls_results(messages);
+    stats.context_files_deduped > 0
+        || stats.context_files_elided > 0
+        || stats.tool_outputs_truncated > 0
+        || stats.tokens_saved_estimate > 0
+        || serde_json::to_string(messages).ok() != before
+}
+
+fn validate_agent_snapshot(
+    snapshot: &refact_runtime_api::ChatSessionSnapshot,
+    task_id: &str,
+    card_id: &str,
+    assignee: Option<&str>,
+) -> Result<(), String> {
+    let Some(task_meta) = &snapshot.thread.task_meta else {
+        return Err(format!(
+            "Agent session for card {card_id} is missing task metadata; it may be stale or deleted."
+        ));
+    };
+    if task_meta.role != "agents" || task_meta.task_id != task_id {
+        return Err(format!(
+            "Agent session for card {card_id} is bound to a different task/role."
+        ));
+    }
+    if task_meta.card_id.as_deref() != Some(card_id) {
+        return Err(format!(
+            "Agent session metadata does not match card {card_id}."
+        ));
+    }
+    if let Some(assignee) = assignee {
+        if task_meta.agent_id.as_deref() != Some(assignee) {
+            return Err(format!(
+                "Agent session for card {card_id} is assigned to a different agent."
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -194,10 +251,27 @@ impl Tool for ToolAgentSteer {
             )
         })?;
 
-        let session_state = chat_facade
-            .session_snapshot(&agent_chat_id)
-            .await?
-            .session_state;
+        let snapshot = chat_facade.session_snapshot(&agent_chat_id).await?;
+        validate_agent_snapshot(&snapshot, &task_id, &card_id, card.assignee.as_deref())?;
+        let session_state = snapshot.session_state;
+        let compacted = if should_autocompact_before_steer(session_state) {
+            let mut messages = snapshot.messages.clone();
+            let compacted = autocompact_messages_for_resume(&mut messages);
+            if compacted {
+                chat_facade
+                    .update_session(
+                        &agent_chat_id,
+                        ChatSessionUpdate {
+                            messages,
+                            previous_response_id: None,
+                        },
+                    )
+                    .await?;
+            }
+            compacted
+        } else {
+            false
+        };
 
         let card_id_for_update = card_id.clone();
         let agent_chat_id_for_update = agent_chat_id.clone();
@@ -244,7 +318,12 @@ impl Tool for ToolAgentSteer {
             false,
             vec![ContextEnum::ChatMessage(ChatMessage {
                 role: "tool".to_string(),
-                content: ChatContent::SimpleText(tool_output(&card_id, &message, session_state)),
+                content: ChatContent::SimpleText(tool_output(
+                    &card_id,
+                    &message,
+                    session_state,
+                    compacted,
+                )),
                 tool_calls: None,
                 tool_call_id: tool_call_id.clone(),
                 ..Default::default()
@@ -273,6 +352,22 @@ mod tests {
     struct MockChatFacade {
         state: StdMutex<SessionState>,
         pushed: StdMutex<Vec<(String, ChatCommand)>>,
+        messages: StdMutex<Vec<ChatMessage>>,
+        thread: StdMutex<refact_chat_api::ThreadParams>,
+        updates: StdMutex<Vec<ChatSessionUpdate>>,
+    }
+
+    fn test_agent_thread() -> refact_chat_api::ThreadParams {
+        refact_chat_api::ThreadParams {
+            task_meta: Some(ThreadTaskMeta {
+                task_id: "task-1".to_string(),
+                role: "agents".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                card_id: Some("T-29".to_string()),
+                planner_chat_id: Some("planner".to_string()),
+            }),
+            ..Default::default()
+        }
     }
 
     impl MockChatFacade {
@@ -280,11 +375,28 @@ mod tests {
             Self {
                 state: StdMutex::new(state),
                 pushed: StdMutex::new(vec![]),
+                messages: StdMutex::new(vec![]),
+                thread: StdMutex::new(test_agent_thread()),
+                updates: StdMutex::new(vec![]),
+            }
+        }
+
+        fn with_messages(state: SessionState, messages: Vec<ChatMessage>) -> Self {
+            Self {
+                state: StdMutex::new(state),
+                pushed: StdMutex::new(vec![]),
+                messages: StdMutex::new(messages),
+                thread: StdMutex::new(test_agent_thread()),
+                updates: StdMutex::new(vec![]),
             }
         }
 
         fn pushed_commands(&self) -> Vec<(String, ChatCommand)> {
             self.pushed.lock().unwrap().clone()
+        }
+
+        fn updates(&self) -> Vec<ChatSessionUpdate> {
+            self.updates.lock().unwrap().clone()
         }
     }
 
@@ -292,8 +404,8 @@ mod tests {
     impl ChatSessionFacade for MockChatFacade {
         async fn session_snapshot(&self, _chat_id: &str) -> Result<ChatSessionSnapshot, String> {
             Ok(ChatSessionSnapshot {
-                messages: vec![],
-                thread: refact_chat_api::ThreadParams::default(),
+                messages: self.messages.lock().unwrap().clone(),
+                thread: self.thread.lock().unwrap().clone(),
                 session_state: *self.state.lock().unwrap(),
                 pause_reasons: vec![],
             })
@@ -302,8 +414,10 @@ mod tests {
         async fn update_session(
             &self,
             _chat_id: &str,
-            _update: ChatSessionUpdate,
+            update: ChatSessionUpdate,
         ) -> Result<(), String> {
+            *self.messages.lock().unwrap() = update.messages.clone();
+            self.updates.lock().unwrap().push(update);
             Ok(())
         }
 
@@ -602,5 +716,44 @@ mod tests {
         );
         assert!(output.contains("✅ Steered T-29"));
         assert!(output.contains("⚙️ Executing tools"));
+    }
+
+    #[tokio::test]
+    async fn tool_agent_steer_autocompacts_completed_agent_before_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let gcx = write_task(
+            temp.path(),
+            test_card("doing", Some("agent-chat-1".to_string())),
+        )
+        .await;
+        let messages = vec![
+            ChatMessage::new("user".to_string(), "hi".to_string()),
+            ChatMessage::new("tool".to_string(), "x".repeat(40_000)),
+        ];
+        let mock = Arc::new(MockChatFacade::with_messages(
+            SessionState::Completed,
+            messages,
+        ));
+        let ccx = planner_ccx(gcx, mock.clone(), "planner").await;
+        let mut tool = ToolAgentSteer::new();
+
+        let output = tool_output_text(
+            tool.tool_execute(
+                ccx,
+                &"call".to_string(),
+                &args(&[
+                    ("card_id", json!("T-29")),
+                    ("message", json!("Continue now")),
+                ]),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let updates = mock.updates();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].previous_response_id, None);
+        assert!(output.contains("Auto-compaction: applied before steering."));
+        assert_eq!(mock.pushed_commands().len(), 1);
     }
 }

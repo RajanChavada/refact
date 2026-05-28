@@ -16,7 +16,7 @@ use tokio::time::sleep;
 use crate::app_state::AppState;
 use crate::tasks::storage;
 use crate::tasks::types::{BoardCard, StatusUpdate};
-use crate::call_validation::ChatMessage;
+use crate::call_validation::{ChatMessage, ChatUsage};
 use crate::chat::internal_roles::{event, EventSubkind};
 use crate::chat::retry_policy::{
     RetryDecision, UserErrorCategory, classify_llm_error_for_retry, classify_user_error,
@@ -178,6 +178,171 @@ fn agent_session_idle_stall_ready(session: &ChatSession, task_id: &str, card: &B
         return false;
     }
     session.last_activity.elapsed() >= STALL_PLANNER_NOTIFY_GRACE
+}
+
+fn usage_summary(usage: Option<&ChatUsage>) -> String {
+    usage
+        .map(|usage| {
+            let mut parts = vec![
+                format!("prompt={}", usage.prompt_tokens),
+                format!("completion={}", usage.completion_tokens),
+                format!("total={}", usage.total_tokens),
+            ];
+            if let Some(cache_read) = usage.cache_read_tokens {
+                parts.push(format!("cache_read={cache_read}"));
+            }
+            if let Some(cache_creation) = usage.cache_creation_tokens {
+                parts.push(format!("cache_creation={cache_creation}"));
+            }
+            parts.join(", ")
+        })
+        .unwrap_or_else(|| "unavailable".to_string())
+}
+
+fn reasoning_token_limit_resume_prompt(
+    card_id: &str,
+    finish_reason: &str,
+    usage: Option<&ChatUsage>,
+) -> String {
+    format!(
+        "Agent `{card_id}` stopped while reasoning before producing an answer or tool call. \
+Finish reason: `{finish_reason}`. Token usage: {}.\n\n\
+Please inspect this agent, compact its chat if needed, then resume it with a short concrete message. \
+A good recovery path is: run `agent_pulse(card_id=\"{card_id}\")`, use `agent_steer` with a concise continuation prompt, or cancel/mark the card failed if it cannot continue.",
+        usage_summary(usage)
+    )
+}
+
+async fn notify_planner_about_reasoning_token_limit(
+    app: AppState,
+    task_id: &str,
+    card_id: &str,
+    agent_chat_id: &str,
+    planner_chat_id: &str,
+    prompt: String,
+    finish_reason: &str,
+    usage: Option<&ChatUsage>,
+    message_id: &str,
+) -> Result<bool, String> {
+    if !record_stall_planner_notification(
+        app.clone(),
+        task_id,
+        card_id,
+        agent_chat_id,
+        "reasoning_token_limit",
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+
+    let notice = task_agent_monitor_notice(
+        json!({
+            "kind": "reasoning_token_limit",
+            "task_id": task_id,
+            "card_id": card_id,
+            "agent_chat_id": agent_chat_id,
+            "finish_reason": finish_reason,
+            "usage": usage.map(|usage| json!({
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_creation_tokens": usage.cache_creation_tokens,
+            })),
+            "message_id": message_id,
+        }),
+        prompt,
+    );
+
+    let sessions = app.chat.sessions.clone();
+    let planner_session =
+        get_or_create_session_with_trajectory(app.clone(), &sessions, planner_chat_id).await;
+
+    {
+        let session = planner_session.lock().await;
+        if session.thread.task_meta.is_none() {
+            return Err(format!(
+                "Cannot notify task planner {}: trajectory is missing or deleted",
+                planner_chat_id
+            ));
+        }
+    }
+
+    let processor_flag = {
+        let mut session = planner_session.lock().await;
+        session.add_message(notice);
+        let request = regenerate_request("task-agent-reasoning-token-limit");
+        session.command_queue.push_back(request);
+        session.emit_queue_update();
+        session.queue_notify.notify_one();
+        session.queue_processor_running.clone()
+    };
+
+    if !processor_flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        tokio::spawn(process_command_queue(
+            app.clone(),
+            planner_session.clone(),
+            processor_flag,
+        ));
+    }
+
+    Ok(true)
+}
+
+pub async fn handle_agent_reasoning_token_limit_stop(
+    app: AppState,
+    task_meta: TaskMeta,
+    finish_reason: String,
+    usage: Option<ChatUsage>,
+    message_id: String,
+    agent_chat_id: String,
+) -> Result<(), String> {
+    if task_meta.role != "agents" {
+        return Ok(());
+    }
+    let Some(card_id) = task_meta.card_id.clone() else {
+        return Ok(());
+    };
+    let Some(planner_chat_id) = task_meta.planner_chat_id.clone() else {
+        return Ok(());
+    };
+
+    let prompt = reasoning_token_limit_resume_prompt(&card_id, &finish_reason, usage.as_ref());
+    let planner_notified = notify_planner_about_reasoning_token_limit(
+        app.clone(),
+        &task_meta.task_id,
+        &card_id,
+        &agent_chat_id,
+        &planner_chat_id,
+        prompt,
+        &finish_reason,
+        usage.as_ref(),
+        &message_id,
+    )
+    .await?;
+
+    let notification_status = if planner_notified {
+        "Planner notified for compaction/resume."
+    } else {
+        "Planner notification skipped because the card/session changed or a duplicate notice was already sent."
+    };
+    let update_message = format!(
+        "Agent stopped while reasoning before producing an answer/tool call (finish_reason={finish_reason}, usage={}). {notification_status} message_id={message_id}",
+        usage_summary(usage.as_ref())
+    );
+    let _ = storage::update_board_atomic(app.gcx.clone(), &task_meta.task_id, move |board| {
+        if let Some(card) = board.get_card_mut(&card_id) {
+            card.status_updates.push(StatusUpdate {
+                timestamp: Utc::now().to_rfc3339(),
+                message: update_message.clone(),
+            });
+        }
+        Ok(())
+    })
+    .await;
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

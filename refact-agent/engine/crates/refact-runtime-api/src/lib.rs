@@ -112,6 +112,7 @@ pub struct ChatSessionSnapshot {
 #[derive(Clone)]
 pub struct ChatSessionUpdate {
     pub messages: Vec<ChatMessage>,
+    pub previous_response_id: Option<String>,
 }
 
 #[derive(Clone)]

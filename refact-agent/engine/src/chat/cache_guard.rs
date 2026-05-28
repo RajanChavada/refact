@@ -54,12 +54,8 @@ pub fn cache_guard_event_message(payload: Value, summary: impl Into<String>) -> 
     )
 }
 
-pub async fn is_guard_enabled_for_model(app: AppState, model_id: &str) -> bool {
-    let Some(pricing) = crate::providers::pricing::lookup_model_pricing(&app.gcx, model_id).await
-    else {
-        return false;
-    };
-    pricing.cache_read.is_some() || pricing.cache_creation.is_some()
+pub async fn is_guard_enabled_for_model(_app: AppState, _model_id: &str) -> bool {
+    false
 }
 
 pub fn sanitize_body_for_cache_guard(value: &Value) -> Value {
@@ -382,7 +378,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_models_dev_cache_guard_uses_central_pricing_lookup() {
+    async fn cache_guard_disabled_even_for_cache_priced_models() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let app = AppState::from_gcx(gcx).await;
         let mut model_caps = std::collections::HashMap::new();
@@ -413,7 +409,7 @@ mod tests {
                 .as_secs();
         }
 
-        assert!(is_guard_enabled_for_model(app, "openai/gpt-4o").await);
+        assert!(!is_guard_enabled_for_model(app, "openai/gpt-4o").await);
     }
 
     #[tokio::test]
@@ -430,7 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_guard_violation_returns_paused_outcome_and_pauses_session() {
+    async fn cache_guard_violation_passes_without_pausing_when_disabled() {
         let gcx = crate::global_context::tests::make_test_gcx().await;
         let app = AppState::from_gcx(gcx.clone()).await;
         let mut model_caps = std::collections::HashMap::new();
@@ -482,9 +478,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(matches!(outcome, CacheGuardOutcome::Paused { .. }));
+        assert!(matches!(outcome, CacheGuardOutcome::Pass(_)));
         let session = session_arc.lock().await;
-        assert!(!session.runtime.pause_reasons.is_empty());
+        assert!(session.runtime.pause_reasons.is_empty());
     }
 
     #[test]

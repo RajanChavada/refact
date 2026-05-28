@@ -203,6 +203,7 @@ impl ChatSessionFacade for EngineChatSessionFacade {
                 .await;
         let mut session = session_arc.lock().await;
         session.messages = update.messages;
+        session.thread.previous_response_id = update.previous_response_id;
         session.cache_guard_force_next = true;
         session.increment_version();
         let snapshot = session.snapshot();

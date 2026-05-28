@@ -524,6 +524,83 @@ fn tail_needs_assistant(messages: &[ChatMessage]) -> bool {
     false
 }
 
+fn is_reasoning_token_limit_stop(message: &ChatMessage) -> bool {
+    if message.role != "assistant"
+        || message
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+    {
+        return false;
+    }
+
+    let finish_reason = message.finish_reason.as_deref().unwrap_or_default();
+    let stopped_for_tokens = matches!(
+        finish_reason,
+        "length" | "max_tokens" | "max_output_tokens" | "token_limit"
+    );
+    if !stopped_for_tokens {
+        return false;
+    }
+
+    message.content.content_text_only().trim().is_empty()
+        && (message
+            .reasoning_content
+            .as_deref()
+            .is_some_and(|reasoning| !reasoning.trim().is_empty())
+            || message
+                .thinking_blocks
+                .as_ref()
+                .is_some_and(|blocks| !blocks.is_empty()))
+}
+
+async fn handle_task_agent_reasoning_token_stop(
+    app: AppState,
+    session_arc: Arc<AMutex<ChatSession>>,
+) -> bool {
+    let (task_meta, finish_reason, usage, message_id, agent_chat_id) = {
+        let mut session = session_arc.lock().await;
+        let Some(meta) = session.thread.task_meta.clone() else {
+            return false;
+        };
+        if meta.role != "agents" {
+            return false;
+        }
+        let Some(message) = session.messages.last() else {
+            return false;
+        };
+        if !is_reasoning_token_limit_stop(message) {
+            return false;
+        }
+
+        let finish_reason = message
+            .finish_reason
+            .clone()
+            .unwrap_or_else(|| "length".to_string());
+        let usage = message.usage.clone();
+        let message_id = message.message_id.clone();
+        let agent_chat_id = session.chat_id.clone();
+        session.set_runtime_state(SessionState::Completed, None);
+        (meta, finish_reason, usage, message_id, agent_chat_id)
+    };
+
+    maybe_save_trajectory(app.clone(), session_arc.clone()).await;
+
+    if let Err(error) = crate::chat::task_agent_monitor::handle_agent_reasoning_token_limit_stop(
+        app,
+        task_meta,
+        finish_reason,
+        usage,
+        message_id,
+        agent_chat_id,
+    )
+    .await
+    {
+        tracing::warn!("failed to notify planner about task agent reasoning token stop: {error}");
+    }
+    true
+}
+
 async fn run_fork_subchat(
     app: AppState,
     agent_name: &str,
@@ -668,6 +745,11 @@ pub fn start_generation(
                 &mut tier1_disabled_for_session,
             )
             .await;
+
+            thread = {
+                let session = session_arc.lock().await;
+                session.thread.clone()
+            };
 
             if user_stop_requested(&session_arc).await {
                 break;
@@ -973,6 +1055,11 @@ pub fn start_generation(
                 .await
             {
                 ToolStepOutcome::NoToolCalls => {
+                    if handle_task_agent_reasoning_token_stop(app.clone(), session_arc.clone())
+                        .await
+                    {
+                        break;
+                    }
                     if inject_priority_messages_if_any(app.clone(), session_arc.clone()).await {
                         continue;
                     }
@@ -1987,6 +2074,16 @@ mod tests {
         }
     }
 
+    fn make_reasoning_token_limit_msg() -> ChatMessage {
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: ChatContent::SimpleText(String::new()),
+            finish_reason: Some("length".to_string()),
+            reasoning_content: Some("still thinking".to_string()),
+            ..Default::default()
+        }
+    }
+
     fn make_assistant_with_tool_call(tool_call_id: &str, tool_name: &str) -> ChatMessage {
         ChatMessage {
             role: "assistant".to_string(),
@@ -2109,6 +2206,19 @@ mod tests {
             make_tool_msg("srvtoolu_123", "search results"),
         ];
         assert!(!tail_needs_assistant(&messages));
+    }
+
+    #[test]
+    fn test_reasoning_token_limit_stop_detects_thought_only_length_finish() {
+        let message = make_reasoning_token_limit_msg();
+        assert!(is_reasoning_token_limit_stop(&message));
+    }
+
+    #[test]
+    fn test_reasoning_token_limit_stop_ignores_visible_answer() {
+        let mut message = make_reasoning_token_limit_msg();
+        message.content = ChatContent::SimpleText("visible answer".to_string());
+        assert!(!is_reasoning_token_limit_stop(&message));
     }
 
     #[test]

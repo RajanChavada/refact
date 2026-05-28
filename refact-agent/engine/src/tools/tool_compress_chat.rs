@@ -813,6 +813,7 @@ impl Tool for ToolCompressChatApply {
                     &chat_id,
                     ChatSessionUpdate {
                         messages: head_messages,
+                        previous_response_id: None,
                     },
                 )
                 .await?;
