@@ -341,6 +341,28 @@ impl ExecRegistry {
             .map(|record| record.snapshot.clone())
     }
 
+    pub async fn authorize_process_access(
+        &self,
+        process_id: &ExecProcessId,
+        current_chat_id: &str,
+        current_workspace: Option<&std::path::Path>,
+    ) -> Result<ExecProcessSnapshot, String> {
+        let records = self.records.lock().await;
+        let snapshot = records
+            .get(process_id)
+            .map(|record| record.snapshot.clone())
+            .ok_or_else(|| format!("process not found: {process_id}"))?;
+        if snapshot
+            .meta
+            .owner
+            .permits_access(current_chat_id, current_workspace)
+        {
+            Ok(snapshot)
+        } else {
+            Err(format!("process access denied: {process_id}"))
+        }
+    }
+
     pub async fn list(&self, filter: ExecProcessFilter) -> Vec<ExecProcessSnapshot> {
         let records = self.records.lock().await;
         let mut snapshots = records

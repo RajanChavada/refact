@@ -13,10 +13,14 @@ use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
 use crate::chat::internal_roles::{event, EventSubkind};
 use crate::chat::types::SessionState;
+use crate::exec::types::normalize_workspace_path;
 use crate::exec::{ExecOutputChunk, ExecOutputStream, ExecProcessId, ExecRegistry};
+use crate::files_correction::get_active_project_path;
 use crate::global_context::SharedGlobalContext;
 use crate::postprocessing::pp_command_output::OutputFilter;
+use crate::tools::file_edit::auxiliary::active_execution_scope;
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
+use crate::worktrees::scope::ExecutionScope;
 
 const DEFAULT_MAX_DURATION_MS: u64 = 30_000;
 const MIN_MAX_DURATION_MS: u64 = 1_000;
@@ -43,19 +47,20 @@ impl Tool for ToolProcessSubscribe {
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let parsed = parse_subscribe_args(args)?;
-        let (gcx, exec_registry, chat_id, abort_flag) = {
+        let (gcx, exec_registry, chat_id, execution_scope, abort_flag) = {
             let ccx_lock = ccx.lock().await;
             (
                 ccx_lock.app.gcx.clone(),
                 ccx_lock.app.runtime.exec_registry.clone(),
                 ccx_lock.chat_id.clone(),
+                ccx_lock.execution_scope.clone(),
                 ccx_lock.abort_flag.clone(),
             )
         };
+        let workspace = current_workspace(gcx.clone(), execution_scope.as_ref()).await;
         let snapshot = exec_registry
-            .get(&parsed.process_id)
-            .await
-            .ok_or_else(|| format!("process not found: {}", parsed.process_id))?;
+            .authorize_process_access(&parsed.process_id, &chat_id, workspace.as_deref())
+            .await?;
         if snapshot.status.is_terminal() {
             return Err(format!("process is not running: {}", parsed.process_id));
         }
@@ -332,6 +337,18 @@ fn subscription_message(process_id: ExecProcessId, line: String) -> ChatMessage 
     )
 }
 
+async fn current_workspace(
+    gcx: SharedGlobalContext,
+    execution_scope: Option<&ExecutionScope>,
+) -> Option<std::path::PathBuf> {
+    if let Some(scope) = active_execution_scope(execution_scope) {
+        return Some(normalize_workspace_path(scope.effective_root()));
+    }
+    get_active_project_path(gcx)
+        .await
+        .map(|path| normalize_workspace_path(&path))
+}
+
 fn process_subscribe_input_schema() -> Value {
     json!({
         "type": "object",
@@ -481,6 +498,16 @@ mod tests {
         }
     }
 
+    async fn run_tool_error(
+        tool: &mut ToolProcessSubscribe,
+        ccx: Arc<AMutex<AtCommandsContext>>,
+        args: HashMap<String, Value>,
+    ) -> String {
+        tool.tool_execute(ccx, &"tool_call".to_string(), &args)
+            .await
+            .unwrap_err()
+    }
+
     fn owner(chat_id: &str) -> ExecOwnerMeta {
         ExecOwnerMeta {
             chat_id: Some(chat_id.to_string()),
@@ -616,6 +643,34 @@ mod tests {
         assert!(events
             .iter()
             .all(|message| message.extra["event"]["payload"]["process_id"] == json!(process_id)));
+    }
+
+    #[tokio::test]
+    async fn cross_chat_process_subscribe_denied() {
+        let (gcx, _owner_ccx, _owner_session) = test_context("subscribe-owner-chat").await;
+        let (_other_gcx, other_ccx, _other_session) = test_context("subscribe-other-chat").await;
+        {
+            let mut ccx_lock = other_ccx.lock().await;
+            ccx_lock.app = AppState::from_gcx(gcx.clone()).await;
+            ccx_lock.global_context = gcx.clone();
+        }
+        let process_id = spawn_background(&gcx, "subscribe-owner-chat", long_sleep_command()).await;
+        let mut tool = ToolProcessSubscribe {
+            config_path: String::new(),
+        };
+
+        let err = run_tool_error(
+            &mut tool,
+            other_ccx,
+            args(vec![
+                ("process_id", json!(process_id.as_str())),
+                ("max_duration_ms", json!(1_000)),
+            ]),
+        )
+        .await;
+
+        assert_eq!(err, format!("process access denied: {process_id}"));
+        gcx.exec_registry.kill(&process_id).await.unwrap();
     }
 
     #[tokio::test]

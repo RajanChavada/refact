@@ -8,13 +8,16 @@ use tokio::sync::Mutex as AMutex;
 
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
-use crate::exec::types::current_timestamp_ms;
+use crate::exec::types::{current_timestamp_ms, normalize_workspace_path};
 use crate::exec::{
-    ExecOutputChunk, ExecProcessId, ExecProcessSnapshot, ExecReadResult, ExecRegistry, ExecStatus,
+    ExecOutputChunk, ExecProcessId, ExecProcessSnapshot, ExecReadResult, ExecStatus,
     ExecWriteStdinResult,
 };
+use crate::files_correction::get_active_project_path;
 use crate::postprocessing::pp_command_output::{output_mini_postprocessing, OutputFilter};
+use crate::tools::file_edit::auxiliary::active_execution_scope;
 use crate::tools::tools_description::{Tool, ToolDesc, ToolSource, ToolSourceType};
+use crate::worktrees::scope::ExecutionScope;
 
 const DEFAULT_YIELD_TIME_MS: u64 = 250;
 const MAX_YIELD_TIME_MS: u64 = 10_000;
@@ -38,14 +41,25 @@ impl Tool for ToolProcessWriteStdin {
         args: &HashMap<String, Value>,
     ) -> Result<(bool, Vec<ContextEnum>), String> {
         let parsed = parse_write_stdin_args(args)?;
-        let exec_registry = {
+        let (gcx, exec_registry, chat_id, execution_scope) = {
             let ccx_lock = ccx.lock().await;
-            ccx_lock.app.runtime.exec_registry.clone()
+            (
+                ccx_lock.app.gcx.clone(),
+                ccx_lock.app.runtime.exec_registry.clone(),
+                ccx_lock.chat_id.clone(),
+                ccx_lock.execution_scope.clone(),
+            )
         };
+        let workspace = current_workspace(gcx, execution_scope.as_ref()).await;
+        exec_registry
+            .authorize_process_access(&parsed.process_id, &chat_id, workspace.as_deref())
+            .await?;
         let result = exec_registry
             .write_stdin(&parsed.process_id, &parsed.chars, parsed.yield_time_ms)
             .await?;
-        let snapshot = require_process(&exec_registry, &parsed.process_id).await?;
+        let snapshot = exec_registry
+            .authorize_process_access(&parsed.process_id, &chat_id, workspace.as_deref())
+            .await?;
         Ok(tool_result(
             tool_call_id,
             format_write_stdin_result(&snapshot, &result),
@@ -146,14 +160,16 @@ fn parse_yield_time_ms(args: &HashMap<String, Value>) -> Result<u64, String> {
     Ok(value)
 }
 
-async fn require_process(
-    registry: &ExecRegistry,
-    process_id: &ExecProcessId,
-) -> Result<ExecProcessSnapshot, String> {
-    registry
-        .get(process_id)
+async fn current_workspace(
+    gcx: Arc<crate::global_context::GlobalContext>,
+    execution_scope: Option<&ExecutionScope>,
+) -> Option<std::path::PathBuf> {
+    if let Some(scope) = active_execution_scope(execution_scope) {
+        return Some(normalize_workspace_path(scope.effective_root()));
+    }
+    get_active_project_path(gcx)
         .await
-        .ok_or_else(|| format!("process not found: {process_id}"))
+        .map(|path| normalize_workspace_path(&path))
 }
 
 fn tool_result(
@@ -317,5 +333,79 @@ fn exit_code(status: &ExecStatus) -> Option<i32> {
         | ExecStatus::Failed { .. }
         | ExecStatus::Killed
         | ExecStatus::TimedOut => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_state::AppState;
+    use crate::exec::{ExecMode, ExecOwnerMeta, ExecProcessMeta};
+    use crate::exec::types::DEFAULT_EXEC_OUTPUT_LIMIT_BYTES;
+
+    async fn ccx_for_chat(
+        gcx: Arc<crate::global_context::GlobalContext>,
+        chat_id: &str,
+    ) -> Arc<AMutex<AtCommandsContext>> {
+        Arc::new(AMutex::new(
+            AtCommandsContext::new_with_abort(
+                AppState::from_gcx(gcx).await,
+                4096,
+                20,
+                false,
+                Vec::new(),
+                chat_id.to_string(),
+                None,
+                "model".to_string(),
+                None,
+                None,
+                None,
+            )
+            .await,
+        ))
+    }
+
+    fn args(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn cross_chat_write_stdin_denied() {
+        let gcx = crate::global_context::tests::make_test_gcx().await;
+        let process_id = ExecProcessId("exec_write_stdin_other_chat".to_string());
+        gcx.exec_registry
+            .register(
+                ExecProcessMeta::new(ExecMode::Background, "cat".to_string())
+                    .with_process_id(process_id.clone())
+                    .with_owner(ExecOwnerMeta {
+                        chat_id: Some("chat-a".to_string()),
+                        ..ExecOwnerMeta::default()
+                    }),
+                DEFAULT_EXEC_OUTPUT_LIMIT_BYTES,
+            )
+            .await;
+        gcx.exec_registry.mark_started(&process_id).await.unwrap();
+        let ccx = ccx_for_chat(gcx, "chat-b").await;
+        let mut tool = ToolProcessWriteStdin {
+            config_path: String::new(),
+        };
+
+        let err = tool
+            .tool_execute(
+                ccx,
+                &"stdin".to_string(),
+                &args(vec![
+                    ("process_id", json!(process_id.as_str())),
+                    ("chars", json!("hi\n")),
+                    ("yield_time_ms", json!(0)),
+                ]),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "process access denied: exec_write_stdin_other_chat");
     }
 }

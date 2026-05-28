@@ -450,6 +450,18 @@ impl ExecOwnerMeta {
         }
         true
     }
+
+    pub fn permits_access(&self, current_chat_id: &str, workspace: Option<&Path>) -> bool {
+        if !current_chat_id.is_empty() && self.chat_id.as_deref() == Some(current_chat_id) {
+            return true;
+        }
+        if let Some(workspace) = workspace {
+            if self.normalized_workspace() == Some(normalize_workspace_path(workspace)) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

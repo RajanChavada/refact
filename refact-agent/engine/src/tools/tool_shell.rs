@@ -12,6 +12,7 @@ use tokio::sync::Mutex as AMutex;
 use crate::at_commands::at_commands::AtCommandsContext;
 use crate::at_commands::at_file::return_one_candidate_or_a_good_error;
 use crate::call_validation::{ChatContent, ChatMessage, ContextEnum};
+use crate::exec::types::normalize_workspace_path;
 use crate::exec::{
     sanitize_short_description, ExecOutputStream, ExecOwnerMeta, ExecProcessSnapshot,
     ExecRawOutput, ExecReadResult, ExecSpawnRequest, ExecStatus,
@@ -170,14 +171,15 @@ impl Tool for ToolShell {
             Some(workdir) => Some(workdir),
             None => get_active_project_path(gcx.clone()).await,
         };
+        let workspace =
+            shell_owner_workspace(gcx.clone(), execution_scope.as_ref(), cwd.as_ref()).await;
         let short_description =
             sanitize_short_description(parsed.description.as_deref().unwrap_or_default());
         let owner = ExecOwnerMeta {
             chat_id: Some(chat_id),
             tool_call_id: Some(tool_call_id.clone()),
             service_name: None,
-            workspace: active_execution_scope(execution_scope.as_ref())
-                .map(|scope| scope.effective_root().to_path_buf()),
+            workspace,
         };
         let tty = parsed.tty.unwrap_or(false);
         let mut request = (if parsed.run_in_background {
@@ -443,6 +445,12 @@ fn exec_extra(
         .cwd
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
+    let workspace = snapshot
+        .meta
+        .owner
+        .workspace
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
     let status_detail = serde_json::to_value(&snapshot.status).unwrap_or(Value::Null);
     let mut exec = json!({
         "process_id": snapshot.meta.process_id.as_str(),
@@ -452,6 +460,7 @@ fn exec_extra(
         "short_description": snapshot.meta.short_description,
         "command": snapshot.meta.command,
         "cwd": cwd,
+        "workspace": workspace,
         "mode": snapshot.meta.mode.to_string(),
         "tty": tty,
         "duration_ms": duration.as_millis() as u64,
@@ -602,6 +611,38 @@ fn validate_shell_timeout_secs(secs: u64) -> Result<u64, String> {
     Ok(secs)
 }
 
+async fn shell_owner_workspace(
+    gcx: Arc<GlobalContext>,
+    execution_scope: Option<&ExecutionScope>,
+    cwd: Option<&PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(scope) = active_execution_scope(execution_scope) {
+        return Some(normalize_workspace_path(scope.effective_root()));
+    }
+    if let Some(cwd) = cwd {
+        if let Some(workspace) = workspace_containing_path(gcx.clone(), cwd).await {
+            return Some(workspace);
+        }
+        return Some(normalize_workspace_path(cwd));
+    }
+    get_active_project_path(gcx)
+        .await
+        .map(|path| normalize_workspace_path(&path))
+}
+
+async fn workspace_containing_path(
+    gcx: Arc<GlobalContext>,
+    path: &std::path::Path,
+) -> Option<PathBuf> {
+    let path = normalize_workspace_path(path);
+    get_project_dirs(gcx)
+        .await
+        .into_iter()
+        .map(|workspace| normalize_workspace_path(&workspace))
+        .filter(|workspace| path.starts_with(workspace))
+        .max_by_key(|workspace| workspace.components().count())
+}
+
 async fn resolve_shell_workdir(
     gcx: Arc<GlobalContext>,
     raw_path: Option<&str>,
@@ -673,6 +714,7 @@ mod tests {
 
     use crate::app_state::AppState;
     use crate::exec::ExecProcessId;
+    use crate::exec::types::normalize_workspace_path;
     use crate::tools::tools_description::Tool;
 
     use super::*;
@@ -704,6 +746,14 @@ mod tests {
             )
             .await,
         ));
+        (gcx, ccx)
+    }
+
+    async fn ccx_with_workspace(
+        workspace: &std::path::Path,
+    ) -> (Arc<GlobalContext>, Arc<AMutex<AtCommandsContext>>) {
+        let (gcx, ccx) = ccx_with_gcx_and_abort(None).await;
+        *gcx.documents_state.workspace_folders.lock().unwrap() = vec![workspace.to_path_buf()];
         (gcx, ccx)
     }
 
@@ -950,6 +1000,44 @@ mod tests {
         assert_eq!(exec(&message)["mode"], "background");
         assert_eq!(exec(&message)["status"], "running");
         assert!(exec(&message)["timeout_secs"].is_null());
+
+        gcx.exec_registry.kill(&process_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_in_background_sets_workspace_from_resolved_cwd() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (gcx, ccx) = ccx_with_workspace(workspace.path()).await;
+        let mut shell = ToolShell::default();
+        let (_, messages) = shell
+            .tool_execute(
+                ccx,
+                &"shell".to_string(),
+                &args(vec![
+                    ("command", json!(background_sleep_command())),
+                    ("description", json!("Run background sleep with workspace")),
+                    ("run_in_background", json!(true)),
+                ]),
+            )
+            .await
+            .unwrap();
+        let message = only_chat_message(messages);
+        let process_id = process_id(&message);
+        let snapshot = gcx.exec_registry.get(&process_id).await.unwrap();
+
+        assert_eq!(
+            snapshot.meta.owner.workspace,
+            Some(normalize_workspace_path(workspace.path()))
+        );
+        assert_eq!(
+            exec(&message)["workspace"],
+            workspace
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
 
         gcx.exec_registry.kill(&process_id).await.unwrap();
     }
