@@ -305,6 +305,35 @@ describe("pagination reducers", () => {
     expect(result.chats.chat1).toBeDefined();
   });
 
+  it("replaceSnapshotHistory treats missing next cursor as terminal", () => {
+    const state: HistoryState = {
+      chats: {},
+      isLoading: false,
+      loadError: null,
+      pagination: {
+        cursor: "previous-cursor",
+        hasMore: true,
+        totalCount: null,
+        generation: 0,
+      },
+    };
+
+    const result = historySlice.reducer(
+      state,
+      historySlice.actions.replaceSnapshotHistory({
+        append: true,
+        items: [],
+        pagination: { cursor: null, hasMore: true, totalCount: 1 },
+      }),
+    );
+
+    expect(result.pagination).toMatchObject({
+      cursor: null,
+      hasMore: false,
+      totalCount: 1,
+    });
+  });
+
   it("replaceSnapshotHistory keeps pagination when appending without new metadata", () => {
     const state: HistoryState = {
       chats: {
@@ -425,6 +454,31 @@ describe("pagination reducers", () => {
 
     expect(result.pagination.cursor).toBe("next-cursor");
     expect(result.pagination.hasMore).toBe(true);
+  });
+
+  it("setPagination treats missing next cursor as terminal", () => {
+    const state: HistoryState = {
+      chats: {},
+      isLoading: false,
+      loadError: null,
+      pagination: {
+        cursor: "previous-cursor",
+        hasMore: true,
+        totalCount: null,
+        generation: 0,
+      },
+    };
+
+    const result = historySlice.reducer(
+      state,
+      historySlice.actions.setPagination({
+        cursor: null,
+        hasMore: true,
+      }),
+    );
+
+    expect(result.pagination.cursor).toBeNull();
+    expect(result.pagination.hasMore).toBe(false);
   });
 
   it("setPagination sets hasMore to false when no more pages", () => {

@@ -1,12 +1,5 @@
 import React, { useCallback, useDeferredValue, useMemo, useState } from "react";
-import {
-  Button,
-  Flex,
-  Skeleton,
-  Spinner,
-  Text,
-  TextField,
-} from "@radix-ui/themes";
+import { Flex, Skeleton, Spinner, Text, TextField } from "@radix-ui/themes";
 import {
   MagnifyingGlassIcon,
   ChevronDownIcon,
@@ -134,7 +127,8 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
   const showLoadError = Boolean(loadError) && filteredTree.length === 0;
   const showLoading =
     !showLoadError &&
-    (projectLoading || (isInitialLoading && filteredTree.length === 0));
+    filteredTree.length === 0 &&
+    (projectLoading || isInitialLoading);
 
   const handleToggleExpand = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -186,7 +180,7 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
     dispatch(push({ name: "chat" }));
   }, [dispatch]);
 
-  const handleLoadMore = useCallback(() => {
+  const handleEndReached = useCallback(() => {
     if (hasMore && !isLoadingMore) {
       void loadMoreAsync();
     }
@@ -281,6 +275,7 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
           ) : (
             <Virtuoso
               data={flatItems}
+              endReached={handleEndReached}
               overscan={200}
               className={styles.virtuosoList}
               itemContent={(_index, item) => {
@@ -314,16 +309,9 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
               components={{
                 Footer: () => (
                   <>
-                    {hasMore && !loadMoreError && (
+                    {isLoadingMore && (
                       <Flex justify="center" py="2">
-                        <Button
-                          size="1"
-                          variant="soft"
-                          onClick={handleLoadMore}
-                          disabled={isLoadingMore}
-                        >
-                          {isLoadingMore ? <Spinner size="1" /> : "Load more"}
-                        </Button>
+                        <Spinner size="2" />
                       </Flex>
                     )}
                     {loadMoreError && (
@@ -334,7 +322,7 @@ export const ChatsSection: React.FC<ChatsSectionProps> = ({
                           style={{ cursor: "pointer" }}
                           onClick={retryLoadMore}
                         >
-                          Load failed — retry
+                          Load failed — click to retry
                         </Text>
                       </Flex>
                     )}

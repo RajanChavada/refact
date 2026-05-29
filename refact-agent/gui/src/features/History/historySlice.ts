@@ -471,7 +471,8 @@ export const historySlice = createSlice({
       }
       if (pagination) {
         state.pagination.cursor = pagination.cursor;
-        state.pagination.hasMore = pagination.hasMore;
+        state.pagination.hasMore =
+          pagination.hasMore && pagination.cursor !== null;
         state.pagination.totalCount = pagination.totalCount ?? null;
         if (!append) {
           state.pagination.generation += 1;
@@ -493,7 +494,8 @@ export const historySlice = createSlice({
       }>,
     ) => {
       state.pagination.cursor = action.payload.cursor;
-      state.pagination.hasMore = action.payload.hasMore;
+      state.pagination.hasMore =
+        action.payload.hasMore && action.payload.cursor !== null;
       if ("totalCount" in action.payload) {
         state.pagination.totalCount = action.payload.totalCount ?? null;
       }

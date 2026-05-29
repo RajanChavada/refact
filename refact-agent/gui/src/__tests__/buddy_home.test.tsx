@@ -155,7 +155,7 @@ function readGuiSource(path: string): Promise<string> {
 function readCssBlock(source: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`(^|\\n)\\s*${escapedSelector}\\s*{`).exec(source);
-  if (!match || match.index === undefined) {
+  if (match?.index === undefined) {
     throw new Error(`Missing CSS block for ${selector}`);
   }
   const open = source.indexOf("{", match.index);
@@ -2659,13 +2659,13 @@ describe("BuddySettingsPanel_autosave", () => {
       http.post(
         "http://127.0.0.1:8001/v1/buddy/settings",
         async ({ request }) => {
-          const body = await request.json();
+          const body = (await request.json()) as {
+            daily_digest_hour?: number | null;
+          };
           capturedBodies.push(body);
           return HttpResponse.json({
             ...makeSnapshot().settings,
             daily_digest_hour:
-              typeof body === "object" &&
-              body !== null &&
               "daily_digest_hour" in body
                 ? body.daily_digest_hour
                 : makeSnapshot().settings.daily_digest_hour,

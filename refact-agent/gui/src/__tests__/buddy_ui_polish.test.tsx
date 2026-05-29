@@ -526,6 +526,21 @@ describe("buddy UI polish", () => {
     };
     store.dispatch(setBuddySnapshot(snapshot));
 
+    server.use(
+      http.post(
+        "http://127.0.0.1:8001/v1/buddy/settings",
+        async ({ request }) => {
+          const body = (await request.json()) as Partial<
+            BuddySnapshot["settings"]
+          >;
+          return HttpResponse.json({
+            ...snapshot.settings,
+            ...body,
+          });
+        },
+      ),
+    );
+
     const { user } = render(<BuddySettingsPanel />, {
       preloadedState: { ...CONFIG_STATE, buddy: store.getState().buddy },
     });

@@ -5099,11 +5099,8 @@ describe("restoreChat buddy_meta handling", () => {
     })(dispatch as never, (() => ({})) as never, undefined);
 
     expect(result.type).toBe("chat/openExistingBuddyChat/rejected");
-    expect(result).toMatchObject({
-      error: expect.objectContaining({
-        message: expect.stringContaining("cannot be opened"),
-      }),
-    });
+    const rejectedResult = result as { error: { message: string } };
+    expect(rejectedResult.error.message).toContain("cannot be opened");
     expect(dispatch).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: restoreChat.type }),
     );
@@ -5139,13 +5136,12 @@ describe("restoreChat buddy_meta handling", () => {
       buddy_chat_kind: "chat",
       workflow_id: null,
     });
-    expect(rt?.thread.messages[0]).toMatchObject({
-      role: "assistant",
-      content: expect.stringContaining(
-        "Buddy could not load saved messages for this chat.",
-      ),
-      finish_reason: "error",
-    });
+    const restoredMessage = rt?.thread.messages[0];
+    expect(restoredMessage?.role).toBe("assistant");
+    expect(restoredMessage?.content).toContain(
+      "Buddy could not load saved messages for this chat.",
+    );
+    expect(restoredMessage).toMatchObject({ finish_reason: "error" });
     expect(rt?.session_state).toBe("error");
     expect(rt?.error).toContain("Buddy could not load saved messages");
     expect(store.getState().pages.at(-1)?.name).toBe("chat");

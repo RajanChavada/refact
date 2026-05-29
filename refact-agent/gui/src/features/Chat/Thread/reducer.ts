@@ -327,6 +327,11 @@ function shouldReplaceBackgroundAgent(
   );
 }
 
+function valueOrExisting<T>(value: T | undefined, existing: T): T {
+  if (value === undefined) return existing;
+  return value;
+}
+
 function applyRestoredThread(
   rt: Draft<ChatThreadRuntime>,
   payload: ReturnType<typeof restoreChat>["payload"],
@@ -338,102 +343,82 @@ function applyRestoredThread(
     ...existing,
     id: payload.id,
     messages,
-    model: payload.model ?? existing.model,
-    title: payload.title ?? existing.title,
+    model: valueOrExisting(payload.model, existing.model),
+    title: valueOrExisting(payload.title, existing.title),
     tool_use: payload.tool_use ?? existing.tool_use ?? fallbackToolUse,
     mode: normalizeLegacyMode(payload.mode ?? existing.mode),
-    buddy_meta:
-      payload.buddy_meta !== undefined
-        ? payload.buddy_meta
-        : existing.buddy_meta,
-    boost_reasoning:
-      payload.boost_reasoning !== undefined
-        ? payload.boost_reasoning
-        : existing.boost_reasoning,
-    context_tokens_cap:
-      payload.context_tokens_cap !== undefined
-        ? payload.context_tokens_cap
-        : existing.context_tokens_cap,
-    include_project_info:
-      payload.include_project_info !== undefined
-        ? payload.include_project_info
-        : existing.include_project_info,
-    increase_max_tokens:
-      payload.increase_max_tokens !== undefined
-        ? payload.increase_max_tokens
-        : existing.increase_max_tokens,
-    project_name:
-      payload.project_name !== undefined
-        ? payload.project_name
-        : existing.project_name,
-    isTitleGenerated:
-      payload.isTitleGenerated !== undefined
-        ? payload.isTitleGenerated
-        : existing.isTitleGenerated,
-    new_chat_suggested: payload.new_chat_suggested ??
-      existing.new_chat_suggested ?? { wasSuggested: false },
-    createdAt: payload.createdAt ?? existing.createdAt,
-    updatedAt: payload.updatedAt ?? existing.updatedAt,
-    last_user_message_id:
-      payload.last_user_message_id !== undefined
-        ? payload.last_user_message_id
-        : existing.last_user_message_id,
-    parent_id:
-      payload.parent_id !== undefined ? payload.parent_id : existing.parent_id,
-    link_type:
-      payload.link_type !== undefined ? payload.link_type : existing.link_type,
-    root_chat_id:
-      payload.root_chat_id !== undefined
-        ? payload.root_chat_id
-        : existing.root_chat_id,
-    worktree:
-      payload.worktree !== undefined ? payload.worktree : existing.worktree,
-    task_meta:
-      payload.task_meta !== undefined ? payload.task_meta : existing.task_meta,
-    is_task_chat:
-      payload.is_task_chat !== undefined
-        ? payload.is_task_chat
-        : existing.is_task_chat,
-    auto_approve_editing_tools:
-      payload.auto_approve_editing_tools !== undefined
-        ? payload.auto_approve_editing_tools
-        : existing.auto_approve_editing_tools,
-    auto_approve_dangerous_commands:
-      payload.auto_approve_dangerous_commands !== undefined
-        ? payload.auto_approve_dangerous_commands
-        : existing.auto_approve_dangerous_commands,
-    reasoning_effort:
-      payload.reasoning_effort !== undefined
-        ? payload.reasoning_effort
-        : existing.reasoning_effort,
-    thinking_budget:
-      payload.thinking_budget !== undefined
-        ? payload.thinking_budget
-        : existing.thinking_budget,
-    temperature:
-      payload.temperature !== undefined
-        ? payload.temperature
-        : existing.temperature,
-    frequency_penalty:
-      payload.frequency_penalty !== undefined
-        ? payload.frequency_penalty
-        : existing.frequency_penalty,
-    max_tokens:
-      payload.max_tokens !== undefined
-        ? payload.max_tokens
-        : existing.max_tokens,
-    parallel_tool_calls:
-      payload.parallel_tool_calls !== undefined
-        ? payload.parallel_tool_calls
-        : existing.parallel_tool_calls,
-    auto_enrichment_enabled:
-      payload.auto_enrichment_enabled !== undefined
-        ? payload.auto_enrichment_enabled
-        : existing.auto_enrichment_enabled,
-    auto_compact_enabled:
-      payload.auto_compact_enabled !== undefined
-        ? payload.auto_compact_enabled
-        : existing.auto_compact_enabled,
+    buddy_meta: valueOrExisting(payload.buddy_meta, existing.buddy_meta),
+    boost_reasoning: valueOrExisting(
+      payload.boost_reasoning,
+      existing.boost_reasoning,
+    ),
+    context_tokens_cap: valueOrExisting(
+      payload.context_tokens_cap,
+      existing.context_tokens_cap,
+    ),
+    include_project_info: valueOrExisting(
+      payload.include_project_info,
+      existing.include_project_info,
+    ),
+    increase_max_tokens: valueOrExisting(
+      payload.increase_max_tokens,
+      existing.increase_max_tokens,
+    ),
+    project_name: valueOrExisting(payload.project_name, existing.project_name),
+    isTitleGenerated: valueOrExisting(
+      payload.isTitleGenerated,
+      existing.isTitleGenerated,
+    ),
+    new_chat_suggested: valueOrExisting(
+      payload.new_chat_suggested,
+      existing.new_chat_suggested,
+    ),
+    createdAt: valueOrExisting(payload.createdAt, existing.createdAt),
+    updatedAt: valueOrExisting(payload.updatedAt, existing.updatedAt),
+    last_user_message_id: valueOrExisting(
+      payload.last_user_message_id,
+      existing.last_user_message_id,
+    ),
+    parent_id: valueOrExisting(payload.parent_id, existing.parent_id),
+    link_type: valueOrExisting(payload.link_type, existing.link_type),
+    root_chat_id: valueOrExisting(payload.root_chat_id, existing.root_chat_id),
+    worktree: valueOrExisting(payload.worktree, existing.worktree),
+    task_meta: valueOrExisting(payload.task_meta, existing.task_meta),
+    is_task_chat: valueOrExisting(payload.is_task_chat, existing.is_task_chat),
+    auto_approve_editing_tools: valueOrExisting(
+      payload.auto_approve_editing_tools,
+      existing.auto_approve_editing_tools,
+    ),
+    auto_approve_dangerous_commands: valueOrExisting(
+      payload.auto_approve_dangerous_commands,
+      existing.auto_approve_dangerous_commands,
+    ),
+    reasoning_effort: valueOrExisting(
+      payload.reasoning_effort,
+      existing.reasoning_effort,
+    ),
+    thinking_budget: valueOrExisting(
+      payload.thinking_budget,
+      existing.thinking_budget,
+    ),
+    temperature: valueOrExisting(payload.temperature, existing.temperature),
+    frequency_penalty: valueOrExisting(
+      payload.frequency_penalty,
+      existing.frequency_penalty,
+    ),
+    max_tokens: valueOrExisting(payload.max_tokens, existing.max_tokens),
+    parallel_tool_calls: valueOrExisting(
+      payload.parallel_tool_calls,
+      existing.parallel_tool_calls,
+    ),
+    auto_enrichment_enabled: valueOrExisting(
+      payload.auto_enrichment_enabled,
+      existing.auto_enrichment_enabled,
+    ),
+    auto_compact_enabled: valueOrExisting(
+      payload.auto_compact_enabled,
+      existing.auto_compact_enabled,
+    ),
   };
   rt.streaming = false;
   rt.waiting_for_response = false;
